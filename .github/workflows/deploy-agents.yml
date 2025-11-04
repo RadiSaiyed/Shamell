@@ -1,0 +1,58 @@
+name: Deploy Agents to Cloud Run
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'apps/agents/**'
+      - 'libs/superapp_shared/**'
+      - '.github/workflows/deploy-agents.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'syriasuperapp' }}
+      REGION: ${{ secrets.GCP_REGION || 'europe-west1' }}
+      SERVICE: agents-api
+      REPO: superapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Artifact Registry Docker auth
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.SERVICE }}:${{ github.sha }}"
+          docker build -t "$IMAGE" -f apps/agents/Dockerfile .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image "$IMAGE" \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --vpc-connector serverless-conn \
+            --add-cloudsql-instances syriasuperapp:europe-west1:superapp-pg \
+            --set-env-vars ENV=prod,APP_PORT=8080,ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS_AGENTS }},AUTO_CREATE_SCHEMA=false,JWT_SECRET=${{ secrets.JWT_SECRET_AGENTS }},RATE_LIMIT_BACKEND=redis,REDIS_URL=${{ secrets.REDIS_URL_AGENTS }},DB_URL=${{ secrets.DB_URL_AGENTS }}
+
