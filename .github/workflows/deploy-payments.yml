@@ -37,8 +37,7 @@ jobs:
       - name: Build and push image
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.SERVICE }}:${{ github.sha }}"
-          docker build -t "$IMAGE" -f apps/payments/Dockerfile .
-          docker push "$IMAGE"
+          gcloud builds submit --project syriasuperapp --tag "$IMAGE" -f apps/payments/Dockerfile .
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       - name: Deploy to Cloud Run
