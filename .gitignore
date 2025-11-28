@@ -1,0 +1,32 @@
+.DS_Store
+**/.DS_Store
+.env
+.venv*
+.venv*/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+
+# Local run logs
+ops/dev/logs/
+ops/dev/pids/
+ops/gcp/logs/
+
+# Flutter/Android build artifacts
+clients/**/build/
+clients/**/.dart_tool/
+clients/**/ios/Pods/
+clients/**/android/.gradle/
+
+# IDE/editor
+**/.idea/
+**/.vscode/
+**/*.iml
+
+# Large SDKs/tools not tracked
+tools/
+
+# Terraform state and providers
+ops/gcp/terraform/.terraform/
+ops/gcp/terraform/terraform.tfstate*
+ops/gcp/terraform/**/terraform-provider-*
