@@ -67,9 +67,9 @@ void main() {
           body: Semantics(
             button: true,
             label: 'Send payment',
-            child: const SendButton(
+            child: SendButton(
               cooldownSec: 0,
-              onTap: null,
+              onTap: () {},
             ),
           ),
         ),
@@ -77,7 +77,7 @@ void main() {
     );
 
     final semantics = tester.getSemantics(find.byType(Semantics));
-    expect(semantics.hasFlag(SemanticsFlag.isButton), isTrue);
+    expect(semantics.flagsCollection.isButton, isTrue);
     expect(semantics.label, 'Send payment');
   });
 }

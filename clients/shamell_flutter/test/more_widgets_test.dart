@@ -6,12 +6,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shamell_flutter/core/l10n.dart';
 import 'package:shamell_flutter/core/taxi/taxi_history.dart';
 import 'package:shamell_flutter/core/food_orders.dart';
+import 'package:shamell_flutter/core/realestate_zillow.dart';
 import 'package:shamell_flutter/main.dart';
 
 void main() {
   setUp(() async {
     // Use in-memory SharedPreferences for widgets that touch it.
-    SharedPreferences.setMockInitialValues(const <String, Object?>{});
+    SharedPreferences.setMockInitialValues(const <String, Object>{});
   });
 
   testWidgets('BusPage shows EN and AR actions', (tester) async {
@@ -198,13 +199,12 @@ void main() {
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,
         ],
-        home: const RealEstatePage('https://example.com'),
+        home: const RealEstateEnduser(baseUrl: 'https://example.com'),
       ),
     );
 
-    expect(find.text('RealEstate'), findsOneWidget);
-    expect(find.text('Search properties'), findsOneWidget);
-    expect(find.text('Reserve or inquire'), findsOneWidget);
+    expect(find.text('Find your home'), findsOneWidget);
+    expect(find.text('Min price'), findsOneWidget);
 
     // AR
     await tester.pumpWidget(
@@ -219,14 +219,13 @@ void main() {
         ],
         home: const Directionality(
           textDirection: TextDirection.rtl,
-          child: RealEstatePage('https://example.com'),
+          child: RealEstateEnduser(baseUrl: 'https://example.com'),
         ),
       ),
     );
 
-    expect(find.text('العقارات'), findsOneWidget);
-    expect(find.text('البحث عن عقارات'), findsOneWidget);
-    expect(find.text('حجز / استفسار'), findsOneWidget);
+    expect(find.text('بحث عن عقار'), findsOneWidget);
+    expect(find.text('Min price'), findsOneWidget);
   });
 
   testWidgets('FreightPage shows EN and AR titles', (tester) async {

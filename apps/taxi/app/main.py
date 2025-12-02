@@ -11,7 +11,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 from sqlalchemy import select
 import httpx
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 
 from .fcm import send_fcm_v1
@@ -33,7 +33,7 @@ router = APIRouter()
 # Internal write-guard: require X-Internal-Secret when configured.
 INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
 
-def _require_internal(request: Request | None):
+def _require_internal(request: Optional[Request] = None):
     if not INTERNAL_API_SECRET:
         return
     try:
@@ -90,8 +90,8 @@ class Driver(Base):
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     balance_cents: Mapped[int] = mapped_column(BigInteger, default=0)
     fcm_token: Mapped[Optional[str]] = mapped_column(String(256), default=None)
-    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Ride(Base):
@@ -107,12 +107,12 @@ class Ride(Base):
     dropoff_lon: Mapped[float] = mapped_column(Float)
     driver_id: Mapped[Optional[str]] = mapped_column(String(36), default=None)
     status: Mapped[str] = mapped_column(String(16), default="requested")  # requested|assigned|accepted|on_trip|completed|canceled
-    requested_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    assigned_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
-    accepted_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
-    started_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
-    canceled_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     fare_cents: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     payments_txn_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     payments_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
@@ -126,8 +126,9 @@ class Idempotency(Base):
     __tablename__ = "idempotency"
     __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    endpoint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     ride_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class TaxiTopupQrLog(Base):
@@ -204,7 +205,7 @@ def _startup():
 
 app.router.on_startup.append(_startup)
 
-def _get_brokerage_rate(s: Session | None = None) -> float:
+def _get_brokerage_rate(s: Optional[Session] = None) -> float:
     try:
         if s is not None:
             cfg = s.get(TaxiConfig, "brokerage_rate")
@@ -311,6 +312,15 @@ class TaxiTopupQrLogOut(BaseModel):
     payload: str
     driver_balance_cents: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaxiTopupQrLogCreate(BaseModel):
+    id: Optional[str] = None
+    driver_id: str
+    driver_phone: Optional[str] = None
+    amount_cents: int
+    created_by: Optional[str] = None
+    payload: str
 
 
 # ---- Helpers ----
@@ -616,7 +626,7 @@ class DriverStatsOut(BaseModel):
 
 @router.get("/drivers/{driver_id}/stats", response_model=DriverStatsOut)
 def driver_stats(driver_id: str, period: str = "today", s: Session = Depends(get_session)):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if period == "7d":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
     elif period == "30d":
@@ -668,7 +678,7 @@ class TaxiAdminSummaryOut(BaseModel):
 
 @router.get("/admin/summary", response_model=TaxiAdminSummaryOut)
 def taxi_admin_summary(s: Session = Depends(get_session)):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_today = start_today + timedelta(days=1)
     total = s.execute(select(func.count(Ride.id))).scalar() or 0
@@ -910,10 +920,13 @@ def request_ride(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     # Idempotency: return existing ride if this key was seen
     if idempotency_key:
         ie = s.get(Idempotency, idempotency_key)
-        if ie and ie.ride_id:
-            r0 = s.get(Ride, ie.ride_id)
-            if r0:
-                return r0
+        if ie:
+            if ie.endpoint and ie.endpoint != "rides/request":
+                raise HTTPException(status_code=409, detail="Idempotency-Key reused for different endpoint")
+            if ie.ride_id:
+                r0 = s.get(Ride, ie.ride_id)
+                if r0:
+                    return r0
     # pick nearest eligible driver (online, not blocked, sufficient available balance = balance - active holds)
     # compute fare estimate for reserve (brokerage fee)
     km_est = _haversine_km(req.pickup_lat, req.pickup_lon, req.dropoff_lat, req.dropoff_lon)
@@ -921,11 +934,26 @@ def request_ride(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     vclass = (req.vehicle_class or 'classic')
     fare_est = _estimate_fare_cents(km_est, eta_min, vclass)
     reserve = int(round(fare_est * _get_brokerage_rate(s)))
-    drivers = s.execute(select(Driver).where(Driver.status == "online", Driver.lat.is_not(None), Driver.lon.is_not(None), Driver.is_blocked == False)).scalars().all()
+    drivers_q = select(Driver).where(
+        Driver.status == "online",
+        Driver.lat.is_not(None),
+        Driver.lon.is_not(None),
+        Driver.is_blocked == False,  # type: ignore
+    )
+    if not DB_URL.startswith("sqlite"):
+        drivers_q = drivers_q.with_for_update(skip_locked=True)
+    drivers = s.execute(drivers_q).scalars().all()
     chosen: Optional[Driver] = None
     best = 1e18
     active_statuses = ("assigned", "accepted", "on_trip")
     for d in drivers:
+        # skip drivers that already have an active ride
+        active_q = select(Ride.id).where(Ride.driver_id == d.id, Ride.status.in_(active_statuses)).limit(1)
+        if not DB_URL.startswith("sqlite"):
+            active_q = active_q.with_for_update()
+        has_active = s.execute(active_q).scalar()
+        if has_active:
+            continue
         # available = balance - sum(active holds)
         try:
             holds = s.execute(select(func.coalesce(func.sum(Ride.driver_fee_hold_cents), 0)).where(Ride.driver_id == d.id, Ride.status.in_(active_statuses))).scalar() or 0
@@ -955,7 +983,7 @@ def request_ride(req: RideRequest, idempotency_key: Optional[str] = Header(defau
         dropoff_lat=req.dropoff_lat, dropoff_lon=req.dropoff_lon,
         driver_id=(chosen.id if chosen else None),
         status=("assigned" if chosen else "requested"),
-        assigned_at=(datetime.utcnow() if chosen else None),
+        assigned_at=(datetime.now(timezone.utc) if chosen else None),
         requested_vehicle_class=(req.vehicle_class or None)
     )
     # apply hold if assigned
@@ -964,7 +992,13 @@ def request_ride(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     s.add(r); s.commit(); s.refresh(r)
     if idempotency_key:
         try:
-            s.add(Idempotency(key=idempotency_key, ride_id=r.id)); s.commit()
+            ie = s.get(Idempotency, idempotency_key)
+            if not ie:
+                ie = Idempotency(key=idempotency_key, endpoint="rides/request", ride_id=r.id)
+            else:
+                ie.endpoint = ie.endpoint or "rides/request"
+                ie.ride_id = ie.ride_id or r.id
+            s.add(ie); s.commit()
         except Exception:
             pass
     return r
@@ -1091,7 +1125,7 @@ def accept_ride(ride_id: str, driver_id: str, request: Request, s: Session = Dep
     r = _get_ride_or_404(s, ride_id)
     if r.status != "assigned" or r.driver_id != driver_id:
         raise HTTPException(status_code=400, detail="not assignable to this driver")
-    r.status = "accepted"; r.accepted_at = datetime.utcnow()
+    r.status = "accepted"; r.accepted_at = datetime.now(timezone.utc)
     s.add(r); s.commit(); s.refresh(r)
     return r
 
@@ -1120,7 +1154,7 @@ def assign_ride(ride_id: str, driver_id: str, request: Request, s: Session = Dep
         raise HTTPException(status_code=402, detail="insufficient balance for hold")
     r.driver_id = driver_id
     r.status = "assigned"
-    r.assigned_at = datetime.utcnow()
+    r.assigned_at = datetime.now(timezone.utc)
     r.driver_fee_hold_cents = reserve
     s.add(r); s.commit(); s.refresh(r)
     try:
@@ -1136,7 +1170,7 @@ def start_ride(ride_id: str, driver_id: str, request: Request, s: Session = Depe
     r = _get_ride_or_404(s, ride_id)
     if r.status != "accepted" or r.driver_id != driver_id:
         raise HTTPException(status_code=400, detail="cannot start")
-    r.status = "on_trip"; r.started_at = datetime.utcnow()
+    r.status = "on_trip"; r.started_at = datetime.now(timezone.utc)
     s.add(r); s.commit(); s.refresh(r)
     return r
 
@@ -1150,14 +1184,15 @@ def complete_ride(ride_id: str, driver_id: str, request: Request, s: Session = D
     # distance + time based fare using tariffs
     km = _haversine_km(r.pickup_lat, r.pickup_lon, r.dropoff_lat, r.dropoff_lon)
     try:
-        secs = int(((datetime.utcnow()) - (r.started_at or r.accepted_at or r.assigned_at or datetime.utcnow())).total_seconds())
+        now = datetime.now(timezone.utc)
+        secs = int((now - (r.started_at or r.accepted_at or r.assigned_at or now)).total_seconds())
         mins = max(1, int(round(secs / 60.0)))
     except Exception:
         mins = _eta_min_from_km(km)
     d = s.get(Driver, driver_id)
     vclass = r.requested_vehicle_class or (d.vehicle_class if d else None)
     fare = _estimate_fare_cents(km, mins, vclass)
-    r.status = "completed"; r.completed_at = datetime.utcnow(); r.fare_cents = fare
+    r.status = "completed"; r.completed_at = datetime.now(timezone.utc); r.fare_cents = fare
     # commission (brokerage fee) at completion
     commission = int(round(fare * _get_brokerage_rate(s)))
     try:
@@ -1197,13 +1232,13 @@ def cancel_ride(ride_id: str, request: Request, s: Session = Depends(get_session
     r = _get_ride_or_404(s, ride_id)
     if r.status in ("on_trip", "completed"):
         raise HTTPException(status_code=400, detail="cannot cancel now")
-    r.status = "canceled"; r.canceled_at = datetime.utcnow(); r.driver_fee_hold_cents = 0
+    r.status = "canceled"; r.canceled_at = datetime.now(timezone.utc); r.driver_fee_hold_cents = 0
     s.add(r); s.commit(); s.refresh(r)
     return r
 
 
 @router.post("/topup_qr_log", response_model=TaxiTopupQrLogOut)
-def create_topup_qr_log(req: TaxiTopupQrLogOut, request: Request, s: Session = Depends(get_session)):
+def create_topup_qr_log(req: TaxiTopupQrLogCreate, request: Request, s: Session = Depends(get_session)):
     # Internal-only: called by BFF when a TaxiTopup QR is created
     _require_internal(request)
     log = TaxiTopupQrLog(
@@ -1234,6 +1269,8 @@ def mark_topup_qr_redeemed(req: TaxiTopupQrRedeemIn, request: Request, s: Sessio
         TaxiTopupQrLog.payload == payload,
         TaxiTopupQrLog.redeemed == False,  # type: ignore
     ).order_by(TaxiTopupQrLog.created_at.desc())
+    if not DB_URL.startswith("sqlite"):
+        q = q.with_for_update(skip_locked=True)
     log = s.execute(q).scalars().first()
     if not log:
         raise HTTPException(status_code=404, detail="log not found or already redeemed")
@@ -1249,7 +1286,7 @@ def mark_topup_qr_redeemed(req: TaxiTopupQrRedeemIn, request: Request, s: Sessio
         if driver.phone.strip() != req.driver_phone.strip():
             raise HTTPException(status_code=403, detail="QR does not belong to this driver")
     log.redeemed = True
-    log.redeemed_at = datetime.utcnow()
+    log.redeemed_at = datetime.now(timezone.utc)
     log.redeemed_by = (req.driver_phone or log.redeemed_by or driver.phone or "").strip() or None
     # Apply topup atomically with redeem, so QR codes are single-use.
     driver.balance_cents = max(0, int(driver.balance_cents or 0) + int(log.amount_cents or 0))
@@ -1404,10 +1441,13 @@ def book_and_pay(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     # Idempotency: if key exists and maps to a ride, return it
     if idempotency_key:
         ie = s.get(Idempotency, idempotency_key)
-        if ie and ie.ride_id:
-            r0 = s.get(Ride, ie.ride_id)
-            if r0:
-                return r0
+        if ie:
+            if ie.endpoint and ie.endpoint != "rides/book_pay":
+                raise HTTPException(status_code=409, detail="Idempotency-Key reused for different endpoint")
+            if ie.ride_id:
+                r0 = s.get(Ride, ie.ride_id)
+                if r0:
+                    return r0
     # If cash-only, no wallet required; else require wallet
     if CASH_ONLY != 1:
         if not req.rider_wallet_id:
@@ -1426,6 +1466,8 @@ def book_and_pay(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     )
     if CASH_ONLY != 1:
         drivers_q = drivers_q.where(Driver.wallet_id.is_not(None))
+    if not DB_URL.startswith("sqlite"):
+        drivers_q = drivers_q.with_for_update(skip_locked=True)
     drivers = s.execute(drivers_q).scalars().all()
     if not drivers:
         raise HTTPException(status_code=400, detail="no online drivers available")
@@ -1433,6 +1475,12 @@ def book_and_pay(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     best = 1e18
     active_statuses = ("assigned", "accepted", "on_trip")
     for d in drivers:
+        active_q = select(Ride.id).where(Ride.driver_id == d.id, Ride.status.in_(active_statuses)).limit(1)
+        if not DB_URL.startswith("sqlite"):
+            active_q = active_q.with_for_update()
+        has_active = s.execute(active_q).scalar()
+        if has_active:
+            continue
         try:
             holds = s.execute(
                 select(func.coalesce(func.sum(Ride.driver_fee_hold_cents), 0)).where(
@@ -1453,9 +1501,8 @@ def book_and_pay(req: RideRequest, idempotency_key: Optional[str] = Header(defau
     # create ride and compute fare
     ride_id = str(uuid.uuid4())
     km = _haversine_km(req.pickup_lat, req.pickup_lon, req.dropoff_lat, req.dropoff_lon)
-    fare = int(round(FARE_BASE_CENTS + FARE_PER_KM_CENTS * km))
-    if fare < MIN_FARE_CENTS:
-        fare = MIN_FARE_CENTS
+    eta_min = _eta_min_from_km(km)
+    fare = _estimate_fare_cents(km, eta_min, vclass)
     rider_phone = req.rider_phone
     rider_wallet_id = req.rider_wallet_id
     if (req.rider_id or "").strip():
@@ -1474,7 +1521,7 @@ def book_and_pay(req: RideRequest, idempotency_key: Optional[str] = Header(defau
         dropoff_lon=req.dropoff_lon,
         driver_id=chosen.id,
         status="assigned",
-        assigned_at=datetime.utcnow(),
+        assigned_at=datetime.now(timezone.utc),
         fare_cents=fare,
         requested_vehicle_class=(req.vehicle_class or None),
     )
@@ -1487,7 +1534,13 @@ def book_and_pay(req: RideRequest, idempotency_key: Optional[str] = Header(defau
         pass
     if idempotency_key:
         try:
-            s.add(Idempotency(key=idempotency_key, ride_id=r.id)); s.commit()
+            ie = s.get(Idempotency, idempotency_key)
+            if not ie:
+                ie = Idempotency(key=idempotency_key, endpoint="rides/book_pay", ride_id=r.id)
+            else:
+                ie.endpoint = ie.endpoint or "rides/book_pay"
+                ie.ride_id = ie.ride_id or r.id
+            s.add(ie); s.commit()
         except Exception:
             pass
     if CASH_ONLY == 1:

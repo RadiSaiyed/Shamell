@@ -5,8 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
+import 'ui_kit.dart';
 import '../main.dart' show AppBG, BusBookPage, BusOperatorPage;
 
 Future<Map<String, String>> _hdrBusDash({bool json = false}) async {
@@ -257,326 +257,272 @@ class _BusMultiLevelPageState extends State<BusMultiLevelPage> {
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.directions_bus_filled_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المستخدم النهائي (الباص)' : 'Enduser (Bus)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Enduser section
+        FormSection(
+          title: l.isArabic ? 'المستخدم النهائي (الباص)' : 'Enduser (Bus)',
+          subtitle: l.isArabic
+              ? 'حجوزات ومسارات الباص للركاب'
+              : 'Intercity bus search, bookings and tickets',
+          children: [
+            Text(
+              l.isArabic
+                  ? 'احجز تذاكر الباص بين المدن، شاهد تفاصيل الحجز وتذاكر QR.'
+                  : 'Search and book intercity bus trips, see your bookings and QR tickets.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'احجز تذاكر الباص بين المدن، شاهد تفاصيل الحجز وتذاكر QR.'
-                    : 'Search and book intercity bus trips, see your bookings and QR tickets.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _openEnduser,
-                icon: const Icon(Icons.search),
-                label: const Text('Bus booking'),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _openEnduser,
+              icon: const Icon(Icons.search),
+              label: const Text('Bus booking'),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.support_agent_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'مشغل الباص' : 'Bus operator',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: [
-                  if (_isBusOperator)
-                    Chip(
-                      label: const Text('operator_bus'),
-                      backgroundColor: Tokens.colorBus.withValues(alpha: .16),
-                      shape: StadiumBorder(
-                        side: BorderSide(
-                          color: Tokens.colorBus.withValues(alpha: .9),
-                        ),
+        // Operator section
+        FormSection(
+          title: l.isArabic ? 'مشغل الباص' : 'Bus operator',
+          subtitle: l.isArabic
+              ? 'أدوار المشغل ولوحة التحكم'
+              : 'Operator roles and console',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                if (_isBusOperator)
+                  Chip(
+                    label: const Text('operator_bus'),
+                    backgroundColor: Tokens.colorBus.withValues(alpha: .16),
+                    shape: StadiumBorder(
+                      side: BorderSide(
+                        color: Tokens.colorBus.withValues(alpha: .9),
                       ),
                     ),
-                  if (!_isBusOperator)
-                    Text(
-                      l.isArabic
-                          ? 'لا توجد صلاحيات مشغل Bus لهذه الهاتف.'
-                          : 'This phone has no bus operator rights.',
-                      style: TextStyle(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: .70),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (_isBusOperator)
-                FilledButton.icon(
-                  onPressed: _openOperator,
-                  icon: const Icon(Icons.dashboard_customize_outlined),
-                  label: const Text('Bus operator'),
-                )
-              else
-                Text(
-                  l.isArabic
-                      ? 'يمكن للمشرف أو المدير إضافة الدور operator_bus من لوحة الباص لهذه الخدمة.'
-                      : 'Admin or Superadmin can grant operator_bus from the Bus tools on this page.',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
                   ),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
-                  const SizedBox(width: 8),
+                if (!_isBusOperator)
                   Text(
-                    l.isArabic ? 'المدير (الباص)' : 'Admin (Bus)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic
-                        ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير الباص ومراقبة الجودة.'
-                        : 'This phone has admin rights; use Admin/Ops dashboards for bus reporting.')
-                    : (l.isArabic
-                        ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
-                        : 'No admin rights for this phone; Superadmin can grant admin.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Superadmin (Bus)',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin can manage bus roles and see global mobility stats and guardrails.'
-                    : 'This phone is not Superadmin; Superadmin sees all bus guardrails and roles.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Roles: ${_roles.join(", ")}'),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              if (_isSuperadmin || _isAdmin) ...[
-                const SizedBox(height: 16),
-                Text(
-                  l.isArabic
-                      ? 'إدارة مشغلي الباص (Superadmin)'
-                      : 'Bus operator provisioning (Superadmin)',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _targetPhoneCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'هاتف الهدف (+963...)'
-                        : 'Target phone (+963...)',
-                    hintText: '+963...',
-                  ),
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _operatorCompanyCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'اسم الشركة / المشغل'
-                        : 'Company / Operator name',
-                    hintText: l.isArabic ? 'مثل: شركة Shamell' : 'e.g. Al-Ameer الأمير',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _roleBusy ? null : _createBusOperatorForPhone,
-                        icon: const Icon(Icons.directions_bus_filled_outlined),
-                        label: Text(
-                          l.isArabic
-                              ? 'إنشاء مشغل باص'
-                              : 'Create Bus operator',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          OutlinedButton(
-                            onPressed: _roleBusy
-                                ? null
-                                : () => _revokeBusOperatorRole(),
-                            child: Text(
-                              l.isArabic
-                                  ? 'إزالة operator_bus'
-                                  : 'Revoke operator_bus',
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          OutlinedButton(
-                            onPressed: _roleBusy
-                                ? null
-                                : () => _loadIdsForPhone(_targetPhoneCtrl.text),
-                            child: Text(
-                              l.isArabic
-                                  ? 'عرض المعرفات لهذا الهاتف'
-                                  : 'Show IDs for this phone',
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_roleOut.isNotEmpty)
-                  Text(
-                    _roleOut,
+                    l.isArabic
+                        ? 'لا توجد صلاحيات مشغل Bus لهذه الهاتف.'
+                        : 'This phone has no bus operator rights.',
                     style: TextStyle(
                       color: Theme.of(context)
                           .colorScheme
                           .onSurface
-                          .withValues(alpha: .80),
+                          .withValues(alpha: .70),
                     ),
                   ),
-                if (_idsForPhone != null) ...[
-                  const SizedBox(height: 8),
-                  Builder(
-                    builder: (ctx) {
-                      final ids = _idsForPhone!;
-                      String field(String key) {
-                        final v = (ids[key] ?? '').toString().trim();
-                        return v.isEmpty ? '-' : v;
-                      }
-
-                      final userId = field('user_id');
-                      final walletId = field('wallet_id');
-                      final busOps = (ids['bus_operator_ids'] is List)
-                          ? (ids['bus_operator_ids'] as List)
-                              .map((e) => e.toString())
-                              .join(', ')
-                          : '';
-
-                      String label(String en, String ar) =>
-                          L10n.of(ctx).isArabic ? ar : en;
-
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${label('User ID', 'معرّف المستخدم')}: $userId',
-                            style: Theme.of(ctx).textTheme.bodySmall,
-                          ),
-                          Text(
-                            '${label('Wallet ID', 'معرّف المحفظة')}: $walletId',
-                            style: Theme.of(ctx).textTheme.bodySmall,
-                          ),
-                          Text(
-                            '${label('Bus operator ID(s)', 'معرّف مشغل الحافلات')}: ${busOps.isEmpty ? '-' : busOps}',
-                            style: Theme.of(ctx).textTheme.bodySmall,
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ],
               ],
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            if (_isBusOperator)
+              FilledButton.icon(
+                onPressed: _openOperator,
+                icon: const Icon(Icons.dashboard_customize_outlined),
+                label: const Text('Bus operator'),
+              )
+            else
+              Text(
+                l.isArabic
+                    ? 'يمكن للمشرف أو المدير إضافة الدور operator_bus من لوحة الباص لهذه الخدمة.'
+                    : 'Admin or Superadmin can grant operator_bus from the Bus tools on this page.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                ),
+              ),
+          ],
         ),
-      ],
-    );
+        const SizedBox(height: 16),
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (الباص)' : 'Admin (Bus)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة وتقارير الحافلات'
+              : 'Admin rights and bus reports',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic
+                      ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير الباص ومراقبة الجودة.'
+                      : 'This phone has admin rights; use Admin/Ops dashboards for bus reporting.')
+                  : (l.isArabic
+                      ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
+                      : 'No admin rights for this phone; Superadmin can grant admin.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+	        // Superadmin section
+	        FormSection(
+	          title: 'Superadmin (Bus)',
+	          subtitle: l.isArabic
+	              ? 'إدارة الأدوار والحواجز لمجال التنقل'
+	              : 'Manage bus roles and mobility guardrails',
+	          children: [
+	            Text(
+	              _isSuperadmin
+	                  ? 'Superadmin can manage bus roles and see global mobility stats and guardrails.'
+	                  : 'This phone is not Superadmin; Superadmin sees all bus guardrails and roles.',
+	              style: TextStyle(
+	                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+	              ),
+	            ),
+	            const SizedBox(height: 8),
+	            Text('Roles: ${_roles.join(", ")}'),
+	            const SizedBox(height: 4),
+	            Text(
+	              'Operator domains: ${_operatorDomains.join(", ")}',
+	              style: TextStyle(
+	                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+	              ),
+	            ),
+	            if (_isSuperadmin || _isAdmin) ...[
+	              const SizedBox(height: 16),
+	              Text(
+	                l.isArabic
+	                    ? 'إدارة مشغلي الباص (Superadmin)'
+	                    : 'Bus operator provisioning (Superadmin)',
+	                style: const TextStyle(fontWeight: FontWeight.w600),
+	              ),
+	              const SizedBox(height: 8),
+	              TextField(
+	                controller: _targetPhoneCtrl,
+	                decoration: InputDecoration(
+	                  labelText: l.isArabic
+	                      ? 'هاتف الهدف (+963...)'
+	                      : 'Target phone (+963...)',
+	                  hintText: '+963...',
+	                ),
+	                keyboardType: TextInputType.phone,
+	              ),
+	              const SizedBox(height: 8),
+	              TextField(
+	                controller: _operatorCompanyCtrl,
+	                decoration: InputDecoration(
+	                  labelText: l.isArabic
+	                      ? 'اسم الشركة / المشغل'
+	                      : 'Company / Operator name',
+	                  hintText: l.isArabic ? 'مثل: شركة Shamell' : 'e.g. Al-Ameer الأمير',
+	                ),
+	              ),
+	              const SizedBox(height: 8),
+	              Row(
+	                children: [
+	                  Expanded(
+	                    child: FilledButton.icon(
+	                      onPressed: _roleBusy ? null : _createBusOperatorForPhone,
+	                      icon: const Icon(Icons.directions_bus_filled_outlined),
+	                      label: Text(
+	                        l.isArabic
+	                            ? 'إنشاء مشغل باص'
+	                            : 'Create Bus operator',
+	                      ),
+	                    ),
+	                  ),
+	                  const SizedBox(width: 8),
+	                  Expanded(
+	                    child: Column(
+	                      crossAxisAlignment: CrossAxisAlignment.stretch,
+	                      children: [
+	                        OutlinedButton(
+	                          onPressed: _roleBusy
+	                              ? null
+	                              : () => _revokeBusOperatorRole(),
+	                          child: Text(
+	                            l.isArabic
+	                                ? 'إزالة operator_bus'
+	                                : 'Revoke operator_bus',
+	                          ),
+	                        ),
+	                        const SizedBox(height: 4),
+	                        OutlinedButton(
+	                          onPressed: _roleBusy
+	                              ? null
+	                              : () => _loadIdsForPhone(_targetPhoneCtrl.text),
+	                          child: Text(
+	                            l.isArabic
+	                                ? 'عرض المعرفات لهذا الهاتف'
+	                                : 'Show IDs for this phone',
+	                          ),
+	                        ),
+	                      ],
+	                    ),
+	                  )
+	                ],
+	              ),
+	              const SizedBox(height: 8),
+	              if (_roleOut.isNotEmpty)
+	                Text(
+	                  _roleOut,
+	                  style: TextStyle(
+	                    color: Theme.of(context)
+	                        .colorScheme
+	                        .onSurface
+	                        .withValues(alpha: .80),
+	                  ),
+	                ),
+	              if (_idsForPhone != null) ...[
+	                const SizedBox(height: 8),
+	                Builder(
+	                  builder: (ctx) {
+	                    final ids = _idsForPhone!;
+	                    String field(String key) {
+	                      final v = (ids[key] ?? '').toString().trim();
+	                      return v.isEmpty ? '-' : v;
+	                    }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Bus – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(
-            child: SafeArea(child: body),
-          ),
-        ],
-      ),
-    );
-  }
-}
+	                    final userId = field('user_id');
+	                    final walletId = field('wallet_id');
+	                    final busOps = (ids['bus_operator_ids'] is List)
+	                        ? (ids['bus_operator_ids'] as List)
+	                            .map((e) => e.toString())
+	                            .join(', ')
+	                        : '';
+
+	                    String label(String en, String ar) =>
+	                        L10n.of(ctx).isArabic ? ar : en;
+
+	                    return Column(
+	                      crossAxisAlignment: CrossAxisAlignment.start,
+	                      children: [
+	                        Text(
+	                          "${label('User ID', 'معرّف المستخدم')}: $userId",
+	                          style: Theme.of(ctx).textTheme.bodySmall,
+	                        ),
+	                        Text(
+	                          "${label('Wallet ID', 'معرّف المحفظة')}: $walletId",
+	                          style: Theme.of(ctx).textTheme.bodySmall,
+	                        ),
+	                        Text(
+	                          "${label('Bus operator ID(s)', 'معرّف مشغل الحافلات')}: ${busOps.isEmpty ? '-' : busOps}",
+	                          style: Theme.of(ctx).textTheme.bodySmall,
+	                        ),
+	                      ],
+	                    );
+	                  },
+	                ),
+	              ],
+	            ],
+	          ],
+	        ),
+	      ],
+	    );
+
+	    return DomainPageScaffold(
+	      background: bg,
+	      title: 'Bus',
+	      child: body,
+	      scrollable: false,
+	    );
+	  }
+	}

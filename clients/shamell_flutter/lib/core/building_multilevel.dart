@@ -5,9 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
-import '../main.dart' show AppBG, BuildingMaterialsPage, BuildingMaterialsOperatorPage;
+import 'ui_kit.dart';
+import '../main.dart' show AppBG;
+import 'building_cubotoo.dart';
 
 Future<Map<String, String>> _hdrBuildingDash({bool json = false}) async {
   final sp = await SharedPreferences.getInstance();
@@ -102,10 +103,7 @@ class _BuildingMaterialsMultiLevelPageState extends State<BuildingMaterialsMulti
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => BuildingMaterialsPage(
-          widget.baseUrl,
-          walletId: _walletId,
-        ),
+        builder: (_) => BuildingCubotooPage(baseUrl: widget.baseUrl),
       ),
     );
   }
@@ -115,7 +113,7 @@ class _BuildingMaterialsMultiLevelPageState extends State<BuildingMaterialsMulti
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => BuildingMaterialsOperatorPage(widget.baseUrl),
+        builder: (_) => BuildingCubotooPage(baseUrl: widget.baseUrl),
       ),
     );
   }
@@ -206,76 +204,55 @@ class _BuildingMaterialsMultiLevelPageState extends State<BuildingMaterialsMulti
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.construction_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المستخدم النهائي (مواد البناء)' : 'Enduser (Building Materials)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Enduser section
+        FormSection(
+          title: l.isArabic ? 'المستخدم النهائي (مواد البناء)' : 'Enduser (Building Materials)',
+          subtitle: l.isArabic
+              ? 'استخدام محفظتك لطلب مواد البناء مع الضمان'
+              : 'Use your wallet to order building materials with escrow',
+          children: [
+            Text(
+              l.isArabic
+                  ? 'تصفح مواد البناء، ثم اطلبها مع حجز المبلغ في الضمان باستخدام محفظتك.'
+                  : 'Browse building materials and place orders held in escrow using your wallet.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'تصفح مواد البناء، ثم اطلبها مع حجز المبلغ في الضمان باستخدام محفظتك.'
-                    : 'Browse building materials and place orders held in escrow using your wallet.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _walletId.isEmpty
+                  ? (l.isArabic
+                      ? 'لا توجد محفظة حالياً؛ Superadmin أو Admin يمكنه إنشاء/ضبط المحفظة.'
+                      : 'No wallet available; Superadmin/Admin can ensure or set a wallet.')
+                  : (l.isArabic
+                      ? 'محفظتك معدّة، يمكنك استخدام Building Materials كمستخدم نهائي.'
+                      : 'Wallet is ready; you can use Building Materials as an enduser.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                _walletId.isEmpty
-                    ? (l.isArabic
-                        ? 'لا توجد محفظة حالياً؛ Superadmin أو Admin يمكنه إنشاء/ضبط المحفظة.'
-                        : 'No wallet available; Superadmin/Admin can ensure or set a wallet.')
-                    : (l.isArabic
-                        ? 'محفظتك معدّة، يمكنك استخدام Building Materials كتاجر مواد بناء.'
-                        : 'Wallet is ready; you can use Building Materials as an enduser.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _walletId.isEmpty ? null : _openEnduser,
-                icon: const Icon(Icons.storefront_outlined),
-                label: Text(l.homeBuildingMaterials),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _walletId.isEmpty ? null : _openEnduser,
+              icon: const Icon(Icons.storefront_outlined),
+              label: Text(l.homeBuildingMaterials),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.support_agent_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'مشغل مواد البناء' : 'Building Materials operator',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
+        // Operator section
+        FormSection(
+          title: l.isArabic ? 'مشغل مواد البناء' : 'Building Materials operator',
+          subtitle: l.isArabic
+              ? 'صلاحيات المشغل ومشاهدة لوحة مواد البناء'
+              : 'Operator rights and building materials console',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -304,179 +281,146 @@ class _BuildingMaterialsMultiLevelPageState extends State<BuildingMaterialsMulti
                     ),
                 ],
               ),
+            const SizedBox(height: 8),
+            if (_isBuildingOperator)
+              FilledButton.icon(
+                onPressed: _openOperator,
+                icon: const Icon(Icons.dashboard_customize_outlined),
+                label: Text(
+                  l.isArabic ? 'فتح مشغل مواد البناء' : 'Open Building Materials operator',
+                ),
+              )
+            else
+              Text(
+                l.isArabic
+                    ? 'يمكن للمشرف أو المدير إضافة الدور operator_commerce من أدوات Superadmin في لوحة مواد البناء / التجارة.'
+                    : 'Admin or Superadmin can grant operator_commerce from the Building & Commerce tools on this page.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (مواد البناء)' : 'Admin (Building Materials)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة وتقارير التجارة / مواد البناء'
+              : 'Admin rights and commerce/building reports',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic
+                      ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير Commerce/Building وعمليات التصدير.'
+                      : 'This phone has admin rights; use admin/ops dashboards for commerce/building reporting.')
+                  : (l.isArabic
+                      ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
+                      : 'No admin rights for this phone; Superadmin can grant admin.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Superadmin section
+        FormSection(
+          title: 'Superadmin (Building Materials)',
+          subtitle: l.isArabic
+              ? 'إدارة أدوار التجارة / مواد البناء والحواجز'
+              : 'Manage commerce/building roles and guardrails',
+          children: [
+            Text(
+              _isSuperadmin
+                  ? 'Superadmin can manage Building & Commerce roles and see guardrails and finance stats.'
+                  : 'This phone is not Superadmin; Superadmin sees all commerce/building roles and guardrails.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('Roles: ${_roles.join(", ")}'),
+            const SizedBox(height: 4),
+            Text(
+              'Operator domains: ${_operatorDomains.join(", ")}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            if (_isSuperadmin || _isAdmin) ...[
+              const SizedBox(height: 16),
+              Text(
+                l.isArabic
+                    ? 'إدارة أدوار التجارة / مواد البناء (Superadmin)'
+                    : 'Commerce / Building role management (Superadmin)',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 8),
-              if (_isBuildingOperator)
-                FilledButton.icon(
-                  onPressed: _openOperator,
-                  icon: const Icon(Icons.dashboard_customize_outlined),
-                  label: Text(
-                    l.isArabic ? 'فتح مشغل مواد البناء' : 'Open Building Materials operator',
+              TextField(
+                controller: _targetPhoneCtrl,
+                decoration: InputDecoration(
+                  labelText: l.isArabic
+                      ? 'هاتف الهدف (+963...)'
+                      : 'Target phone (+963...)',
+                  hintText: '+963...',
+                ),
+                keyboardType: TextInputType.phone,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _roleBusy
+                          ? null
+                          : () => _mutateCommerceRole(grant: true),
+                      icon: const Icon(Icons.add),
+                      label: Text(
+                        l.isArabic
+                            ? 'إضافة operator_commerce'
+                            : 'Grant operator_commerce',
+                      ),
+                    ),
                   ),
-                )
-              else
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _roleBusy
+                          ? null
+                          : () => _mutateCommerceRole(grant: false),
+                      icon: const Icon(Icons.remove_circle_outline),
+                      label: Text(
+                        l.isArabic
+                            ? 'إزالة operator_commerce'
+                            : 'Revoke operator_commerce',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_roleOut.isNotEmpty)
                 Text(
-                  l.isArabic
-                      ? 'يمكن للمشرف أو المدير إضافة الدور operator_commerce من أدوات Superadmin في لوحة مواد البناء / التجارة.'
-                      : 'Admin or Superadmin can grant operator_commerce from the Building & Commerce tools on this page.',
+                  _roleOut,
                   style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: .80),
                   ),
                 ),
             ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المدير (مواد البناء)' : 'Admin (Building Materials)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic
-                        ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير Commerce/Building وعمليات التصدير.'
-                        : 'This phone has admin rights; use admin/ops dashboards for commerce/building reporting.')
-                    : (l.isArabic
-                        ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
-                        : 'No admin rights for this phone; Superadmin can grant admin.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Superadmin (Building Materials)',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin can manage Building & Commerce roles and see guardrails and finance stats.'
-                    : 'This phone is not Superadmin; Superadmin sees all commerce/building roles and guardrails.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Roles: ${_roles.join(", ")}'),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              if (_isSuperadmin || _isAdmin) ...[
-                const SizedBox(height: 16),
-                Text(
-                  l.isArabic
-                      ? 'إدارة أدوار التجارة / مواد البناء (Superadmin)'
-                      : 'Commerce / Building role management (Superadmin)',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _targetPhoneCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'هاتف الهدف (+963...)'
-                        : 'Target phone (+963...)',
-                    hintText: '+963...',
-                  ),
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _roleBusy
-                            ? null
-                            : () => _mutateCommerceRole(grant: true),
-                        icon: const Icon(Icons.add),
-                        label: Text(
-                          l.isArabic
-                              ? 'إضافة operator_commerce'
-                              : 'Grant operator_commerce',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _roleBusy
-                            ? null
-                            : () => _mutateCommerceRole(grant: false),
-                        icon: const Icon(Icons.remove_circle_outline),
-                        label: Text(
-                          l.isArabic
-                              ? 'إزالة operator_commerce'
-                              : 'Revoke operator_commerce',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_roleOut.isNotEmpty)
-                  Text(
-                    _roleOut,
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: .80),
-                    ),
-                  ),
-              ],
-            ],
-          ),
+          ],
         ),
       ],
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Building Materials – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(
-            child: SafeArea(child: body),
-          ),
-        ],
-      ),
+    return DomainPageScaffold(
+      background: bg,
+      title: 'Building Materials',
+      child: body,
+      scrollable: false,
     );
   }
 }

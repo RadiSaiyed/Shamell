@@ -5,9 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
-import '../main.dart' show AppBG, StaysPage, StaysOperatorPage;
+import 'ui_kit.dart';
+import '../main.dart' show AppBG, StaysPage;
+import 'pms_cloudbeds.dart';
 
 Future<Map<String, String>> _hdrStaysDash({bool json = false}) async {
   final sp = await SharedPreferences.getInstance();
@@ -102,7 +103,15 @@ class _StaysMultiLevelPageState extends State<StaysMultiLevelPage> {
     if (!_isStaysOperator) return;
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => StaysOperatorPage(widget.baseUrl)),
+      MaterialPageRoute(builder: (_) => PmsGlassPage(widget.baseUrl)),
+    );
+  }
+
+  void _openOperatorPro() {
+    if (!_isStaysOperator) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => PmsGlassPage(widget.baseUrl)),
     );
   }
 
@@ -191,63 +200,42 @@ class _StaysMultiLevelPageState extends State<StaysMultiLevelPage> {
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card (guest)
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.hotel_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'ضيف الفنادق والإقامات' : 'Guest (Hotels & Stays)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Guest/Enduser section
+        FormSection(
+          title: l.isArabic ? 'ضيف الفنادق والإقامات' : 'Guest (Hotels & Stays)',
+          subtitle: l.isArabic
+              ? 'البحث عن الإقامات والحجز من المحفظة'
+              : 'Search and book stays directly from your wallet',
+          children: [
+            Text(
+              l.isArabic
+                  ? 'ابحث عن الفنادق والإقامات، احصل على عروض الأسعار، واحجز مباشرة من محفظتك.'
+                  : 'Search hotels and stays, get quotes and book directly from your wallet.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'ابحث عن الفنادق والإقامات، احصل على عروض الأسعار، واحجز مباشرة من محفظتك.'
-                    : 'Search hotels and stays, get quotes and book directly from your wallet.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _openGuest,
-                icon: const Icon(Icons.hotel),
-                label: Text(l.homeStays),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _openGuest,
+              icon: const Icon(Icons.hotel),
+              label: Text(l.homeStays),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card (hotel operator)
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.business_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'مشغل الفنادق والإقامات' : 'Hotel & Stays operator',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
+        // Operator section (hotel operator)
+        FormSection(
+          title: l.isArabic ? 'مشغل الفنادق والإقامات' : 'Hotel & Stays operator',
+          subtitle: l.isArabic
+              ? 'صلاحيات المشغل ولوحات PMS'
+              : 'Operator rights and PMS consoles',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -276,173 +264,153 @@ class _StaysMultiLevelPageState extends State<StaysMultiLevelPage> {
                     ),
                 ],
               ),
+            const SizedBox(height: 8),
+            if (_isStaysOperator)
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _openOperator,
+                    icon: const Icon(Icons.dashboard_customize_outlined),
+                    label: Text(l.staysOperatorTitle),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _openOperatorPro,
+                    icon: const Icon(Icons.view_compact_outlined),
+                    label: Text(l.isArabic ? 'لوحة حديثة' : 'New Operator UI'),
+                  ),
+                ],
+              )
+            else
+              Text(
+                l.isArabic
+                    ? 'يمكن للمشرف أو المدير إضافة الدور operator_stays من أدوات Superadmin في لوحة الفنادق والإقامات.'
+                    : 'Admin or Superadmin can grant operator_stays from the Hotels & Stays tools on this page.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (الفنادق والإقامات)' : 'Admin (Hotels & Stays)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة وتقارير الحجوزات'
+              : 'Admin rights and booking reports',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic
+                      ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير حجوزات الفنادق والإقامات.'
+                      : 'This phone has admin rights; use Ops/Admin dashboards for hotels & stays reporting.')
+                  : (l.isArabic
+                      ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
+                      : 'No admin rights for this phone; Superadmin can grant admin.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Superadmin section
+        FormSection(
+          title: 'Superadmin (Hotels & Stays)',
+          subtitle: l.isArabic
+              ? 'إدارة أدوار الفنادق والإقامات والحواجز'
+              : 'Manage hotels & stays roles and guardrails',
+          children: [
+            Text(
+              _isSuperadmin
+                  ? 'Superadmin can manage Hotels & Stays roles and see global guardrails and stats.'
+                  : 'This phone is not Superadmin; Superadmin sees all hotels & stays roles and guardrails.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('Roles: ${_roles.join(", ")}'),
+            const SizedBox(height: 4),
+            Text(
+              'Operator domains: ${_operatorDomains.join(", ")}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            if (_isSuperadmin || _isAdmin) ...[
+              const SizedBox(height: 16),
+              Text(
+                l.isArabic
+                    ? 'إدارة أدوار الفنادق والإقامات (Superadmin)'
+                    : 'Hotels & Stays role management (Superadmin)',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 8),
-              if (_isStaysOperator)
-                FilledButton.icon(
-                  onPressed: _openOperator,
-                  icon: const Icon(Icons.dashboard_customize_outlined),
-                  label: Text(l.staysOperatorTitle),
-                )
-              else
+              TextField(
+                controller: _targetPhoneCtrl,
+                decoration: InputDecoration(
+                  labelText: l.isArabic
+                      ? 'هاتف الهدف (+963...)'
+                      : 'Target phone (+963...)',
+                  hintText: '+963...',
+                ),
+                keyboardType: TextInputType.phone,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed:
+                          _roleBusy ? null : () => _mutateStaysRole(grant: true),
+                      icon: const Icon(Icons.add),
+                      label: Text(
+                        l.isArabic
+                            ? 'إضافة operator_stays'
+                            : 'Grant operator_stays',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          _roleBusy ? null : () => _mutateStaysRole(grant: false),
+                      icon: const Icon(Icons.remove_circle_outline),
+                      label: Text(
+                        l.isArabic
+                            ? 'إزالة operator_stays'
+                            : 'Revoke operator_stays',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_roleOut.isNotEmpty)
                 Text(
-                  l.isArabic
-                      ? 'يمكن للمشرف أو المدير إضافة الدور operator_stays من أدوات Superadmin في لوحة الفنادق والإقامات.'
-                      : 'Admin or Superadmin can grant operator_stays from the Hotels & Stays tools on this page.',
+                  _roleOut,
                   style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: .80),
                   ),
                 ),
             ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المدير (الفنادق والإقامات)' : 'Admin (Hotels & Stays)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic
-                        ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير حجوزات الفنادق والإقامات.'
-                        : 'This phone has admin rights; use Ops/Admin dashboards for hotels & stays reporting.')
-                    : (l.isArabic
-                        ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
-                        : 'No admin rights for this phone; Superadmin can grant admin.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Superadmin (Hotels & Stays)',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin can manage Hotels & Stays roles and see global guardrails and stats.'
-                    : 'This phone is not Superadmin; Superadmin sees all hotels & stays roles and guardrails.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Roles: ${_roles.join(", ")}'),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              if (_isSuperadmin || _isAdmin) ...[
-                const SizedBox(height: 16),
-                Text(
-                  l.isArabic
-                      ? 'إدارة أدوار الفنادق والإقامات (Superadmin)'
-                      : 'Hotels & Stays role management (Superadmin)',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _targetPhoneCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'هاتف الهدف (+963...)'
-                        : 'Target phone (+963...)',
-                    hintText: '+963...',
-                  ),
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed:
-                            _roleBusy ? null : () => _mutateStaysRole(grant: true),
-                        icon: const Icon(Icons.add),
-                        label: Text(
-                          l.isArabic
-                              ? 'إضافة operator_stays'
-                              : 'Grant operator_stays',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed:
-                            _roleBusy ? null : () => _mutateStaysRole(grant: false),
-                        icon: const Icon(Icons.remove_circle_outline),
-                        label: Text(
-                          l.isArabic
-                              ? 'إزالة operator_stays'
-                              : 'Revoke operator_stays',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_roleOut.isNotEmpty)
-                  Text(
-                    _roleOut,
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: .80),
-                    ),
-                  ),
-              ],
-            ],
-          ),
+          ],
         ),
       ],
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Hotels & Stays – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(child: SafeArea(child: body)),
-        ],
-      ),
+    return DomainPageScaffold(
+      background: bg,
+      title: 'Hotels & Stays',
+      child: body,
+      scrollable: false,
     );
   }
 }

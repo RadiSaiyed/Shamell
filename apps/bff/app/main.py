@@ -45,6 +45,12 @@ configure_cors(app, os.getenv("ALLOWED_ORIGINS", "*"))
 add_standard_health(app)
 _HTTPX_CLIENT: httpx.Client | None = None
 _HTTPX_ASYNC_CLIENT: httpx.AsyncClient | None = None
+# Include PMS router directly for monolith/internal mode so Cloudbeds UI works via BFF.
+try:
+    from apps.pms.app.main import router as pms_router  # type: ignore
+    app.include_router(pms_router, prefix="/pms")  # type: ignore[arg-type]
+except Exception:
+    pms_router = None  # type: ignore
 
 
 def _httpx_client() -> httpx.Client:
@@ -692,6 +698,13 @@ def admin_info(request: Request):
         }
     except Exception:
         domains["livestock"] = {"internal": False, "base_url": LIVESTOCK_BASE}
+    try:
+        domains["equipment"] = {
+            "internal": _use_equipment_internal(),
+            "base_url": EQUIPMENT_BASE,
+        }
+    except Exception:
+        domains["equipment"] = {"internal": False, "base_url": EQUIPMENT_BASE}
 
     return {"env": env, "monolith": monolith, "security_headers": SECURITY_HEADERS_ENABLED, "domains": domains}
 
@@ -737,6 +750,9 @@ CARRENTAL_BASE = _env_or("CARRENTAL_BASE_URL", "")
 REALESTATE_BASE = _env_or("REALESTATE_BASE_URL", "")
 STAYS_BASE = _env_or("STAYS_BASE_URL", "")
 FREIGHT_BASE = _env_or("FREIGHT_BASE_URL", "")
+EQUIPMENT_BASE = _env_or("EQUIPMENT_BASE_URL", "")
+COURIER_BASE = _env_or("COURIER_BASE_URL", "")
+COURIER_ADMIN_TOKEN = _env_or("COURIER_ADMIN_TOKEN", "")
 CHAT_BASE = _env_or("CHAT_BASE_URL", "")
 AGRICULTURE_BASE = _env_or("AGRICULTURE_BASE_URL", "")
 COMMERCE_BASE = _env_or("COMMERCE_BASE_URL", "")
@@ -757,6 +773,13 @@ GOTIFY_APP_TOKEN = os.getenv("GOTIFY_APP_TOKEN", "")
 NOMINATIM_USER_AGENT = _env_or("NOMINATIM_USER_AGENT", "shamell-taxi/1.0 (contact@example.com)")
 OSRM_BASE = _env_or("OSRM_BASE_URL", "")
 OVERPASS_BASE = _env_or("OVERPASS_BASE_URL", "https://overpass-api.de/api/interpreter")
+
+# Force all domains to use internal integrations; ignore external BASE_URLs.
+FORCE_INTERNAL_DOMAINS = True
+
+
+def _force_internal(avail: bool) -> bool:
+    return bool(FORCE_INTERNAL_DOMAINS and avail)
 OVERPASS_USER_AGENT = _env_or("OVERPASS_USER_AGENT", NOMINATIM_USER_AGENT)
 BFF_TOPUP_SELLERS = set(a.strip() for a in os.getenv("BFF_TOPUP_SELLERS", "").split(",") if a.strip())
 BFF_TOPUP_ALLOW_ALL = (_env_or("BFF_TOPUP_ALLOW_ALL", "false").lower() == "true")
@@ -1134,16 +1157,22 @@ def _is_superadmin(phone: str) -> bool:
 
     - In production/staging environments only SUPERADMIN_PHONE
       is allowed as Superadmin.
-    - In test environments (ENV=test) the previous role logic stays active
-      so tests can explicitly simulate Superadmin roles.
+    - We also honor the Payments role "superadmin" (and legacy ops/seller in
+      test/dev) so granting the role in the DB is enough without relying on
+      env overrides.
     """
     # Hard binding to a single phone number (production path)
     if phone.strip() == SUPERADMIN_PHONE:
         return True
-    # Test environment: allow role-based simulation for tests
-    if _env_or("ENV", "dev").lower() == "test":
+    # Role-based superadmin (dev/test use payments roles)
+    try:
         roles = _get_effective_roles(phone)
-        return any(r in ("ops", "seller", "superadmin") for r in roles)
+        if "superadmin" in roles:
+            return True
+        if _env_or("ENV", "dev").lower() == "test":
+            return any(r in ("ops", "seller", "superadmin") for r in roles)
+    except Exception:
+        pass
     return False
 
 
@@ -2265,7 +2294,7 @@ async def me_home_snapshot(request: Request, response: Response = None):  # type
             snapshot["is_superadmin"] = False
         # Determine operator domains
         op_domains: list[str] = []
-        for dom in ("taxi", "bus", "stays", "realestate", "food", "commerce", "freight", "agriculture", "livestock", "carrental"):
+        for dom in ("taxi", "bus", "stays", "realestate", "food", "commerce", "freight", "agriculture", "livestock", "carrental", "equipment"):
             try:
                 if _is_operator(phone, dom):
                     op_domains.append(dom)
@@ -3888,11 +3917,15 @@ try:
         SendReq as _ChatSendReq,
         MsgOut as _ChatMsgOut,
         ReadReq as _ChatReadReq,
+        PushTokenReq as _ChatPushTokenReq,
+        ContactRuleReq as _ChatRuleReq,
         register as _chat_register,
         get_device as _chat_get_device,
         send_message as _chat_send_message,
         inbox as _chat_inbox,
         mark_read as _chat_mark_read,
+        register_push_token as _chat_register_push,
+        set_block as _chat_set_block,
     )
     _CHAT_INTERNAL_AVAILABLE = True
 except Exception:
@@ -3902,6 +3935,8 @@ except Exception:
 
 
 def _use_chat_internal() -> bool:
+    if _force_internal(_CHAT_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("CHAT_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -3956,6 +3991,64 @@ def chat_get_device(device_id: str):
             with _chat_internal_session() as s:
                 return _chat_get_device(device_id=device_id, s=s)
         r = httpx.get(_chat_url(f"/devices/{device_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/devices/{device_id}/push_token")
+async def chat_push_token(device_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                preq = _ChatPushTokenReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_register_push(device_id=device_id, req=preq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/devices/{device_id}/push_token"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/devices/{device_id}/block")
+async def chat_block(device_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                breq = _ChatRuleReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_set_block(device_id=device_id, req=breq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/devices/{device_id}/block"), json=body, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4074,7 +4167,16 @@ async def chat_inbox_ws(ws: WebSocket):
                                 "nonce_b64": getattr(m, "nonce_b64", None),
                                 "box_b64": getattr(m, "box_b64", None),
                                 "sender_pubkey_b64": getattr(m, "sender_pubkey_b64", getattr(m, "sender_pubkey", None)),
+                                "sender_dh_pub_b64": getattr(m, "sender_dh_pub_b64", getattr(m, "sender_dh_pub", None)),
                                 "created_at": getattr(m, "created_at", None),
+                                "delivered_at": getattr(m, "delivered_at", None),
+                                "read_at": getattr(m, "read_at", None),
+                                "expire_at": getattr(m, "expire_at", None),
+                                "sealed_sender": getattr(m, "sealed_sender", False),
+                                "sender_hint": getattr(m, "sender_hint", None),
+                                "sender_fingerprint": getattr(m, "sender_fingerprint", getattr(m, "sender_hint", None)),
+                                "key_id": getattr(m, "key_id", None),
+                                "prev_key_id": getattr(m, "prev_key_id", None),
                             }
                             for m in arr
                         ]
@@ -4107,6 +4209,12 @@ def _freight_url(path: str) -> str:
     return FREIGHT_BASE.rstrip("/") + path
 
 
+def _courier_url(path: str) -> str:
+    if not COURIER_BASE:
+        raise HTTPException(status_code=500, detail="COURIER_BASE_URL not configured")
+    return COURIER_BASE.rstrip("/") + path
+
+
 # --- Freight internal service (monolith mode) ---
 _FREIGHT_INTERNAL_AVAILABLE = False
 try:
@@ -4132,6 +4240,8 @@ except Exception:
 
 
 def _use_freight_internal() -> bool:
+    if _force_internal(_FREIGHT_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("FREIGHT_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4179,10 +4289,17 @@ async def freight_quote(req: Request):
 
 @app.post("/courier/quote")
 async def courier_quote(req: Request):
-    """
-    Courier alias on top of the Freight quote endpoint.
-    """
-    return await freight_quote(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        r = httpx.post(_courier_url("/quote"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/freight/book")
@@ -4223,10 +4340,24 @@ async def freight_book(request: Request):
 
 @app.post("/courier/book")
 async def courier_book(req: Request):
-    """
-    Courier alias on top of the Freight book endpoint.
-    """
-    return await freight_book(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key")
+    except Exception:
+        ikey = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    try:
+        r = httpx.post(_courier_url("/orders"), json=body, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/freight/shipments/{sid}")
@@ -4249,10 +4380,13 @@ def freight_get_shipment(sid: str):
 
 @app.get("/courier/shipments/{sid}")
 def courier_get_shipment(sid: str):
-    """
-    Courier alias on top of the Freight get_shipment endpoint.
-    """
-    return freight_get_shipment(sid)
+    try:
+        r = httpx.get(_courier_url(f"/track/{sid}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/freight/shipments/{sid}/status")
@@ -4287,10 +4421,234 @@ async def freight_set_status(sid: str, req: Request):
 
 @app.post("/courier/shipments/{sid}/status")
 async def courier_set_status(sid: str, req: Request):
-    """
-    Courier alias on top of the Freight set_status endpoint.
-    """
-    return await freight_set_status(sid, req)
+    _require_operator(req, "freight")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key")
+    except Exception:
+        ikey = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    try:
+        r = httpx.post(_courier_url(f"/orders/{sid}/status"), json=body, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/track/{token}")
+def courier_track_public(token: str):
+    try:
+        r = httpx.get(_courier_url(f"/track/public/{token}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/courier/orders/{oid}/contact")
+async def courier_contact(oid: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        r = httpx.post(_courier_url(f"/orders/{oid}/contact"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/courier/orders/{oid}/reschedule")
+async def courier_reschedule(oid: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        r = httpx.post(_courier_url(f"/orders/{oid}/reschedule"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/stats")
+def courier_stats(carrier: str | None = None, partner_id: str | None = None, service_type: str | None = None):
+    params = {}
+    if carrier:
+        params["carrier"] = carrier
+    if partner_id:
+        params["partner_id"] = partner_id
+    if service_type:
+        params["service_type"] = service_type
+    headers = {}
+    if COURIER_ADMIN_TOKEN:
+        headers["X-Admin-Token"] = COURIER_ADMIN_TOKEN
+    try:
+        r = httpx.get(_courier_url("/stats"), params=params, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/stats/export")
+def courier_stats_export(carrier: str | None = None, partner_id: str | None = None, service_type: str | None = None):
+    params = {}
+    if carrier:
+        params["carrier"] = carrier
+    if partner_id:
+        params["partner_id"] = partner_id
+    if service_type:
+        params["service_type"] = service_type
+    headers = {}
+    if COURIER_ADMIN_TOKEN:
+        headers["X-Admin-Token"] = COURIER_ADMIN_TOKEN
+    try:
+        r = httpx.get(_courier_url("/stats/export"), params=params, headers=headers, timeout=10)
+        resp = Response(content=r.content, media_type="text/csv")
+        cd = r.headers.get("Content-Disposition")
+        if cd:
+            resp.headers["Content-Disposition"] = cd
+        return resp
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/kpis/partners")
+def courier_partner_kpis(start_iso: str | None = None, end_iso: str | None = None, carrier: str | None = None, service_type: str | None = None):
+    params = {}
+    if start_iso:
+        params["start_iso"] = start_iso
+    if end_iso:
+        params["end_iso"] = end_iso
+    if carrier:
+        params["carrier"] = carrier
+    if service_type:
+        params["service_type"] = service_type
+    headers = {}
+    if COURIER_ADMIN_TOKEN:
+        headers["X-Admin-Token"] = COURIER_ADMIN_TOKEN
+    try:
+        r = httpx.get(_courier_url("/kpis/partners"), params=params, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/kpis/partners/export")
+def courier_partner_kpis_export(start_iso: str | None = None, end_iso: str | None = None, carrier: str | None = None, service_type: str | None = None):
+    params = {}
+    if start_iso:
+        params["start_iso"] = start_iso
+    if end_iso:
+        params["end_iso"] = end_iso
+    if carrier:
+        params["carrier"] = carrier
+    if service_type:
+        params["service_type"] = service_type
+    headers = {}
+    if COURIER_ADMIN_TOKEN:
+        headers["X-Admin-Token"] = COURIER_ADMIN_TOKEN
+    try:
+        r = httpx.get(_courier_url("/kpis/partners/export"), params=params, headers=headers, timeout=10)
+        resp = Response(content=r.content, media_type="text/csv")
+        cd = r.headers.get("Content-Disposition")
+        if cd:
+            resp.headers["Content-Disposition"] = cd
+        return resp
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/address/validate")
+def courier_validate_address(lat: float, lng: float, address: str | None = None):
+    try:
+        r = httpx.get(_courier_url("/address/validate"), params={"lat": lat, "lng": lng, "address": address or ""}, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/slots")
+def courier_slots(service_type: str = "same_day"):
+    try:
+        r = httpx.get(_courier_url("/slots"), params={"service_type": service_type}, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/courier/partners", response_model=dict)
+def courier_create_partner(body: dict):
+    try:
+        r = httpx.post(_courier_url("/partners"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/partners")
+def courier_list_partners():
+    try:
+        r = httpx.get(_courier_url("/partners"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/courier/apply", response_model=dict)
+def courier_apply(body: dict):
+    try:
+        r = httpx.post(_courier_url("/apply"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/courier/admin/applications")
+def courier_admin_applications(status: str | None = None):
+    params = {}
+    if status:
+        params["status"] = status
+    headers = {}
+    if COURIER_ADMIN_TOKEN:
+        headers["X-Admin-Token"] = COURIER_ADMIN_TOKEN
+    try:
+        r = httpx.get(_courier_url("/admin/applications"), params=params, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ---- Stays proxies ----
@@ -4377,6 +4735,8 @@ except Exception:
 
 
 def _use_stays_internal() -> bool:
+    if _force_internal(_STAYS_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("STAYS_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4530,10 +4890,18 @@ try:
         engine as _doctors_engine,
         DoctorCreate as _DoctorsDoctorCreate,
         AppointmentCreate as _DoctorsAppointmentCreate,
+        AppointmentReschedule as _DoctorsAppointmentReschedule,
+        AvailabilityBlock as _DoctorsAvailabilityBlock,
         create_doctor as _doctors_create_doctor,
         list_doctors as _doctors_list_doctors,
+        get_doctor as _doctors_get_doctor,
+        get_doctor_availability as _doctors_get_doctor_availability,
+        set_doctor_availability as _doctors_set_doctor_availability,
         create_appt as _doctors_create_appt,
         list_appts as _doctors_list_appts,
+        list_slots as _doctors_list_slots,
+        cancel_appointment as _doctors_cancel_appointment,
+        reschedule_appointment as _doctors_reschedule_appointment,
     )
     _DOCTORS_INTERNAL_AVAILABLE = True
 except Exception:
@@ -4579,10 +4947,27 @@ try:
         engine as _agriculture_engine,
         get_session as _agriculture_get_session,
         ListingCreate as _AgricultureListingCreate,
+        ListingUpdate as _AgricultureListingUpdate,
         ListingOut as _AgricultureListingOut,
+        RFQCreate as _AgricultureRFQCreate,
+        RFQReplyCreate as _AgricultureRFQReplyCreate,
+        RFQOut as _AgricultureRFQOut,
+        RFQReplyOut as _AgricultureRFQReplyOut,
+        OrderCreate as _AgricultureOrderCreate,
+        OrderOut as _AgricultureOrderOut,
+        OrderUpdate as _AgricultureOrderUpdate,
         create_listing as _agriculture_create_listing,
         list_listings as _agriculture_list_listings,
         get_listing as _agriculture_get_listing,
+        update_listing as _agriculture_update_listing,
+        create_rfq as _agriculture_create_rfq,
+        list_rfqs as _agriculture_list_rfqs,
+        get_rfq as _agriculture_get_rfq,
+        reply_rfq as _agriculture_reply_rfq,
+        list_rfq_replies as _agriculture_list_rfq_replies,
+        create_order as _agriculture_create_order,
+        list_orders as _agriculture_list_orders,
+        update_order as _agriculture_update_order,
     )
     _AGRICULTURE_INTERNAL_AVAILABLE = True
 except Exception:
@@ -4598,9 +4983,16 @@ try:
         get_session as _livestock_get_session,
         ListingCreate as _LivestockListingCreate,
         ListingOut as _LivestockListingOut,
+        ListingUpdate as _LivestockListingUpdate,
+        OfferCreate as _LivestockOfferCreate,
+        OfferUpdate as _LivestockOfferUpdate,
         create_listing as _livestock_create_listing,
         list_listings as _livestock_list_listings,
         get_listing as _livestock_get_listing,
+        update_listing as _livestock_update_listing,
+        create_offer as _livestock_create_offer,
+        list_offers as _livestock_list_offers,
+        update_offer as _livestock_update_offer,
     )
     _LIVESTOCK_INTERNAL_AVAILABLE = True
 except Exception:
@@ -4610,6 +5002,8 @@ except Exception:
 
 
 def _use_commerce_internal() -> bool:
+    if _force_internal(_COMMERCE_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("COMMERCE_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4621,6 +5015,8 @@ def _use_commerce_internal() -> bool:
 
 
 def _use_doctors_internal() -> bool:
+    if _force_internal(_DOCTORS_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("DOCTORS_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4632,6 +5028,8 @@ def _use_doctors_internal() -> bool:
 
 
 def _use_flights_internal() -> bool:
+    if _force_internal(_FLIGHTS_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("FLIGHTS_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4643,6 +5041,8 @@ def _use_flights_internal() -> bool:
 
 
 def _use_jobs_internal() -> bool:
+    if _force_internal(_JOBS_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("JOBS_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4654,6 +5054,8 @@ def _use_jobs_internal() -> bool:
 
 
 def _use_agriculture_internal() -> bool:
+    if _force_internal(_AGRICULTURE_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("AGRICULTURE_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -4665,6 +5067,8 @@ def _use_agriculture_internal() -> bool:
 
 
 def _use_livestock_internal() -> bool:
+    if _force_internal(_LIVESTOCK_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("LIVESTOCK_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -5510,6 +5914,78 @@ async def doctors_create(req: Request):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.get("/doctors/doctors/{doctor_id}")
+def doctors_get(doctor_id: int):
+    try:
+        if _use_doctors_internal():
+            if not _DOCTORS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="doctors internal not available")
+            with _doctors_internal_session() as s:
+                return _doctors_get_doctor(doctor_id=doctor_id, s=s)
+        r = httpx.get(_doctors_url(f"/doctors/{doctor_id}"), timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/doctors/doctors/{doctor_id}/availability")
+def doctors_get_availability(doctor_id: int):
+    try:
+        if _use_doctors_internal():
+            if not _DOCTORS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="doctors internal not available")
+            with _doctors_internal_session() as s:
+                return _doctors_get_doctor_availability(doctor_id=doctor_id, s=s)
+        r = httpx.get(_doctors_url(f"/doctors/{doctor_id}/availability"), timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.put("/doctors/doctors/{doctor_id}/availability")
+async def doctors_set_availability(doctor_id: int, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_doctors_internal():
+            if not _DOCTORS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="doctors internal not available")
+            data = body or []
+            if not isinstance(data, list):
+                raise HTTPException(status_code=400, detail="body must be a list")
+            blocks = []
+            for item in data:
+                if not isinstance(item, dict):
+                    raise HTTPException(status_code=400, detail="invalid availability block")
+                try:
+                    blocks.append(_DoctorsAvailabilityBlock(**item))
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+            with _doctors_internal_session() as s:
+                return _doctors_set_doctor_availability(doctor_id=doctor_id, blocks=blocks, s=s)
+        r = httpx.put(_doctors_url(f"/doctors/{doctor_id}/availability"), json=body, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.get("/doctors/appointments")
 def doctors_list_appointments(doctor_id: int | None = None, limit: int = 50):
     params: dict[str, object] = {"limit": max(1, min(limit, 200))}
@@ -5522,6 +5998,29 @@ def doctors_list_appointments(doctor_id: int | None = None, limit: int = 50):
             with _doctors_internal_session() as s:
                 return _doctors_list_appts(doctor_id=doctor_id, limit=limit, s=s)
         r = httpx.get(_doctors_url("/appointments"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/doctors/slots")
+def doctors_slots(doctor_id: int, start_date: str | None = None, days: int = 7):
+    days_clamped = max(1, min(days, 31))
+    params: dict[str, object] = {"doctor_id": doctor_id, "days": days_clamped}
+    if start_date:
+        params["start_date"] = start_date
+    try:
+        if _use_doctors_internal():
+            if not _DOCTORS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="doctors internal not available")
+            with _doctors_internal_session() as s:
+                return _doctors_list_slots(doctor_id=doctor_id, start_date=start_date, days=days_clamped, s=s)
+        r = httpx.get(_doctors_url("/slots"), params=params, timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -5559,6 +6058,55 @@ async def doctors_create_appointment(req: Request):
         if ikey:
             headers["Idempotency-Key"] = ikey
         r = httpx.post(_doctors_url("/appointments"), json=body, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/doctors/appointments/{appt_id}/cancel")
+async def doctors_cancel_appointment(appt_id: str):
+    try:
+        if _use_doctors_internal():
+            if not _DOCTORS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="doctors internal not available")
+            with _doctors_internal_session() as s:
+                return _doctors_cancel_appointment(appt_id=appt_id, s=s)
+        r = httpx.post(_doctors_url(f"/appointments/{appt_id}/cancel"), timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/doctors/appointments/{appt_id}/reschedule")
+async def doctors_reschedule_appointment(appt_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_doctors_internal():
+            if not _DOCTORS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="doctors internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                areq = _DoctorsAppointmentReschedule(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _doctors_internal_session() as s:
+                return _doctors_reschedule_appointment(appt_id=appt_id, req=areq, s=s)
+        r = httpx.post(_doctors_url(f"/appointments/{appt_id}/reschedule"), json=body, timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -5711,7 +6259,7 @@ def stays_listings(q: str = "", city: str = "", limit: int = 50, offset: int = 0
 
 # ---- Agriculture proxies ----
 @app.get("/agriculture/listings")
-def agriculture_listings(q: str = "", city: str = "", category: str = "", limit: int = 50):
+def agriculture_listings(q: str = "", city: str = "", category: str = "", status: str = "", limit: int = 50):
     params = {"limit": max(1, min(limit, 200))}
     if q:
         params["q"] = q
@@ -5719,12 +6267,20 @@ def agriculture_listings(q: str = "", city: str = "", category: str = "", limit:
         params["city"] = city
     if category:
         params["category"] = category
+    if status:
+        params["status"] = status
+    # status optional
+    # allow status via query
+    # we won't add a dedicated param here to keep backward compat; users can pass ?status=
+    # from req.query_params
+    # but to ease usage, read from request? not available here; so accept status param:
+    # signature extended above if needed
     try:
         if _use_agriculture_internal():
             if not _AGRICULTURE_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="agriculture internal not available")
             with _agriculture_internal_session() as s:
-                return _agriculture_list_listings(q=q, city=city, category=category, limit=limit, s=s)
+                return _agriculture_list_listings(q=q, city=city, category=category, status=status, limit=limit, s=s)
         r = httpx.get(_agriculture_url("/listings"), params=params, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
@@ -5815,22 +6371,292 @@ def agriculture_get_listing(lid: int):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.patch("/agriculture/listings/{lid}")
+async def agriculture_update_listing(lid: int, req: Request):
+    _require_operator(req, "agriculture")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                lreq = _AgricultureListingUpdate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _agriculture_internal_session() as s:
+                return _agriculture_update_listing(lid=lid, req=lreq, s=s)
+        r = httpx.patch(_agriculture_url(f"/listings/{lid}"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/agriculture/rfqs")
+async def agriculture_create_rfq(req: Request):
+    # allow buyers without auth; keep simple
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                rreq = _AgricultureRFQCreate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _agriculture_internal_session() as s:
+                return _agriculture_create_rfq(req=rreq, s=s)
+        r = httpx.post(_agriculture_url("/rfqs"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/agriculture/rfqs")
+def agriculture_list_rfqs(status: str = "", city: str = "", limit: int = 100):
+    params = {"limit": max(1, min(limit, 200))}
+    if status:
+        params["status"] = status
+    if city:
+        params["city"] = city
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            with _agriculture_internal_session() as s:
+                return _agriculture_list_rfqs(status=status, city=city, limit=limit, s=s)
+        r = httpx.get(_agriculture_url("/rfqs"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/agriculture/rfqs/{rid}/reply")
+async def agriculture_reply_rfq(rid: int, req: Request):
+    _require_operator(req, "agriculture")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                rreq = _AgricultureRFQReplyCreate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _agriculture_internal_session() as s:
+                return _agriculture_reply_rfq(rid=rid, req=rreq, s=s)
+        r = httpx.post(_agriculture_url(f"/rfqs/{rid}/reply"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/agriculture/rfqs/{rid}/replies")
+def agriculture_list_rfq_replies(rid: int):
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            with _agriculture_internal_session() as s:
+                return _agriculture_list_rfq_replies(rid=rid, s=s)
+        r = httpx.get(_agriculture_url(f"/rfqs/{rid}/replies"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/agriculture/orders")
+async def agriculture_create_order(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                oreq = _AgricultureOrderCreate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _agriculture_internal_session() as s:
+                return _agriculture_create_order(req=oreq, s=s)
+        r = httpx.post(_agriculture_url("/orders"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/agriculture/orders")
+def agriculture_list_orders(status: str = "", limit: int = 100):
+    params = {"limit": max(1, min(limit, 200))}
+    if status:
+        params["status"] = status
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            with _agriculture_internal_session() as s:
+                return _agriculture_list_orders(status=status, limit=limit, s=s)
+        r = httpx.get(_agriculture_url("/orders"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.patch("/agriculture/orders/{oid}")
+async def agriculture_update_order(oid: int, req: Request):
+    _require_operator(req, "agriculture")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_agriculture_internal():
+            if not _AGRICULTURE_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="agriculture internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                oreq = _AgricultureOrderUpdate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _agriculture_internal_session() as s:
+                return _agriculture_update_order(oid=oid, req=oreq, s=s)
+        r = httpx.patch(_agriculture_url(f"/orders/{oid}"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ---- Livestock proxies ----
 @app.get("/livestock/listings")
-def livestock_listings(q: str = "", city: str = "", species: str = "", limit: int = 50):
+def livestock_listings(
+    q: str = "",
+    city: str = "",
+    species: str = "",
+    breed: str = "",
+    status: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    min_price: int = None,
+    max_price: int = None,
+    sex: str = "",
+    order: str = "",
+    min_weight: float = None,
+    max_weight: float = None,
+    negotiable: bool = None,
+):
     params = {"limit": max(1, min(limit, 200))}
+    if offset and offset > 0:
+        params["offset"] = max(0, offset)
     if q:
         params["q"] = q
     if city:
         params["city"] = city
     if species:
         params["species"] = species
+    if breed:
+        params["breed"] = breed
+    if status:
+        params["status"] = status
+    if min_price is not None:
+        params["min_price"] = min_price
+    if max_price is not None:
+        params["max_price"] = max_price
+    if min_weight is not None:
+        params["min_weight"] = min_weight
+    if max_weight is not None:
+        params["max_weight"] = max_weight
+    if min_power is not None:
+        params["min_power"] = min_power
+    if max_power is not None:
+        params["max_power"] = max_power
+    if sex:
+        params["sex"] = sex
+    if order:
+        params["order"] = order
+    if min_weight is not None:
+        params["min_weight"] = min_weight
+    if max_weight is not None:
+        params["max_weight"] = max_weight
+    if negotiable is not None:
+        params["negotiable"] = negotiable
     try:
         if _use_livestock_internal():
             if not _LIVESTOCK_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="livestock internal not available")
             with _livestock_internal_session() as s:
-                return _livestock_list_listings(q=q, city=city, species=species, limit=limit, s=s)
+                return _livestock_list_listings(
+                    q=q,
+                    city=city,
+                    species=species,
+                    breed=breed,
+                    status=status,
+                    limit=limit,
+                    offset=offset,
+                    min_price=min_price,
+                    max_price=max_price,
+                    sex=sex,
+                    order=order,
+                    min_weight=min_weight,
+                    max_weight=max_weight,
+                    negotiable=negotiable,
+                    s=s,
+                )
         r = httpx.get(_livestock_url("/listings"), params=params, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
@@ -5912,6 +6738,115 @@ def livestock_get_listing(lid: int):
             with _livestock_internal_session() as s:
                 return _livestock_get_listing(lid=lid, s=s)
         r = httpx.get(_livestock_url(f"/listings/{lid}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.patch("/livestock/listings/{lid}")
+async def livestock_update_listing(lid: int, req: Request):
+    _require_operator(req, "livestock")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_livestock_internal():
+            if not _LIVESTOCK_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="livestock internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                lreq = _LivestockListingUpdate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _livestock_internal_session() as s:
+                return _livestock_update_listing(lid=lid, req=lreq, s=s)
+        r = httpx.patch(_livestock_url(f"/listings/{lid}"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/livestock/listings/{lid}/offers")
+async def livestock_create_offer(lid: int, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_livestock_internal():
+            if not _LIVESTOCK_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="livestock internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            data["listing_id"] = lid
+            try:
+                oreq = _LivestockOfferCreate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _livestock_internal_session() as s:
+                return _livestock_create_offer(lid=lid, req=oreq, s=s)
+        r = httpx.post(_livestock_url(f"/listings/{lid}/offers"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/livestock/listings/{lid}/offers")
+def livestock_list_offers(lid: int, req: Request):
+    _require_operator(req, "livestock")
+    try:
+        if _use_livestock_internal():
+            if not _LIVESTOCK_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="livestock internal not available")
+            with _livestock_internal_session() as s:
+                return _livestock_list_offers(lid=lid, s=s)
+        r = httpx.get(_livestock_url(f"/listings/{lid}/offers"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.patch("/livestock/offers/{oid}")
+async def livestock_update_offer(oid: int, req: Request):
+    _require_operator(req, "livestock")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_livestock_internal():
+            if not _LIVESTOCK_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="livestock internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                oreq = _LivestockOfferUpdate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _livestock_internal_session() as s:
+                return _livestock_update_offer(oid=oid, req=oreq, s=s)
+        r = httpx.patch(_livestock_url(f"/offers/{oid}"), json=body, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -6414,6 +7349,8 @@ except Exception:
 
 
 def _use_re_internal() -> bool:
+    if _force_internal(_RE_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("REALESTATE_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -6431,21 +7368,31 @@ def _re_internal_session():
 
 
 @app.get("/realestate/properties")
-def re_list_properties(q: str = "", city: str = "", min_price: int = 0, max_price: int = 0, min_bedrooms: int = 0, limit: int = 20):
+def re_list_properties(q: str = "", city: str = "", min_price: str = "", max_price: str = "", min_bedrooms: str = "", limit: int = 20):
     params = {"limit": max(1, min(limit, 100))}
     if q: params["q"] = q
     if city: params["city"] = city
-    if min_price: params["min_price"] = min_price
-    if max_price: params["max_price"] = max_price
-    if min_bedrooms: params["min_bedrooms"] = min_bedrooms
+    def _to_int(val: str) -> Optional[int]:
+        try:
+            if val is None or val == "":
+                return None
+            return int(val)
+        except Exception:
+            return None
+    min_p_in = _to_int(min_price)
+    max_p_in = _to_int(max_price)
+    min_beds_in = _to_int(min_bedrooms)
+    if min_p_in is not None: params["min_price"] = min_p_in
+    if max_p_in is not None: params["max_price"] = max_p_in
+    if min_beds_in is not None: params["min_bedrooms"] = min_beds_in
     try:
         if _use_re_internal():
             if not _RE_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="realestate internal not available")
             # convert sentinel 0 to None for optional filters
-            min_p = None if min_price <= 0 else min_price
-            max_p = None if max_price <= 0 else max_price
-            min_beds = None if min_bedrooms <= 0 else min_bedrooms
+            min_p = None if not min_p_in or min_p_in <= 0 else min_p_in
+            max_p = None if not max_p_in or max_p_in <= 0 else max_p_in
+            min_beds = None if not min_beds_in or min_beds_in <= 0 else min_beds_in
             with _re_internal_session() as s:
                 return _re_list_properties(q=q, city=city, min_price=min_p, max_price=max_p, min_bedrooms=min_beds, limit=limit, s=s)
         r = httpx.get(_re_url("/properties"), params=params, timeout=10)
@@ -6651,6 +7598,8 @@ except Exception:
 
 
 def _use_food_internal() -> bool:
+    if _force_internal(_FOOD_INTERNAL_AVAILABLE):
+        return True
     if not _FOOD_INTERNAL_AVAILABLE:
         return False
     mode = os.getenv("FOOD_INTERNAL_MODE", "on").lower()
@@ -6890,6 +7839,8 @@ except Exception:
 
 
 def _use_carrental_internal() -> bool:
+    if _force_internal(_CARRENTAL_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("CARRENTAL_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -6907,20 +7858,63 @@ def _carrental_internal_session():
 
 
 @app.get("/carrental/cars")
-def cr_list_cars(q: str = "", city: str = "", make: str = "", limit: int = 20):
+def cr_list_cars(
+    q: str = "",
+    city: str = "",
+    dropoff_city: str = "",
+    make: str = "",
+    transmission: str = "",
+    fuel: str = "",
+    car_class: str = "",
+    max_price: int = None,
+    min_seats: int = None,
+    free_cancel: bool = None,
+    unlimited_mileage: bool = None,
+    limit: int = 20,
+):
     params = {"limit": max(1, min(limit, 100))}
     if q:
         params["q"] = q
     if city:
         params["city"] = city
+    if dropoff_city:
+        params["dropoff_city"] = dropoff_city
     if make:
         params["make"] = make
+    if transmission:
+        params["transmission"] = transmission
+    if fuel:
+        params["fuel"] = fuel
+    if car_class:
+        params["car_class"] = car_class
+    if max_price is not None:
+        params["max_price"] = max_price
+    if min_seats is not None:
+        params["min_seats"] = min_seats
+    if free_cancel is not None:
+        params["free_cancel"] = free_cancel
+    if unlimited_mileage is not None:
+        params["unlimited_mileage"] = unlimited_mileage
     try:
         if _use_carrental_internal():
             if not _CARRENTAL_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="carrental internal not available")
             with _carrental_internal_session() as s:
-                return _carrental_list_cars(q=q, city=city, make=make, limit=limit, s=s)
+                return _carrental_list_cars(
+                    q=q,
+                    city=city,
+                    dropoff_city=dropoff_city,
+                    make=make,
+                    transmission=transmission,
+                    fuel=fuel,
+                    car_class=car_class,
+                    max_price=max_price,
+                    min_seats=min_seats,
+                    free_cancel=free_cancel,
+                    unlimited_mileage=unlimited_mileage,
+                    limit=limit,
+                    s=s,
+                )
         r = httpx.get(_carrental_url("/cars"), params=params, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
@@ -7172,6 +8166,580 @@ def cr_export_bookings(request: Request, status: str = "", limit: int = 1000):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+# ---- Equipment proxies ----
+def _equipment_url(path: str) -> str:
+    if not EQUIPMENT_BASE:
+        raise HTTPException(status_code=500, detail="EQUIPMENT_BASE_URL not configured")
+    return EQUIPMENT_BASE.rstrip("/") + path
+
+
+_EQUIPMENT_INTERNAL_AVAILABLE = False
+try:
+    from sqlalchemy.orm import Session as _EquipmentSession  # type: ignore[import]
+    from apps.equipment.app import main as _equipment_main  # type: ignore[import]
+    from apps.equipment.app.main import (  # type: ignore[import]
+        engine as _equipment_engine,
+        get_session as _equipment_get_session,
+        EquipmentCreate as _EquipmentCreate,
+        EquipmentUpdate as _EquipmentUpdate,
+        EquipmentOut as _EquipmentOut,
+        QuoteReq as _EquipmentQuoteReq,
+        QuoteOut as _EquipmentQuoteOut,
+        BookReq as _EquipmentBookReq,
+        BookingOut as _EquipmentBookingOut,
+        BookingStatusUpdate as _EquipmentStatusUpdate,
+        TaskUpdate as _EquipmentTaskUpdate,
+        create_asset as _equipment_create_asset,
+        list_assets as _equipment_list_assets,
+        get_asset as _equipment_get_asset,
+        update_asset as _equipment_update_asset,
+        delete_asset as _equipment_delete_asset,
+        quote as _equipment_quote,
+        book as _equipment_book,
+        list_bookings as _equipment_list_bookings,
+        get_booking as _equipment_get_booking,
+        update_booking_status as _equipment_update_booking_status,
+        update_logistics as _equipment_update_logistics,
+        analytics_summary as _equipment_analytics,
+        dashboard as _equipment_dashboard,
+    )
+    _EQUIPMENT_INTERNAL_AVAILABLE = True
+except Exception:
+    _EquipmentSession = None  # type: ignore[assignment]
+    _equipment_engine = None  # type: ignore[assignment]
+    _EQUIPMENT_INTERNAL_AVAILABLE = False
+
+
+def _use_equipment_internal() -> bool:
+    if _force_internal(_EQUIPMENT_INTERNAL_AVAILABLE):
+        return True
+    mode = os.getenv("EQUIPMENT_INTERNAL_MODE", "auto").lower()
+    if mode == "off":
+        return False
+    if not _EQUIPMENT_INTERNAL_AVAILABLE:
+        return False
+    if mode == "on":
+        return True
+    return not bool(EQUIPMENT_BASE)
+
+
+def _equipment_internal_session():
+    if not _EQUIPMENT_INTERNAL_AVAILABLE or _EquipmentSession is None or _equipment_engine is None:  # type: ignore[truthy-function]
+        raise RuntimeError("Equipment internal service not available")
+    return _EquipmentSession(_equipment_engine)  # type: ignore[call-arg]
+
+
+@app.get("/equipment/assets")
+def equipment_list_assets(
+    q: str = "",
+    city: str = "",
+    category: str = "",
+    subcategory: str = "",
+    tag: str = "",
+    status: str = "",
+    available_only: bool = False,
+    from_iso: str = "",
+    to_iso: str = "",
+    min_price: int = None,
+    max_price: int = None,
+    min_weight: float = None,
+    max_weight: float = None,
+    min_power: float = None,
+    max_power: float = None,
+    order: str = "newest",
+    near_lat: float = None,
+    near_lon: float = None,
+    max_distance_km: float = None,
+    limit: int = 50,
+):
+    params = {"limit": max(1, min(limit, 200))}
+    if q:
+        params["q"] = q
+    if city:
+        params["city"] = city
+    if category:
+        params["category"] = category
+    if subcategory:
+        params["subcategory"] = subcategory
+    if tag:
+        params["tag"] = tag
+    if status:
+        params["status"] = status
+    if available_only:
+        params["available_only"] = available_only
+    if from_iso:
+        params["from_iso"] = from_iso
+    if to_iso:
+        params["to_iso"] = to_iso
+    if min_price is not None:
+        params["min_price"] = min_price
+    if max_price is not None:
+        params["max_price"] = max_price
+    if order:
+        params["order"] = order
+    if near_lat is not None:
+        params["near_lat"] = near_lat
+    if near_lon is not None:
+        params["near_lon"] = near_lon
+    if max_distance_km is not None:
+        params["max_distance_km"] = max_distance_km
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_list_assets(
+                    q=q,
+                    city=city,
+                    category=category,
+                    subcategory=subcategory,
+                    tag=tag,
+                    status=status,
+                    available_only=available_only,
+                    from_iso=from_iso,
+                    to_iso=to_iso,
+                    min_price=min_price,
+                    max_price=max_price,
+                    min_weight=min_weight,
+                    max_weight=max_weight,
+                    min_power=min_power,
+                    max_power=max_power,
+                    order=order,
+                    near_lat=near_lat,
+                    near_lon=near_lon,
+                    max_distance_km=max_distance_km,
+                    limit=limit,
+                    s=s,
+                )
+        r = httpx.get(_equipment_url("/assets"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/equipment/assets")
+async def equipment_create_asset(req: Request):
+    _require_operator(req, "equipment")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                creq = _EquipmentCreate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _equipment_internal_session() as s:
+                return _equipment_create_asset(req=creq, s=s)
+        r = httpx.post(_equipment_url("/assets"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.patch("/equipment/assets/{equipment_id}")
+async def equipment_update_asset(equipment_id: int, req: Request):
+    _require_operator(req, "equipment")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                ureq = _EquipmentUpdate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _equipment_internal_session() as s:
+                return _equipment_update_asset(equipment_id=equipment_id, req=ureq, s=s)
+        r = httpx.patch(_equipment_url(f"/assets/{equipment_id}"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/assets/{equipment_id}")
+def equipment_get_asset(equipment_id: int):
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_get_asset(equipment_id=equipment_id, s=s)
+        r = httpx.get(_equipment_url(f"/assets/{equipment_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.delete("/equipment/assets/{equipment_id}")
+def equipment_delete_asset(equipment_id: int, request: Request):
+    _require_operator(request, "equipment")
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_delete_asset(equipment_id=equipment_id, s=s)
+        r = httpx.delete(_equipment_url(f"/assets/{equipment_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/equipment/quote")
+async def equipment_quote(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                qreq = _EquipmentQuoteReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _equipment_internal_session() as s:
+                return _equipment_quote(req=qreq, s=s)
+        r = httpx.post(_equipment_url("/quote"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/equipment/book")
+async def equipment_book(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key")
+    except Exception:
+        ikey = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                breq = _EquipmentBookReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _equipment_internal_session() as s:
+                return _equipment_book(req=breq, idempotency_key=ikey, s=s)
+        r = httpx.post(_equipment_url("/book"), json=body, headers=headers, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/bookings/{booking_id}")
+def equipment_get_booking(booking_id: str):
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_get_booking(booking_id=booking_id, s=s)
+        r = httpx.get(_equipment_url(f"/bookings/{booking_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/bookings")
+def equipment_list_bookings(request: Request, status: str = "", renter_wallet_id: str = "", equipment_id: int | None = None, upcoming_only: bool = False, limit: int = 100):
+    params = {"limit": max(1, min(limit, 300))}
+    if status:
+        params["status"] = status
+    if renter_wallet_id:
+        params["renter_wallet_id"] = renter_wallet_id
+    if equipment_id is not None:
+        params["equipment_id"] = equipment_id
+    if upcoming_only:
+        params["upcoming_only"] = upcoming_only
+    # Basic guardrail: non-operators must filter by renter_wallet_id
+    try:
+        phone = _auth_phone(request)
+    except Exception:
+        phone = None
+    is_op = False
+    try:
+        if phone:
+            is_op = _is_operator(phone, "equipment")
+    except Exception:
+        is_op = False
+    if not is_op and not renter_wallet_id:
+        raise HTTPException(status_code=403, detail="renter_wallet_id required")
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_list_bookings(
+                    status=status,
+                    renter_wallet_id=renter_wallet_id,
+                    equipment_id=equipment_id,
+                    upcoming_only=upcoming_only,
+                    limit=limit,
+                    s=s,
+                )
+        r = httpx.get(_equipment_url("/bookings"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/equipment/bookings/{booking_id}/status")
+async def equipment_update_booking_status(booking_id: str, req: Request):
+    _require_operator(req, "equipment")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                sreq = _EquipmentStatusUpdate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _equipment_internal_session() as s:
+                return _equipment_update_booking_status(booking_id=booking_id, req=sreq, s=s)
+        r = httpx.post(_equipment_url(f"/bookings/{booking_id}/status"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/equipment/bookings/{booking_id}/logistics")
+async def equipment_update_logistics(booking_id: str, req: Request):
+    _require_operator(req, "equipment")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or []
+            if not isinstance(data, list):
+                data = []
+            updates: list[_EquipmentTaskUpdate] = []
+            for item in data:
+                try:
+                    updates.append(_EquipmentTaskUpdate(**item))
+                except Exception:
+                    continue
+            with _equipment_internal_session() as s:
+                return _equipment_update_logistics(booking_id=booking_id, updates=updates, s=s)
+        r = httpx.post(_equipment_url(f"/bookings/{booking_id}/logistics"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/analytics/summary")
+def equipment_analytics(request: Request):
+    _require_operator(request, "equipment")
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_analytics(s=s)
+        r = httpx.get(_equipment_url("/analytics/summary"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/dashboard")
+def equipment_dashboard(request: Request, renter_wallet_id: str = "", owner_wallet_id: str = ""):
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    params = {}
+    if renter_wallet_id:
+        params["renter_wallet_id"] = renter_wallet_id
+    if owner_wallet_id:
+        params["owner_wallet_id"] = owner_wallet_id
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_dashboard(renter_wallet_id=renter_wallet_id, owner_wallet_id=owner_wallet_id, s=s)
+        r = httpx.get(_equipment_url("/dashboard"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/availability/{equipment_id}")
+def equipment_availability(equipment_id: int):
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_main.availability(equipment_id=equipment_id, s=s)  # type: ignore[attr-defined]
+        r = httpx.get(_equipment_url(f"/availability/{equipment_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/equipment/calendar/{equipment_id}")
+def equipment_calendar(equipment_id: int, month: str):
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_main.calendar(equipment_id=equipment_id, month=month, s=s)  # type: ignore[attr-defined]
+        r = httpx.get(_equipment_url(f"/calendar/{equipment_id}"), params={"month": month}, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/equipment/availability/{equipment_id}")
+async def equipment_add_block(equipment_id: int, req: Request):
+    _require_operator(req, "equipment")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                breq = _equipment_main.AvailabilityReq(**data)  # type: ignore[attr-defined]
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _equipment_internal_session() as s:
+                return _equipment_main.create_block(equipment_id=equipment_id, req=breq, s=s)  # type: ignore[attr-defined]
+        r = httpx.post(_equipment_url(f"/availability/{equipment_id}"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.delete("/equipment/availability/{block_id}")
+def equipment_delete_block(block_id: str, request: Request):
+    _require_operator(request, "equipment")
+    try:
+        if _use_equipment_internal():
+            if not _EQUIPMENT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="equipment internal not available")
+            with _equipment_internal_session() as s:
+                return _equipment_main.delete_block(block_id=block_id, s=s)  # type: ignore[attr-defined]
+        r = httpx.delete(_equipment_url(f"/availability/{block_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ---- Taxi proxies ----
 def _taxi_url(path: str) -> str:
     if not TAXI_BASE:
@@ -7278,6 +8846,8 @@ def _use_taxi_internal() -> bool:
       - "off"  -> always use HTTP
       - "auto" -> default; use internal if Taxi is importable and TAXI_BASE_URL is empty
     """
+    if _force_internal(_TAXI_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("TAXI_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -7424,6 +8994,8 @@ def _use_pay_internal() -> bool:
       - off  -> immer HTTP
       - auto -> intern, wenn importierbar und PAYMENTS_BASE_URL leer
     """
+    if _force_internal(_PAY_INTERNAL_AVAILABLE):
+        return True
     mode = (os.getenv("PAYMENTS_INTERNAL_MODE") or os.getenv("PAY_INTERNAL_MODE") or "auto").lower()
     if mode == "off":
         return False
@@ -9142,6 +10714,8 @@ except Exception:
 
 
 def _use_bus_internal() -> bool:
+    if _force_internal(_BUS_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("BUS_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -12072,6 +13646,8 @@ except Exception:
 
 
 def _use_carmarket_internal() -> bool:
+    if _force_internal(_CARMARKET_INTERNAL_AVAILABLE):
+        return True
     mode = os.getenv("CARMARKET_INTERNAL_MODE", "auto").lower()
     if mode == "off":
         return False
@@ -13917,6 +15493,192 @@ def stays_page(request: Request):
     return HTMLResponse(content=html)
 
 
+@app.get("/courier_console", response_class=HTMLResponse)
+def courier_console(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
+    html = """
+<!doctype html>
+<html><head><meta name=viewport content="width=device-width, initial-scale=1" />
+<title>Courier</title>
+<style>
+  body{font-family:sans-serif;margin:20px;max-width:1000px;background:#ffffff;color:#000000;}
+  .card{border:1px solid #dddddd;border-radius:6px;padding:12px;margin-bottom:12px;}
+  button{padding:6px 10px;border-radius:4px;border:1px solid #cccccc;background:#2563eb;color:#ffffff;}
+  input,select{padding:6px 8px;border-radius:4px;border:1px solid #cccccc;}
+  label{font-size:12px;color:#555;}
+  pre{background:#f5f5f5;padding:8px;border-radius:4px;border:1px solid #e5e7eb;white-space:pre-wrap;}
+</style>
+</head><body>
+<h1>Courier Console</h1>
+<section class="card">
+  <h3>Track shipment</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id=oid placeholder="Order ID" />
+    <input id=token placeholder="Public token" />
+    <button onclick="track()">Track</button>
+  </div>
+  <pre id=trackout></pre>
+</section>
+<section class="card">
+  <h3>Contact / Reschedule</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id=cid placeholder="Order ID" />
+    <input id=cmsg placeholder="Message for support" />
+    <button onclick="contact()">Send</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+    <input id=ws type=datetime-local />
+    <input id=we type=datetime-local />
+    <label><input type=checkbox id=sts /> Short-term storage</label>
+    <button onclick="resched()">Reschedule</button>
+  </div>
+  <pre id=contactout></pre>
+</section>
+<section class="card">
+  <h3>Status / Scan / Proof</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id=sid placeholder="Order ID" />
+    <select id=sstatus>
+      <option value="assigned">assigned</option>
+      <option value="pickup">pickup</option>
+      <option value="delivering">delivering</option>
+      <option value="delivered">delivered</option>
+      <option value="failed">failed</option>
+      <option value="retry">retry</option>
+      <option value="return">return</option>
+    </select>
+    <input id=spin placeholder="PIN (for delivered)" />
+    <input id=sproof placeholder="Proof URL" />
+    <input id=sbarcode placeholder="Barcode / Scan" />
+    <input id=ssign placeholder="Signature (text stub)" />
+    <button onclick="setStatus()">Update</button>
+  </div>
+  <pre id=statusout></pre>
+</section>
+<section class="card">
+  <h3>Partner KPIs</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id=pkpi_start type=datetime-local />
+    <input id=pkpi_end type=datetime-local />
+    <input id=pkpi_carrier placeholder="Carrier" />
+    <select id=pkpi_service>
+      <option value="">any</option>
+      <option value="same_day">same_day</option>
+      <option value="next_day">next_day</option>
+    </select>
+    <button onclick="loadKPI()">Load KPIs</button>
+  </div>
+  <pre id=kpiout></pre>
+</section>
+<section class="card">
+  <h3>Stats & CO₂</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id=stat_carrier placeholder="Carrier" />
+    <input id=stat_partner placeholder="Partner ID" />
+    <select id=stat_service>
+      <option value="">any</option>
+      <option value="same_day">same_day</option>
+      <option value="next_day">next_day</option>
+    </select>
+    <button onclick="loadStats()">Load stats</button>
+  </div>
+  <pre id=statout></pre>
+</section>
+<script>
+async function track(){
+  const oid=document.getElementById('oid').value;
+  const token=document.getElementById('token').value;
+  const url = oid?('/courier/shipments/'+encodeURIComponent(oid)):(token?('/courier/track/'+encodeURIComponent(token)):null);
+  if(!url){ alert('Provide order id or token'); return; }
+  const r=await fetch(url); document.getElementById('trackout').textContent=await r.text();
+}
+async function contact(){
+  const oid=document.getElementById('cid').value;
+  const msg=document.getElementById('cmsg').value;
+  if(!oid||!msg){ alert('Order id and message required'); return; }
+  const r=await fetch('/courier/orders/'+encodeURIComponent(oid)+'/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:msg})});
+  document.getElementById('contactout').textContent=await r.text();
+}
+async function resched(){
+  const oid=document.getElementById('cid').value;
+  const ws=document.getElementById('ws').value;
+  const we=document.getElementById('we').value;
+  if(!oid||!ws||!we){ alert('Order id and both windows required'); return; }
+  const body={window_start:ws, window_end:we, short_term_storage:document.getElementById('sts').checked};
+  const r=await fetch('/courier/orders/'+encodeURIComponent(oid)+'/reschedule',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  document.getElementById('contactout').textContent=await r.text();
+}
+async function loadKPI(){
+  const params=new URLSearchParams();
+  const s=document.getElementById('pkpi_start').value; const e=document.getElementById('pkpi_end').value;
+  const c=document.getElementById('pkpi_carrier').value; const svc=document.getElementById('pkpi_service').value;
+  if(s)params.set('start_iso',s); if(e)params.set('end_iso',e); if(c)params.set('carrier',c); if(svc)params.set('service_type',svc);
+  const r=await fetch('/courier/kpis/partners?'+params.toString()); document.getElementById('kpiout').textContent=await r.text();
+}
+async function loadStats(){
+  const params=new URLSearchParams();
+  const c=document.getElementById('stat_carrier').value;
+  const p=document.getElementById('stat_partner').value;
+  const svc=document.getElementById('stat_service').value;
+  if(c)params.set('carrier',c); if(p)params.set('partner_id',p); if(svc)params.set('service_type',svc);
+  const r=await fetch('/courier/stats?'+params.toString()); document.getElementById('statout').textContent=await r.text();
+}
+async function setStatus(){
+  const oid=document.getElementById('sid').value;
+  if(!oid){ alert('Order id required'); return; }
+  const body={
+    status:document.getElementById('sstatus').value,
+    pin:document.getElementById('spin').value||undefined,
+    proof_url:document.getElementById('sproof').value||undefined,
+    scanned_barcode:document.getElementById('sbarcode').value||undefined,
+    signature:document.getElementById('ssign').value||undefined
+  };
+  const r=await fetch('/courier/shipments/'+encodeURIComponent(oid)+'/status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  document.getElementById('statusout').textContent=await r.text();
+}
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/courier/track_page", response_class=HTMLResponse)
+def courier_track_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
+    try:
+        with open(Path(__file__).parent / "courier_tracking.html", "r") as f:
+            content = f.read()
+    except Exception:
+        return HTMLResponse(content="tracking UI not found", status_code=500)
+    return HTMLResponse(content=content)
+
+
+@app.get("/courier/driver_page", response_class=HTMLResponse)
+def courier_driver_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
+    try:
+        with open(Path(__file__).parent / "courier_driver.html", "r") as f:
+            content = f.read()
+    except Exception:
+        return HTMLResponse(content="driver UI not found", status_code=500)
+    return HTMLResponse(content=content)
+
+
+@app.get("/courier/sla_page", response_class=HTMLResponse)
+def courier_sla_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
+    try:
+        with open(Path(__file__).parent / "courier_sla.html", "r") as f:
+            content = f.read()
+    except Exception:
+        return HTMLResponse(content="sla UI not found", status_code=500)
+    return HTMLResponse(content=content)
+
+
 @app.get("/freight", response_class=HTMLResponse)
 def freight_page(request: Request):
     if not _auth_phone(request):
@@ -14375,29 +16137,228 @@ async function health(){ try{ const r=await fetch('/commerce/health'); document.
 
 @app.get("/doctors", response_class=HTMLResponse)
 def doctors_page():
-    return _legacy_console_removed_page("Shamell · Doctors")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
-<title>Doctors Operator</title>
+<title>Doctors · Booking</title>
 <link rel="icon" href="/icons/doctors.svg" />
-<link rel="manifest" href="/doctors/manifest.json" />
 <style>
-  body{font-family:sans-serif;margin:20px;max-width:820px;background:#ffffff;color:#000000;}
-  input,button{font-size:14px;padding:6px;margin:4px 0}
-  input{background:#ffffff;border:1px solid #cccccc;border-radius:4px;color:#000000}
-  button{border:1px solid #cccccc;background:#f3f4f6;border-radius:4px;color:#000000;box-shadow:none}
-  pre{background:#f5f5f5;padding:8px;white-space:pre-wrap;border-radius:4px;border:1px solid #dddddd}
+  :root { --accent:#f43f5e; --bg:#0b1520; --panel:#111c29; --muted:#9fb0c7; --border:#1e2a38; --card:#0e1926; }
+  *{box-sizing:border-box;}
+  body{margin:0;padding:24px;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:linear-gradient(135deg,#0b1520 0%,#0d1b2b 45%,#0f2238 100%);color:#e8f0ff;}
+  h1,h2{margin:0 0 10px 0;font-weight:700;letter-spacing:-0.01em;}
+  p{margin:6px 0 14px 0;color:var(--muted);}
+  .shell{max-width:1080px;margin:0 auto;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 18px 40px rgba(0,0,0,0.35);}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px;}
+  input,select,button,textarea{width:100%;border-radius:10px;border:1px solid var(--border);background:var(--card);color:#e8f0ff;font-size:14px;padding:10px;}
+  button{background:var(--accent);border-color:transparent;font-weight:600;cursor:pointer;transition:transform .08s ease, box-shadow .12s ease;}
+  button:hover{transform:translateY(-1px);box-shadow:0 10px 25px rgba(244,63,94,0.35);}
+  .row{display:flex;gap:8px;}
+  .row > *{flex:1;}
+  .list{display:flex;flex-direction:column;gap:10px;}
+  .item{padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--card);}
+  .pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;color:var(--muted);}
+  .slots{display:flex;flex-wrap:wrap;gap:8px;}
+  .slot{padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);cursor:pointer;transition:all .1s ease;}
+  .slot:hover{border-color:var(--accent);color:#fff;}
+  .muted{color:var(--muted);}
+  pre{white-space:pre-wrap;word-break:break-word;}
+  @media(max-width:900px){ .grid{grid-template-columns:1fr;} body{padding:14px;} }
 </style>
 </head><body>
-<div style="position:sticky;top:-12px;z-index:10;backdrop-filter:blur(12px);background:rgba(255,255,255,.08);padding:8px 10px;border-radius:14px;border:1px solid rgba(255,255,255,.2);margin:-8px 0 12px 0;display:flex;align-items:center;gap:8px"><div style="flex:1;font-weight:600">Doctors (Operator)</div></div>
-<p>Stub dashboard. Planned modules: doctors, appointments, payments.</p>
-<div>
-  <button onclick="health()">Check Health</button>
-  <pre id=out></pre>
+<div class="shell">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+    <div style="width:38px;height:38px;border-radius:10px;background:rgba(244,63,94,0.12);border:1px solid rgba(244,63,94,0.3);display:grid;place-items:center;font-weight:700;color:#fff;">DR</div>
+    <div>
+      <h1 style="margin:0;">Doctors</h1>
+      <p style="margin:0;">Search, pick a slot, book, reschedule or cancel — Doctolib-style.</p>
+    </div>
+    <div style="flex:1;"></div>
+    <button style="width:auto;padding:10px 14px;" onclick="health()">Health</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Search doctors</h2>
+      <div class="row">
+        <div>
+          <label>Name</label>
+          <input id="q" placeholder="e.g. Müller" />
+        </div>
+        <div>
+          <label>Speciality</label>
+          <input id="speciality" placeholder="e.g. Allgemeinmedizin" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>City</label>
+          <input id="city" placeholder="e.g. Berlin" />
+        </div>
+        <div style="align-self:flex-end;">
+          <button onclick="loadDoctors()">Search</button>
+        </div>
+      </div>
+      <div id="doctors" class="list" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Book appointment</h2>
+      <label>Selected doctor</label>
+      <div id="selectedDoctor" class="pill">None</div>
+      <div style="margin-top:10px;">
+        <label>Slot</label>
+        <div id="slots" class="slots"></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <div><label>Patient name</label><input id="pname" /></div>
+        <div><label>Phone</label><input id="pphone" /></div>
+      </div>
+      <div class="row">
+        <div><label>Email</label><input id="pemail" /></div>
+        <div><label>Reason</label><input id="preason" placeholder="optional" /></div>
+      </div>
+      <div class="row">
+        <div><label>Duration (min)</label><input id="pduration" type="number" value="20" /></div>
+        <div style="align-self:flex-end;"><button onclick="book()">Book</button></div>
+      </div>
+      <div id="bookResult" class="muted" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Manage existing appointment</h2>
+    <div class="row">
+      <div><label>Appointment ID</label><input id="apptId" placeholder="hex id returned on booking" /></div>
+      <div><label>New slot (ISO)</label><input id="rescheduleTs" placeholder="2024-10-01T09:20:00+02:00" /></div>
+      <div><label>New duration (min)</label><input id="rescheduleDur" type="number" /></div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <button onclick="reschedule()">Reschedule</button>
+      <button onclick="cancelAppt()" style="background:#0f2238;border:1px solid var(--border);">Cancel</button>
+    </div>
+    <div id="apptResult" class="muted" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>Raw output</h2>
+    <pre id="out">Ready</pre>
+  </div>
 </div>
+
 <script>
+let currentDoctor=null;
 async function health(){ try{ const r=await fetch('/doctors/health'); document.getElementById('out').textContent=await r.text(); }catch(e){ document.getElementById('out').textContent='Error: '+e; } }
+
+function renderDoctors(list){
+  const el=document.getElementById('doctors'); el.innerHTML='';
+  if(!list.length){ el.innerHTML='<div class="muted">No doctors found.</div>'; return; }
+  list.forEach(d=>{
+    const div=document.createElement('div'); div.className='item';
+    div.innerHTML=\`
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <div>
+          <div style="font-weight:700">\${d.name}</div>
+          <div class="muted">\${d.speciality||'—'} · \${d.city||'—'} · \${d.timezone}</div>
+        </div>
+        <button style="width:auto;padding:8px 12px;" onclick='selectDoctor(\${d.id}, "\${d.name.replace(/"/g,'')}" )'>Select</button>
+      </div>\`;
+    el.appendChild(div);
+  });
+}
+
+async function loadDoctors(){
+  const q=document.getElementById('q').value.trim();
+  const city=document.getElementById('city').value.trim();
+  const sp=document.getElementById('speciality').value.trim();
+  const params=new URLSearchParams({limit:50});
+  if(q) params.set('q',q);
+  if(city) params.set('city',city);
+  if(sp) params.set('speciality',sp);
+  try{
+    const r=await fetch('/doctors/doctors?'+params.toString());
+    const data=await r.json();
+    renderDoctors(data);
+    document.getElementById('out').textContent=JSON.stringify(data,null,2);
+  }catch(e){ document.getElementById('out').textContent='Error: '+e; }
+}
+
+async function selectDoctor(id,name){
+  currentDoctor=id;
+  document.getElementById('selectedDoctor').textContent=name+' (#'+id+')';
+  document.getElementById('slots').innerHTML='<div class="muted">Loading slots…</div>';
+  try{
+    const r=await fetch('/doctors/slots?doctor_id='+id+'&days=7');
+    const slots=await r.json();
+    renderSlots(slots);
+    document.getElementById('out').textContent=JSON.stringify(slots,null,2);
+  }catch(e){ document.getElementById('slots').innerHTML='<div class="muted">Error loading slots</div>'; }
+}
+
+function renderSlots(slots){
+  const el=document.getElementById('slots'); el.innerHTML='';
+  if(!slots.length){ el.innerHTML='<div class="muted">No upcoming slots</div>'; return; }
+  slots.slice(0,60).forEach(s=>{
+    const div=document.createElement('div'); div.className='slot';
+    const t=new Date(s.ts_iso);
+    div.textContent=t.toLocaleString(undefined,{weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+    div.onclick=()=>{ document.getElementById('slots').querySelectorAll('.slot').forEach(n=>n.style.borderColor='var(--border)'); div.style.borderColor='var(--accent)'; div.dataset.selected='1'; document.getElementById('bookResult').textContent='Selected '+s.ts_iso; document.getElementById('bookResult').dataset.ts=s.ts_iso; document.getElementById('pduration').value=s.duration_minutes; };
+    el.appendChild(div);
+  });
+}
+
+async function book(){
+  if(!currentDoctor){ document.getElementById('bookResult').textContent='Select a doctor first'; return; }
+  const ts=document.getElementById('bookResult').dataset.ts;
+  if(!ts){ document.getElementById('bookResult').textContent='Select a slot first'; return; }
+  const body={
+    doctor_id: currentDoctor,
+    patient_name: document.getElementById('pname').value || null,
+    patient_phone: document.getElementById('pphone').value || null,
+    patient_email: document.getElementById('pemail').value || null,
+    reason: document.getElementById('preason').value || null,
+    ts_iso: ts,
+    duration_minutes: parseInt(document.getElementById('pduration').value||'20',10)
+  };
+  try{
+    const r=await fetch('/doctors/appointments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await r.json();
+    document.getElementById('bookResult').textContent='Booked: '+data.id;
+    document.getElementById('apptId').value=data.id;
+    document.getElementById('out').textContent=JSON.stringify(data,null,2);
+  }catch(e){ document.getElementById('bookResult').textContent='Error '+e; }
+}
+
+async function cancelAppt(){
+  const id=document.getElementById('apptId').value.trim();
+  if(!id){ document.getElementById('apptResult').textContent='Enter appointment id'; return; }
+  try{
+    const r=await fetch('/doctors/appointments/'+id+'/cancel',{method:'POST'});
+    const data=await r.json();
+    document.getElementById('apptResult').textContent='Canceled';
+    document.getElementById('out').textContent=JSON.stringify(data,null,2);
+  }catch(e){ document.getElementById('apptResult').textContent='Error '+e; }
+}
+
+async function reschedule(){
+  const id=document.getElementById('apptId').value.trim();
+  if(!id){ document.getElementById('apptResult').textContent='Enter appointment id'; return; }
+  const ts=document.getElementById('rescheduleTs').value.trim();
+  if(!ts){ document.getElementById('apptResult').textContent='Enter new ts_iso'; return; }
+  const dur=document.getElementById('rescheduleDur').value.trim();
+  const body={ ts_iso: ts };
+  if(dur){ body.duration_minutes=parseInt(dur,10); }
+  try{
+    const r=await fetch('/doctors/appointments/'+id+'/reschedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await r.json();
+    document.getElementById('apptResult').textContent='Rescheduled';
+    document.getElementById('out').textContent=JSON.stringify(data,null,2);
+  }catch(e){ document.getElementById('apptResult').textContent='Error '+e; }
+}
+
+loadDoctors();
 </script>
 </body></html>
 """

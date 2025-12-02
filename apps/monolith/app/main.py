@@ -33,12 +33,33 @@ _INTERNAL_DEFAULTS = {
     "LIVESTOCK_INTERNAL_MODE": "on",
     "CARRENTAL_INTERNAL_MODE": "on",
     "CARMARKET_INTERNAL_MODE": "on",
+    "EQUIPMENT_INTERNAL_MODE": "on",
     "DOCTORS_INTERNAL_MODE": "on",
     "FLIGHTS_INTERNAL_MODE": "on",
     "REAL_ESTATE_INTERNAL_MODE": "on",
 }
 for k, v in _INTERNAL_DEFAULTS.items():
     os.environ.setdefault(k, v)
+# Monolith-only guard: reject external *_BASE_URL usage when enabled.
+MONOLITH_ONLY = os.getenv("MONOLITH_ONLY", "1").lower() not in ("0", "false", "off")
+
+
+def _assert_monolith_only():
+    """
+    Fail fast if MONOLITH_ONLY is enabled but external BASE_URLs are set.
+    This ensures all domains run in-process without HTTP hops.
+    """
+    if not MONOLITH_ONLY:
+        return
+    offenders = []
+    for k, v in os.environ.items():
+        if k.endswith("_BASE_URL") and v:
+            offenders.append(f"{k}={v}")
+    if offenders:
+        raise RuntimeError(
+            "MONOLITH_ONLY is enabled but external BASE_URL env vars are set; "
+            "unset these to run purely in-process:\n" + "\n".join(offenders)
+        )
 
 # Shared DB + internal secrets for monolith mode. To avoid table name
 # collisions across domains, each service gets its own DB unless
@@ -72,6 +93,19 @@ try:
     from apps.chat.app.main import router as chat_router
     from apps.carmarket.app.main import router as carmarket_router
     from apps.livestock.app.main import router as livestock_router
+    from apps.pos.app.main import router as pos_router
+    from apps.equipment.app.main import router as equipment_router
+    from apps.courier.app import main as courier_main  # type: ignore[import]
+    courier_router = getattr(courier_main, "router", None)
+    if hasattr(courier_main, "on_startup"):
+        courier_main.on_startup()  # type: ignore[call-arg]
+    courier_main.Base.metadata.create_all(courier_main.engine)  # type: ignore[attr-defined]
+    from apps.urbify.app import main as urbify_main  # type: ignore[import]
+    urbify_router = getattr(urbify_main, "router", None)
+    if hasattr(urbify_main, "on_startup"):
+        urbify_main.on_startup()  # type: ignore[call-arg]
+    urbify_main.Base.metadata.create_all(urbify_main.engine)  # type: ignore[attr-defined]
+    from apps.pms.app.main import router as pms_router
     from apps.realestate.app.main import router as realestate_router
 except Exception:
     jobs_router = None
@@ -85,11 +119,16 @@ except Exception:
     freight_router = None
     agriculture_router = None
     doctors_router = None
+    equipment_router = None
     flights_router = None
     chat_router = None
     carmarket_router = None
     livestock_router = None
     realestate_router = None
+    pos_router = None
+    courier_router = None
+    pms_router = None
+    urbify_router = None
 
 
 def _mount_service_app(path_prefix: str, app_import_path: str):
@@ -132,6 +171,7 @@ def monolith_startup():
     the minimal bootstrap logic here so that required tables exist before
     the BFF hits those services.
     """
+    _assert_monolith_only()
     # Payments: create users / wallets tables so /payments/users etc. work.
     try:
         from apps.payments.app import main as payments_main  # type: ignore[import]
@@ -223,6 +263,46 @@ def monolith_startup():
         # Bus module not importable; ignore in monolith startup.
         pass
 
+    # Carrental: ensure core tables exist so BFF internal mode works.
+    try:
+        from apps.carrental.app import main as carrental_main  # type: ignore[import]
+        try:
+            if hasattr(carrental_main, "_startup"):
+                carrental_main._startup()  # type: ignore[call-arg]
+            else:
+                carrental_main.Base.metadata.create_all(carrental_main.engine)  # type: ignore[attr-defined]
+        except Exception:
+            # Best-effort; errors surface at endpoint call time.
+            pass
+    except Exception:
+        pass
+
+    # Equipment rental: ensure schema exists for internal mode
+    try:
+        from apps.equipment.app import main as equipment_main  # type: ignore[import]
+        try:
+            if hasattr(equipment_main, "_startup"):
+                equipment_main._startup()  # type: ignore[call-arg]
+            else:
+                equipment_main.Base.metadata.create_all(equipment_main.engine)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # POS: ensure core tables exist
+    try:
+        from apps.pos.app import main as pos_main  # type: ignore[import]
+        try:
+            if hasattr(pos_main, "on_startup"):
+                pos_main.on_startup()  # type: ignore[call-arg]
+            else:
+                pos_main.Base.metadata.create_all(pos_main.engine)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     # Taxi: ensure that the core tables exist so that the Taxi
     # domain can be used in-process (internal mode) without a
     # separate taxi-api container.
@@ -308,13 +388,11 @@ if commerce_router is not None:
     root_app.include_router(commerce_router, prefix="/commerce")
 if carrental_router is not None:
     root_app.include_router(carrental_router, prefix="/carrental")
+if equipment_router is not None:
+    root_app.include_router(equipment_router, prefix="/equipment")
 if freight_router is not None:
     # Legacy freight prefix (kept for backwards compatibility)
     root_app.include_router(freight_router, prefix="/freight")
-    # New courier prefix as an alias on top of the same router so that
-    # newer clients can use /courier while the underlying domain remains
-    # the same.
-    root_app.include_router(freight_router, prefix="/courier")
 if agriculture_router is not None:
     root_app.include_router(agriculture_router, prefix="/agriculture")
 if doctors_router is not None:
@@ -327,6 +405,14 @@ if carmarket_router is not None:
     root_app.include_router(carmarket_router, prefix="/carmarket")
 if livestock_router is not None:
     root_app.include_router(livestock_router, prefix="/livestock")
+if pms_router is not None:
+    root_app.include_router(pms_router, prefix="/pms")
+if pos_router is not None:
+    root_app.include_router(pos_router, prefix="/pos")
+if courier_router is not None:
+    root_app.include_router(courier_router, prefix="/courier")
+if urbify_router is not None:
+    root_app.include_router(urbify_router, prefix="/urbify")
 if realestate_router is not None:
     root_app.include_router(realestate_router, prefix="/realestate")
 

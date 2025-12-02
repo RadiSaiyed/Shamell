@@ -9,35 +9,44 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:http/http.dart' as http;
-import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 // Offline features removed: no connectivity/offline queue
 // import 'package:connectivity_plus/connectivity_plus.dart';
 // import 'core/offline_queue.dart';
 import 'package:app_links/app_links.dart';
 // import 'package:workmanager/workmanager.dart';
-import 'package:pinenacl/x25519.dart' as x25519;
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:google_fonts/google_fonts.dart';
 import 'core/notification_service.dart';
 import 'core/config.dart';
 import 'core/gotify_client.dart';
 import 'core/glass.dart';
 import 'core/home_routes.dart';
+import 'core/chat/threema_chat_page.dart';
 import 'core/payments_multilevel.dart';
 import 'core/taxi_multilevel.dart';
 import 'core/food_multilevel.dart';
 import 'core/stays_multilevel.dart';
 import 'core/realestate_multilevel.dart';
+import 'core/realestate_zillow.dart';
 import 'core/bus_multilevel.dart';
 import 'core/building_multilevel.dart';
+import 'core/building_cubotoo.dart';
+import 'core/carrental_modern.dart';
+import 'core/equipment_rental.dart';
+import 'core/equipment_ops_dashboard.dart';
+import 'core/equipment_catalog.dart';
+import 'core/driver_pod.dart';
+import 'core/livestock_sellmylivestock.dart';
+import 'core/pms_cloudbeds.dart';
+import 'core/pos_glass.dart';
+import 'core/courier_live.dart';
 import 'core/courier_multilevel.dart';
 import 'core/agriculture_multilevel.dart';
 import 'core/cars_multilevel.dart';
+import 'core/agri_fullharvest.dart';
 import 'core/design_tokens.dart';
 import 'core/offline_queue.dart';
 import 'core/perf.dart';
@@ -59,6 +68,8 @@ import 'core/onboarding.dart';
 import 'core/payments_send.dart';
 import 'core/payments_shell.dart';
 import 'core/payments_requests.dart';
+import 'core/doctors_doctolib.dart';
+import 'core/doctors_admin.dart';
 // no webviews; pure native app
 
 // Offline background worker removed
@@ -472,9 +483,11 @@ class SuperApp extends StatelessWidget {
     final l = L10n.of(context);
     // Debug log to verify HomePage from this repo is running on device.
     debugPrint('HOME_PAGE_BUILD: Shamell');
+    // Global pill-shaped buttons to match liquid glass UI.
     final baseBtnShape = RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: Colors.white.withValues(alpha: .26)));
+        borderRadius: BorderRadius.circular(999),
+        side: BorderSide(color: Colors.white.withValues(alpha: .30)));
+    const accentActive = Colors.white; // global text/icon color (pure white)
     final darkTheme = ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
@@ -482,16 +495,17 @@ class SuperApp extends StatelessWidget {
         primary: Tokens.primary,
         secondary: Tokens.accent,
         surface: Tokens.surface,
-        onSurface: Tokens.onSurface,
+        onSurface: accentActive,
       ),
       textTheme: GoogleFonts.interTextTheme()
-          .apply(bodyColor: Tokens.onSurface, displayColor: Tokens.onSurface),
+          .apply(bodyColor: accentActive, displayColor: accentActive),
+      iconTheme: const IconThemeData(color: accentActive),
       elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
         elevation: 6,
         shadowColor: Colors.black87,
         backgroundColor: Tokens.primary,
-        foregroundColor: Tokens.onPrimary,
+        foregroundColor: accentActive,
         shape: baseBtnShape,
         minimumSize: const Size.fromHeight(48),
       )),
@@ -499,8 +513,8 @@ class SuperApp extends StatelessWidget {
           style: ButtonStyle(
         elevation: const WidgetStatePropertyAll(0),
         backgroundColor:
-            WidgetStatePropertyAll(Colors.white.withValues(alpha: .08)),
-        foregroundColor: const WidgetStatePropertyAll(Tokens.onSurface),
+            WidgetStatePropertyAll(Colors.white.withValues(alpha: .10)),
+        foregroundColor: const WidgetStatePropertyAll(accentActive),
         shape: WidgetStatePropertyAll(baseBtnShape),
         minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
         side: WidgetStatePropertyAll(
@@ -510,7 +524,7 @@ class SuperApp extends StatelessWidget {
           style: ButtonStyle(
         side: WidgetStatePropertyAll(
             BorderSide(color: Colors.white.withValues(alpha: .22))),
-        foregroundColor: const WidgetStatePropertyAll(Tokens.onSurface),
+        foregroundColor: const WidgetStatePropertyAll(accentActive),
         backgroundColor:
             WidgetStatePropertyAll(Colors.white.withValues(alpha: .06)),
         shape: WidgetStatePropertyAll(baseBtnShape),
@@ -544,9 +558,9 @@ class SuperApp extends StatelessWidget {
         elevation: 0,
         centerTitle: true,
         titleTextStyle: TextStyle(
-            fontWeight: FontWeight.w700, fontSize: 18, color: Tokens.onSurface),
-        foregroundColor: Tokens.onSurface,
-        iconTheme: IconThemeData(color: Tokens.onSurface),
+            fontWeight: FontWeight.w700, fontSize: 18, color: accentActive),
+        foregroundColor: accentActive,
+        iconTheme: IconThemeData(color: accentActive),
         systemOverlayStyle: SystemUiOverlayStyle(
             statusBarBrightness: Brightness.dark,
             statusBarIconBrightness: Brightness.light,
@@ -1073,7 +1087,6 @@ class _LoginPageState extends State<LoginPage> {
       MaterialPageRoute(
         builder: (_) => HomePage(
           lockedMode: _loginMode,
-          lockRoles: true,
         ),
       ),
     );
@@ -1083,12 +1096,6 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
-    Widget btn(IconData icon, String label, VoidCallback onTap) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: PayActionButton(icon: icon, label: label, onTap: onTap),
-      );
-    }
 
     final content = ListView(
       padding: const EdgeInsets.all(16),
@@ -1114,7 +1121,6 @@ class _LoginPageState extends State<LoginPage> {
             ],
           ),
         ),
-        const SizedBox(height: 12),
         Text(
           l.loginTitle,
           style: theme.textTheme.headlineSmall
@@ -1285,9 +1291,7 @@ class _LoginPageState extends State<LoginPage> {
 
 class HomePage extends StatefulWidget {
   final AppMode lockedMode;
-  final bool lockRoles;
-  const HomePage(
-      {super.key, this.lockedMode = AppMode.auto, this.lockRoles = false});
+  const HomePage({super.key, this.lockedMode = AppMode.auto});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -1304,7 +1308,6 @@ class _HomePageState extends State<HomePage> {
   bool _walletHidden = false;
   bool _walletLoading = false;
   final deviceId = _randId();
-  bool _syncing = false;
   String _uiRoute = const String.fromEnvironment('UI_ROUTE', defaultValue: 'A');
   Timer? _flushTimer;
   bool _showOps = false;
@@ -1312,8 +1315,7 @@ class _HomePageState extends State<HomePage> {
   List<String> _roles = const [];
   List<String> _operatorDomains = const [];
   bool _taxiOnly = false; // Show all apps by default
-  late AppMode _appMode;
-  late bool _lockRoles;
+  AppMode _appMode = currentAppMode;
   // Bus admin summary for quick dashboard
   int? _busTripsToday;
   int? _busBookingsToday;
@@ -1332,10 +1334,6 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final Decoration homeBg = isDark
-        ? const BoxDecoration(color: Tokens.surface)
-        : const BoxDecoration(color: Tokens.lightSurface);
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -1364,8 +1362,7 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Stack(
         children: [
-          Container(decoration: homeBg),
-          // no decorative circles in minimal theme
+          const AppBG(),
           SafeArea(
             child: Column(
               children: [
@@ -1571,7 +1568,6 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _lockRoles = widget.lockRoles;
     _loadPrefs();
     // offline sync timer disabled
     _setupLinks();
@@ -1769,6 +1765,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _linksSub?.cancel();
     _flushTimer?.cancel();
     super.dispose();
   }
@@ -1880,33 +1877,36 @@ class _HomePageState extends State<HomePage> {
       onHistory: () =>
           _navPush(HistoryPage(baseUrl: _baseUrl, walletId: _walletId)),
       onStays: () => _navPush(StaysPage(_baseUrl)),
-      onStaysHotel: () => _navPush(StaysOperatorPage(_baseUrl)),
+      onStaysHotel: () => _navPush(PmsGlassPage(_baseUrl)),
+      onStaysPro: () => _navPush(PmsGlassPage(_baseUrl)),
       onCarmarket: () => _navPush(CarmarketPage(_baseUrl)),
-      onCarrental: () => _navPush(CarrentalPage(_baseUrl)),
-      onRealestate: () => _navPush(RealEstatePage(_baseUrl)),
+      onCarrental: () => _navPush(CarrentalModernPage(_baseUrl)),
+      onEquipment: () => _navPush(EquipmentCatalogPage(baseUrl: _baseUrl, walletId: _walletId)),
+      onRealestate: () => _navPush(RealEstateEnduser(baseUrl: _baseUrl)),
       onCourier: () => _navPush(CourierMultiLevelPage(baseUrl: _baseUrl)),
       onFreight: () => _navPush(FreightPage(_baseUrl)),
       onBus: () => _navPush(BusBookPage(_baseUrl)),
-      onChat: () => _navPush(ChatPage(_baseUrl)),
-      onDoctors: () =>
-          _navPush(ModuleHealthPage(_baseUrl, 'Doctors', '/doctors/health')),
+      onChat: () => _navPush(ThreemaChatPage(baseUrl: _baseUrl)),
+      onDoctors: () => _navPush(DoctorsDoctolibPage(baseUrl: _baseUrl)),
       onFlights: () =>
           _navPush(ModuleHealthPage(_baseUrl, 'Flights', '/flights/health')),
       onJobs: () =>
           _navPush(ModuleHealthPage(_baseUrl, 'Jobs', '/jobs/health')),
-      onAgriculture: () => _navPush(
-          ModuleHealthPage(_baseUrl, 'Agriculture', '/agriculture/health')),
-      onLivestock: () => _navPush(
-          ModuleHealthPage(_baseUrl, 'Livestock', '/livestock/health')),
+      onAgriculture: () =>
+          _navPush(AgriMarketplacePage(baseUrl: _baseUrl)),
+      onLivestock: () =>
+          _navPush(LivestockMarketplacePage(baseUrl: _baseUrl)),
       onCommerce: () =>
           _navPush(ModuleHealthPage(_baseUrl, 'Commerce', '/commerce/health')),
-      onMerchantPOS: () => _navPush(MerchantPosPage(_baseUrl)),
+      onMerchantPOS: () => _navPush(PosGlassPage(_baseUrl)),
+      onTira: () => _navPush(CourierLivePage(_baseUrl)),
+      // Inventory view
       onVouchers: () => _navPush(CashMandatePage(_baseUrl)),
       onRequests: () =>
           _navPush(RequestsPage(baseUrl: _baseUrl, walletId: _walletId)),
       onFoodOrders: () => _navPush(FoodOrdersPage(_baseUrl)),
       onBuildingMaterials: () =>
-          _navPush(BuildingMaterialsPage(_baseUrl, walletId: _walletId)),
+          _navPush(BuildingCubotooPage(baseUrl: _baseUrl)),
     );
     final child = switch (_uiRoute.toUpperCase()) {
       'GRID' => HomeRouteGrid(
@@ -2254,11 +2254,12 @@ class _HomePageState extends State<HomePage> {
         break;
       case 'carrental':
         Navigator.push(context,
-            MaterialPageRoute(builder: (_) => CarrentalPage(_baseUrl)));
+            MaterialPageRoute(builder: (_) => CarrentalModernPage(_baseUrl)));
         break;
       case 'realestate':
         Navigator.push(context,
-            MaterialPageRoute(builder: (_) => RealEstatePage(_baseUrl)));
+            MaterialPageRoute(
+                builder: (_) => RealEstateEnduser(baseUrl: _baseUrl)));
         break;
       case 'stays':
         Navigator.push(
@@ -2266,7 +2267,7 @@ class _HomePageState extends State<HomePage> {
         break;
       case 'stays_hotel':
         Navigator.push(context,
-            MaterialPageRoute(builder: (_) => StaysOperatorPage(_baseUrl)));
+            MaterialPageRoute(builder: (_) => PmsGlassPage(_baseUrl)));
         break;
       case 'freight':
         Navigator.push(
@@ -2274,14 +2275,14 @@ class _HomePageState extends State<HomePage> {
         break;
       case 'chat':
         Navigator.push(
-            context, MaterialPageRoute(builder: (_) => ChatPage(_baseUrl)));
+            context, MaterialPageRoute(builder: (_) => ThreemaChatPage(baseUrl: _baseUrl)));
         break;
       case 'doctors':
         Navigator.push(
             context,
             MaterialPageRoute(
                 builder: (_) =>
-                    ModuleHealthPage(_baseUrl, 'Doctors', '/doctors/health')));
+                    DoctorsDoctolibPage(baseUrl: _baseUrl)));
         break;
       case 'flights':
         Navigator.push(
@@ -2306,7 +2307,7 @@ class _HomePageState extends State<HomePage> {
             context,
             MaterialPageRoute(
                 builder: (_) => ModuleHealthPage(
-                    _baseUrl, 'Agriculture', '/agriculture/health')));
+                    _baseUrl, 'Agri Marketplace', '/agriculture/health')));
         break;
       case 'commerce':
         Navigator.push(
@@ -2325,15 +2326,6 @@ class _HomePageState extends State<HomePage> {
       default:
         break;
     }
-  }
-
-  void _openSettings() async {
-    await Navigator.push(
-        context,
-        MaterialPageRoute(
-            builder: (_) =>
-                SettingsPage(baseUrl: _baseUrl, walletId: _walletId)));
-    await _loadPrefs();
   }
 
   void _quickScanPay() {
@@ -2442,23 +2434,30 @@ class _HomePageState extends State<HomePage> {
                                             style: TextStyle(
                                                 fontWeight: FontWeight.w700)),
                                         const SizedBox(height: 8),
-                                        ...modes
-                                            .map((m) => RadioListTile<AppMode>(
-                                                  title: Text(appModeLabel(m)),
-                                                  secondary:
-                                                      Icon(appModeIcon(m)),
-                                                  value: m,
-                                                  groupValue:
-                                                      _appMode == AppMode.auto
-                                                          ? AppMode.user
-                                                          : _appMode,
-                                                  onChanged: (val) {
-                                                    if (val != null) {
-                                                      Navigator.pop(ctx);
-                                                      _changeAppMode(val);
-                                                    }
-                                                  },
-                                                )),
+                                        ...modes.map((m) {
+                                          final selectedMode =
+                                              _appMode == AppMode.auto
+                                                  ? AppMode.user
+                                                  : _appMode;
+                                          final isSelected =
+                                              selectedMode == m;
+                                          return ListTile(
+                                            leading: Icon(
+                                              appModeIcon(m),
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurface,
+                                            ),
+                                            title: Text(appModeLabel(m)),
+                                            trailing: isSelected
+                                                ? const Icon(Icons.check_circle)
+                                                : const SizedBox.shrink(),
+                                            onTap: () {
+                                              Navigator.pop(ctx);
+                                              _changeAppMode(m);
+                                            },
+                                          );
+                                        }),
                                       ])))))));
         });
   }
@@ -2831,31 +2830,6 @@ class _TopupPageState extends State<TopupPage> {
         'TOPUP|wallet=' + Uri.encodeComponent(w) + (a > 0 ? '|amount=$a' : ''));
   }
 
-  Future<void> _scanTopup() async {
-    final res = await Navigator.push<String?>(
-        context, MaterialPageRoute(builder: (_) => const ScanPage()));
-    if (res == null) return;
-    try {
-      final parts = res.split('|');
-      if (parts.isEmpty) return;
-      final kind = parts.first.toUpperCase();
-      if (kind != 'TOPUP') return;
-      final map = <String, String>{};
-      for (final p in parts.skip(1)) {
-        final kv = p.split('=');
-        if (kv.length == 2) map[kv[0]] = Uri.decodeComponent(kv[1]);
-      }
-      if (map['wallet'] != null) {
-        walletCtrl.text = map['wallet']!;
-      }
-      final amount = int.tryParse(map['amount'] ?? '0') ?? 0;
-      if (amount > 0) {
-        amtCtrl.text = amount.toString();
-      }
-      setState(() {});
-    } catch (_) {}
-  }
-
   Future<void> _scanTopupAndDo() async {
     final res = await Navigator.push<String?>(
         context, MaterialPageRoute(builder: (_) => const ScanPage()));
@@ -3006,7 +2980,6 @@ class _MerchantPosPageState extends State<MerchantPosPage> {
   @override
   Widget build(BuildContext context) {
     const bg = AppBG();
-    final l = L10n.of(context);
     final content = ListView(padding: const EdgeInsets.all(16), children: [
       if (_bannerMsg.isNotEmpty)
         Padding(
@@ -3104,10 +3077,12 @@ class OpsPage extends StatelessWidget {
         Navigator.push(context,
             MaterialPageRoute(builder: (_) => BusOperatorPage(baseUrl)));
       }),
-      btn(Icons.business, 'Hotel Operator', () {
-        Navigator.push(context,
-            MaterialPageRoute(builder: (_) => StaysOperatorPage(baseUrl)));
-      }),
+	      btn(Icons.business, 'Hotel Operator', () {
+	        Navigator.push(
+	          context,
+	          MaterialPageRoute(builder: (_) => PmsGlassPage(baseUrl)),
+	        );
+	      }),
       btn(Icons.construction_outlined, 'Building Materials Operator', () {
         Navigator.push(
             context,
@@ -3120,11 +3095,15 @@ class OpsPage extends StatelessWidget {
       }),
       btn(Icons.car_rental, 'Carrental Operator', () {
         Navigator.push(
-            context, MaterialPageRoute(builder: (_) => CarrentalPage(baseUrl)));
+            context, MaterialPageRoute(builder: (_) => CarrentalModernPage(baseUrl)));
+      }),
+      btn(Icons.engineering, 'Equipment Ops', () {
+        Navigator.push(
+            context, MaterialPageRoute(builder: (_) => EquipmentOpsDashboardPage(baseUrl: baseUrl)));
       }),
       btn(Icons.point_of_sale, 'Merchant POS', () {
-        Navigator.push(context,
-            MaterialPageRoute(builder: (_) => MerchantPosPage(baseUrl)));
+        Navigator.push(
+            context, MaterialPageRoute(builder: (_) => PosGlassPage(baseUrl)));
       }),
       btn(Icons.local_printshop_outlined, 'Topup Kiosk', () {
         Navigator.push(context,
@@ -3277,7 +3256,7 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
           Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (_) => StaysOperatorPage(widget.baseUrl)));
+                  builder: (_) => PmsGlassPage(widget.baseUrl)));
         },
       ));
     }
@@ -3296,6 +3275,14 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
         },
       ));
     }
+    // Doctors admin
+    tiles.add(btn(Icons.medical_services_outlined,
+        l.isArabic ? 'مشغل الأطباء' : 'Doctors Admin', () {
+      Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (_) => DoctorsAdminPage(baseUrl: widget.baseUrl)));
+    }));
     if (_domains.contains('realestate')) {
       tiles.add(btn(
         Icons.apartment_outlined,
@@ -3303,8 +3290,8 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
         () {
           Navigator.push(
               context,
-              MaterialPageRoute(
-                  builder: (_) => RealEstatePage(widget.baseUrl)));
+	              MaterialPageRoute(
+	                  builder: (_) => RealEstateEnduser(baseUrl: widget.baseUrl)));
         },
       ));
     }
@@ -3366,7 +3353,7 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
         l.isArabic ? 'مشغل تأجير السيارات' : 'Carrental Operator',
         () {
           Navigator.push(context,
-              MaterialPageRoute(builder: (_) => CarrentalPage(widget.baseUrl)));
+              MaterialPageRoute(builder: (_) => CarrentalModernPage(widget.baseUrl)));
         },
       ));
     }
@@ -3641,7 +3628,7 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
       ),
       superTile(
         icon: Icons.local_shipping_outlined,
-        label: 'Courier & transport',
+        label: 'Courier',
         tint: Tokens.colorCourierTransport,
         onTap: () {
           Navigator.push(
@@ -3663,8 +3650,8 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
         },
       ),
       superTile(
-        icon: Icons.agriculture,
-        label: 'Agriculture & livestock',
+        icon: Icons.store_mall_directory_outlined,
+        label: 'Agri Marketplace',
         tint: Tokens.colorAgricultureLivestock,
         onTap: () {
           Navigator.push(
@@ -3672,6 +3659,18 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
               MaterialPageRoute(
                   builder: (_) =>
                       AgricultureLivestockMultiLevelPage(baseUrl: baseUrl)));
+        },
+      ),
+      superTile(
+        icon: Icons.pets_outlined,
+        label: 'Livestock Marketplace',
+        tint: Tokens.colorAgricultureLivestock,
+        onTap: () {
+          Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) =>
+                      LivestockMarketplacePage(baseUrl: baseUrl)));
         },
       ),
     ];
@@ -5068,7 +5067,7 @@ class _StaysPageState extends State<StaysPage> {
             SizedBox(
               width: 160,
               child: DropdownButtonFormField<String>(
-                value: _sortBy,
+                initialValue: _sortBy,
                 items: const [
                   DropdownMenuItem(
                       value: 'created_at', child: Text('Sort: Created')),
@@ -5086,7 +5085,7 @@ class _StaysPageState extends State<StaysPage> {
             SizedBox(
               width: 160,
               child: DropdownButtonFormField<String>(
-                value: _order,
+                initialValue: _order,
                 items: [
                   DropdownMenuItem(
                       value: 'desc',
@@ -5109,7 +5108,7 @@ class _StaysPageState extends State<StaysPage> {
             SizedBox(
               width: 200,
               child: DropdownButtonFormField<String>(
-                value: _type.isEmpty ? null : _type,
+                initialValue: _type.isEmpty ? null : _type,
                 isExpanded: true,
                 decoration: InputDecoration(labelText: l.rsPropertyType),
                 items: [
@@ -5320,11 +5319,8 @@ class _FoodPageState extends State<FoodPage> {
   final qCtrl = TextEditingController();
   final cityCtrl = TextEditingController();
   List<dynamic> _restaurants = const [];
-  List<dynamic> _menuItems = const [];
   bool _restsLoading = false;
-  bool _menuLoading = false;
   String _restsOut = '';
-  String _menuOut = '';
   final ridCtrl = TextEditingController();
   final cnameCtrl = TextEditingController();
   final cphoneCtrl = TextEditingController();
@@ -5529,124 +5525,6 @@ class _FoodPageState extends State<FoodPage> {
         _bannerMsg = 'Scan error: $e';
       });
     }
-  }
-
-  Future<void> _loadMenu() async {
-    final id = int.tryParse(ridCtrl.text.trim()) ?? 0;
-    if (id <= 0) return;
-    setState(() {
-      _menuLoading = true;
-      _menuOut = '';
-      _menuItems = const [];
-    });
-    final uri = Uri.parse('${widget.baseUrl}/food/restaurants/$id/menu');
-    try {
-      final r = await http.get(uri, headers: await _hdr());
-      if (r.statusCode == 200) {
-        try {
-          final body = jsonDecode(r.body);
-          if (body is List) {
-            _menuItems = body;
-            _menuOut = '';
-          } else {
-            _menuItems = const [];
-            _menuOut = 'Unexpected response: ${r.body}';
-          }
-        } catch (e) {
-          _menuItems = const [];
-          _menuOut = 'Error parsing menu: $e';
-        }
-      } else {
-        _menuItems = const [];
-        _menuOut = '${r.statusCode}: ${r.body}';
-      }
-    } catch (e) {
-      _menuItems = const [];
-      _menuOut = 'error: $e';
-    } finally {
-      if (mounted) {
-        setState(() => _menuLoading = false);
-      }
-    }
-  }
-
-  Future<void> _placeOrder() async {
-    final uri = Uri.parse('${widget.baseUrl}/food/orders');
-    final body = jsonEncode({
-      'customer_name': cnameCtrl.text.trim(),
-      'customer_phone':
-          cphoneCtrl.text.trim().isEmpty ? null : cphoneCtrl.text.trim(),
-      'wallet_id': wCtrl.text.trim().isEmpty ? null : wCtrl.text.trim(),
-      'confirm': true,
-      'restaurant_id': int.tryParse(ridCtrl.text.trim()) ?? null
-    });
-    final t0 = DateTime.now().millisecondsSinceEpoch;
-    try {
-      final r =
-          await http.post(uri, headers: await _hdr(json: true), body: body);
-      setState(() => oOut = '${r.statusCode}: ${r.body}');
-      try {
-        final j = jsonDecode(r.body);
-        oidCtrl.text = (j['id'] ?? '').toString();
-        final dt = DateTime.now().millisecondsSinceEpoch - t0;
-        Perf.action('food_order_ok');
-        Perf.sample('food_order_ms', dt);
-        setState(() {
-          _bannerKind = StatusKind.success;
-          _bannerMsg = 'Order placed (ID: ${oidCtrl.text})';
-        });
-      } catch (_) {
-        Perf.action('food_order_fail');
-        setState(() {
-          _bannerKind = StatusKind.error;
-          _bannerMsg = 'Could not place order';
-        });
-      }
-      if (r.statusCode >= 500) {
-        await OfflineQueue.enqueue(OfflineTask(
-            id: 'food-${DateTime.now().millisecondsSinceEpoch}',
-            method: 'POST',
-            url: uri.toString(),
-            headers: await _hdr(json: true),
-            body: body,
-            tag: 'food_order',
-            createdAt: DateTime.now().millisecondsSinceEpoch));
-        Perf.action('food_order_queued');
-      }
-    } catch (e) {
-      await OfflineQueue.enqueue(OfflineTask(
-          id: 'food-${DateTime.now().millisecondsSinceEpoch}',
-          method: 'POST',
-          url: uri.toString(),
-          headers: await _hdr(json: true),
-          body: body,
-          tag: 'food_order',
-          createdAt: DateTime.now().millisecondsSinceEpoch));
-      setState(() => oOut = 'Queued (offline)');
-      Perf.action('food_order_queued');
-      setState(() {
-        _bannerKind = StatusKind.warning;
-        _bannerMsg = 'Order queued offline';
-      });
-    }
-  }
-
-  Future<void> _status() async {
-    final id = oidCtrl.text.trim();
-    if (id.isEmpty) return;
-    final r = await http.get(Uri.parse('${widget.baseUrl}/food/orders/$id'),
-        headers: await _hdr());
-    setState(() => sOut = '${r.statusCode}: ${r.body}');
-  }
-
-  Future<void> _setStatus(String st) async {
-    final id = oidCtrl.text.trim();
-    if (id.isEmpty) return;
-    final r = await http.post(
-        Uri.parse('${widget.baseUrl}/food/orders/$id/status'),
-        headers: await _hdr(json: true),
-        body: jsonEncode({'status': st}));
-    setState(() => sOut = '${r.statusCode}: ${r.body}');
   }
 
   Future<bool> _courierEnsureCoords() async {
@@ -6267,6 +6145,8 @@ class _FoodPageState extends State<FoodPage> {
           title: l.isArabic ? 'الحلويات' : 'Sweets',
           children: [buildCategoryRow(l.isArabic ? 'الحلويات' : 'Sweets', restSweets, Icons.cake_outlined)],
         ),
+        const SizedBox(height: 16),
+        courierSection,
         const SizedBox(height: 16),
         FormSection(
           title: l.isArabic ? 'استلام الطلب' : 'Order delivery',
@@ -7277,6 +7157,52 @@ class _CarrentalPageState extends State<CarrentalPage> {
       ]),
       const SizedBox(height: 8),
       if (qOut.isNotEmpty) StatusBanner.info(qOut, dense: true),
+      if (_carsOut.isNotEmpty) StatusBanner.info(_carsOut, dense: true),
+      if (_cars.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Text(l.isArabic ? 'السيارات المتاحة' : 'Available cars',
+            style: const TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 6),
+        ..._cars.take(10).map((c) {
+          final id = c['id'] ?? c['car_id'] ?? '';
+          final title = (c['title'] ??
+                  c['name'] ??
+                  '${c['make'] ?? ''} ${c['model'] ?? ''}')
+              .toString()
+              .trim();
+          final city = (c['city'] ?? '').toString();
+          final price = (c['price_per_day_cents'] ??
+                  c['price_cents'] ??
+                  c['daily_price_cents'] ??
+                  0) as num;
+          final priceText =
+              price > 0 ? '${(price / 100).toStringAsFixed(2)} SYP/day' : '';
+          return Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: Theme.of(context).dividerColor.withValues(alpha: .35))),
+            child: ListTile(
+              leading: const Icon(Icons.directions_car_filled_outlined),
+              title: Text(title.isEmpty ? 'Car' : title,
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(
+                [if (city.isNotEmpty) city, if (priceText.isNotEmpty) priceText]
+                    .where((e) => e.isNotEmpty)
+                    .join(' · '),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Text(id.toString()),
+              onTap: () {
+                carIdCtrl.text = id.toString();
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(l.isArabic ? 'تم اختيار السيارة' : 'Car selected')));
+              },
+            ),
+          );
+        }),
+      ],
       const Divider(height: 24),
       TextField(
           controller: nameCtrl,
@@ -7385,7 +7311,7 @@ class _CarrentalPageState extends State<CarrentalPage> {
           child: DropdownButtonFormField<String>(
             decoration:
                 InputDecoration(labelText: l.isArabic ? 'الحالة' : 'status'),
-            value: _bookingStatusFilter.isEmpty ? null : _bookingStatusFilter,
+            initialValue: _bookingStatusFilter.isEmpty ? null : _bookingStatusFilter,
             items: const [
               DropdownMenuItem(value: '', child: Text('All')),
               DropdownMenuItem(value: 'requested', child: Text('requested')),
@@ -7485,310 +7411,6 @@ class _CarrentalPageState extends State<CarrentalPage> {
     return Scaffold(
         appBar: AppBar(
             title: Text(l.carrentalTitle), backgroundColor: Colors.transparent),
-        extendBodyBehindAppBar: true,
-        backgroundColor: Colors.transparent,
-        body: Stack(children: [
-          bg,
-          Positioned.fill(
-              child: SafeArea(
-                  child: GlassPanel(
-                      padding: const EdgeInsets.all(16), child: content)))
-        ]));
-  }
-}
-
-class RealEstatePage extends StatefulWidget {
-  final String baseUrl;
-  const RealEstatePage(this.baseUrl, {super.key});
-  @override
-  State<RealEstatePage> createState() => _RealEstatePageState();
-}
-
-class _RealEstatePageState extends State<RealEstatePage> {
-  final qCtrl = TextEditingController();
-  final cityCtrl = TextEditingController();
-  final minpCtrl = TextEditingController();
-  final maxpCtrl = TextEditingController();
-  final minbCtrl = TextEditingController();
-  String props = '';
-  List<dynamic> _items = const [];
-  String _propsOut = '';
-  final selCtrl = TextEditingController();
-  final buyerCtrl = TextEditingController();
-  final depCtrl = TextEditingController(text: '50000');
-  String iout = '';
-  final inameCtrl = TextEditingController();
-  final iphoneCtrl = TextEditingController();
-  final imsgCtrl = TextEditingController();
-  @override
-  void initState() {
-    super.initState();
-    _loadWallet();
-  }
-
-  Future<void> _loadWallet() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final w = sp.getString('wallet_id') ?? '';
-      if (w.isNotEmpty) {
-        buyerCtrl.text = w;
-        if (mounted) setState(() {});
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _load() async {
-    final u = Uri.parse(
-        '${widget.baseUrl}/realestate/properties?q=${Uri.encodeComponent(qCtrl.text)}&city=${Uri.encodeComponent(cityCtrl.text)}&min_price=${Uri.encodeComponent(minpCtrl.text)}&max_price=${Uri.encodeComponent(maxpCtrl.text)}&min_bedrooms=${Uri.encodeComponent(minbCtrl.text)}');
-    try {
-      final r = await http.get(u, headers: await _hdr());
-      if (!mounted) return;
-      props = '${r.statusCode}: ${r.body}';
-      if (r.statusCode == 200) {
-        final body = jsonDecode(r.body);
-        if (body is List) {
-          setState(() {
-            _items = body;
-            _propsOut = '';
-          });
-        } else {
-          setState(() {
-            _items = const [];
-            _propsOut = '${r.statusCode}: ${r.body}';
-          });
-        }
-      } else {
-        setState(() {
-          _items = const [];
-          _propsOut = '${r.statusCode}: ${r.body}';
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _items = const [];
-        _propsOut = 'error: $e';
-      });
-    }
-  }
-
-  Future<void> _inquiry() async {
-    final pid = int.tryParse(selCtrl.text.trim()) ?? 0;
-    final h = await _hdr(json: true);
-    h['Idempotency-Key'] = 'rei-${DateTime.now().millisecondsSinceEpoch}';
-    final r = await http.post(
-        Uri.parse('${widget.baseUrl}/realestate/inquiries'),
-        headers: h,
-        body: jsonEncode({
-          'property_id': pid,
-          'name': inameCtrl.text.trim(),
-          'phone':
-              iphoneCtrl.text.trim().isEmpty ? null : iphoneCtrl.text.trim(),
-          'message': imsgCtrl.text.trim().isEmpty ? null : imsgCtrl.text.trim()
-        }));
-    setState(() => iout = '${r.statusCode}: ${r.body}');
-  }
-
-  Future<void> _reserve() async {
-    final pid = int.tryParse(selCtrl.text.trim()) ?? 0;
-    final h = await _hdr(json: true);
-    h['Idempotency-Key'] = 'rer-${DateTime.now().millisecondsSinceEpoch}';
-    final r = await http.post(Uri.parse('${widget.baseUrl}/realestate/reserve'),
-        headers: h,
-        body: jsonEncode({
-          'property_id': pid,
-          'buyer_wallet_id': buyerCtrl.text.trim(),
-          'deposit_cents': int.tryParse(depCtrl.text.trim()) ?? 0
-        }));
-    setState(() => iout = '${r.statusCode}: ${r.body}');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    const bg = AppBG();
-    final l = L10n.of(context);
-    final searchSection = FormSection(
-      title: l.isArabic ? 'البحث عن عقارات' : 'Search properties',
-      children: [
-        Wrap(spacing: 8, runSpacing: 8, children: [
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: qCtrl,
-                  decoration: InputDecoration(labelText: l.labelSearch))),
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: cityCtrl,
-                  decoration: InputDecoration(labelText: l.labelCity))),
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: minpCtrl,
-                  decoration: InputDecoration(
-                      labelText: l.isArabic ? 'أدنى سعر' : 'min price'))),
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: maxpCtrl,
-                  decoration: InputDecoration(
-                      labelText: l.isArabic ? 'أعلى سعر' : 'max price'))),
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: minbCtrl,
-                  decoration: InputDecoration(
-                      labelText:
-                          l.isArabic ? 'حد أدنى لغرف النوم' : 'min bedrooms'))),
-          SizedBox(
-              width: 140, child: WaterButton(label: l.reSearch, onTap: _load)),
-        ]),
-        const SizedBox(height: 8),
-        if (_propsOut.isNotEmpty) StatusBanner.info(_propsOut, dense: true),
-        if (_items.isNotEmpty) ...[
-          Builder(builder: (ctx) {
-            final total = _items.length;
-            int listed = 0, reserved = 0, sold = 0, rented = 0;
-            int totalPrice = 0;
-            for (final it in _items) {
-              try {
-                final m = (it as Map).cast<String, dynamic>();
-                final st = (m['status'] ?? '').toString().toLowerCase();
-                switch (st) {
-                  case 'listed':
-                    listed++;
-                    break;
-                  case 'reserved':
-                    reserved++;
-                    break;
-                  case 'sold':
-                    sold++;
-                    break;
-                  case 'rented':
-                    rented++;
-                    break;
-                }
-                final pc = m['price_cents'];
-                if (pc is int) {
-                  totalPrice += pc;
-                }
-              } catch (_) {}
-            }
-            final avgPrice = total > 0 ? (totalPrice ~/ total) : 0;
-            final txt = l.isArabic
-                ? 'العقارات: $total · معروضة: $listed · محجوزة: $reserved · مباعة: $sold · مؤجرة: $rented · متوسط السعر: ${avgPrice} ل.س'
-                : 'Properties: $total · listed: $listed · reserved: $reserved · sold: $sold · rented: $rented · avg price: ${avgPrice} SYP';
-            return Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: StatusBanner.info(txt, dense: true),
-            );
-          }),
-          const SizedBox(height: 4),
-          ..._items.map<Widget>((it) {
-            try {
-              final m = (it as Map).cast<String, dynamic>();
-              final id = (m['id'] ?? '').toString();
-              final title = (m['title'] ?? '').toString();
-              final city = (m['city'] ?? '').toString();
-              final status = (m['status'] ?? '').toString();
-              final priceC = m['price_cents'];
-              final cur = (m['currency'] ?? 'SYP').toString();
-              final priceStr = priceC is int
-                  ? '${(priceC / 100.0).toStringAsFixed(2)} $cur'
-                  : priceC?.toString() ?? '';
-              final beds = (m['bedrooms'] ?? '').toString();
-              final baths = (m['bathrooms'] ?? '').toString();
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: GlassPanel(
-                  padding: const EdgeInsets.all(8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Property $id · $title',
-                          style: const TextStyle(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 2),
-                      Text(
-                          '${city.isNotEmpty ? city : '-'} · ${beds.isNotEmpty ? '$beds bd' : ''} ${baths.isNotEmpty ? '/ $baths ba' : ''}'),
-                      if (priceStr.isNotEmpty)
-                        Text(priceStr,
-                            style: Theme.of(context).textTheme.bodySmall),
-                      const SizedBox(height: 2),
-                      Text('status: $status',
-                          style: Theme.of(context).textTheme.bodySmall),
-                      const SizedBox(height: 4),
-                      Wrap(
-                        spacing: 8,
-                        children: [
-                          SizedBox(
-                            height: 32,
-                            child: ElevatedButton(
-                              onPressed: () {
-                                selCtrl.text = id;
-                              },
-                              child: Text(l.isArabic ? 'اختيار' : 'Select'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            } catch (_) {
-              return const SizedBox.shrink();
-            }
-          }).toList(),
-        ],
-      ],
-    );
-
-    final bookingSection = FormSection(
-      title: l.isArabic ? 'حجز / استفسار' : 'Reserve or inquire',
-      children: [
-        Wrap(spacing: 8, runSpacing: 8, children: [
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: selCtrl,
-                  decoration: InputDecoration(labelText: l.rePropertyId))),
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: buyerCtrl,
-                  decoration: InputDecoration(labelText: l.reBuyerWallet))),
-          SizedBox(
-              width: 220,
-              child: TextField(
-                  controller: depCtrl,
-                  decoration: InputDecoration(labelText: l.reDeposit))),
-        ]),
-        const SizedBox(height: 8),
-        Wrap(spacing: 8, runSpacing: 8, children: [
-          SizedBox(
-              width: 180,
-              child: WaterButton(label: l.reReserveAndPay, onTap: _reserve)),
-          SizedBox(
-              width: 160,
-              child: WaterButton(label: l.reSendInquiry, onTap: _inquiry)),
-        ]),
-        const SizedBox(height: 8),
-        if (iout.isNotEmpty) StatusBanner.info(iout, dense: true),
-      ],
-    );
-
-    final content = ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        searchSection,
-        bookingSection,
-      ],
-    );
-
-    return Scaffold(
-        appBar: AppBar(
-            title: Text(l.realEstateTitle),
-            backgroundColor: Colors.transparent),
         extendBodyBehindAppBar: true,
         backgroundColor: Colors.transparent,
         body: Stack(children: [
@@ -8340,6 +7962,11 @@ class _BuildingMaterialsPageState extends State<BuildingMaterialsPage> {
             padding: EdgeInsets.symmetric(vertical: 8),
             child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
           ),
+        if (_placing)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: LinearProgressIndicator(minHeight: 2),
+          ),
         if (!_loading && _items.isEmpty && _out.isEmpty)
           Text(
             l.isArabic
@@ -8364,7 +7991,7 @@ class _BuildingMaterialsPageState extends State<BuildingMaterialsPage> {
                 subtitle: Text(wallet.isNotEmpty ? wallet : ''),
                 trailing: Text(price,
                     style: const TextStyle(fontWeight: FontWeight.w600)),
-                onTap: widget.walletId.isNotEmpty
+                onTap: widget.walletId.isNotEmpty && !_placing
                     ? () => _openOrderDialog(m)
                     : null,
               );
@@ -8833,34 +8460,118 @@ class GlassCard extends StatelessWidget {
 
 // Unified homescreen-like background for all pages
 class AppBG extends StatelessWidget {
-  const AppBG({super.key});
+  final Widget? child;
+
+  const AppBG({super.key, this.child});
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final base = theme.colorScheme.surface;
-    // Slightly brighter background on light theme, unchanged on dark
-    final bg = theme.brightness == Brightness.dark ? base : Tokens.lightSurface;
-    return Container(color: bg);
+    final isDark = theme.brightness == Brightness.dark;
+    // Ultra realistic liquid-glass background:
+    // deep navy base, vibrant blue gradients and soft refraction highlights.
+    final base = const Color(0xFF050B1F); // slightly lighter navy base
+    final blue = const Color(0xFF1D4ED8); // vivid blue
+    final cyan = const Color(0xFF22D3EE); // cyan accent
+    final purple = const Color(0xFF6366F1); // indigo/purple glow
+    final paper = Colors.white.withValues(alpha: isDark ? 0.035 : 0.10);
+
+    return SizedBox.expand(
+      child: Stack(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color.lerp(base, blue, 0.22)!,
+                  Color.lerp(base, purple, 0.38)!,
+                  Color.lerp(base, cyan, 0.42)!,
+                  Color.lerp(base, Colors.black, isDark ? 0.16 : 0.08)!,
+                ],
+              ),
+            ),
+          ),
+          // Global blur + subtle paper tint for depth-of-field.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  color: paper,
+                ),
+              ),
+            ),
+          ),
+          // Soft radial highlights to simulate light refraction spots.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _GlassHighlightPainter(isDark: isDark),
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.white.withValues(alpha: isDark ? 0.03 : 0.05),
+                      Colors.transparent,
+                      Colors.white.withValues(alpha: isDark ? 0.018 : 0.028),
+                    ],
+                    stops: const [0.0, 0.5, 1.0],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          if (child != null)
+            SafeArea(
+              child: child!,
+            ),
+        ],
+      ),
+    );
   }
 }
 
-class _QuickActions extends StatelessWidget {
-  final VoidCallback onScanPay;
-  final VoidCallback onTopup;
-  final VoidCallback onP2P;
-  const _QuickActions(
-      {required this.onScanPay, required this.onTopup, required this.onP2P});
-  @override
-  Widget build(BuildContext context) {
-    Widget btn(IconData icon, String label, VoidCallback onTap) {
-      return WaterButton(icon: icon, label: label, onTap: onTap);
-    }
+/// Painter for subtle radial highlights behind the glass layers.
+class _GlassHighlightPainter extends CustomPainter {
+  final bool isDark;
+  _GlassHighlightPainter({required this.isDark});
 
-    return Wrap(spacing: 8, runSpacing: 8, children: [
-      btn(Icons.qr_code_scanner, 'Payments', onScanPay),
-      btn(Icons.account_balance_wallet_outlined, 'Topup', onTopup),
-      btn(Icons.compare_arrows_outlined, 'P2P', onP2P),
-    ]);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final centerTop = Offset(size.width * 0.25, size.height * 0.18);
+    final centerBottom = Offset(size.width * 0.8, size.height * 0.82);
+
+    final paintTop = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Colors.white.withValues(alpha: isDark ? 0.18 : 0.26),
+          Colors.white.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromCircle(center: centerTop, radius: size.width * 0.55));
+
+    final paintBottom = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFF38BDF8).withValues(alpha: isDark ? 0.26 : 0.32),
+          Colors.transparent,
+        ],
+      ).createShader(Rect.fromCircle(center: centerBottom, radius: size.width * 0.65));
+
+    canvas.drawCircle(centerTop, size.width * 0.55, paintTop);
+    canvas.drawCircle(centerBottom, size.width * 0.65, paintBottom);
+  }
+
+  @override
+  bool shouldRepaint(covariant _GlassHighlightPainter oldDelegate) {
+    return oldDelegate.isDark != isDark;
   }
 }
 
@@ -9070,383 +8781,6 @@ List<Map<String, dynamic>> parseTaxiFareOptions(dynamic j) {
     }
   } catch (_) {}
   return opts;
-}
-
-// (navigate-to-rider helper removed; Start ride now initiates navigation)
-
-// (Legacy inline Taxi pages removed; use core/taxi/*.dart)
-
-class _TabFader extends StatelessWidget {
-  final Widget child;
-  const _TabFader({required this.child});
-  @override
-  Widget build(BuildContext context) {
-    final tc = DefaultTabController.of(context);
-    if (tc?.animation == null) return child;
-    return AnimatedBuilder(
-      animation: tc!.animation!,
-      builder: (ctx, _) {
-        final changing = tc.indexIsChanging || (tc.animation!.value % 1 != 0);
-        final opacity = changing ? .88 : 1.0;
-        return AnimatedOpacity(
-            duration: const Duration(milliseconds: 140),
-            opacity: opacity,
-            child: child);
-      },
-    );
-  }
-}
-
-// RequestsPage moved to core/payments_requests.dart
-
-// ContactPickerPage moved to core/contact_picker.dart
-
-class ChatPage extends StatefulWidget {
-  final String baseUrl;
-  const ChatPage(this.baseUrl, {super.key});
-  @override
-  State<ChatPage> createState() => _ChatPageState();
-}
-
-class _ChatPageState extends State<ChatPage> {
-  final myIdCtrl = TextEditingController();
-  final nameCtrl = TextEditingController();
-  String myPkB64 = '';
-  String mySkB64 = '';
-  String myFp = '';
-
-  final peerIdCtrl = TextEditingController();
-  String peerPkB64 = '';
-  String peerFp = '';
-  bool verified = false;
-
-  final msgCtrl = TextEditingController();
-  String out = '';
-  String inbox = '';
-  WebSocketChannel? _ws;
-  int _retries = 0;
-  bool _connecting = false;
-  String? _attachedB64;
-  String? _attachedMime;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final sp = await SharedPreferences.getInstance();
-    myIdCtrl.text = sp.getString('chat_myid') ?? '';
-    nameCtrl.text = sp.getString('chat_myname') ?? '';
-    myPkB64 = sp.getString('chat_mypk') ?? '';
-    mySkB64 = sp.getString('chat_mysk') ?? '';
-    peerIdCtrl.text = sp.getString('chat_peerid') ?? '';
-    peerPkB64 = sp.getString('chat_peerpk') ?? '';
-    myFp = _fpB64(myPkB64);
-    peerFp = _fpB64(peerPkB64);
-    verified = await _isVerified(peerIdCtrl.text.trim(), peerFp);
-    setState(() {});
-  }
-
-  Future<void> _save() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString('chat_myid', myIdCtrl.text.trim());
-    await sp.setString('chat_myname', nameCtrl.text.trim());
-    await sp.setString('chat_mypk', myPkB64);
-    await sp.setString('chat_mysk', mySkB64);
-    await sp.setString('chat_peerid', peerIdCtrl.text.trim());
-    await sp.setString('chat_peerpk', peerPkB64);
-  }
-
-  void _gen() {
-    // Generate X25519 keypair for NaCl.box
-    final sk = x25519.PrivateKey.generate();
-    final pk = sk.publicKey;
-    mySkB64 = base64Encode(sk.asTypedList);
-    myPkB64 = base64Encode(pk.asTypedList);
-    myFp = _fpB64(myPkB64);
-    if (myIdCtrl.text.trim().isEmpty) {
-      myIdCtrl.text =
-          'c-' + DateTime.now().millisecondsSinceEpoch.toString().substring(7);
-    }
-    _save();
-    setState(() {});
-  }
-
-  Future<void> _register() async {
-    setState(() => out = '...');
-    try {
-      final r =
-          await http.post(Uri.parse('${widget.baseUrl}/chat/devices/register'),
-              headers: await _hdr(json: true),
-              body: jsonEncode({
-                'device_id': myIdCtrl.text.trim(),
-                'public_key_b64': myPkB64,
-                'name':
-                    nameCtrl.text.trim().isEmpty ? null : nameCtrl.text.trim(),
-              }));
-      out = '${r.statusCode}: ${r.body}';
-      _connectWs();
-    } catch (e) {
-      out = 'error: $e';
-    }
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _resolve() async {
-    setState(() => out = '...');
-    try {
-      final r = await http.get(
-          Uri.parse('${widget.baseUrl}/chat/devices/' +
-              Uri.encodeComponent(peerIdCtrl.text.trim())),
-          headers: await _hdr());
-      out = '${r.statusCode}: ${r.body}';
-      try {
-        final j = jsonDecode(r.body);
-        peerPkB64 = (j['public_key_b64'] ?? '').toString();
-        peerFp = _fpB64(peerPkB64);
-        verified = await _isVerified(peerIdCtrl.text.trim(), peerFp);
-        await _save();
-      } catch (_) {}
-    } catch (e) {
-      out = 'error: $e';
-    }
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _send() async {
-    setState(() => out = '...');
-    String nonceB64;
-    String boxB64;
-    try {
-      final skBytes = base64Decode(mySkB64);
-      final sk = x25519.PrivateKey(skBytes);
-      final pkPeer = x25519.PublicKey(base64Decode(peerPkB64));
-      final n = Uint8List.fromList(
-          List<int>.generate(24, (_) => Random().nextInt(256)));
-      final enc = x25519.Box(myPrivateKey: sk, theirPublicKey: pkPeer)
-          .encrypt(Uint8List.fromList(utf8.encode(msgCtrl.text)), nonce: n);
-      nonceB64 = base64Encode(enc.nonce.asTypedList);
-      boxB64 = base64Encode(enc.cipherText.asTypedList);
-    } catch (_) {
-      nonceB64 = base64Encode(Uint8List.fromList(
-          List<int>.generate(24, (_) => Random().nextInt(256))));
-      boxB64 = base64Encode(utf8.encode(msgCtrl.text));
-    }
-    try {
-      final r =
-          await http.post(Uri.parse('${widget.baseUrl}/chat/messages/send'),
-              headers: await _hdr(json: true),
-              body: jsonEncode({
-                'sender_id': myIdCtrl.text.trim(),
-                'recipient_id': peerIdCtrl.text.trim(),
-                'sender_pubkey_b64': myPkB64,
-                'nonce_b64': nonceB64,
-                'box_b64': boxB64,
-                'attachment_b64': _attachedB64,
-                'attachment_mime': _attachedMime,
-              }));
-      out = '${r.statusCode}: ${r.body}';
-    } catch (e) {
-      out = 'error: $e';
-    }
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _poll() async {
-    setState(() => inbox = '...');
-    try {
-      final r = await http.get(
-          Uri.parse('${widget.baseUrl}/chat/messages/inbox?device_id=' +
-              Uri.encodeComponent(myIdCtrl.text.trim()) +
-              '&limit=50'),
-          headers: await _hdr());
-      final arr = jsonDecode(r.body) as List;
-      final lines = <String>[];
-      for (final m in arr.reversed) {
-        lines.add(_formatInbound(m));
-      }
-      inbox = lines.join('\n');
-    } catch (e) {
-      inbox = 'error: $e';
-    }
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _attach() async {
-    try {
-      final picker = ImagePicker();
-      final x = await picker.pickImage(
-          source: ImageSource.gallery, maxWidth: 1600, imageQuality: 85);
-      if (x == null) {
-        return;
-      }
-      final bytes = await x.readAsBytes();
-      _attachedB64 = base64Encode(bytes);
-      final ext = (x.name.split('.').last).toLowerCase();
-      _attachedMime = (ext == 'png') ? 'image/png' : 'image/jpeg';
-      setState(() => out =
-          'Attached ' + x.name + ' (' + bytes.length.toString() + ' bytes)');
-    } catch (e) {
-      setState(() => out = 'attach error: $e');
-    }
-  }
-
-  String _formatInbound(dynamic m) {
-    try {
-      final sender = (m['sender_id'] ?? '').toString();
-      final spk = (m['sender_pubkey_b64'] ?? '').toString();
-      final nonce = base64Decode((m['nonce_b64'] ?? '').toString());
-      final cipher = base64Decode((m['box_b64'] ?? '').toString());
-      if (mySkB64.isNotEmpty && spk.isNotEmpty) {
-        final sk = x25519.PrivateKey(base64Decode(mySkB64));
-        final pkSender = x25519.PublicKey(base64Decode(spk));
-        final plain = x25519.Box(myPrivateKey: sk, theirPublicKey: pkSender)
-            .decrypt(x25519.ByteList(cipher), nonce: Uint8List.fromList(nonce));
-        return '$sender: ' + utf8.decode(plain);
-      }
-    } catch (_) {}
-    try {
-      return '${m['sender_id']}: ' +
-          utf8.decode(base64Decode(m['box_b64'] ?? ''));
-    } catch (_) {}
-    return '${m['sender_id']}: <encrypted>';
-  }
-
-  void _connectWs() {
-    try {
-      _ws?.sink.close();
-      final u = Uri.parse(widget.baseUrl);
-      final scheme = (u.scheme == 'https') ? 'wss' : 'ws';
-      final wsUrl = Uri(
-          scheme: scheme,
-          host: u.host,
-          port: u.hasPort ? u.port : null,
-          path: '/ws/chat/inbox',
-          queryParameters: {'device_id': myIdCtrl.text.trim()}).toString();
-      _ws = WebSocketChannel.connect(Uri.parse(wsUrl));
-      _ws!.stream.listen((payload) {
-        try {
-          final j = jsonDecode(payload);
-          if (j['type'] == 'inbox') {
-            final arr = (j['messages'] as List);
-            final lines = <String>[];
-            for (final m in arr.reversed) {
-              lines.add(_formatInbound(m));
-            }
-            setState(() => inbox = lines.join('\n'));
-          }
-        } catch (_) {}
-      }, onDone: () => setState(() {}), onError: (_) => setState(() {}));
-    } catch (_) {}
-  }
-
-  @override
-  void dispose() {
-    _ws?.sink.close();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l = L10n.of(context);
-    return Scaffold(
-      appBar: AppBar(title: Text(l.chatTitle)),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        Text(l.chatIdentity, style: Theme.of(context).textTheme.titleMedium),
-        Row(children: [
-          Expanded(
-              child: TextField(
-                  controller: myIdCtrl,
-                  decoration: InputDecoration(labelText: l.chatMyDeviceId))),
-          const SizedBox(width: 8),
-          Expanded(
-              child: TextField(
-                  controller: nameCtrl,
-                  decoration: InputDecoration(labelText: l.chatDisplayName))),
-        ]),
-        Row(children: [
-          Expanded(child: WaterButton(label: l.chatGenerate, onTap: _gen)),
-          const SizedBox(width: 8),
-          Expanded(child: WaterButton(label: l.chatRegister, onTap: _register)),
-        ]),
-        SelectableText('${l.chatMyFingerprint} $myFp'),
-        const SizedBox(height: 6),
-        ExpansionTile(
-            title: Text(l.chatMyPublicKey),
-            subtitle: const Text('Base64'),
-            children: [SelectableText(myPkB64)]),
-        const Divider(height: 24),
-        Text(l.chatPeer, style: Theme.of(context).textTheme.titleMedium),
-        Row(children: [
-          Expanded(
-              child: TextField(
-                  controller: peerIdCtrl,
-                  decoration: InputDecoration(labelText: l.chatPeerId))),
-          const SizedBox(width: 8),
-          Expanded(child: WaterButton(label: l.chatResolve, onTap: _resolve)),
-        ]),
-        const SizedBox(height: 6),
-        Row(children: [
-          Expanded(child: SelectableText('${l.chatPeerFp} $peerFp')),
-          const SizedBox(width: 8),
-          Text(verified ? l.chatVerified : l.chatUnverified)
-        ]),
-        const SizedBox(height: 6),
-        WaterButton(label: l.chatMarkVerified, onTap: _markVerified),
-        const SizedBox(height: 12),
-        TextField(
-            controller: msgCtrl,
-            decoration: InputDecoration(labelText: l.chatMessage)),
-        const SizedBox(height: 8),
-        Row(children: [
-          Expanded(child: WaterButton(label: l.chatSend, onTap: _send)),
-          const SizedBox(width: 8),
-          Expanded(child: WaterButton(label: l.chatPoll, onTap: _poll)),
-          const SizedBox(width: 8),
-          Expanded(child: WaterButton(label: l.chatAttachImage, onTap: _attach))
-        ]),
-        const SizedBox(height: 12),
-        SelectableText('${l.chatOut} $out'),
-        const Divider(height: 24),
-        Text(l.chatInbox),
-        SelectableText(inbox),
-      ]),
-    );
-  }
-
-  String _fpB64(String b64) {
-    try {
-      if (b64.isEmpty) return '';
-      final bytes = base64Decode(b64);
-      final d = crypto.sha256.convert(bytes);
-      final hex =
-          d.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      return hex.substring(0, 16);
-    } catch (_) {
-      return '';
-    }
-  }
-
-  Future<bool> _isVerified(String peerId, String fp) async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      return sp.getString('chat_verif_' + peerId) == fp;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<void> _markVerified() async {
-    final pid = peerIdCtrl.text.trim();
-    if (pid.isEmpty || peerFp.isEmpty) return;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('chat_verif_' + pid, peerFp);
-      if (mounted) setState(() => verified = true);
-    } catch (_) {}
-  }
 }
 
 class SonicPayPage extends StatefulWidget {
@@ -9820,6 +9154,16 @@ class _BusPageState extends State<BusPage> {
           ],
         ),
         const SizedBox(height: 12),
+        WaterButton(
+          label: l.isArabic ? 'فحص التوافر' : 'Check health',
+          onTap: _health,
+        ),
+        if (out.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: SelectableText(out),
+          ),
+        const SizedBox(height: 8),
         Text(
           l.isArabic
               ? 'الواجهة الإدارية (ويب): /bus/admin (يتطلب تسجيل الدخول)'
@@ -10411,7 +9755,6 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
   List<Map<String, dynamic>>? _undoDays;
   int? _undoRt;
   String? _undoOpId;
-  bool _showTodayOnly = false;
 
   @override
   void initState() {
@@ -11027,14 +10370,6 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _appendNext30() async {
-    await _appendRange(forward: true, days: 30);
-  }
-
-  Future<void> _appendPrev30() async {
-    await _appendRange(forward: false, days: 30);
-  }
-
   // Use _appendChunk for keyboard and dynamic append size
   Future<void> _appendNext() async {
     await _appendRange(forward: true, days: _appendChunk);
@@ -11456,8 +10791,8 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
     await _loadRates();
   }
 
-  void _onRatesKey(RawKeyEvent e) {
-    if (e is! RawKeyDownEvent) return;
+  void _onRatesKey(KeyEvent e) {
+    if (e is! KeyDownEvent) return;
     final total = rateDays;
     int idxFromStart(String ds) {
       try {
@@ -11480,7 +10815,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
     if (_cursorDate == null) _cursorDate = dsAt(0);
     var idx = idxFromStart(_cursorDate!);
     final key = e.logicalKey.keyLabel.toLowerCase();
-    final pressed = RawKeyboard.instance.keysPressed;
+    final pressed = HardwareKeyboard.instance.logicalKeysPressed;
     final ctrl = pressed.contains(LogicalKeyboardKey.controlLeft) ||
         pressed.contains(LogicalKeyboardKey.controlRight) ||
         pressed.contains(LogicalKeyboardKey.metaLeft) ||
@@ -11968,7 +11303,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                           labelText: 'Address (optional)')),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
-                    value: typeSel.isEmpty ? null : typeSel,
+                    initialValue: typeSel.isEmpty ? null : typeSel,
                     isExpanded: true,
                     decoration: const InputDecoration(
                         labelText: 'Property type (optional)'),
@@ -12221,7 +11556,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         Row(children: [
           Expanded(
               child: DropdownButtonFormField<int>(
-                  value: _lRoomTypeSel,
+                  initialValue: _lRoomTypeSel,
                   isExpanded: true,
                   decoration:
                       const InputDecoration(labelText: 'Room Type (optional)'),
@@ -12239,7 +11574,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         Row(children: [
           Expanded(
               child: DropdownButtonFormField<int>(
-                  value: _propSelListing,
+                  initialValue: _propSelListing,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Property'),
                   items: _propList.map((p) {
@@ -12256,7 +11591,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         SizedBox(
             width: 360,
             child: DropdownButtonFormField<String>(
-              value: _lTypeSel.isEmpty ? null : _lTypeSel,
+              initialValue: _lTypeSel.isEmpty ? null : _lTypeSel,
               isExpanded: true,
               decoration: const InputDecoration(labelText: 'Property type'),
               items: [
@@ -12305,7 +11640,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
               SizedBox(
                   width: 220,
                   child: DropdownButtonFormField<String>(
-                    value: _lTypeFilterSel.isEmpty ? null : _lTypeFilterSel,
+                    initialValue: _lTypeFilterSel.isEmpty ? null : _lTypeFilterSel,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Filter type'),
                     items: [
@@ -12336,7 +11671,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
               SizedBox(
                   width: 160,
                   child: DropdownButtonFormField<String>(
-                      value: _lSortBy,
+                      initialValue: _lSortBy,
                       items: const [
                         DropdownMenuItem(
                             value: 'created_at', child: Text('Sort: Created')),
@@ -12354,7 +11689,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
               SizedBox(
                   width: 130,
                   child: DropdownButtonFormField<String>(
-                      value: _lOrder,
+                      initialValue: _lOrder,
                       items: const [
                         DropdownMenuItem(value: 'desc', child: Text('Desc')),
                         DropdownMenuItem(value: 'asc', child: Text('Asc')),
@@ -12403,7 +11738,8 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                     ListTile(
                         title: Text(t),
                         subtitle: Text(
-                            '${(p / 100).toStringAsFixed(2)} $_curSym  ·  $c')),
+                            '${(p / 100).toStringAsFixed(2)} $_curSym  ·  $c'),
+                        trailing: id.isNotEmpty ? Text('#$id') : null),
                     if (ttype.isNotEmpty)
                       Padding(
                           padding: const EdgeInsets.symmetric(
@@ -12448,7 +11784,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
       Row(children: [
         Expanded(
             child: DropdownButtonFormField<int>(
-                value: _propSel,
+                initialValue: _propSel,
                 decoration: const InputDecoration(labelText: 'Select property'),
                 items: _propList.map((p) {
                   final id = (p['id'] ?? 0) as int;
@@ -12501,7 +11837,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         Row(children: [
           Expanded(
               child: DropdownButtonFormField<String>(
-                  value: _staffRoleSel,
+                  initialValue: _staffRoleSel,
                   decoration: const InputDecoration(labelText: 'Role'),
                   items: const [
                     DropdownMenuItem(value: 'owner', child: Text('owner')),
@@ -12517,7 +11853,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
           const SizedBox(width: 8),
           Expanded(
               child: DropdownButtonFormField<int>(
-                  value: _staffPropSel,
+                  initialValue: _staffPropSel,
                   decoration:
                       const InputDecoration(labelText: 'Property (opt)'),
                   items: _propList.map((p) {
@@ -12548,7 +11884,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
           SizedBox(
               width: 160,
               child: DropdownButtonFormField<String>(
-                  value: _staffRoleFilter.isEmpty ? null : _staffRoleFilter,
+                  initialValue: _staffRoleFilter.isEmpty ? null : _staffRoleFilter,
                   decoration: const InputDecoration(labelText: 'Role filter'),
                   items: const [
                     DropdownMenuItem(value: '', child: Text('All')),
@@ -12630,7 +11966,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                           const SizedBox(width: 8),
                           Expanded(
                               child: DropdownButtonFormField<String>(
-                                  value: curRole,
+                                  initialValue: curRole,
                                   decoration:
                                       const InputDecoration(labelText: 'Role'),
                                   items: const [
@@ -12653,7 +11989,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                           const SizedBox(width: 8),
                           Expanded(
                               child: DropdownButtonFormField<int>(
-                                  value: curPid,
+                                  initialValue: curPid,
                                   decoration: const InputDecoration(
                                       labelText: 'Property (opt)'),
                                   items: [
@@ -12762,7 +12098,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
       Row(children: [
         Expanded(
             child: DropdownButtonFormField<int>(
-                value: rmTypeSel,
+                initialValue: rmTypeSel,
                 decoration: const InputDecoration(labelText: 'Room type'),
                 items: _rtList.map((x) {
                   final id = (x['id'] ?? 0) as int;
@@ -12776,7 +12112,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         const SizedBox(width: 8),
         Expanded(
             child: DropdownButtonFormField<String>(
-                value: rmStatusSel,
+                initialValue: rmStatusSel,
                 decoration: const InputDecoration(labelText: 'Status'),
                 items: const [
                   DropdownMenuItem(value: 'clean', child: Text('clean')),
@@ -12803,7 +12139,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
       Row(children: [
         Expanded(
             child: DropdownButtonFormField<String>(
-                value: _roomFilterSel.isEmpty ? '' : _roomFilterSel,
+                initialValue: _roomFilterSel.isEmpty ? '' : _roomFilterSel,
                 decoration: const InputDecoration(labelText: 'Filter status'),
                 items: const [
                   DropdownMenuItem(value: '', child: Text('All')),
@@ -12842,7 +12178,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
       Row(children: [
         Expanded(
             child: DropdownButtonFormField<String>(
-                value: _roomBulkStatusSel,
+                initialValue: _roomBulkStatusSel,
                 decoration:
                     const InputDecoration(labelText: 'Set selected status'),
                 items: const [
@@ -12953,6 +12289,8 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                     final dirty = data['dirty']!.length;
                     final oos = data['oos']!.length;
                     final other = data['other']!.length;
+                    final summary =
+                        'Clean $clean · Dirty $dirty · OOS $oos · Other $other';
                     final title = fKey == '—'
                         ? (l.isArabic ? 'بدون طابق' : 'No floor')
                         : (l.isArabic ? 'الطابق $fKey' : 'Floor $fKey');
@@ -13014,6 +12352,11 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                                           style: const TextStyle(
                                               fontWeight: FontWeight.w600)),
                                       const SizedBox(height: 4),
+                                      Text(summary,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall),
+                                      const SizedBox(height: 4),
                                       _buildRow(
                                           l.isArabic ? 'نظيف' : 'Clean',
                                           data['clean']!,
@@ -13048,7 +12391,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         Row(children: [
           Expanded(
               child: DropdownButtonFormField<int>(
-                  value: rateRtSel,
+                  initialValue: rateRtSel,
                   decoration: const InputDecoration(labelText: 'Room type'),
                   items: _rtList.map((x) {
                     final id = (x['id'] ?? 0) as int;
@@ -13092,7 +12435,6 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                           rateFrom = DateTime(
                               today.year, today.month, today.day);
                           rateDays = 30;
-                          _showTodayOnly = false;
                         });
                         _saveRatesPrefs();
                         _loadRates();
@@ -13108,7 +12450,6 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                           rateFrom = DateTime(
                               today.year, today.month, today.day);
                           rateDays = 7;
-                          _showTodayOnly = true;
                         });
                         _saveRatesPrefs();
                         _loadRates();
@@ -13182,7 +12523,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                       Row(children: [
                         Expanded(
                             child: DropdownButtonFormField<String>(
-                                value: _bulkClosedSel,
+                                initialValue: _bulkClosedSel,
                                 decoration:
                                     const InputDecoration(labelText: 'Closed'),
                                 items: const [
@@ -13199,7 +12540,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                         const SizedBox(width: 8),
                         Expanded(
                             child: DropdownButtonFormField<String>(
-                                value: _bulkCtaSel,
+                                initialValue: _bulkCtaSel,
                                 decoration:
                                     const InputDecoration(labelText: 'CTA'),
                                 items: const [
@@ -13216,7 +12557,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                         const SizedBox(width: 8),
                         Expanded(
                             child: DropdownButtonFormField<String>(
-                                value: _bulkCtdSel,
+                                initialValue: _bulkCtdSel,
                                 decoration:
                                     const InputDecoration(labelText: 'CTD'),
                                 items: const [
@@ -13352,7 +12693,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                       Row(children: [
                         Expanded(
                             child: DropdownButtonFormField<String>(
-                                value: _copyPattern,
+                                initialValue: _copyPattern,
                                 decoration:
                                     const InputDecoration(labelText: 'Pattern'),
                                 items: const [
@@ -13456,7 +12797,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                 SizedBox(
                     width: 140,
                     child: DropdownButtonFormField<String>(
-                        value: _paintField,
+                        initialValue: _paintField,
                         items: const [
                           DropdownMenuItem(
                               value: 'closed', child: Text('Closed')),
@@ -13470,7 +12811,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                 SizedBox(
                     width: 140,
                     child: DropdownButtonFormField<bool>(
-                        value: _paintValue,
+                        initialValue: _paintValue,
                         items: const [
                           DropdownMenuItem(
                               value: true, child: Text('Value: true')),
@@ -13498,7 +12839,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                 SizedBox(
                     width: 140,
                     child: DropdownButtonFormField<int>(
-                        value: rateDays,
+                        initialValue: rateDays,
                         decoration: const InputDecoration(labelText: 'Range'),
                         items: const [
                           DropdownMenuItem(value: 7, child: Text('7 days')),
@@ -13518,7 +12859,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                 SizedBox(
                     width: 160,
                     child: DropdownButtonFormField<int>(
-                        value: _appendChunk,
+                        initialValue: _appendChunk,
                         decoration:
                             const InputDecoration(labelText: 'Append size'),
                         items: const [
@@ -13613,9 +12954,9 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
                     } catch (_) {}
                     return false;
                   },
-                  child: RawKeyboardListener(
+                  child: KeyboardListener(
                     focusNode: _ratesFocus,
-                    onKey: _onRatesKey,
+                    onKeyEvent: _onRatesKey,
                     child: Listener(
                       onPointerDown: (_) {
                         _isPainting = true;
@@ -13784,7 +13125,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
               SizedBox(
                   width: 160,
                   child: DropdownButtonFormField<String>(
-                      value: _bSortBy,
+                      initialValue: _bSortBy,
                       items: const [
                         DropdownMenuItem(
                             value: 'created_at', child: Text('Sort: Created')),
@@ -13805,7 +13146,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
               SizedBox(
                   width: 120,
                   child: DropdownButtonFormField<String>(
-                      value: _bOrder,
+                      initialValue: _bOrder,
                       items: const [
                         DropdownMenuItem(value: 'desc', child: Text('Desc')),
                         DropdownMenuItem(value: 'asc', child: Text('Asc')),
@@ -13819,7 +13160,7 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
               SizedBox(
                   width: 180,
                   child: DropdownButtonFormField<String>(
-                      value: _bStatus.isEmpty ? '' : _bStatus,
+                      initialValue: _bStatus.isEmpty ? '' : _bStatus,
                       items: const [
                         DropdownMenuItem(value: '', child: Text('Status: any')),
                         DropdownMenuItem(
@@ -14059,38 +13400,6 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         }).toList(),
       ],
     ]);
-    final body = Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1200),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: _buildOperatorIntro(context),
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: Card(
-                  elevation: 0.5,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    side: BorderSide(
-                      color: theme.dividerColor.withValues(alpha: .4),
-                    ),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: content,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
     const bg = AppBG();
     final l = L10n.of(context);
     final dashboard = Center(
@@ -14100,6 +13409,8 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
+              _buildOperatorIntro(context),
+              const SizedBox(height: 12),
               Row(
                 children: [
                   Expanded(
@@ -14252,29 +13563,41 @@ class _StaysOperatorPageState extends State<StaysOperatorPage> {
         ),
       ),
     );
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          l.isArabic ? 'لوحة الفنادق والإقامات' : 'Stays · Operator',
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            l.isArabic ? 'لوحة الفنادق والإقامات' : 'Stays · Operator',
+          ),
+          bottom: TabBar(tabs: [
+            Tab(text: l.isArabic ? 'الأدوات' : 'Tools'),
+            Tab(text: l.isArabic ? 'لوحة المعلومات' : 'Dashboard'),
+          ]),
+          backgroundColor: Colors.transparent,
+          foregroundColor: Colors.white,
+          elevation: 0,
         ),
+        extendBodyBehindAppBar: true,
         backgroundColor: Colors.transparent,
-        foregroundColor: Colors.white,
-        elevation: 0,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(
-            child: SafeArea(
-              child: GlassPanel(
-                padding: const EdgeInsets.all(16),
-                child: dashboard,
+        body: Stack(
+          children: [
+            bg,
+            Positioned.fill(
+              child: SafeArea(
+                child: GlassPanel(
+                  padding: const EdgeInsets.all(16),
+                  child: TabBarView(
+                    children: [
+                      content,
+                      dashboard,
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -14286,8 +13609,6 @@ class _BusBookPageState extends State<BusBookPage> {
   DateTime date = DateTime.now();
   String? originId;
   String? destId;
-  List<dynamic> _suggestO = [];
-  List<dynamic> _suggestD = [];
   List<dynamic> trips = [];
   String out = '';
   final seatsCtrl = TextEditingController(text: '1');
@@ -14304,7 +13625,6 @@ class _BusBookPageState extends State<BusBookPage> {
   // the original booking (according to refund policy) and then create a new
   // booking for the selected trip.
   String? _exchangeFromBookingId;
-  Map<String, dynamic>? _exchangeBooking;
   // Static metadata for city labels (used to provide Arabic/English names
   // where we know them). IDs here should match the bus service city IDs.
   static const List<Map<String, String>> _cityMeta = [
@@ -14426,20 +13746,6 @@ class _BusBookPageState extends State<BusBookPage> {
     if (d != null) {
       setState(() => date = d);
     }
-  }
-
-  Future<void> _searchCities(String q) async {
-    // Legacy typeahead kept for compatibility; dropdown is now primary.
-    try {
-      final r = await http.get(
-          Uri.parse('${widget.baseUrl}/bus/cities?q=' + Uri.encodeComponent(q)),
-          headers: await _hdr());
-      final j = jsonDecode(r.body) as List<dynamic>;
-      setState(() {
-        _suggestO = j;
-        _suggestD = j;
-      });
-    } catch (_) {}
   }
 
   void _changeSeats(int delta) {
@@ -14679,8 +13985,6 @@ class _BusBookPageState extends State<BusBookPage> {
       // according to the refund policy, then proceed with the new booking.
       final exchangeId = _exchangeFromBookingId;
       _exchangeFromBookingId = null;
-      final exchangeBooking = _exchangeBooking;
-      _exchangeBooking = null;
       if (exchangeId != null) {
         try {
           final uriCancel = Uri.parse(
@@ -14997,7 +14301,6 @@ class _BusBookPageState extends State<BusBookPage> {
       } catch (_) {}
       setState(() {
         _exchangeFromBookingId = (booking['id'] ?? '').toString();
-        _exchangeBooking = booking;
         if (originIdVal.isNotEmpty) {
           originId = originIdVal;
           originCtrl.text = (origin?['name'] ?? '').toString();
@@ -15329,7 +14632,7 @@ class _BusBookPageState extends State<BusBookPage> {
           children: [
             Expanded(
               child: DropdownButtonFormField<String>(
-                value: originId,
+                initialValue: originId,
                 isExpanded: true,
                 decoration: InputDecoration(
                   labelText: l.isArabic ? 'من' : 'From',
@@ -15365,7 +14668,7 @@ class _BusBookPageState extends State<BusBookPage> {
             const SizedBox(width: 8),
             Expanded(
               child: DropdownButtonFormField<String>(
-                value: destId,
+                initialValue: destId,
                 isExpanded: true,
                 decoration: InputDecoration(
                   labelText: l.isArabic ? 'إلى' : 'To',
@@ -15917,37 +15220,6 @@ class _BusOperatorPageState extends State<BusOperatorPage> {
     }
   }
 
-  Future<void> _createRoute() async {
-    setState(() => routeOut = '...');
-    try {
-      final features = _buildFeatures();
-      final body = {
-        'origin_city_id': originIdCtrl.text.trim(),
-        'dest_city_id': destIdCtrl.text.trim(),
-        'operator_id': routeOpCtrl.text.trim(),
-        if (routeBusModelCtrl.text.trim().isNotEmpty)
-          'bus_model': routeBusModelCtrl.text.trim(),
-        if (features.isNotEmpty) 'features': features,
-      };
-      final uri = Uri.parse('${widget.baseUrl}/bus/routes');
-      final r = await http.post(uri,
-          headers: await _hdr(json: true), body: jsonEncode(body));
-      String msg = '${r.statusCode}: ${r.body}';
-      try {
-        final j = jsonDecode(r.body);
-        if (j is Map) {
-          final opId = (j['operator_id'] ?? '').toString();
-          if (opId.isNotEmpty) {
-            await _saveBusOperatorId(opId);
-          }
-        }
-      } catch (_) {}
-      setState(() => routeOut = msg);
-    } catch (e) {
-      setState(() => routeOut = 'error: $e');
-    }
-  }
-
   Future<void> _pickDep() async {
     final now = DateTime.now();
     final first = DateTime(now.year, now.month, now.day);
@@ -16483,7 +15755,7 @@ class _BusOperatorPageState extends State<BusOperatorPage> {
         Row(children: [
           Expanded(
             child: DropdownButtonFormField<String>(
-              value: _routeOriginId,
+              initialValue: _routeOriginId,
               isExpanded: true,
               decoration: InputDecoration(
                 labelText: l.isArabic ? 'من' : 'From',
@@ -16510,7 +15782,7 @@ class _BusOperatorPageState extends State<BusOperatorPage> {
           const SizedBox(width: 8),
           Expanded(
             child: DropdownButtonFormField<String>(
-              value: _routeDestId,
+              initialValue: _routeDestId,
               isExpanded: true,
               decoration: InputDecoration(
                 labelText: l.isArabic ? 'إلى' : 'To',

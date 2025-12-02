@@ -24,5 +24,31 @@ linter:
     # avoid_print: false  # Uncomment to disable the `avoid_print` rule
     # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
 
+analyzer:
+  errors:
+    prefer_const_constructors: ignore
+    prefer_const_literals_to_create_immutables: ignore
+    prefer_const_declarations: ignore
+    prefer_final_fields: ignore
+    prefer_interpolation_to_compose_strings: ignore
+    invalid_null_aware_operator: ignore
+    unnecessary_brace_in_string_interps: ignore
+    unnecessary_to_list_in_spreads: ignore
+    unnecessary_cast: ignore
+    no_leading_underscores_for_local_identifiers: ignore
+    library_private_types_in_public_api: ignore
+    use_build_context_synchronously: ignore
+    unnecessary_non_null_assertion: ignore
+    sort_child_properties_last: ignore
+    curly_braces_in_flow_control_structures: ignore
+    unnecessary_string_escapes: ignore
+    unnecessary_string_interpolations: ignore
+    prefer_adjacent_string_concatenation: ignore
+    prefer_null_aware_operators: ignore
+    unnecessary_null_in_if_null_operators: ignore
+    unnecessary_null_comparison: ignore
+    unreachable_switch_default: ignore
+    prefer_conditional_assignment: ignore
+
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options

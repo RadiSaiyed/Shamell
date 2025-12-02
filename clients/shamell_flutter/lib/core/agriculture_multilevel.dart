@@ -5,9 +5,11 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
-import '../main.dart' show AppBG, ModuleHealthPage;
+import 'ui_kit.dart';
+import '../main.dart' show AppBG;
+import 'agri_fullharvest.dart';
+import 'livestock_sellmylivestock.dart';
 
 Future<Map<String, String>> _hdrAgriDash({bool json = false}) async {
   final sp = await SharedPreferences.getInstance();
@@ -99,7 +101,7 @@ class _AgricultureLivestockMultiLevelPageState extends State<AgricultureLivestoc
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ModuleHealthPage(widget.baseUrl, 'Agriculture', '/agriculture/health'),
+        builder: (_) => AgriMarketplacePage(baseUrl: widget.baseUrl),
       ),
     );
   }
@@ -108,7 +110,7 @@ class _AgricultureLivestockMultiLevelPageState extends State<AgricultureLivestoc
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ModuleHealthPage(widget.baseUrl, 'Livestock', '/livestock/health'),
+        builder: (_) => LivestockMarketplacePage(baseUrl: widget.baseUrl),
       ),
     );
   }
@@ -171,10 +173,10 @@ class _AgricultureLivestockMultiLevelPageState extends State<AgricultureLivestoc
       children: [
         Row(
           children: [
-            Icon(Icons.agriculture, color: Tokens.colorAgricultureLivestock),
+            Icon(Icons.store_mall_directory_outlined, color: Tokens.colorAgricultureLivestock),
             const SizedBox(width: 8),
             const Text(
-              'Agriculture & Livestock – Enduser, Operator, Admin, Superadmin',
+              'Agri Marketplace + Livestock',
               style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
             ),
           ],
@@ -198,74 +200,53 @@ class _AgricultureLivestockMultiLevelPageState extends State<AgricultureLivestoc
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.agriculture),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المستخدم النهائي (الزراعة والثروة الحيوانية)' : 'Enduser (Agriculture & Livestock)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Enduser section
+        FormSection(
+          title: l.isArabic ? 'مستخدم سوق المنتجات الزراعية' : 'Enduser (Agri Marketplace)',
+          subtitle: l.isArabic
+              ? 'طلب المنتجات الزراعية وتتبع صحة السوق'
+              : 'Request produce and track marketplace health',
+          children: [
+            Text(
+              l.isArabic
+                  ? 'تصفح واطلب المنتجات الزراعية والموردين، وتابع صحة خدمات السوق.'
+                  : 'Browse and request produce supply, match with growers, and monitor marketplace health.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'راقب حالة وحدات الزراعة والثروة الحيوانية، وتأكد من عمل الخدمات بشكل سليم.'
-                    : 'Check health for agriculture and livestock modules and ensure services are running well.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _openAgriculture,
+                  icon: const Icon(Icons.store),
+                  label: const Text('Agri Marketplace'),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.icon(
-                    onPressed: _openAgriculture,
-                    icon: const Icon(Icons.agriculture),
-                    label: const Text('Agriculture'),
-                  ),
-                  FilledButton.icon(
-                    onPressed: _openLivestock,
-                    icon: const Icon(Icons.pets),
-                    label: const Text('Livestock'),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                FilledButton.icon(
+                  onPressed: _openLivestock,
+                  icon: const Icon(Icons.pets),
+                  label: const Text('Livestock marketplace'),
+                ),
+              ],
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.support_agent_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'مشغل الزراعة والثروة الحيوانية' : 'Agriculture & Livestock operator',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
+        // Operator section
+        FormSection(
+          title: l.isArabic ? 'مشغل سوق المنتجات الزراعية' : 'Agri Marketplace operator',
+          subtitle: l.isArabic
+              ? 'صلاحيات مشغلي الزراعة والثروة الحيوانية'
+              : 'Agriculture and livestock operator roles',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -306,205 +287,172 @@ class _AgricultureLivestockMultiLevelPageState extends State<AgricultureLivestoc
                     ),
                 ],
               ),
+            const SizedBox(height: 8),
+            if (_isAgriOperator || _isLivestockOperator)
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (_isAgriOperator)
+                    FilledButton.icon(
+                      onPressed: _openAgriculture,
+                      icon: const Icon(Icons.agriculture),
+                      label: const Text('Agri Marketplace health'),
+                    ),
+                  if (_isLivestockOperator)
+                    FilledButton.icon(
+                      onPressed: _openLivestock,
+                      icon: const Icon(Icons.pets),
+                      label: const Text('Livestock operator'),
+                    ),
+                ],
+              )
+            else
+              Text(
+                l.isArabic
+                    ? 'يمكن للمشرف أو المدير إضافة الأدوار operator_agriculture / operator_livestock من أدوات Superadmin في لوحة سوق المنتجات الزراعية.'
+                    : 'Admin or Superadmin can grant operator_agriculture / operator_livestock from the Agri Marketplace tools on this page.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (سوق المنتجات الزراعية)' : 'Admin (Agri Marketplace)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة وتقارير سوق المنتجات الزراعية'
+              : 'Admin rights and Agri Marketplace reporting',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic
+                      ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير سوق المنتجات الزراعية.'
+                      : 'This phone has admin rights; use admin/ops dashboards for Agri Marketplace reporting.')
+                  : (l.isArabic
+                      ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
+                      : 'No admin rights for this phone; Superadmin can grant admin.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Superadmin section
+        FormSection(
+          title: 'Superadmin (Agri Marketplace)',
+          subtitle: l.isArabic
+              ? 'إدارة أدوار سوق المنتجات الزراعية والحواجز'
+              : 'Manage Agri Marketplace roles and guardrails',
+          children: [
+            Text(
+              _isSuperadmin
+                  ? 'Superadmin can manage Agri Marketplace roles and see guardrails and stats.'
+                  : 'This phone is not Superadmin; Superadmin sees all Agri Marketplace roles and guardrails.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('Roles: ${_roles.join(", ")}'),
+            const SizedBox(height: 4),
+            Text(
+              'Operator domains: ${_operatorDomains.join(", ")}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            if (_isSuperadmin || _isAdmin) ...[
+              const SizedBox(height: 16),
+              Text(
+                l.isArabic
+                    ? 'إدارة أدوار سوق المنتجات الزراعية (Superadmin)'
+                    : 'Agri Marketplace role management (Superadmin)',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 8),
-              if (_isAgriOperator || _isLivestockOperator)
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    if (_isAgriOperator)
-                      FilledButton.icon(
-                        onPressed: _openAgriculture,
-                        icon: const Icon(Icons.agriculture),
-                        label: const Text('Agriculture health'),
-                      ),
-                    if (_isLivestockOperator)
-                      FilledButton.icon(
-                        onPressed: _openLivestock,
-                        icon: const Icon(Icons.pets),
-                        label: const Text('Livestock health'),
-                      ),
-                  ],
-                )
-              else
+              TextField(
+                controller: _targetPhoneCtrl,
+                decoration: InputDecoration(
+                  labelText: l.isArabic
+                      ? 'هاتف الهدف (+963...)'
+                      : 'Target phone (+963...)',
+                  hintText: '+963...',
+                ),
+                keyboardType: TextInputType.phone,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _roleBusy
+                        ? null
+                        : () => _mutateAgriRole(
+                              role: 'operator_agriculture',
+                              grant: true,
+                            ),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Grant operator_agriculture'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _roleBusy
+                        ? null
+                        : () => _mutateAgriRole(
+                              role: 'operator_agriculture',
+                              grant: false,
+                            ),
+                    icon: const Icon(Icons.remove_circle_outline),
+                    label: const Text('Revoke operator_agriculture'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: _roleBusy
+                        ? null
+                        : () => _mutateAgriRole(
+                              role: 'operator_livestock',
+                              grant: true,
+                            ),
+                    icon: const Icon(Icons.add),
+                    label: const Text('Grant operator_livestock'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _roleBusy
+                        ? null
+                        : () => _mutateAgriRole(
+                              role: 'operator_livestock',
+                              grant: false,
+                            ),
+                    icon: const Icon(Icons.remove_circle_outline),
+                    label: const Text('Revoke operator_livestock'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_roleOut.isNotEmpty)
                 Text(
-                  l.isArabic
-                      ? 'يمكن للمشرف أو المدير إضافة الأدوار operator_agriculture / operator_livestock من أدوات Superadmin في لوحة الزراعة والثروة الحيوانية.'
-                      : 'Admin or Superadmin can grant operator_agriculture / operator_livestock from the Agriculture & Livestock tools on this page.',
+                  _roleOut,
                   style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: .80),
                   ),
                 ),
             ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المدير (الزراعة والثروة الحيوانية)' : 'Admin (Agriculture & Livestock)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic
-                        ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير الزراعة والثروة الحيوانية.'
-                        : 'This phone has admin rights; use admin/ops dashboards for agriculture & livestock reporting.')
-                    : (l.isArabic
-                        ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
-                        : 'No admin rights for this phone; Superadmin can grant admin.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Superadmin (Agriculture & Livestock)',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin can manage Agriculture & Livestock roles and see guardrails and stats.'
-                    : 'This phone is not Superadmin; Superadmin sees all agriculture & livestock roles and guardrails.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Roles: ${_roles.join(", ")}'),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              if (_isSuperadmin || _isAdmin) ...[
-                const SizedBox(height: 16),
-                Text(
-                  l.isArabic
-                      ? 'إدارة أدوار الزراعة والثروة الحيوانية (Superadmin)'
-                      : 'Agriculture & Livestock role management (Superadmin)',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _targetPhoneCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'هاتف الهدف (+963...)'
-                        : 'Target phone (+963...)',
-                    hintText: '+963...',
-                  ),
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _roleBusy
-                          ? null
-                          : () => _mutateAgriRole(
-                                role: 'operator_agriculture',
-                                grant: true,
-                              ),
-                      icon: const Icon(Icons.add),
-                      label: const Text('Grant operator_agriculture'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _roleBusy
-                          ? null
-                          : () => _mutateAgriRole(
-                                role: 'operator_agriculture',
-                                grant: false,
-                              ),
-                      icon: const Icon(Icons.remove_circle_outline),
-                      label: const Text('Revoke operator_agriculture'),
-                    ),
-                    FilledButton.icon(
-                      onPressed: _roleBusy
-                          ? null
-                          : () => _mutateAgriRole(
-                                role: 'operator_livestock',
-                                grant: true,
-                              ),
-                      icon: const Icon(Icons.add),
-                      label: const Text('Grant operator_livestock'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _roleBusy
-                          ? null
-                          : () => _mutateAgriRole(
-                                role: 'operator_livestock',
-                                grant: false,
-                              ),
-                      icon: const Icon(Icons.remove_circle_outline),
-                      label: const Text('Revoke operator_livestock'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_roleOut.isNotEmpty)
-                  Text(
-                    _roleOut,
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: .80),
-                    ),
-                  ),
-              ],
-            ],
-          ),
+          ],
         ),
       ],
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Agriculture & Livestock – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(
-            child: SafeArea(child: body),
-          ),
-        ],
-      ),
+    return DomainPageScaffold(
+      background: bg,
+      title: 'Agriculture & Livestock',
+      child: body,
+      scrollable: false,
     );
   }
 }

@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi import Depends, APIRouter
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
 from starlette.requests import Request
-from fastapi import Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
@@ -1360,8 +1359,6 @@ def admin_wallets_search(
         q = q.where(Wallet.id == wallet_id)
     if phone:
         try:
-            from sqlalchemy import literal
-            # Simple case-insensitive contains; works on both SQLite/PG
             q = q.where(User.phone.ilike(f"%{phone}%"))
         except Exception:
             q = q.where(User.phone.like(f"%{phone}%"))
@@ -1555,7 +1552,6 @@ def admin_ledger_reconcile_all(
         limit = 1000
     pairs = s.execute(select(User, Wallet).where(Wallet.user_id == User.id).limit(limit)).all()
     # Precompute ledger sums
-    from sqlalchemy import func as _f
     results = []
     for u, w in pairs:
         total = s.execute(select(sa_func.coalesce(sa_func.sum(LedgerEntry.amount_cents), 0)).where(LedgerEntry.wallet_id == w.id)).scalar() or 0
@@ -1583,7 +1579,6 @@ def admin_ledger_seed(
     if limit < 1 or limit > 10000:
         limit = 1000
     pairs = s.execute(select(User, Wallet).where(Wallet.user_id == User.id).limit(limit)).all()
-    from sqlalchemy import func as _f
     to_seed = []
     for u, w in pairs:
         total = s.execute(select(sa_func.coalesce(sa_func.sum(LedgerEntry.amount_cents), 0)).where(LedgerEntry.wallet_id == w.id)).scalar() or 0
@@ -1604,7 +1599,6 @@ def admin_ledger_reconcile(wallet_id: str, s: Session = Depends(get_session), ad
     w = s.get(Wallet, wallet_id)
     if not w:
         raise HTTPException(status_code=404, detail="Wallet not found")
-    from sqlalchemy import func as _f
     total = s.execute(select(sa_func.coalesce(sa_func.sum(LedgerEntry.amount_cents), 0)).where(LedgerEntry.wallet_id == wallet_id)).scalar() or 0
     return {
         "wallet_id": wallet_id,

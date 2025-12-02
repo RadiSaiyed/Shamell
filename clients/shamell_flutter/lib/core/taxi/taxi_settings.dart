@@ -82,7 +82,9 @@ class _TaxiSettingsPageState extends State<TaxiSettingsPage>{
       children: [
         const Text('Taxi Settings', style: TextStyle(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
-        Text('Brokerage fee (platform commission charged on each completed ride).', style: TextStyle(color: cs.onSurface.withOpacity(.8))),
+        Text(
+            'Brokerage fee (platform commission charged on each completed ride).',
+            style: TextStyle(color: cs.onSurface.withValues(alpha: .8))),
         const SizedBox(height: 16),
         Row(children:[
           Expanded(child: TextField(
@@ -109,7 +111,9 @@ class _TaxiSettingsPageState extends State<TaxiSettingsPage>{
           },
         ),
         const SizedBox(height: 8),
-        Text('Example: For a 30,000 SYP ride, fee = ${fmtCents((30000 * _rate).round())} SYP, driver gets ${fmtCents((30000 * (1.0-_rate)).round())} SYP.', style: TextStyle(fontSize: 12, color: cs.onSurface.withOpacity(.8))),
+        Text(
+            'Example: For a 30,000 SYP ride, fee = ${fmtCents((30000 * _rate).round())} SYP, driver gets ${fmtCents((30000 * (1.0-_rate)).round())} SYP.',
+            style: TextStyle(fontSize: 12, color: cs.onSurface.withValues(alpha: .8))),
         const SizedBox(height: 16),
         FilledButton.icon(
           onPressed: _loading? null : _save,

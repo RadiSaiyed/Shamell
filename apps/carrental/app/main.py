@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends, Request, Header
+from fastapi import FastAPI, HTTPException, Depends, Request, Header, APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 import os
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
-from sqlalchemy import create_engine, String, Integer, BigInteger, DateTime, Float, func
+from sqlalchemy import create_engine, String, Integer, BigInteger, DateTime, Float, func, text, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 from sqlalchemy import select
 from datetime import datetime, timezone
@@ -84,6 +85,38 @@ def get_session() -> Session:
 
 def _startup():
     Base.metadata.create_all(engine)
+    insp = inspect(engine)
+    if insp.has_table("cars", schema=DB_SCHEMA):
+        cols = {c["name"] for c in insp.get_columns("cars", schema=DB_SCHEMA)}
+
+        def add(col_sql: str):
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(col_sql))
+            except Exception:
+                pass
+
+        tbl = f'{"%s." % DB_SCHEMA if DB_SCHEMA else ""}cars'
+        if "dropoff_city" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN dropoff_city VARCHAR(64)')
+        if "seats" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN seats INTEGER')
+        if "transmission" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN transmission VARCHAR(32)')
+        if "fuel" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN fuel VARCHAR(32)')
+        if "car_class" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN car_class VARCHAR(32)')
+        if "image_url" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN image_url VARCHAR(400)')
+        if "free_cancel" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN free_cancel BOOLEAN DEFAULT 0')
+        if "unlimited_mileage" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN unlimited_mileage BOOLEAN DEFAULT 0')
+        if "rating" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN rating FLOAT')
+        if "trips" not in cols:
+            add(f'ALTER TABLE {tbl} ADD COLUMN trips INTEGER')
 
 app.router.on_startup.append(_startup)
 
@@ -96,6 +129,16 @@ class CarCreate(BaseModel):
     model: Optional[str] = None
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
     city: Optional[str] = None
+    dropoff_city: Optional[str] = None
+    seats: Optional[int] = Field(default=None, ge=1, le=20)
+    transmission: Optional[str] = None
+    fuel: Optional[str] = None
+    car_class: Optional[str] = None
+    image_url: Optional[str] = None
+    free_cancel: bool = False
+    unlimited_mileage: bool = False
+    rating: Optional[float] = Field(default=None, ge=0, le=5)
+    trips: Optional[int] = Field(default=None, ge=0)
     owner_wallet_id: Optional[str] = None
 
 
@@ -107,6 +150,16 @@ class CarUpdate(BaseModel):
     model: Optional[str] = None
     year: Optional[int] = Field(default=None, ge=1900, le=2100)
     city: Optional[str] = None
+    dropoff_city: Optional[str] = None
+    seats: Optional[int] = Field(default=None, ge=1, le=20)
+    transmission: Optional[str] = None
+    fuel: Optional[str] = None
+    car_class: Optional[str] = None
+    image_url: Optional[str] = None
+    free_cancel: Optional[bool] = None
+    unlimited_mileage: Optional[bool] = None
+    rating: Optional[float] = Field(default=None, ge=0, le=5)
+    trips: Optional[int] = Field(default=None, ge=0)
     owner_wallet_id: Optional[str] = None
 
 
@@ -117,6 +170,16 @@ class CarOut(BaseModel):
     model: Optional[str]
     year: Optional[int]
     city: Optional[str]
+    dropoff_city: Optional[str]
+    seats: Optional[int]
+    transmission: Optional[str]
+    fuel: Optional[str]
+    car_class: Optional[str]
+    image_url: Optional[str]
+    free_cancel: bool
+    unlimited_mileage: bool
+    rating: Optional[float]
+    trips: Optional[int]
     price_per_day_cents: Optional[int]
     price_per_hour_cents: Optional[int]
     currency: str
@@ -130,6 +193,16 @@ def create_car(req: CarCreate, s: Session = Depends(get_session)):
         title=req.title.strip(),
         make=(req.make or None), model=(req.model or None),
         year=req.year, city=(req.city or None),
+        dropoff_city=(req.dropoff_city or None),
+        seats=req.seats,
+        transmission=(req.transmission or None),
+        fuel=(req.fuel or None),
+        car_class=(req.car_class or None),
+        image_url=(req.image_url or None),
+        free_cancel=req.free_cancel,
+        unlimited_mileage=req.unlimited_mileage,
+        rating=req.rating,
+        trips=req.trips,
         price_per_day_cents=req.price_per_day_cents,
         price_per_hour_cents=req.price_per_hour_cents,
         owner_wallet_id=(req.owner_wallet_id or None),
@@ -139,15 +212,45 @@ def create_car(req: CarCreate, s: Session = Depends(get_session)):
 
 
 @router.get("/cars", response_model=List[CarOut])
-def list_cars(q: str = "", city: str = "", make: str = "", limit: int = 20, s: Session = Depends(get_session)):
+def list_cars(
+    q: str = "",
+    city: str = "",
+    dropoff_city: str = "",
+    make: str = "",
+    transmission: str = "",
+    fuel: str = "",
+    car_class: str = "",
+    max_price: Optional[int] = None,
+    min_seats: Optional[int] = None,
+    free_cancel: Optional[bool] = None,
+    unlimited_mileage: Optional[bool] = None,
+    limit: int = 20,
+    s: Session = Depends(get_session),
+):
     limit = max(1, min(limit, 100))
     stmt = select(Car)
     if q:
         stmt = stmt.where(func.lower(Car.title).like(f"%{q.lower()}%"))
     if city:
         stmt = stmt.where(func.lower(Car.city) == city.lower())
+    if dropoff_city:
+        stmt = stmt.where(func.lower(Car.dropoff_city) == dropoff_city.lower())
     if make:
         stmt = stmt.where(func.lower(Car.make) == make.lower())
+    if transmission:
+        stmt = stmt.where(func.lower(Car.transmission) == transmission.lower())
+    if fuel:
+        stmt = stmt.where(func.lower(Car.fuel) == fuel.lower())
+    if car_class:
+        stmt = stmt.where(func.lower(Car.car_class) == car_class.lower())
+    if max_price is not None and max_price > 0:
+        stmt = stmt.where(Car.price_per_day_cents <= max_price)
+    if min_seats is not None and min_seats > 0:
+        stmt = stmt.where(Car.seats >= min_seats)
+    if free_cancel is not None:
+        stmt = stmt.where(Car.free_cancel == free_cancel)
+    if unlimited_mileage is not None:
+        stmt = stmt.where(Car.unlimited_mileage == unlimited_mileage)
     stmt = stmt.order_by(Car.id.desc()).limit(limit)
     return s.execute(stmt).scalars().all()
 

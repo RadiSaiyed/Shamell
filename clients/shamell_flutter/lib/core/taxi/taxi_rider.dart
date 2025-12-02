@@ -13,7 +13,7 @@ import '../glass.dart';
 import '../ui_kit.dart';
 import '../format.dart' show fmtCents;
 import '../config.dart';
-import '../taxi/taxi_common.dart' show hdrTaxi, parseTaxiFareOptions, TaxiFareChips, TaxiBG, TaxiSlideButton;
+import '../taxi/taxi_common.dart' show hdrTaxi, parseTaxiFareOptions, TaxiFareChips, TaxiBG;
 import '../l10n.dart';
 import '../perf.dart';
 import '../status_banner.dart';
@@ -453,109 +453,6 @@ class _TaxiRiderPageState extends State<TaxiRiderPage> {
         }
       }
     }catch(_){ }
-  }
-
-  Future<void> _searchPoi(String category) async {
-    try{
-      // Use pickup as center for nearby search
-      final center = _pickup;
-      final uri = Uri.parse('${widget.baseUrl}/osm/poi_search').replace(queryParameters: {
-        'q': category,
-        'lat': center.latitude.toString(),
-        'lon': center.longitude.toString(),
-        'limit': '20',
-      });
-      final resp = await http.get(uri);
-      if(resp.statusCode != 200){
-        setState(()=> out = 'POI search error: ${resp.statusCode}');
-        return;
-      }
-      final data = jsonDecode(resp.body);
-      if(data is! List || data.isEmpty){
-        setState(()=> out = 'No nearby places found for $category');
-        return;
-      }
-      if(!mounted) return;
-      await showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        builder: (ctx){
-          final l = L10n.of(context);
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    l.isArabic
-                        ? 'أماكن قريبة: $category'
-                        : 'Nearby places: $category',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  Flexible(
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: data.length,
-                      itemBuilder: (_, i){
-                        final item = data[i] as Map;
-                        final name = (item['name'] ?? '').toString();
-                        final addr = (item['address'] ?? '').toString();
-                        final lat = (item['lat'] as num?)?.toDouble();
-                        final lon = (item['lon'] as num?)?.toDouble();
-                        if(lat == null || lon == null){
-                          return const SizedBox.shrink();
-                        }
-                        return ListTile(
-                          title: Text(
-                            name.isEmpty ? addr : name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: addr.isEmpty
-                              ? null
-                              : Text(
-                                  addr,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                          onTap: (){
-                            final ll = LatLng(lat, lon);
-                            if(_setPickup){
-                              _pickup = ll;
-                              if(addr.isNotEmpty) {
-                                pickupAddrCtrl.text = addr;
-                              } else if(name.isNotEmpty){
-                                pickupAddrCtrl.text = name;
-                              }
-                            }else{
-                              _drop = ll;
-                              if(addr.isNotEmpty){
-                                dropAddrCtrl.text = addr;
-                              } else if(name.isNotEmpty){
-                                dropAddrCtrl.text = name;
-                              }
-                            }
-                            Navigator.pop(ctx);
-                            _updateRoute();
-                            setState((){});
-                            _scheduleFareEstimateRider();
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      );
-    }catch(e){
-      setState(()=> out = 'POI search error: $e');
-    }
   }
 
   Future<void> _loadNearestDriver() async {

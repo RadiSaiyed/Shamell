@@ -389,7 +389,7 @@ class _TaxiOperatorPageState extends State<TaxiOperatorPage> {
         const SizedBox(height: 8),
         Row(children: [
           Expanded(child: DropdownButtonFormField<String>(
-            value: _dClass,
+            initialValue: _dClass,
             items: classes.map((c) => DropdownMenuItem(value: c, child: Text(c.toUpperCase()))).toList(),
             onChanged: (v) => setState(() => _dClass = v ?? 'classic'),
             decoration: const InputDecoration(labelText: 'Vehicle class'),

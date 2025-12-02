@@ -5,9 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
-import '../main.dart' show AppBG, RealEstatePage;
+import 'ui_kit.dart';
+import '../main.dart' show AppBG;
+import 'realestate_zillow.dart';
 
 Future<Map<String, String>> _hdrReDash({bool json = false}) async {
   final sp = await SharedPreferences.getInstance();
@@ -94,7 +95,8 @@ class _RealestateMultiLevelPageState extends State<RealestateMultiLevelPage> {
   void _openEnduser() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => RealEstatePage(widget.baseUrl)),
+      MaterialPageRoute(
+          builder: (_) => RealEstateEnduser(baseUrl: widget.baseUrl)),
     );
   }
 
@@ -104,7 +106,8 @@ class _RealestateMultiLevelPageState extends State<RealestateMultiLevelPage> {
     if (!_isReOperator) return;
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => RealEstatePage(widget.baseUrl)),
+      MaterialPageRoute(
+          builder: (_) => RealEstateOperator(baseUrl: widget.baseUrl)),
     );
   }
 
@@ -194,63 +197,42 @@ class _RealestateMultiLevelPageState extends State<RealestateMultiLevelPage> {
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.home_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المستخدم النهائي (Realestate)' : 'Enduser (Realestate)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Enduser section
+        FormSection(
+          title: l.isArabic ? 'المستخدم النهائي (Realestate)' : 'Enduser (Realestate)',
+          subtitle: l.isArabic
+              ? 'تصفح العقارات واحجزها مع وديعة سكن'
+              : 'Browse properties and reserve with a deposit',
+          children: [
+            Text(
+              l.isArabic
+                  ? 'تصفح العقارات، أرسل استفسارات، واطلب حجز مع وديعة سكن.'
+                  : 'Browse properties, send inquiries and reserve with a deposit.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'تصفح العقارات، أرسل استفسارات، واطلب حجز مع وديعة سكن.'
-                    : 'Browse properties, send inquiries and reserve with a deposit.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _openEnduser,
-                icon: const Icon(Icons.home),
-                label: const Text('RealEstate'),
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _openEnduser,
+              icon: const Icon(Icons.home),
+              label: const Text('Realestate'),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.support_agent_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'مشغل العقارات' : 'Realestate operator',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
+        // Operator section
+        FormSection(
+          title: l.isArabic ? 'مشغل العقارات' : 'Realestate operator',
+          subtitle: l.isArabic
+              ? 'صلاحيات المشغل ولوحة Realestate الخاصة بالمشغل'
+              : 'Operator rights and realestate operator view',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -295,159 +277,128 @@ class _RealestateMultiLevelPageState extends State<RealestateMultiLevelPage> {
                     color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
                   ),
                 ),
-            ],
-          ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (Realestate)' : 'Admin (Realestate)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة وتقارير العقارات'
+              : 'Admin rights and realestate reports',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic
+                      ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير العقارات.'
+                      : 'This phone has admin rights; use Ops/Admin dashboards for realestate reporting.')
+                  : (l.isArabic
+                      ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
+                      : 'No admin rights for this phone; Superadmin can grant admin.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Superadmin section
+        FormSection(
+          title: 'Superadmin (Realestate)',
+          subtitle: l.isArabic
+              ? 'إدارة أدوار Realestate والحواجز'
+              : 'Manage realestate roles and guardrails',
+          children: [
+            Text(
+              _isSuperadmin
+                  ? 'Superadmin can manage Realestate roles and see global guardrails and stats.'
+                  : 'This phone is not Superadmin; Superadmin sees all realestate roles and guardrails.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('Roles: ${_roles.join(", ")}'),
+            const SizedBox(height: 4),
+            Text(
+              'Operator domains: ${_operatorDomains.join(", ")}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            if (_isSuperadmin || _isAdmin) ...[
+              const SizedBox(height: 16),
+              Text(
+                l.isArabic
+                    ? 'إدارة أدوار Realestate (Superadmin)'
+                    : 'Realestate role management (Superadmin)',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _targetPhoneCtrl,
+                decoration: InputDecoration(
+                  labelText: l.isArabic
+                      ? 'هاتف الهدف (+963...)'
+                      : 'Target phone (+963...)',
+                  hintText: '+963...',
+                ),
+                keyboardType: TextInputType.phone,
+              ),
+              const SizedBox(height: 8),
               Row(
                 children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _roleBusy
+                          ? null
+                          : () => _mutateRealestateRole(grant: true),
+                      icon: const Icon(Icons.add),
+                      label: Text(
+                        l.isArabic
+                            ? 'إضافة operator_realestate'
+                            : 'Grant operator_realestate',
+                      ),
+                    ),
+                  ),
                   const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المدير (Realestate)' : 'Admin (Realestate)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _roleBusy
+                          ? null
+                          : () => _mutateRealestateRole(grant: false),
+                      icon: const Icon(Icons.remove_circle_outline),
+                      label: Text(
+                        l.isArabic
+                            ? 'إزالة operator_realestate'
+                            : 'Revoke operator_realestate',
+                      ),
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic
-                        ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى تقارير العقارات.'
-                        : 'This phone has admin rights; use Ops/Admin dashboards for realestate reporting.')
-                    : (l.isArabic
-                        ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
-                        : 'No admin rights for this phone; Superadmin can grant admin.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Superadmin (Realestate)',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin can manage Realestate roles and see global guardrails and stats.'
-                    : 'This phone is not Superadmin; Superadmin sees all realestate roles and guardrails.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Roles: ${_roles.join(", ")}'),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              if (_isSuperadmin || _isAdmin) ...[
-                const SizedBox(height: 16),
+              if (_roleOut.isNotEmpty)
                 Text(
-                  l.isArabic
-                      ? 'إدارة أدوار Realestate (Superadmin)'
-                      : 'Realestate role management (Superadmin)',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _targetPhoneCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'هاتف الهدف (+963...)'
-                        : 'Target phone (+963...)',
-                    hintText: '+963...',
+                  _roleOut,
+                  style: TextStyle(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: .80),
                   ),
-                  keyboardType: TextInputType.phone,
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _roleBusy
-                            ? null
-                            : () => _mutateRealestateRole(grant: true),
-                        icon: const Icon(Icons.add),
-                        label: Text(
-                          l.isArabic
-                              ? 'إضافة operator_realestate'
-                              : 'Grant operator_realestate',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _roleBusy
-                            ? null
-                            : () => _mutateRealestateRole(grant: false),
-                        icon: const Icon(Icons.remove_circle_outline),
-                        label: Text(
-                          l.isArabic
-                              ? 'إزالة operator_realestate'
-                              : 'Revoke operator_realestate',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_roleOut.isNotEmpty)
-                  Text(
-                    _roleOut,
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: .80),
-                    ),
-                  ),
-              ],
             ],
-          ),
+          ],
         ),
       ],
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Realestate – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(child: SafeArea(child: body)),
-        ],
-      ),
+    return DomainPageScaffold(
+      background: bg,
+      title: 'Realestate',
+      child: body,
+      scrollable: false,
     );
   }
 }

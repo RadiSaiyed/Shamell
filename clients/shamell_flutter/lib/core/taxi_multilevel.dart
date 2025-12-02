@@ -5,8 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
+import 'ui_kit.dart';
 import '../main.dart' show AppBG;
 import 'taxi/taxi_rider.dart';
 import 'taxi/taxi_driver.dart';
@@ -209,79 +209,58 @@ class _TaxiMultiLevelPageState extends State<TaxiMultiLevelPage> {
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card: Rider + Driver
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.directions_car_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المستخدم النهائي (تاكسي)' : 'Enduser (Taxi)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Enduser section: Rider + Driver
+        FormSection(
+          title: l.isArabic ? 'المستخدم النهائي (تاكسي)' : 'Enduser (Taxi)',
+          subtitle: l.isArabic
+              ? 'كرَاكب يمكنك طلب رحلات؛ كسائق يمكنك استلام الطلبات والبدء/إنهاء الرحلة.'
+              : 'Riders request trips; drivers accept and complete rides',
+          children: [
+            Text(
+              l.isArabic
+                  ? 'كرَاكب يمكنك طلب رحلات؛ كسائق يمكنك استلام الطلبات والبدء/إنهاء الرحلة.'
+                  : 'As rider you can request rides; as driver you accept and complete rides.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'كرَاكب يمكنك طلب رحلات؛ كسائق يمكنك استلام الطلبات والبدء/إنهاء الرحلة.'
-                    : 'As rider you can request rides; as driver you accept and complete rides.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _openRider,
+                  icon: const Icon(Icons.person_outline),
+                  label: Text(l.homeTaxiRider),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.icon(
-                    onPressed: _openRider,
-                    icon: const Icon(Icons.person_outline),
-                    label: Text(l.homeTaxiRider),
-                  ),
-                  FilledButton.icon(
-                    onPressed: _openDriver,
-                    icon: const Icon(Icons.local_taxi_outlined),
-                    label: Text(l.homeTaxiDriver),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _openHistory,
-                    icon: const Icon(Icons.history),
-                    label: Text(l.menuTrips),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                FilledButton.icon(
+                  onPressed: _openDriver,
+                  icon: const Icon(Icons.local_taxi_outlined),
+                  label: Text(l.homeTaxiDriver),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _openHistory,
+                  icon: const Icon(Icons.history),
+                  label: Text(l.menuTrips),
+                ),
+              ],
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.support_agent_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'مشغل تاكسي' : 'Taxi operator',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
+        // Operator section
+        FormSection(
+          title: l.isArabic ? 'مشغل تاكسي' : 'Taxi operator',
+          subtitle: l.isArabic
+              ? 'صلاحيات مشغل التاكسي ولوحة التحكم'
+              : 'Taxi operator rights and console',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
@@ -310,177 +289,144 @@ class _TaxiMultiLevelPageState extends State<TaxiMultiLevelPage> {
                     ),
                 ],
               ),
-              const SizedBox(height: 8),
-              if (_isTaxiOperator)
-                FilledButton.icon(
-                  onPressed: _openOperator,
-                  icon: const Icon(Icons.dashboard_customize_outlined),
-                  label: Text(l.homeTaxiOperator),
+            const SizedBox(height: 8),
+            if (_isTaxiOperator)
+              FilledButton.icon(
+                onPressed: _openOperator,
+                icon: const Icon(Icons.dashboard_customize_outlined),
+                label: Text(l.homeTaxiOperator),
+              )
+            else
+              Text(
+                l.isArabic
+                    ? 'يمكن للمشرف أو المدير إضافة الدور operator_taxi من أدوات Superadmin في لوحة التاكسي.'
+                    : 'Admin or Superadmin can grant operator_taxi from the Taxi tools on this page.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
                 ),
-              if (!_isTaxiOperator)
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (تاكسي)' : 'Admin (Taxi)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة ولوحات التحكم للتاكسي'
+              : 'Admin rights and taxi control dashboards',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic
+                      ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى لوحة التحكم وOps Admin.'
+                      : 'This phone has admin rights; use Admin/Ops dashboards for taxi controls.')
+                  : (l.isArabic
+                      ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
+                      : 'No admin rights for this phone; Superadmin can grant admin.'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // Superadmin section
+        FormSection(
+          title: 'Superadmin (Taxi)',
+          subtitle: l.isArabic
+              ? 'إدارة أدوار التاكسي وحواجز التنقل'
+              : 'Manage taxi roles and mobility guardrails',
+          children: [
+            Text(
+              _isSuperadmin
+                  ? 'Superadmin can manage taxi roles, view guardrails and global mobility stats.'
+                  : 'This phone is not Superadmin; Superadmin sees all taxi guardrails and roles.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('Roles: ${_roles.join(", ")}'),
+            const SizedBox(height: 4),
+            Text(
+              'Operator domains: ${_operatorDomains.join(", ")}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            if (_isSuperadmin || _isAdmin) ...[
+              const SizedBox(height: 16),
+              Text(
+                l.isArabic
+                    ? 'إدارة أدوار التاكسي (Superadmin)'
+                    : 'Taxi role management (Superadmin)',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _targetPhoneCtrl,
+                decoration: InputDecoration(
+                  labelText: l.isArabic
+                      ? 'هاتف الهدف (+963...)'
+                      : 'Target phone (+963...)',
+                  hintText: '+963...',
+                ),
+                keyboardType: TextInputType.phone,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _roleBusy
+                          ? null
+                          : () => _mutateTaxiOperatorRole(grant: true),
+                      icon: const Icon(Icons.add),
+                      label: Text(
+                        l.isArabic
+                            ? 'إضافة operator_taxi'
+                            : 'Grant operator_taxi',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _roleBusy
+                          ? null
+                          : () => _mutateTaxiOperatorRole(grant: false),
+                      icon: const Icon(Icons.remove_circle_outline),
+                      label: Text(
+                        l.isArabic
+                            ? 'إزالة operator_taxi'
+                            : 'Revoke operator_taxi',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_roleOut.isNotEmpty)
                 Text(
-                  l.isArabic
-                      ? 'يمكن للمشرف أو المدير إضافة الدور operator_taxi من أدوات Superadmin في لوحة التاكسي.'
-                      : 'Admin or Superadmin can grant operator_taxi from the Taxi tools on this page.',
+                  _roleOut,
                   style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: .80),
                   ),
                 ),
             ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المدير (تاكسي)' : 'Admin (Taxi)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic
-                        ? 'هذا الهاتف لديه صلاحيات المدير؛ يمكنه الوصول إلى لوحة التحكم وOps Admin.'
-                        : 'This phone has admin rights; use Admin/Ops dashboards for taxi controls.')
-                    : (l.isArabic
-                        ? 'لا توجد صلاحيات المدير؛ المشرف يمكنه إضافة دور admin.'
-                        : 'No admin rights for this phone; Superadmin can grant admin.'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Superadmin (Taxi)',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin can manage taxi roles, view guardrails and global mobility stats.'
-                    : 'This phone is not Superadmin; Superadmin sees all taxi guardrails and roles.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Roles: ${_roles.join(", ")}'),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-              if (_isSuperadmin || _isAdmin) ...[
-                const SizedBox(height: 16),
-                Text(
-                  l.isArabic
-                      ? 'إدارة أدوار التاكسي (Superadmin)'
-                      : 'Taxi role management (Superadmin)',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _targetPhoneCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isArabic
-                        ? 'هاتف الهدف (+963...)'
-                        : 'Target phone (+963...)',
-                    hintText: '+963...',
-                  ),
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _roleBusy
-                            ? null
-                            : () => _mutateTaxiOperatorRole(grant: true),
-                        icon: const Icon(Icons.add),
-                        label: Text(
-                          l.isArabic
-                              ? 'إضافة operator_taxi'
-                              : 'Grant operator_taxi',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _roleBusy
-                            ? null
-                            : () => _mutateTaxiOperatorRole(grant: false),
-                        icon: const Icon(Icons.remove_circle_outline),
-                        label: Text(
-                          l.isArabic
-                              ? 'إزالة operator_taxi'
-                              : 'Revoke operator_taxi',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_roleOut.isNotEmpty)
-                  Text(
-                    _roleOut,
-                    style: TextStyle(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: .80),
-                    ),
-                  ),
-              ],
-            ],
-          ),
+          ],
         ),
       ],
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Taxi – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(
-            child: SafeArea(child: body),
-          ),
-        ],
-      ),
+    return DomainPageScaffold(
+      background: bg,
+      title: 'Taxi',
+      child: body,
+      scrollable: false,
     );
   }
 }

@@ -24,11 +24,6 @@ Future<void> _setCookie(String v) async {
   await sp.setString('sa_cookie', v);
 }
 
-Future<void> _clearCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  await sp.remove('sa_cookie');
-}
-
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const OpsAdminApp());
@@ -69,8 +64,8 @@ class OpsAdminApp extends StatelessWidget {
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Tokens.lightBorder)),
         enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Tokens.lightBorder)),
         focusedBorder: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12)), borderSide: BorderSide(color: Tokens.lightFocus, width: 1.4)),
-        labelStyle: TextStyle(color: Tokens.lightOnSurface.withOpacity(.92)),
-        hintStyle: TextStyle(color: Tokens.lightOnSurface.withOpacity(.60)),
+        labelStyle: TextStyle(color: Tokens.lightOnSurface.withValues(alpha: .92)),
+        hintStyle: TextStyle(color: Tokens.lightOnSurface.withValues(alpha: .60)),
       ),
       cardTheme: CardThemeData(
         color: Tokens.lightSurfaceAlt,
@@ -107,22 +102,22 @@ class OpsAdminApp extends StatelessWidget {
         minimumSize: const Size.fromHeight(40),
       )),
       outlinedButtonTheme: OutlinedButtonThemeData(style: OutlinedButton.styleFrom(
-        side: BorderSide(color: Colors.white.withOpacity(.22)),
+        side: BorderSide(color: Colors.white.withValues(alpha: .22)),
         foregroundColor: Tokens.onSurface,
         shape: baseBtnShape,
         minimumSize: const Size.fromHeight(40),
       )),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: Colors.white.withOpacity(.10),
+        fillColor: Colors.white.withValues(alpha: .10),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Tokens.border)),
         enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Tokens.border)),
         focusedBorder: const OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12)), borderSide: BorderSide(color: Tokens.focus, width: 1.4)),
-        labelStyle: TextStyle(color: Tokens.onSurface.withOpacity(.92)),
-        hintStyle: TextStyle(color: Tokens.onSurface.withOpacity(.72)),
+        labelStyle: TextStyle(color: Tokens.onSurface.withValues(alpha: .92)),
+        hintStyle: TextStyle(color: Tokens.onSurface.withValues(alpha: .72)),
       ),
       cardTheme: CardThemeData(
-        color: Colors.white.withOpacity(.08),
+        color: Colors.white.withValues(alpha: .08),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: Tokens.border)),
         elevation: 8,
         shadowColor: Colors.black87,
@@ -298,8 +293,8 @@ class _LoginPageState extends State<LoginPage> {
           }
         }
       } catch (_) {}
-      setState(() => out = '${resp.statusCode}: ${resp.body}');
       if (!mounted) return;
+      setState(() => out = '${resp.statusCode}: ${resp.body}');
       if (resp.statusCode == 200) {
         try {
           final sp = await SharedPreferences.getInstance();

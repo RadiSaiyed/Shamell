@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Request, APIRouter
+from fastapi import FastAPI, HTTPException, Depends, Header, APIRouter
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 import os
@@ -9,6 +9,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 from datetime import datetime, timezone, timedelta
 import uuid
 import httpx
+import hashlib
+import hmac
 
 try:
     # Optional internal Payments integration (monolith mode). We keep this
@@ -38,6 +40,19 @@ DB_URL = _env_or("BUS_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/bus.db
 DB_SCHEMA = os.getenv("DB_SCHEMA") if not DB_URL.startswith("sqlite") else None
 PAYMENTS_BASE = _env_or("PAYMENTS_BASE_URL", "")
 TICKET_SECRET = _env_or("BUS_TICKET_SECRET", "change-me-bus-ticket")
+ENV = os.getenv("ENV", "dev").lower()
+
+
+def _enforce_ticket_secret_baseline() -> None:
+    """
+    Fail fast in non-dev/test environments when the ticket signing secret
+    is left at the insecure default, to avoid accepting forged tickets.
+    """
+    if ENV not in ("dev", "test") and TICKET_SECRET == "change-me-bus-ticket":
+        raise RuntimeError("BUS_TICKET_SECRET must be set in non-dev environments")
+
+
+_enforce_ticket_secret_baseline()
 
 
 def _use_pay_internal() -> bool:
@@ -77,10 +92,16 @@ def _generate_trip_id(s: Session, route: "Route", depart_at: datetime) -> str:
     d = _city_code_for_trip_id(getattr(dest_city, "name", "") or "Dest")
     dep_utc = depart_at.astimezone(timezone.utc)
     base = f"{o}-{d}-{dep_utc.strftime('%Y%m%d')}-{dep_utc.strftime('%H%M')}"
+    max_len = 36
+    # Reserve space for potential "-NN" suffix when trimming base.
+    base = base[: max_len - 3]
     trip_id = base
     n = 1
     while s.get(Trip, trip_id) is not None and n < 100:
-        trip_id = f"{base}-{n}"
+        suffix = f"-{n}"
+        trip_id = f"{base}{suffix}"
+        if len(trip_id) > max_len:
+            trip_id = trip_id[:max_len]
         n += 1
     if s.get(Trip, trip_id) is not None:
         trip_id = str(uuid.uuid4())
@@ -149,6 +170,7 @@ class Booking(Base):
     __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     trip_id: Mapped[str] = mapped_column(String(36))
+    price_cents: Mapped[Optional[int]] = mapped_column(BigInteger, default=None)
     customer_phone: Mapped[Optional[str]] = mapped_column(String(32), default=None)
     wallet_id: Mapped[Optional[str]] = mapped_column(String(36), default=None)
     seats: Mapped[int] = mapped_column(Integer, default=1)
@@ -164,7 +186,7 @@ class Ticket(Base):
     booking_id: Mapped[str] = mapped_column(String(36))
     trip_id: Mapped[str] = mapped_column(String(36))
     seat_no: Mapped[Optional[int]] = mapped_column(Integer, default=None)
-    status: Mapped[str] = mapped_column(String(16), default="issued")  # issued|boarded|canceled
+    status: Mapped[str] = mapped_column(String(16), default="issued")  # pending|issued|boarded|canceled
     issued_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
     boarded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -173,6 +195,11 @@ class Idempotency(Base):
     __tablename__ = "idempotency"
     __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    trip_id: Mapped[Optional[str]] = mapped_column(String(36), default=None)
+    wallet_id: Mapped[Optional[str]] = mapped_column(String(36), default=None)
+    seats: Mapped[Optional[int]] = mapped_column(Integer, default=None)
+    seat_numbers_hash: Mapped[Optional[str]] = mapped_column(String(128), default=None)
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), default=None)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -232,9 +259,35 @@ def _ensure_trips_status_column() -> None:
         pass
 
 
+def _ensure_booking_trip_columns() -> None:
+    """
+    SQLite migration to add missing trip_id columns on legacy deployments.
+
+    Older DBs may have bookings/tickets without trip_id; new code relies on
+    it for joins and reporting.
+    """
+    if not DB_URL.startswith("sqlite"):
+        return
+    try:
+        with engine.begin() as conn:
+            insp = inspect(conn)
+            # bookings.trip_id
+            cols_bookings = [c["name"] for c in insp.get_columns("bookings", schema=DB_SCHEMA)]
+            if "trip_id" not in cols_bookings:
+                conn.execute(text("ALTER TABLE bookings ADD COLUMN trip_id VARCHAR(36)"))
+            # tickets.trip_id
+            cols_tickets = [c["name"] for c in insp.get_columns("tickets", schema=DB_SCHEMA)]
+            if "trip_id" not in cols_tickets:
+                conn.execute(text("ALTER TABLE tickets ADD COLUMN trip_id VARCHAR(36)"))
+    except Exception:
+        # Best-effort: if this fails, caller will still have tables; admin can fix manually.
+        pass
+
+
 def on_startup():
     Base.metadata.create_all(engine)
     _ensure_trips_status_column()
+    _ensure_booking_trip_columns()
     # SQLite migration for is_online on operators
     try:
         if DB_URL.startswith("sqlite"):
@@ -353,6 +406,24 @@ class BookingOut(BaseModel):
     wallet_id: Optional[str] = None
     customer_phone: Optional[str] = None
     tickets: Optional[List[dict]] = None
+
+
+def _booking_out_from_db(b: "Booking", s: Session, include_tickets: bool = True) -> BookingOut:
+    tickets = None
+    if include_tickets:
+        tks = s.execute(select(Ticket).where(Ticket.booking_id == b.id)).scalars().all()
+        tickets = [{"id": tk.id, "payload": _ticket_payload(tk)} for tk in tks]
+    return BookingOut(
+        id=b.id,
+        trip_id=b.trip_id,
+        seats=b.seats,
+        status=b.status,
+        payments_txn_id=b.payments_txn_id,
+        created_at=b.created_at,
+        wallet_id=b.wallet_id,
+        customer_phone=b.customer_phone,
+        tickets=tickets,
+    )
 
 
 class BookingCancelOut(BaseModel):
@@ -594,6 +665,12 @@ def _payments_transfer(from_wallet: str, to_wallet: str, amount_cents: int, ikey
     return r.json()
 
 
+def _ticket_payload(tk: "Ticket") -> str:
+    msg = f"{tk.id}:{tk.booking_id}:{tk.trip_id}:{tk.seat_no or 0}".encode()
+    sig = hmac.new(TICKET_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    return f"TICKET|id={tk.id}|b={tk.booking_id}|trip={tk.trip_id}|seat={tk.seat_no or 0}|sig={sig}"
+
+
 def _refund_pct_for_departure(now: datetime, depart_at: datetime) -> float:
     """
     Compute refund percentage for cancellations/exchanges based on time
@@ -622,28 +699,6 @@ def _refund_pct_for_departure(now: datetime, depart_at: datetime) -> float:
 
 @router.post("/trips/{trip_id}/book", response_model=BookingOut)
 def book_trip(trip_id: str, body: BookReq, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"), s: Session = Depends(get_session)):
-    # Idempotency
-    if idempotency_key:
-        existed = s.get(Idempotency, idempotency_key)
-        if existed:
-            # Return last booking for this trip (+wallet if provided)
-            q = select(Booking).where(Booking.trip_id == trip_id)
-            if (body.wallet_id or "").strip():
-                q = q.where(Booking.wallet_id == body.wallet_id.strip())
-            b = s.execute(q.order_by(Booking.created_at.desc())).scalars().first()
-            if b:
-                return BookingOut(
-                    id=b.id,
-                    trip_id=b.trip_id,
-                    seats=b.seats,
-                    status=b.status,
-                    payments_txn_id=b.payments_txn_id,
-                    created_at=b.created_at,
-                    wallet_id=b.wallet_id,
-                    customer_phone=b.customer_phone,
-                )
-        else:
-            s.add(Idempotency(key=idempotency_key)); s.commit()
     t = s.get(Trip, trip_id)
     if not t:
         raise HTTPException(status_code=404, detail="trip not found")
@@ -654,7 +709,6 @@ def book_trip(trip_id: str, body: BookReq, idempotency_key: Optional[str] = Head
 
     seat_numbers: list[int] = []
     if body.seat_numbers:
-        # Normalise + validate explicit seat selection
         try:
             seat_numbers = [int(x) for x in body.seat_numbers]  # type: ignore[arg-type]
         except Exception:
@@ -663,168 +717,220 @@ def book_trip(trip_id: str, body: BookReq, idempotency_key: Optional[str] = Head
             raise HTTPException(status_code=400, detail="seat_numbers cannot be empty")
         if len(set(seat_numbers)) != len(seat_numbers):
             raise HTTPException(status_code=400, detail="seat_numbers must be unique")
-        # Ensure all seat numbers within 1..seats_total
         for sn in seat_numbers:
             if sn < 1 or sn > t.seats_total:
                 raise HTTPException(status_code=400, detail="seat_numbers out of range")
-        seats_requested = len(seat_numbers)
     else:
         seats_requested = body.seats
 
+    if seat_numbers:
+        seats_requested = len(seat_numbers)
+
     if seats_requested < 1 or seats_requested > 10:
         raise HTTPException(status_code=400, detail="invalid seats")
-    # Track seats already allocated to tickets for this trip to avoid double assignments.
-    taken_seats = {
-        sn
-        for sn in s.execute(
-            select(Ticket.seat_no).where(
-                Ticket.trip_id == trip_id,
-                Ticket.seat_no.is_not(None),
-                Ticket.status != "canceled",
-            )
-        ).scalars().all()
-        if sn
-    }
-    # Lock via SELECT ... FOR UPDATE on PG; on SQLite best-effort by transaction
-    t_locked = s.execute(select(Trip).where(Trip.id == trip_id).with_for_update()).scalars().first() if not DB_URL.startswith("sqlite") else t
-    if t_locked.seats_available < seats_requested:
-        raise HTTPException(status_code=400, detail="not enough seats")
-    # Prevent double-booking of explicitly chosen seats
+
+    seat_numbers_hash: Optional[str] = None
     if seat_numbers:
-        conflict = [sn for sn in seat_numbers if sn in taken_seats]
-        if conflict:
-            raise HTTPException(status_code=400, detail="one or more selected seats already booked")
-        assigned_seats = seat_numbers
-    else:
-        assigned_seats: list[int] = []
-        for sn in range(1, t.seats_total + 1):
-            if sn in taken_seats:
-                continue
-            assigned_seats.append(sn)
-            if len(assigned_seats) == seats_requested:
-                break
-        if len(assigned_seats) != seats_requested:
-            raise HTTPException(status_code=400, detail="not enough seats")
+        normalized = ",".join(str(sn) for sn in sorted(seat_numbers))
+        seat_numbers_hash = hashlib.sha256(normalized.encode()).hexdigest()
 
-    t_locked.seats_available -= seats_requested
-    b = Booking(
-        id=str(uuid.uuid4()),
-        trip_id=trip_id,
-        customer_phone=(body.customer_phone or None),
-        wallet_id=wallet_id,
-        seats=seats_requested,
-        status="pending",
-    )
-    s.add(t_locked)
-    s.add(b)
-
-    # When a Payments backend is configured (either via PAYMENTS_BASE_URL
-    # or via the internal Payments integration in monolith mode) we
-    # enforce that the booking is only created if the wallet has
-    # sufficient balance and the transfer succeeds. On failure we roll
-    # back the seat reservation and booking so that nothing is reserved.
     require_payment = (bool(PAYMENTS_BASE) or _use_pay_internal()) and not env_test
-    # If payments are available we require a wallet_id so the trip is
-    # always paid from a wallet.
     if require_payment and not wallet_id:
-        s.rollback()
         raise HTTPException(status_code=400, detail="wallet_id required for booking")
 
-    try:
-        # fetch operator of route to resolve payout wallet
-        rt = s.execute(select(Route).where(Route.id == t.route_id)).scalars().first()
-        op = s.execute(select(Operator).where(Operator.id == rt.operator_id)).scalars().first() if rt else None
-        amount = t.price_cents * seats_requested
-        if require_payment:
-            if not op or not op.wallet_id:
-                s.rollback()
-                raise HTTPException(status_code=500, detail="operator wallet not configured")
-            # Special case: customer and operator share the same wallet.
-            # In this scenario a payments transfer would be a no-op and
-            # Payments rejects it with "Cannot transfer to same wallet".
-            # We treat this as a successfully confirmed booking without
-            # issuing a transfer.
-            if wallet_id == op.wallet_id:
-                b.status = "confirmed"
-            else:
-                try:
-                    resp = _payments_transfer(wallet_id, op.wallet_id, amount, ikey=f"bus-book-{b.id}", ref=f"booking-{b.id}")
-                    # For HTTP-based payments we usually get a JSON dict; for
-                    # internal calls we may receive a Pydantic model converted
-                    # to dict by _payments_transfer. In both cases the
-                    # transaction ID is optional; we keep it best-effort.
-                    if isinstance(resp, dict):
-                        b.payments_txn_id = str(resp.get("id") or resp.get("txn_id") or "")
-                    b.status = "confirmed"
-                except httpx.HTTPStatusError as e:
-                    # Inspect response body to map insufficient funds or other
-                    # clear upstream errors into user-facing messages.
-                    msg = ""
-                    try:
-                        if e.response is not None:
-                            try:
-                                j = e.response.json()
-                                if isinstance(j, dict) and "detail" in j:
-                                    msg = str(j.get("detail") or "")
-                                else:
-                                    msg = e.response.text or ""
-                            except Exception:
-                                msg = e.response.text or ""
-                        else:
-                            msg = str(e)
-                    except Exception:
-                        msg = str(e)
-                    s.rollback()
-                    low = msg.lower()
-                    if "insufficient funds" in low or ("insufficient" in low and "balance" in low):
-                        raise HTTPException(status_code=400, detail="insufficient funds")
-                    if "cannot transfer to same wallet" in low:
-                        raise HTTPException(status_code=400, detail="cannot transfer to same wallet")
-                    raise HTTPException(status_code=500, detail="payment failed")
-                except HTTPException as e:
-                    # Internal Payments may raise HTTPException directly
-                    # (e.g. "Insufficient funds"). We normalise the message
-                    # but keep the booking/seat state rolled back.
-                    s.rollback()
-                    msg = str(getattr(e, "detail", "") or "")
-                    low = msg.lower()
-                    if "insufficient funds" in low or ("insufficient" in low and "balance" in low):
-                        raise HTTPException(status_code=400, detail="insufficient funds")
-                    if "cannot transfer to same wallet" in low:
-                        raise HTTPException(status_code=400, detail="cannot transfer to same wallet")
-                    raise HTTPException(status_code=500, detail="payment failed")
-                except Exception:
-                    s.rollback()
-                    raise HTTPException(status_code=500, detail="payment failed")
+    existing_booking: Optional[Booking] = None
+    if idempotency_key:
+        existed = s.get(Idempotency, idempotency_key)
+        if existed:
+            if (
+                existed.trip_id != trip_id
+                or (existed.wallet_id or "") != (wallet_id or "")
+                or existed.seats != seats_requested
+                or (existed.seat_numbers_hash or "") != (seat_numbers_hash or "")
+            ):
+                raise HTTPException(status_code=409, detail="Idempotency-Key reused with different parameters")
+            if existed.booking_id:
+                b_existing = s.get(Booking, existed.booking_id)
+                if b_existing:
+                    if require_payment and b_existing.status == "pending":
+                        existing_booking = b_existing
+                    else:
+                        return _booking_out_from_db(b_existing, s)
+        else:
+            s.add(
+                Idempotency(
+                    key=idempotency_key,
+                    trip_id=trip_id,
+                    wallet_id=wallet_id,
+                    seats=seats_requested,
+                    seat_numbers_hash=seat_numbers_hash,
+                )
+            )
+            s.commit()
 
-        # issue tickets: one per seat
-        import hmac as _hmac, hashlib as _hash
-        tickets: List[dict] = []
-        for sn in assigned_seats:
-            tid = str(uuid.uuid4())
-            msg = f"{tid}:{b.id}:{t.id}:{sn}".encode()
-            sig = _hmac.new(TICKET_SECRET.encode(), msg, _hash.sha256).hexdigest()
-            payload = f"TICKET|id={tid}|b={b.id}|trip={t.id}|seat={sn}|sig={sig}"
-            s.add(Ticket(id=tid, booking_id=b.id, trip_id=t.id, seat_no=sn))
-            tickets.append({"id": tid, "payload": payload})
-        s.commit()
-        s.refresh(b)
-        return BookingOut(
-            id=b.id,
-            trip_id=b.trip_id,
-            seats=b.seats,
-            status=b.status,
-            payments_txn_id=b.payments_txn_id,
-            created_at=b.created_at,
-            wallet_id=b.wallet_id,
-            customer_phone=b.customer_phone,
-            tickets=tickets,
+    def _reserve_seats(ticket_status: str) -> tuple[Booking, list[Ticket]]:
+        t_locked = (
+            s.execute(select(Trip).where(Trip.id == trip_id).with_for_update()).scalars().first()
+            if not DB_URL.startswith("sqlite")
+            else t
         )
-    except HTTPException:
-        # Any HTTPException raised above should abort the booking completely.
-        # At this point the transaction has already been rolled back when
-        # necessary, so seats and booking are not reserved.
-        raise
+        taken_query = select(Ticket.seat_no).where(
+            Ticket.trip_id == trip_id,
+            Ticket.seat_no.is_not(None),
+            Ticket.status != "canceled",
+        )
+        if not DB_URL.startswith("sqlite"):
+            taken_query = taken_query.with_for_update()
+        taken_seats = {sn for sn in s.execute(taken_query).scalars().all() if sn}
+        if t_locked.seats_available < seats_requested:
+            raise HTTPException(status_code=400, detail="not enough seats")
+        if seat_numbers:
+            conflict = [sn for sn in seat_numbers if sn in taken_seats]
+            if conflict:
+                raise HTTPException(status_code=400, detail="one or more selected seats already booked")
+            assigned = seat_numbers
+        else:
+            assigned = []
+            for sn in range(1, t.seats_total + 1):
+                if sn in taken_seats:
+                    continue
+                assigned.append(sn)
+                if len(assigned) == seats_requested:
+                    break
+            if len(assigned) != seats_requested:
+                raise HTTPException(status_code=400, detail="not enough seats")
+        t_locked.seats_available -= seats_requested
+        b_local = Booking(
+            id=str(uuid.uuid4()),
+            trip_id=trip_id,
+            price_cents=t.price_cents,
+            customer_phone=(body.customer_phone or None),
+            wallet_id=wallet_id,
+            seats=seats_requested,
+            status="pending",
+        )
+        s.add(t_locked)
+        s.add(b_local)
+        tickets_local: list[Ticket] = []
+        for sn in assigned:
+            tid = str(uuid.uuid4())
+            tk = Ticket(id=tid, booking_id=b_local.id, trip_id=t.id, seat_no=sn, status=ticket_status)
+            s.add(tk)
+            tickets_local.append(tk)
+        if idempotency_key:
+            idem = s.get(Idempotency, idempotency_key)
+            if idem:
+                idem.booking_id = b_local.id
+                s.add(idem)
+        s.commit()
+        s.refresh(b_local)
+        return b_local, tickets_local
+
+    def _fail_booking_and_release(booking_id: str):
+        b_fail = s.get(Booking, booking_id)
+        if not b_fail:
+            return
+        t_fail = (
+            s.execute(select(Trip).where(Trip.id == b_fail.trip_id).with_for_update()).scalars().first()
+            if not DB_URL.startswith("sqlite")
+            else s.get(Trip, b_fail.trip_id)
+        )
+        tickets_fail = s.execute(select(Ticket).where(Ticket.booking_id == booking_id)).scalars().all()
+        if t_fail:
+            seats_back = b_fail.seats or 0
+            t_fail.seats_available = min(t_fail.seats_total, t_fail.seats_available + seats_back)
+            s.add(t_fail)
+        for tk in tickets_fail:
+            tk.status = "canceled"
+            s.add(tk)
+        b_fail.status = "failed"
+        s.add(b_fail)
+        s.commit()
+
+    if not require_payment:
+        booking, _ = _reserve_seats(ticket_status="issued")
+        return _booking_out_from_db(booking, s, include_tickets=True)
+
+    booking = existing_booking
+    tickets_for_booking: list[Ticket] = []
+    if not booking:
+        booking, tickets_for_booking = _reserve_seats(ticket_status="pending")
+    else:
+        seats_requested = booking.seats
+        tickets_for_booking = s.execute(select(Ticket).where(Ticket.booking_id == booking.id)).scalars().all()
+
+    rt = s.execute(select(Route).where(Route.id == t.route_id)).scalars().first()
+    op = s.execute(select(Operator).where(Operator.id == rt.operator_id)).scalars().first() if rt else None
+    amount = t.price_cents * seats_requested
+
+    payment_resp: Optional[dict] = None
+    try:
+        if not op or not op.wallet_id:
+            raise HTTPException(status_code=500, detail="operator wallet not configured")
+        if wallet_id == op.wallet_id:
+            pass
+        else:
+            payment_resp = _payments_transfer(wallet_id, op.wallet_id, amount, ikey=f"bus-book-{booking.id}", ref=f"booking-{booking.id}")
+    except httpx.HTTPStatusError as e:
+        msg = ""
+        try:
+            if e.response is not None:
+                try:
+                    j = e.response.json()
+                    if isinstance(j, dict) and "detail" in j:
+                        msg = str(j.get("detail") or "")
+                    else:
+                        msg = e.response.text or ""
+                except Exception:
+                    msg = e.response.text or ""
+            else:
+                msg = str(e)
+        except Exception:
+            msg = str(e)
+        _fail_booking_and_release(booking.id)
+        low = msg.lower()
+        if "insufficient funds" in low or ("insufficient" in low and "balance" in low):
+            raise HTTPException(status_code=400, detail="insufficient funds")
+        if "cannot transfer to same wallet" in low:
+            raise HTTPException(status_code=400, detail="cannot transfer to same wallet")
+        raise HTTPException(status_code=500, detail="payment failed")
+    except HTTPException as e:
+        _fail_booking_and_release(booking.id)
+        msg = str(getattr(e, "detail", "") or "")
+        low = msg.lower()
+        if "insufficient funds" in low or ("insufficient" in low and "balance" in low):
+            raise HTTPException(status_code=400, detail="insufficient funds")
+        if "cannot transfer to same wallet" in low:
+            raise HTTPException(status_code=400, detail="cannot transfer to same wallet")
+        raise HTTPException(status_code=500, detail="payment failed")
+    except Exception:
+        _fail_booking_and_release(booking.id)
+        raise HTTPException(status_code=500, detail="payment failed")
+
+    t_confirm = (
+        s.execute(select(Trip).where(Trip.id == trip_id).with_for_update()).scalars().first()
+        if not DB_URL.startswith("sqlite")
+        else s.get(Trip, trip_id)
+    )
+    booking = s.get(Booking, booking.id)
+    tickets_for_booking = s.execute(select(Ticket).where(Ticket.booking_id == booking.id)).scalars().all()
+    if booking:
+        booking.status = "confirmed"
+        if isinstance(payment_resp, dict):
+            booking.payments_txn_id = str(payment_resp.get("id") or payment_resp.get("txn_id") or "")
+        s.add(booking)
+    for tk in tickets_for_booking:
+        tk.status = "issued"
+        if not tk.issued_at:
+            tk.issued_at = datetime.now(timezone.utc)
+        s.add(tk)
+    if t_confirm:
+        s.add(t_confirm)
+    s.commit()
+    if booking:
+        s.refresh(booking)
+        return _booking_out_from_db(booking, s, include_tickets=True)
+    raise HTTPException(status_code=500, detail="booking confirmation failed")
 
 
 @router.get("/bookings/{booking_id}", response_model=BookingOut)
@@ -832,16 +938,9 @@ def booking_status(booking_id: str, s: Session = Depends(get_session)):
     b = s.get(Booking, booking_id)
     if not b:
         raise HTTPException(status_code=404, detail="not found")
-    return BookingOut(
-        id=b.id,
-        trip_id=b.trip_id,
-        seats=b.seats,
-        status=b.status,
-        payments_txn_id=b.payments_txn_id,
-        created_at=b.created_at,
-        wallet_id=b.wallet_id,
-        customer_phone=b.customer_phone,
-    )
+    return _booking_out_from_db(b, s, include_tickets=True)
+
+
 @router.post("/bookings/{booking_id}/cancel", response_model=BookingCancelOut)
 def cancel_booking(booking_id: str, s: Session = Depends(get_session)):
     """
@@ -857,12 +956,20 @@ def cancel_booking(booking_id: str, s: Session = Depends(get_session)):
 
     After departure, cancellations are rejected.
     """
-    b = s.get(Booking, booking_id)
+    b = (
+        s.execute(select(Booking).where(Booking.id == booking_id).with_for_update()).scalars().first()
+        if not DB_URL.startswith("sqlite")
+        else s.get(Booking, booking_id)
+    )
     if not b:
         raise HTTPException(status_code=404, detail="not found")
     if b.status == "canceled":
         raise HTTPException(status_code=400, detail="booking already canceled")
-    t = s.get(Trip, b.trip_id)
+    t = (
+        s.execute(select(Trip).where(Trip.id == b.trip_id).with_for_update()).scalars().first()
+        if not DB_URL.startswith("sqlite")
+        else s.get(Trip, b.trip_id)
+    )
     if not t:
         raise HTTPException(status_code=404, detail="trip not found")
     now = datetime.now(timezone.utc)
@@ -875,13 +982,16 @@ def cancel_booking(booking_id: str, s: Session = Depends(get_session)):
     ).scalars().first()
     if has_boarded:
         raise HTTPException(status_code=400, detail="one or more tickets already boarded")
-    amount = int(t.price_cents) * int(b.seats or 0)
+    amount = int(b.price_cents or t.price_cents or 0) * int(b.seats or 0)
     refund_cents = int(round(amount * pct))
     currency = t.currency
     # Release seats
     t.seats_available = min(t.seats_total, int(t.seats_available or 0) + int(b.seats or 0))
     # Cancel tickets
-    tickets = s.execute(select(Ticket).where(Ticket.booking_id == booking_id)).scalars().all()
+    tickets_q = select(Ticket).where(Ticket.booking_id == booking_id)
+    if not DB_URL.startswith("sqlite"):
+        tickets_q = tickets_q.with_for_update()
+    tickets = s.execute(tickets_q).scalars().all()
     for tk in tickets:
         if tk.status != "boarded":
             tk.status = "canceled"
@@ -1060,7 +1170,11 @@ def ticket_board(body: BoardReq, s: Session = Depends(get_session)):
         sig = p.get('sig') or ''
     except Exception:
         raise HTTPException(status_code=400, detail="invalid payload")
-    tk = s.get(Ticket, tid)
+    tk = (
+        s.execute(select(Ticket).where(Ticket.id == tid).with_for_update()).scalars().first()
+        if not DB_URL.startswith("sqlite")
+        else s.get(Ticket, tid)
+    )
     if not tk or tk.booking_id != bid or tk.trip_id != trip:
         raise HTTPException(status_code=404, detail="ticket not found")
     if tk.status == "canceled":
@@ -1070,10 +1184,14 @@ def ticket_board(body: BoardReq, s: Session = Depends(get_session)):
     expect = _hmac.new(TICKET_SECRET.encode(), f"{tid}:{bid}:{trip}:{seat}".encode(), _hash.sha256).hexdigest()
     if not _hmac.compare_digest(expect, sig):
         raise HTTPException(status_code=401, detail="invalid signature")
-    booking = s.get(Booking, tk.booking_id)
+    booking = (
+        s.execute(select(Booking).where(Booking.id == tk.booking_id).with_for_update()).scalars().first()
+        if not DB_URL.startswith("sqlite")
+        else s.get(Booking, tk.booking_id)
+    )
     if booking and booking.status != "confirmed":
         env = os.getenv("ENV", "dev").lower()
-        payments_enabled = bool(PAYMENTS_BASE) or os.getenv("PAY_INTERNAL_MODE", "off").lower() == "on"
+        payments_enabled = bool(PAYMENTS_BASE) or _use_pay_internal()
         # In dev/test or when payments are disabled, allow boarding pending bookings.
         if payments_enabled and env not in ("dev", "test"):
             raise HTTPException(status_code=400, detail="booking not confirmed")
@@ -1120,10 +1238,11 @@ def operator_stats(operator_id: str, period: str = "today", s: Session = Depends
             confirmed_bookings=0,
             seats_sold=0,
             seats_total=0,
+            seats_boarded=0,
             revenue_cents=0,
         )
     route_ids = [r.id for r in routes]
-    trips = s.execute(select(Trip).where(Trip.route_id.in_(route_ids))).scalars().all()
+    trips = s.execute(select(Trip).where(Trip.route_id.in_(route_ids), Trip.depart_at >= start)).scalars().all()
     trip_ids = [t.id for t in trips]
     # bookings in period (by creation date)
     bookings = s.execute(

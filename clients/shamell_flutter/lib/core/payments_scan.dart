@@ -19,7 +19,7 @@ class _PaymentScanTabState extends State<PaymentScanTab>{
   final aliasCtrl = TextEditingController();
   final amtCtrl = TextEditingController();
   final noteCtrl = TextEditingController();
-  String out=''; bool _scanned=false; bool _paying=false;
+  String out=''; bool _scanned=false;
   bool _showAmountPrompt = false;
 
   @override
@@ -95,15 +95,14 @@ class _PaymentScanTabState extends State<PaymentScanTab>{
   Future<void> _pay() async {
     final toWallet=toCtrl.text.trim(); final toAlias=aliasCtrl.text.trim(); final amt=amtCtrl.text.trim(); final note=noteCtrl.text.trim();
     if(amt.isEmpty || (toWallet.isEmpty && toAlias.isEmpty)){ setState(()=> out='Enter target and amount'); return; }
-    setState((){ _paying=true; out='...'; });
+    setState((){ out='...'; });
     try{
       final body = <String,dynamic>{ 'from_wallet_id': widget.fromWalletId, 'amount': amt };
       if(toWallet.isNotEmpty) body['to_wallet_id']=toWallet; else body['to_alias']=toAlias;
       if(note.isNotEmpty) body['reference']=note;
       final r = await http.post(Uri.parse('${widget.baseUrl}/payments/transfer'), headers: {'content-type':'application/json'}, body: jsonEncode(body));
-      out='${r.statusCode}: ${r.body}';
-    }catch(e){ out='Error: $e'; }
-    setState(()=> _paying=false);
+      setState(()=> out='${r.statusCode}: ${r.body}');
+    }catch(e){ setState(()=> out='Error: $e'); }
   }
 
   Future<void> _confirmAndPay() async {

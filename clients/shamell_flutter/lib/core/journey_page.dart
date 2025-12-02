@@ -168,7 +168,7 @@ class _JourneyPageState extends State<JourneyPage> {
   Widget _buildMobilitySection(L10n l) {
     final hasAny = _taxi.isNotEmpty || _bus.isNotEmpty;
     return FormSection(
-      title: l.isArabic ? 'الحركة' : 'Mobility',
+      title: l.mobilityTitle,
       children: [
         if (!hasAny)
           Text(

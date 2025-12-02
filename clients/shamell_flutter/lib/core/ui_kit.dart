@@ -104,6 +104,55 @@ class StandardListTile extends StatelessWidget {
   }
 }
 
+/// Shared scaffold that applies the unified Shamell layout shell:
+/// gradient background + full-screen GlassPanel card, as used in
+/// Taxi Rider and other modernised flows.
+class DomainPageScaffold extends StatelessWidget {
+  final Widget background;
+  final String title;
+  final Widget child;
+  final bool scrollable;
+
+  const DomainPageScaffold({
+    super.key,
+    required this.background,
+    required this.title,
+    required this.child,
+    this.scrollable = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final inner = scrollable
+        ? SingleChildScrollView(
+            child: child,
+          )
+        : child;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+        backgroundColor: Colors.transparent,
+      ),
+      extendBodyBehindAppBar: true,
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        children: [
+          background,
+          Positioned.fill(
+            child: SafeArea(
+              child: GlassPanel(
+                padding: const EdgeInsets.all(12),
+                radius: 12,
+                child: inner,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Standard primary action button used across the app.
 ///
 /// This wraps a FilledButton so that primary calls-to-action share the
@@ -140,4 +189,3 @@ class PrimaryButton extends StatelessWidget {
     return btn;
   }
 }
-

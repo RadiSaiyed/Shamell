@@ -28,9 +28,11 @@ class HomeActions {
   final VoidCallback onHistory;
   final VoidCallback onStays;
   final VoidCallback onStaysHotel;
+  final VoidCallback onStaysPro;
   // Additional modules on homescreen
   final VoidCallback onCarmarket;
   final VoidCallback onCarrental;
+  final VoidCallback onEquipment;
   final VoidCallback onRealestate;
   final VoidCallback onCourier;
   final VoidCallback onFreight;
@@ -47,6 +49,7 @@ class HomeActions {
   final VoidCallback onRequests;
   final VoidCallback onFoodOrders;
   final VoidCallback onBuildingMaterials;
+  final VoidCallback onTira;
   const HomeActions({
     required this.onScanPay,
     required this.onTopup,
@@ -65,8 +68,10 @@ class HomeActions {
     required this.onHistory,
     required this.onStays,
     required this.onStaysHotel,
+    required this.onStaysPro,
     required this.onCarmarket,
     required this.onCarrental,
+    required this.onEquipment,
     required this.onRealestate,
     required this.onCourier,
     required this.onFreight,
@@ -83,6 +88,7 @@ class HomeActions {
     required this.onRequests,
     required this.onFoodOrders,
     required this.onBuildingMaterials,
+    required this.onTira,
   });
 }
 
@@ -129,11 +135,17 @@ class _HomeRouteHubState extends State<HomeRouteHub> with TickerProviderStateMix
     final specs = <_SatSpec>[
       _SatSpec(icon: Icons.local_taxi_outlined, label: l.homeTaxiRider, onTap: widget.actions.onTaxiRider),
       _SatSpec(icon: Icons.local_taxi, label: l.homeTaxiDriver, onTap: widget.actions.onTaxiDriver),
-      if(!widget.taxiOnly) _SatSpec(icon: Icons.restaurant_outlined, label: l.homeFood, onTap: widget.actions.onFood),
-      if(!widget.taxiOnly) _SatSpec(icon: Icons.hotel, label: l.homeStays, onTap: widget.actions.onStays),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.route, label: l.mobilityTitle, onTap: widget.actions.onMobility),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.directions_bus_filled, label: l.busTitle, onTap: widget.actions.onBus),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.storefront, label: l.homeCommerce, onTap: widget.actions.onCommerce),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.account_balance_wallet_outlined, label: l.homeWallet, onTap: widget.actions.onWallet),
       if(!widget.taxiOnly) _SatSpec(icon: Icons.receipt_long_outlined, label: l.homeBills, onTap: widget.actions.onBills),
       if(!widget.taxiOnly) _SatSpec(icon: Icons.swap_horiz_outlined, label: l.qaP2P, onTap: widget.actions.onP2P),
       if(!widget.taxiOnly) _SatSpec(icon: Icons.account_balance_wallet_outlined, label: l.qaTopup, onTap: widget.actions.onTopup),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.restaurant_outlined, label: l.homeFood, onTap: widget.actions.onFood),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.hotel, label: l.homeStays, onTap: widget.actions.onStays),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.point_of_sale, label: l.homeMerchantPos, onTap: widget.actions.onMerchantPOS),
+      if(!widget.taxiOnly) _SatSpec(icon: Icons.engineering, label: l.equipmentTitle, onTap: widget.actions.onEquipment),
       if(!widget.taxiOnly) _SatSpec(icon: Icons.construction_outlined, label: l.homeBuildingMaterials, onTap: widget.actions.onBuildingMaterials),
     ];
     if(widget.taxiOnly){
@@ -321,13 +333,7 @@ class HomeRouteGrid extends StatelessWidget{
   @override Widget build(BuildContext context){
     final l = L10n.of(context);
     final isTaxiOperator = operatorDomains.contains('taxi');
-    final isBusOperator = operatorDomains.contains('bus');
-    final isStaysOperator = operatorDomains.contains('stays');
-    final isFoodOperator = operatorDomains.contains('food');
-    final isRealestateOperator = operatorDomains.contains('realestate');
-    final isCommerceOperator = operatorDomains.contains('commerce');
-    final isFreightOperator = operatorDomains.contains('freight');
-    final isCarrentalOperator = operatorDomains.contains('carrental');
+    // operator flags currently unused in grid
     // Category tiles to keep homescreen compact (flat, high‑contrast grid)
     if(taxiOnly){
       final taxiSpecs = <_SatSpec>[
@@ -351,61 +357,115 @@ class HomeRouteGrid extends StatelessWidget{
         },
       );
     }
-    // Flat list: show all modules directly without grouping into sub-grids,
-    // except Payments which is bundled again into a dedicated hub.
+    // Flat list of high-level hubs. Each hub opens a compact sub-grid that
+    // groups related domains (finance, mobility, logistics, commerce, etc.).
+    // Payments stays as a dedicated finance hub.
     final cats = <_SatSpec>[
       if(!taxiOnly)
         _SatSpec(
           icon: Icons.account_balance_wallet_outlined,
-          label: l.homePayments,
+          label: l.isArabic ? 'المال والمحفظة' : 'Finance & Wallet',
           onTap: (){
             Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
-              title: l.homePayments,
+              title: l.isArabic ? 'المال والمحفظة' : 'Finance & Wallet',
               specs: [
+                _SatSpec(icon: Icons.account_balance_wallet_outlined, label: l.homeWallet, onTap: actions.onWallet, tint: Tokens.colorPayments),
                 _SatSpec(icon: Icons.receipt_long_outlined, label: l.homeBills, onTap: actions.onBills, tint: Tokens.colorPayments),
+                _SatSpec(icon: Icons.history, label: l.historyTitle, onTap: actions.onHistory, tint: Tokens.colorPayments),
                 _SatSpec(icon: Icons.list_alt, label: l.homeRequests, onTap: actions.onRequests, tint: Tokens.colorPayments),
                 _SatSpec(icon: Icons.card_giftcard, label: l.homeVouchers, onTap: actions.onVouchers, tint: Tokens.colorPayments),
+                _SatSpec(icon: Icons.point_of_sale, label: l.homeMerchantPos, onTap: actions.onMerchantPOS, tint: Tokens.colorPayments),
               ],
               compact: true,
             )));
           },
           tint: Tokens.colorPayments,
         ),
-      // Taxi
+      // Mobility & Travel cluster: taxi, bus, flights
       _SatSpec(
-        icon: Icons.local_taxi_outlined,
-        label: l.homeTaxiRider,
-        onTap: actions.onTaxiRider,
-        tint: Tokens.colorTaxi,
-      ),
-      if (showOps && isTaxiOperator)
-        _SatSpec(
-          icon: Icons.support_agent,
-          label: l.homeTaxiOperator,
-          onTap: actions.onTaxiOperator,
-          tint: Tokens.colorTaxi,
-        ),
-      // Bus & mobility (end-user only sees Bus, Bus Operator stays im Operator-Dashboard)
-      _SatSpec(icon: Icons.directions_bus_filled, label: 'Bus', onTap: actions.onBus, tint: Tokens.colorBus),
-      _SatSpec(icon: Icons.local_shipping_outlined, label: 'Courier & Transport', onTap: actions.onFreight, tint: Tokens.colorCourierTransport),
-      // Food
-      _SatSpec(icon: Icons.restaurant_outlined, label: l.homeFood, onTap: actions.onFood, tint: Tokens.colorFood),
-      // Stays & flights
-      _SatSpec(icon: Icons.hotel, label: l.homeStays, onTap: actions.onStays, tint: Tokens.colorHotelsStays),
-      _SatSpec(icon: Icons.flight_takeoff, label: l.homeFlights, onTap: actions.onFlights, tint: Tokens.colorHotelsStays),
-      // Marketplace & services
-      _SatSpec(
-        icon: Icons.storefront,
-        label: l.homeCommerce,
+        icon: Icons.travel_explore,
+        label: l.isArabic ? 'التنقل والسفر' : 'Mobility & Travel',
         onTap: (){
           Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
-            title: l.homeCommerce,
+            title: l.isArabic ? 'التنقل والسفر' : 'Mobility & Travel',
             specs: [
-              _SatSpec(icon: Icons.agriculture, label: l.homeAgriculture, onTap: actions.onAgriculture, tint: Tokens.colorAgricultureLivestock),
+              _SatSpec(icon: Icons.route, label: l.mobilityTitle, onTap: actions.onMobility, tint: Tokens.colorTaxi),
+              _SatSpec(icon: Icons.local_taxi_outlined, label: l.homeTaxiRider, onTap: actions.onTaxiRider, tint: Tokens.colorTaxi),
+              _SatSpec(icon: Icons.local_taxi, label: l.homeTaxiDriver, onTap: actions.onTaxiDriver, tint: Tokens.colorTaxi),
+              _SatSpec(icon: Icons.support_agent, label: l.homeTaxiOperator, onTap: actions.onTaxiOperator, tint: Tokens.colorTaxi),
+              _SatSpec(icon: Icons.directions_bus, label: l.busTitle, onTap: actions.onBus, tint: Tokens.colorBus),
+              _SatSpec(icon: Icons.flight_takeoff, label: l.homeFlights, onTap: actions.onFlights, tint: Tokens.colorHotelsStays),
+            ],
+            compact: true,
+          )));
+        },
+        tint: Tokens.colorBus,
+      ),
+      // Delivery & Logistics: courier, live courier, freight
+      _SatSpec(
+        icon: Icons.local_shipping_outlined,
+        label: l.isArabic ? 'التوصيل والخدمات اللوجستية' : 'Delivery & Logistics',
+        onTap: (){
+          Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
+            title: l.isArabic ? 'التوصيل والخدمات اللوجستية' : 'Delivery & Logistics',
+            specs: [
+              _SatSpec(icon: Icons.local_shipping_outlined, label: 'Courier', onTap: actions.onCourier, tint: Tokens.colorCourierTransport),
+              _SatSpec(icon: Icons.delivery_dining_outlined, label: 'Courier Live', onTap: actions.onTira, tint: Tokens.colorCourierTransport),
+              _SatSpec(icon: Icons.local_shipping, label: 'Freight', onTap: actions.onFreight, tint: Tokens.colorCourierTransport),
+            ],
+            compact: true,
+          )));
+        },
+        tint: Tokens.colorCourierTransport,
+      ),
+      // Food & Shopping: food orders + commerce entry point
+      _SatSpec(
+        icon: Icons.restaurant_outlined,
+        label: l.isArabic ? 'الطعام والتسوق' : 'Food & Shopping',
+        onTap: (){
+          Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
+            title: l.isArabic ? 'الطعام والتسوق' : 'Food & Shopping',
+            specs: [
+              _SatSpec(icon: Icons.restaurant_outlined, label: l.homeFood, onTap: actions.onFood, tint: Tokens.colorFood),
+              _SatSpec(icon: Icons.receipt_long_outlined, label: l.foodOrdersTitle, onTap: actions.onFoodOrders, tint: Tokens.colorFood),
+              _SatSpec(icon: Icons.storefront_outlined, label: l.homeCommerce, onTap: actions.onCommerce, tint: Tokens.colorBuildingMaterials),
+            ],
+            compact: true,
+          )));
+        },
+        tint: Tokens.colorFood,
+      ),
+      // Stays & Real Estate
+      _SatSpec(
+        icon: Icons.hotel,
+        label: l.isArabic ? 'الإقامة والعقارات' : 'Stays & Real Estate',
+        onTap: (){
+          Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
+            title: l.isArabic ? 'الإقامة والعقارات' : 'Stays & Real Estate',
+            specs: [
+              _SatSpec(icon: Icons.hotel, label: l.homeStays, onTap: actions.onStays, tint: Tokens.colorHotelsStays),
+              _SatSpec(icon: Icons.business_center_outlined, label: l.staysOperatorTitle, onTap: actions.onStaysHotel, tint: Tokens.colorHotelsStays),
+              _SatSpec(icon: Icons.apartment_outlined, label: 'Stays Pro', onTap: actions.onStaysPro, tint: Tokens.colorHotelsStays),
+              _SatSpec(icon: Icons.home_work_outlined, label: l.realEstateTitle, onTap: actions.onRealestate, tint: Tokens.colorHotelsStays),
+            ],
+            compact: true,
+          )));
+        },
+        tint: Tokens.colorHotelsStays,
+      ),
+      // Agriculture, vehicles & equipment
+      _SatSpec(
+        icon: Icons.storefront,
+        label: l.isArabic ? 'الزراعة والتجارة' : 'Agriculture & Trade',
+        onTap: (){
+          Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
+            title: l.isArabic ? 'الزراعة والتجارة' : 'Agriculture & Trade',
+            specs: [
+              _SatSpec(icon: Icons.store_mall_directory_outlined, label: l.homeAgriculture, onTap: actions.onAgriculture, tint: Tokens.colorAgricultureLivestock),
+              _SatSpec(icon: Icons.agriculture, label: l.homeLivestock, onTap: actions.onLivestock, tint: Tokens.colorAgricultureLivestock),
               _SatSpec(icon: Icons.directions_car_filled_outlined, label: 'Carmarket', onTap: actions.onCarmarket, tint: Tokens.colorCars),
               _SatSpec(icon: Icons.car_rental, label: 'Carrental', onTap: actions.onCarrental, tint: Tokens.colorCars),
-              _SatSpec(icon: Icons.home_work_outlined, label: l.realEstateTitle, onTap: actions.onRealestate, tint: Tokens.colorHotelsStays),
-              _SatSpec(icon: Icons.work_outline, label: l.homeJobs, onTap: actions.onJobs, tint: Tokens.colorBuildingMaterials),
+              _SatSpec(icon: Icons.engineering, label: l.equipmentTitle, onTap: actions.onEquipment, tint: Tokens.colorBuildingMaterials),
               _SatSpec(icon: Icons.construction_outlined, label: l.homeBuildingMaterials, onTap: actions.onBuildingMaterials, tint: Tokens.colorBuildingMaterials),
             ],
             compact: true,
@@ -413,21 +473,22 @@ class HomeRouteGrid extends StatelessWidget{
         },
         tint: Tokens.colorBuildingMaterials,
       ),
-      _SatSpec(icon: Icons.medical_services_outlined, label: l.homeDoctors, onTap: actions.onDoctors, tint: Tokens.colorCourierTransport),
-      // Chat
-      _SatSpec(icon: Icons.chat_bubble_outline, label: l.homeChat, onTap: actions.onChat, tint: Tokens.accent),
-      // Courier & Transport split
+      // Jobs & Services: jobs, doctors, chat
       _SatSpec(
-        icon: Icons.local_shipping_outlined,
-        label: 'Courier',
-        onTap: actions.onCourier,
-        tint: Tokens.colorCourierTransport,
-      ),
-      _SatSpec(
-        icon: Icons.local_shipping,
-        label: 'Transport',
-        onTap: actions.onFreight,
-        tint: Tokens.colorCourierTransport,
+        icon: Icons.work_outline,
+        label: l.isArabic ? 'الوظائف والخدمات' : 'Jobs & Services',
+        onTap: (){
+          Navigator.of(context).push(MaterialPageRoute(builder: (_)=> HomeSubGrid(
+            title: l.isArabic ? 'الوظائف والخدمات' : 'Jobs & Services',
+            specs: [
+              _SatSpec(icon: Icons.work_outline, label: l.homeJobs, onTap: actions.onJobs, tint: Tokens.colorBuildingMaterials),
+              _SatSpec(icon: Icons.medical_services_outlined, label: l.homeDoctors, onTap: actions.onDoctors, tint: Tokens.colorCourierTransport),
+              _SatSpec(icon: Icons.chat_bubble_outline, label: l.homeChat, onTap: actions.onChat, tint: Tokens.accent),
+            ],
+            compact: true,
+          )));
+        },
+        tint: Tokens.colorBuildingMaterials,
       ),
       // Admin / Ops tiles (only when applicable)
       if(showOps) _SatSpec(icon: Icons.admin_panel_settings, label: 'Ops Console', onTap: actions.onOps, tint: Tokens.lightFocus),
@@ -520,13 +581,9 @@ class _LiquidGlassTile extends StatelessWidget{
   @override Widget build(BuildContext context){
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final Color cardBg = isDark
-        ? theme.colorScheme.surface.withValues(alpha: .96)
-        : Colors.white;
-    final Color border = isDark
-        ? Colors.white.withValues(alpha: .18)
-        : Colors.black.withValues(alpha: .10);
-    final Color iconBg = (tint ?? theme.colorScheme.primary).withValues(alpha: .12);
+    final Color baseTint = tint ?? theme.colorScheme.primary;
+    final Color border = Colors.white.withValues(alpha: isDark ? .26 : .36);
+    final Color iconBg = baseTint.withValues(alpha: .20);
     final Color iconFg = tint ?? theme.colorScheme.primary;
     final Color textColor = theme.colorScheme.onSurface.withValues(alpha: .90);
     return Semantics(
@@ -535,38 +592,73 @@ class _LiquidGlassTile extends StatelessWidget{
       child: Padding(
         padding: const EdgeInsets.all(1),
         child: Material(
-          color: cardBg,
+          color: Colors.transparent,
           shape: RoundedRectangleBorder(
-            borderRadius: Tokens.radiusSm,
+            borderRadius: BorderRadius.circular(24),
             side: BorderSide(color: border),
           ),
           child: InkWell(
             onTap: onTap,
-            borderRadius: Tokens.radiusSm,
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: iconBg,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(icon, size: 30, color: iconFg),
+            borderRadius: BorderRadius.circular(24),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: isDark ? .22 : .32),
+                    baseTint.withValues(alpha: .18),
+                    Colors.white.withValues(alpha: isDark ? .10 : .18),
+                  ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: baseTint.withValues(alpha: .50),
+                    blurRadius: 20,
+                    spreadRadius: 1,
+                    offset: const Offset(0, 12),
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: textColor,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
-                    ),
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? .55 : .30),
+                    blurRadius: 28,
+                    spreadRadius: -4,
+                    offset: const Offset(0, 20),
                   ),
                 ],
+              ),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        gradient: RadialGradient(
+                          center: const Alignment(-0.3, -0.4),
+                          radius: 1.0,
+                          colors: [
+                            Colors.white.withValues(alpha: .80),
+                            iconBg,
+                          ],
+                        ),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, size: 28, color: iconFg),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: textColor,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -813,7 +905,19 @@ class _HomeRoutePaletteState extends State<HomeRoutePalette>{
       ),
       const SizedBox(height: 8),
       Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child:
-        Wrap(spacing: 8, children: [
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          _QuickChip(
+            icon: Icons.qr_code_scanner,
+            label: l.qaScanPay,
+            onTap: widget.actions.onScanPay,
+            tint: Tokens.colorPayments,
+          ),
+          _QuickChip(
+            icon: Icons.route,
+            label: l.mobilityTitle,
+            onTap: widget.actions.onMobility,
+            tint: Tokens.colorTaxi,
+          ),
           _QuickChip(
             icon: Icons.local_taxi_outlined,
             label: l.homeTaxiRider,
@@ -833,10 +937,208 @@ class _HomeRoutePaletteState extends State<HomeRoutePalette>{
               onTap: widget.actions.onTaxiOperator,
               tint: Tokens.colorTaxi,
             ),
+          _QuickChip(
+            icon: Icons.directions_bus_filled,
+            label: l.busTitle,
+            onTap: widget.actions.onBus,
+            tint: Tokens.colorBus,
+          ),
+          _QuickChip(
+            icon: Icons.restaurant_outlined,
+            label: l.homeFood,
+            onTap: widget.actions.onFood,
+            tint: Tokens.colorFood,
+          ),
+          _QuickChip(
+            icon: Icons.hotel,
+            label: l.homeStays,
+            onTap: widget.actions.onStays,
+            tint: Tokens.colorHotelsStays,
+          ),
+          _QuickChip(
+            icon: Icons.storefront,
+            label: l.homeCommerce,
+            onTap: widget.actions.onCommerce,
+            tint: Tokens.colorBuildingMaterials,
+          ),
+          _QuickChip(
+            icon: Icons.point_of_sale,
+            label: l.homeMerchantPos,
+            onTap: widget.actions.onMerchantPOS,
+            tint: Tokens.colorPayments,
+          ),
         ]),
       ),
       const SizedBox(height: 8),
-      Expanded(child: ListView.builder(itemCount: recents.length, itemBuilder: (_,i)=>ListTile(title: Text(recents[i]), leading: const Icon(Icons.chevron_right))))
+      Expanded(child: ListView(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.qr_code_scanner),
+            title: Text(l.qaScanPay),
+            onTap: widget.actions.onScanPay,
+          ),
+          ListTile(
+            leading: const Icon(Icons.account_balance_wallet_outlined),
+            title: Text(l.homeWallet),
+            subtitle: Text(l.historyTitle),
+            onTap: widget.actions.onHistory,
+          ),
+          ListTile(
+            leading: const Icon(Icons.swap_horiz),
+            title: Text(l.qaP2P),
+            onTap: widget.actions.onP2P,
+          ),
+          ListTile(
+            leading: const Icon(Icons.account_balance_wallet_outlined),
+            title: Text(l.qaTopup),
+            onTap: widget.actions.onTopup,
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.route),
+            title: Text(l.mobilityTitle),
+            onTap: widget.actions.onMobility,
+          ),
+          ListTile(
+            leading: const Icon(Icons.local_taxi_outlined),
+            title: Text(l.homeTaxiRider),
+            onTap: widget.actions.onTaxiRider,
+          ),
+          ListTile(
+            leading: const Icon(Icons.local_taxi),
+            title: Text(l.homeTaxiDriver),
+            onTap: widget.actions.onTaxiDriver,
+          ),
+          if(widget.showTaxiOperator)
+            ListTile(
+              leading: const Icon(Icons.support_agent),
+              title: Text(l.homeTaxiOperator),
+              onTap: widget.actions.onTaxiOperator,
+            ),
+          ListTile(
+            leading: const Icon(Icons.directions_bus_filled),
+            title: Text(l.busTitle),
+            onTap: widget.actions.onBus,
+          ),
+          ListTile(
+            leading: const Icon(Icons.support_agent),
+            title: const Text('Bus Operator'),
+            onTap: widget.actions.onBusOperator,
+          ),
+          ListTile(
+            leading: const Icon(Icons.dashboard_customize_outlined),
+            title: const Text('Bus Control'),
+            onTap: widget.actions.onBusControl,
+          ),
+          ListTile(
+            leading: const Icon(Icons.local_shipping_outlined),
+            title: const Text('Courier'),
+            onTap: widget.actions.onCourier,
+          ),
+          ListTile(
+            leading: const Icon(Icons.delivery_dining_outlined),
+            title: const Text('Courier Live'),
+            onTap: widget.actions.onTira,
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.restaurant_outlined),
+            title: Text(l.homeFood),
+            onTap: widget.actions.onFood,
+          ),
+          ListTile(
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: Text(l.foodOrdersTitle),
+            onTap: widget.actions.onFoodOrders,
+          ),
+          ListTile(
+            leading: const Icon(Icons.hotel),
+            title: Text(l.homeStays),
+            onTap: widget.actions.onStays,
+          ),
+          ListTile(
+            leading: const Icon(Icons.business_center_outlined),
+            title: Text(l.staysOperatorTitle),
+            onTap: widget.actions.onStaysHotel,
+          ),
+          ListTile(
+            leading: const Icon(Icons.apartment_outlined),
+            title: const Text('Stays Pro'),
+            onTap: widget.actions.onStaysPro,
+          ),
+          ListTile(
+            leading: const Icon(Icons.flight_takeoff),
+            title: Text(l.homeFlights),
+            onTap: widget.actions.onFlights,
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.store_mall_directory_outlined),
+            title: Text(l.homeAgriculture),
+            onTap: widget.actions.onAgriculture,
+          ),
+          ListTile(
+            leading: const Icon(Icons.agriculture),
+            title: Text(l.homeLivestock),
+            onTap: widget.actions.onLivestock,
+          ),
+          ListTile(
+            leading: const Icon(Icons.directions_car_filled_outlined),
+            title: const Text('Carmarket'),
+            onTap: widget.actions.onCarmarket,
+          ),
+          ListTile(
+            leading: const Icon(Icons.car_rental),
+            title: const Text('Carrental'),
+            onTap: widget.actions.onCarrental,
+          ),
+          ListTile(
+            leading: const Icon(Icons.engineering),
+            title: Text(l.equipmentTitle),
+            onTap: widget.actions.onEquipment,
+          ),
+          ListTile(
+            leading: const Icon(Icons.home_work_outlined),
+            title: Text(l.realEstateTitle),
+            onTap: widget.actions.onRealestate,
+          ),
+          ListTile(
+            leading: const Icon(Icons.work_outline),
+            title: Text(l.homeJobs),
+            onTap: widget.actions.onJobs,
+          ),
+          ListTile(
+            leading: const Icon(Icons.construction_outlined),
+            title: Text(l.homeBuildingMaterials),
+            onTap: widget.actions.onBuildingMaterials,
+          ),
+          ListTile(
+            leading: const Icon(Icons.storefront_outlined),
+            title: Text(l.homeCommerce),
+            onTap: widget.actions.onCommerce,
+          ),
+          ListTile(
+            leading: const Icon(Icons.point_of_sale),
+            title: Text(l.homeMerchantPos),
+            onTap: widget.actions.onMerchantPOS,
+          ),
+          ListTile(
+            leading: const Icon(Icons.medical_services_outlined),
+            title: Text(l.homeDoctors),
+            onTap: widget.actions.onDoctors,
+          ),
+          ListTile(
+            leading: const Icon(Icons.chat_bubble_outline),
+            title: Text(l.homeChat),
+            onTap: widget.actions.onChat,
+          ),
+          const Divider(),
+          ...recents.map((r)=>ListTile(
+            leading: const Icon(Icons.history),
+            title: Text(r),
+          )),
+        ],
+      ))
     ]);
   }
 }
@@ -855,42 +1157,138 @@ class _HomeRouteSheetsState extends State<HomeRouteSheets>{
       Positioned.fill(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children:[
         const SizedBox(height: 8),
         Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child:
-          Row(children:[
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            _QuickChip(
+              icon: Icons.qr_code_scanner,
+              label: l.qaScanPay,
+              onTap: widget.actions.onScanPay,
+              tint: Tokens.colorPayments,
+            ),
+            _QuickChip(
+              icon: Icons.route,
+              label: l.mobilityTitle,
+              onTap: widget.actions.onMobility,
+              tint: Tokens.colorTaxi,
+            ),
             _QuickChip(
               icon: Icons.local_taxi_outlined,
               label: l.homeTaxiRider,
               onTap: widget.actions.onTaxiRider,
               tint: Tokens.colorTaxi,
             ),
-            const SizedBox(width:8),
             _QuickChip(
               icon: Icons.local_taxi,
               label: l.homeTaxiDriver,
               onTap: widget.actions.onTaxiDriver,
               tint: Tokens.colorTaxi,
             ),
-            if(widget.showTaxiOperator)...[
-              const SizedBox(width:8),
+            if(widget.showTaxiOperator)
               _QuickChip(
                 icon: Icons.support_agent,
                 label: l.homeTaxiOperator,
                 onTap: widget.actions.onTaxiOperator,
                 tint: Tokens.colorTaxi,
               ),
-            ],
+            _QuickChip(
+              icon: Icons.directions_bus_filled,
+              label: l.busTitle,
+              onTap: widget.actions.onBus,
+              tint: Tokens.colorBus,
+            ),
+            _QuickChip(
+              icon: Icons.restaurant_outlined,
+              label: l.homeFood,
+              onTap: widget.actions.onFood,
+              tint: Tokens.colorFood,
+            ),
+            _QuickChip(
+              icon: Icons.hotel,
+              label: l.homeStays,
+              onTap: widget.actions.onStays,
+              tint: Tokens.colorHotelsStays,
+            ),
+            _QuickChip(
+              icon: Icons.storefront,
+              label: l.homeCommerce,
+              onTap: widget.actions.onCommerce,
+              tint: Tokens.colorBuildingMaterials,
+            ),
           ])),
       ])),
       DraggableScrollableSheet(
-        initialChildSize: .58, minChildSize: .40, maxChildSize: .95,
-        snap: true, snapSizes: const [.40, .58, .95],
+        initialChildSize: .68, minChildSize: .42, maxChildSize: .95,
+        snap: true, snapSizes: const [.42, .68, .95],
         builder: (_, controller){
-          return _SheetContainer(title: l.homeTaxi, controller: controller, child: ListView(controller: controller, children: [
-            ListTile(title: Text(l.homeTaxiRider), trailing: const Icon(Icons.chevron_right), onTap: widget.actions.onTaxiRider),
-            ListTile(title: Text(l.homeTaxiDriver), trailing: const Icon(Icons.chevron_right), onTap: widget.actions.onTaxiDriver),
-            if(widget.showTaxiOperator)
-              ListTile(title: Text(l.homeTaxiOperator), trailing: const Icon(Icons.chevron_right), onTap: widget.actions.onTaxiOperator),
-            const SizedBox(height: 8),
-          ]));
+          return _SheetContainer(
+            title: l.homeActions,
+            controller: controller,
+            child: ListView(controller: controller, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+                child: Text(l.homePayments, style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              ListTile(leading: const Icon(Icons.qr_code_scanner), title: Text(l.qaScanPay), onTap: widget.actions.onScanPay),
+              ListTile(leading: const Icon(Icons.account_balance_wallet_outlined), title: Text(l.homeWallet), subtitle: Text(l.historyTitle), onTap: widget.actions.onHistory),
+              ListTile(leading: const Icon(Icons.swap_horiz), title: Text(l.qaP2P), onTap: widget.actions.onP2P),
+              ListTile(leading: const Icon(Icons.account_balance_wallet_outlined), title: Text(l.qaTopup), onTap: widget.actions.onTopup),
+              ListTile(leading: const Icon(Icons.point_of_sale), title: Text(l.homeMerchantPos), onTap: widget.actions.onMerchantPOS),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+                child: Text(l.mobilityTitle, style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              ListTile(leading: const Icon(Icons.route), title: Text(l.mobilityTitle), onTap: widget.actions.onMobility),
+              ListTile(leading: const Icon(Icons.local_taxi_outlined), title: Text(l.homeTaxiRider), onTap: widget.actions.onTaxiRider),
+              ListTile(leading: const Icon(Icons.local_taxi), title: Text(l.homeTaxiDriver), onTap: widget.actions.onTaxiDriver),
+              if(widget.showTaxiOperator)
+                ListTile(leading: const Icon(Icons.support_agent), title: Text(l.homeTaxiOperator), onTap: widget.actions.onTaxiOperator),
+              ListTile(leading: const Icon(Icons.directions_bus_filled), title: Text(l.busTitle), onTap: widget.actions.onBus),
+              ListTile(leading: const Icon(Icons.support_agent), title: const Text('Bus Operator'), onTap: widget.actions.onBusOperator),
+              ListTile(leading: const Icon(Icons.dashboard_customize_outlined), title: const Text('Bus Control'), onTap: widget.actions.onBusControl),
+              ListTile(leading: const Icon(Icons.local_shipping_outlined), title: const Text('Courier'), onTap: widget.actions.onCourier),
+              ListTile(leading: const Icon(Icons.local_shipping), title: const Text('Courier'), onTap: widget.actions.onCourier),
+              ListTile(leading: const Icon(Icons.delivery_dining_outlined), title: const Text('Courier Live'), onTap: widget.actions.onTira),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+                child: Text(l.homeFood, style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              ListTile(leading: const Icon(Icons.restaurant_outlined), title: Text(l.homeFood), onTap: widget.actions.onFood),
+              ListTile(leading: const Icon(Icons.receipt_long_outlined), title: Text(l.foodOrdersTitle), onTap: widget.actions.onFoodOrders),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+                child: Text(l.homeStays, style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              ListTile(leading: const Icon(Icons.hotel), title: Text(l.homeStays), onTap: widget.actions.onStays),
+              ListTile(leading: const Icon(Icons.business_center_outlined), title: Text(l.staysOperatorTitle), onTap: widget.actions.onStaysHotel),
+              ListTile(leading: const Icon(Icons.apartment_outlined), title: const Text('Stays Pro'), onTap: widget.actions.onStaysPro),
+              ListTile(leading: const Icon(Icons.flight_takeoff), title: Text(l.homeFlights), onTap: widget.actions.onFlights),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+                child: Text(l.homeCommerce, style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              ListTile(leading: const Icon(Icons.store_mall_directory_outlined), title: Text(l.homeAgriculture), onTap: widget.actions.onAgriculture),
+              ListTile(leading: const Icon(Icons.agriculture), title: Text(l.homeLivestock), onTap: widget.actions.onLivestock),
+              ListTile(leading: const Icon(Icons.directions_car_filled_outlined), title: const Text('Carmarket'), onTap: widget.actions.onCarmarket),
+              ListTile(leading: const Icon(Icons.car_rental), title: const Text('Carrental'), onTap: widget.actions.onCarrental),
+              ListTile(leading: const Icon(Icons.engineering), title: Text(l.equipmentTitle), onTap: widget.actions.onEquipment),
+              ListTile(leading: const Icon(Icons.home_work_outlined), title: Text(l.realEstateTitle), onTap: widget.actions.onRealestate),
+              ListTile(leading: const Icon(Icons.work_outline), title: Text(l.homeJobs), onTap: widget.actions.onJobs),
+              ListTile(leading: const Icon(Icons.construction_outlined), title: Text(l.homeBuildingMaterials), onTap: widget.actions.onBuildingMaterials),
+              ListTile(leading: const Icon(Icons.storefront_outlined), title: Text(l.homeCommerce), onTap: widget.actions.onCommerce),
+              ListTile(leading: const Icon(Icons.point_of_sale), title: Text(l.homeMerchantPos), onTap: widget.actions.onMerchantPOS),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+                child: Text('Services', style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              ListTile(leading: const Icon(Icons.medical_services_outlined), title: Text(l.homeDoctors), onTap: widget.actions.onDoctors),
+              ListTile(leading: const Icon(Icons.chat_bubble_outline), title: Text(l.homeChat), onTap: widget.actions.onChat),
+              const SizedBox(height: 12),
+            ]),
+          );
         },
       ),
       const SizedBox.shrink(),

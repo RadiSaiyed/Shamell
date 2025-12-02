@@ -5,12 +5,12 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
-import 'glass.dart';
 import 'l10n.dart';
 import 'format.dart' show fmtCents;
 import 'payments_shell.dart';
 import 'history_page.dart';
 import 'payments_send.dart' show PayActionButton;
+import 'ui_kit.dart';
 import '../main.dart' show AppBG;
 
 Future<Map<String, String>> _hdrPayDash({bool json = false}) async {
@@ -126,7 +126,7 @@ class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage> {
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
-    final bg = const AppBG();
+    const bg = AppBG();
     final body = ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -161,223 +161,167 @@ class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage> {
             ),
           ),
         const SizedBox(height: 16),
-        // Enduser card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.person_outline),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المستخدم النهائي' : 'Enduser',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+        // Enduser section
+        FormSection(
+          title: l.isArabic ? 'المستخدم النهائي' : 'Enduser',
+          subtitle: l.isArabic
+              ? 'المحفظة الرئيسية والمدفوعات الأخيرة'
+              : 'Main wallet and recent payments',
+          children: [
+            Text(
+              _walletId.isEmpty
+                  ? (l.isArabic ? 'لم يتم إنشاء محفظة بعد' : 'No wallet created yet')
+                  : '${l.homeWallet}: $_walletId',
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _balanceCents == null
+                  ? (l.isArabic ? 'الرصيد غير معروف' : 'Balance unknown')
+                  : '${fmtCents(_balanceCents!)} $_currency',
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _recentCount == 0
+                  ? (l.isArabic ? 'لا توجد مدفوعات حديثة' : 'No recent payments')
+                  : (l.isArabic
+                      ? '$_recentCount عملية حديثة'
+                      : '$_recentCount recent payment(s)'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: PayActionButton(
+                    icon: Icons.account_balance_wallet_outlined,
+                    label: l.homePayments,
+                    onTap: _walletId.isEmpty ? () {} : _openPayments,
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _walletId.isEmpty
-                    ? (l.isArabic ? 'لم يتم إنشاء محفظة بعد' : 'No wallet created yet')
-                    : '${l.homeWallet}: $_walletId',
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _balanceCents == null
-                    ? (l.isArabic ? 'الرصيد غير معروف' : 'Balance unknown')
-                    : '${fmtCents(_balanceCents!)} $_currency',
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _recentCount == 0
-                    ? (l.isArabic ? 'لا توجد مدفوعات حديثة' : 'No recent payments')
-                    : (l.isArabic
-                        ? '$_recentCount عملية حديثة'
-                        : '$_recentCount recent payment(s)'),
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: PayActionButton(
-                      icon: Icons.account_balance_wallet_outlined,
-                      label: l.homePayments,
-                      onTap: _walletId.isEmpty ? () {} : _openPayments,
-                    ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: PayActionButton(
+                    icon: Icons.history,
+                    label: l.viewAll,
+                    onTap: _walletId.isEmpty ? () {} : _openHistory,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: PayActionButton(
-                      icon: Icons.history,
-                      label: l.viewAll,
-                      onTap: _walletId.isEmpty ? () {} : _openHistory,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                ),
+              ],
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Operator card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.support_agent_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المشغل (Payments)' : 'Operator (Payments)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic ? 'الأدوار' : 'Roles',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 4),
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: [
-                  for (final r in _roles.where((r) => r == 'seller' || r.startsWith('operator_')))
-                    Chip(
-                      label: Text(r),
-                      backgroundColor: Tokens.colorPayments.withValues(alpha: .14),
-                      shape: StadiumBorder(
-                        side: BorderSide(
-                          color: Tokens.colorPayments.withValues(alpha: .9),
-                        ),
+        // Operator section
+        FormSection(
+          title: l.isArabic ? 'المشغل (Payments)' : 'Operator (Payments)',
+          subtitle: l.isArabic
+              ? 'أدوار المشغل وMerchant POS'
+              : 'Operator roles and merchant POS access',
+          children: [
+            Text(
+              l.isArabic ? 'الأدوار' : 'Roles',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                for (final r in _roles.where((r) => r == 'seller' || r.startsWith('operator_')))
+                  Chip(
+                    label: Text(r),
+                    backgroundColor: Tokens.colorPayments.withValues(alpha: .14),
+                    shape: StadiumBorder(
+                      side: BorderSide(
+                        color: Tokens.colorPayments.withValues(alpha: .9),
                       ),
                     ),
-                  if (!_roles.any((r) => r == 'seller' || r.startsWith('operator_')))
-                    Text(
-                      l.isArabic
-                          ? 'لا توجد أدوار مشغل Payments'
-                          : 'No Payments operator roles for this phone',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                      ),
+                  ),
+                if (!_roles.any((r) => r == 'seller' || r.startsWith('operator_')))
+                  Text(
+                    l.isArabic
+                        ? 'لا توجد أدوار مشغل Payments'
+                        : 'No Payments operator roles for this phone',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
                     ),
-                ],
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l.isArabic
+                  ? 'استخدم Merchant POS ولوحة المشغل لمتابعة المدفوعات للتجار.'
+                  : 'Use Merchant POS and operator consoles to handle merchant payments.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'استخدم Merchant POS ولوحة المشغل لمتابعة المدفوعات للتجار.'
-                    : 'Use Merchant POS and operator consoles to handle merchant payments.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Admin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.admin_panel_settings_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    l.isArabic ? 'المدير (Payments)' : 'Admin (Payments)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Admin section
+        FormSection(
+          title: l.isArabic ? 'المدير (Payments)' : 'Admin (Payments)',
+          subtitle: l.isArabic
+              ? 'صلاحيات الإدارة وتقارير Ops Admin'
+              : 'Admin rights and Ops Admin reports',
+          children: [
+            Text(
+              _isAdmin
+                  ? (l.isArabic ? 'هذا الهاتف لديه صلاحيات المدير.' : 'This phone has admin rights.')
+                  : (l.isArabic ? 'لا توجد صلاحيات المدير.' : 'No admin rights for this phone.'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l.isArabic
+                  ? 'استخدم وحدة Ops Admin لتقارير Payments وعمليات التصدير.'
+                  : 'Use the Ops Admin console for payments reporting and exports.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                _isAdmin
-                    ? (l.isArabic ? 'هذا الهاتف لديه صلاحيات المدير.' : 'This phone has admin rights.')
-                    : (l.isArabic ? 'لا توجد صلاحيات المدير.' : 'No admin rights for this phone.'),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                l.isArabic
-                    ? 'استخدم وحدة Ops Admin لتقارير Payments وعمليات التصدير.'
-                    : 'Use the Ops Admin console for payments reporting and exports.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        // Superadmin card
-        GlassPanel(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.security_outlined),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Superadmin (Payments)',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ],
+        // Superadmin section
+        FormSection(
+          title: 'Superadmin (Payments)',
+          subtitle: l.isArabic
+              ? 'تحكم كامل في الأدوار والحواجز المالية'
+              : 'Full control over roles and guardrails',
+          children: [
+            Text(
+              _isSuperadmin
+                  ? 'Superadmin: full control over roles, guardrails and finance for Payments.'
+                  : 'This phone is not Superadmin; Superadmin sees all roles and guardrails.',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                _isSuperadmin
-                    ? 'Superadmin: full control over roles, guardrails and finance for Payments.'
-                    : 'This phone is not Superadmin; Superadmin sees all roles and guardrails.',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Roles: ${_roles.join(", ")}',
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Operator domains: ${_operatorDomains.join(", ")}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
               ),
-              const SizedBox(height: 8),
-              Text(
-                'Roles: ${_roles.join(", ")}',
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Operator domains: ${_operatorDomains.join(", ")}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ],
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Payments – 4 levels'),
-        backgroundColor: Colors.transparent,
-      ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          bg,
-          Positioned.fill(
-            child: SafeArea(
-              child: body,
-            ),
-          ),
-        ],
-      ),
+    return DomainPageScaffold(
+      background: bg,
+      title: 'Payments',
+      child: body,
+      scrollable: false,
     );
   }
 }

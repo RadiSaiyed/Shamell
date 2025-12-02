@@ -3,24 +3,26 @@ import 'package:flutter/material.dart';
 class Tokens {
   // Core palette
   // Dark theme
-  static const Color surface = Color(0xFF0F172A); // slate-900
-  static const Color onSurface = Color(0xFFE5E7EB); // gray-200
-  static const Color primary = Color(0xFF0F766E); // petrol
+  // Deep navy surface with subtle blue tint for a cinematic glass backdrop.
+  static const Color surface = Color(0xFF050B1F); // soft navy instead of near-black
+  static const Color onSurface = Color(0xFFFFFFFF); // pure white text
+  // Vibrant blue primary, tuned for liquid-glass gradients and focus rings.
+  static const Color primary = Color(0xFF2563EB); // blue-600
   static const Color onPrimary = Color(0xFFFFFFFF); // white text
-  static const Color accent = Color(0xFF22D3EE); // cyan-400
-  static const Color border = Color(0xFF243047); // slate-800
-  static const Color focus = Color(0xFF93C5FD); // blue-300 (focus ring)
-  static const Color surfaceAlt = Color(0xFF111827); // slightly lighter panel
+  static const Color accent = Color(0xFF38BDF8); // sky/cyan-400
+  static const Color border = Color(0xFF111827); // subtle outline
+  static const Color focus = Color(0xFF60A5FA); // blue-400 (focus ring)
+  static const Color surfaceAlt = Color(0xFF02081C); // slightly lighter panel
   static const Color error = Color(0xFFEF4444); // red-500
   static const Color warning = Color(0xFFF59E0B); // amber-500
 
   // Light theme – calmer, brighter surface
-  static const Color lightSurface = Color(0xFFF3F4F6); // very light gray #F3F4F6
+  static const Color lightSurface = Color(0xFFE5F0FF); // soft blue-tinted paper
   static const Color lightSurfaceAlt = Color(0xFFFFFFFF); // white cards
-  static const Color lightOnSurface = Color(0xFF111827); // primary text #111827
-  static const Color lightOnSurfaceSecondary = Color(0xFF6B7280); // secondary text #6B7280
-  static const Color lightBorder = Color(0xFFE5E7EB); // subtle card border #E5E7EB
-  static const Color lightFocus = Color(0xFF0F766E); // petrol focus / primary
+  static const Color lightOnSurface = Color(0xFFFFFFFF); // white text
+  static const Color lightOnSurfaceSecondary = Color(0xFFFFFFFF); // white text
+  static const Color lightBorder = Color(0xFFD0E2FF); // subtle card border
+  static const Color lightFocus = Color(0xFF2563EB); // primary blue
 
   static const Duration motionFast = Duration(milliseconds: 120);
   static const Duration motionBase = Duration(milliseconds: 180);

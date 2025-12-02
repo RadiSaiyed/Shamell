@@ -9,7 +9,7 @@ import 'package:shamell_flutter/main.dart';
 void main() {
   setUp(() async {
     // Ensure SharedPreferences works without real disk IO.
-    SharedPreferences.setMockInitialValues(const <String, Object?>{});
+    SharedPreferences.setMockInitialValues(const <String, Object>{});
   });
 
   testWidgets('LoginPage shows EN labels', (tester) async {

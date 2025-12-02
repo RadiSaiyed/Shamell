@@ -9,7 +9,7 @@ import 'package:shamell_flutter/core/mobility_history.dart';
 
 void main() {
   setUp(() async {
-    SharedPreferences.setMockInitialValues(const <String, Object?>{});
+    SharedPreferences.setMockInitialValues(const <String, Object>{});
   });
 
   testWidgets('JourneyPage shows EN headings', (tester) async {
@@ -104,4 +104,3 @@ void main() {
     expect(find.text('لا توجد رحلات بعد'), findsOneWidget);
   });
 }
-

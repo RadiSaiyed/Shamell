@@ -115,7 +115,7 @@ class L10n {
   String get homeBus =>
       isArabic ? 'الحافلات' : 'Bus';
   String get homeChat =>
-      isArabic ? 'الدردشة' : 'Chat';
+      isArabic ? 'ميرسال' : 'Mirsaal';
   String get homeDoctors =>
       isArabic ? 'الأطباء' : 'Doctors';
   String get homeFlights =>
@@ -123,9 +123,9 @@ class L10n {
   String get homeJobs =>
       isArabic ? 'الوظائف' : 'Jobs';
   String get homeAgriculture =>
-      isArabic ? 'الزراعة والثروة الحيوانية' : 'Agriculture & Livestock';
+      isArabic ? 'سوق المنتجات الزراعية' : 'Agri Marketplace';
   String get homeLivestock =>
-      isArabic ? 'الزراعة والثروة الحيوانية' : 'Agriculture & Livestock';
+      isArabic ? 'سوق الثروة الحيوانية' : 'Livestock Marketplace';
   String get homeCommerce =>
       isArabic ? 'السوق' : 'Marketplace';
   String get homeMerchantPos =>
@@ -198,6 +198,233 @@ class L10n {
       isArabic ? 'خرج:' : 'Out:';
   String get chatInbox =>
       isArabic ? 'الوارد (مباشر عبر WS + استعلام)' : 'Inbox (live via WS + poll)';
+
+  // Mirsaal Identity / backup / dialogs
+  String get mirsaalIdentityTitle =>
+      isArabic ? 'هويتك' : 'Your ID';
+  String get mirsaalIdentityNotCreated =>
+      isArabic ? 'لم يتم إنشاء الهوية بعد' : 'Not created yet';
+  String get mirsaalIdentityHint =>
+      isArabic ? 'أنشئ هويتك للبدء.' : 'Create your identity to start.';
+  String get mirsaalDisplayNameOptional =>
+      isArabic ? 'اسم العرض (اختياري)' : 'Display name (optional)';
+  String get mirsaalGenerate =>
+      isArabic ? 'توليد' : 'Generate';
+  String get mirsaalRegisterWithRelay =>
+      isArabic ? 'التسجيل مع الخادم' : 'Register with relay';
+  String get mirsaalShowQrButton =>
+      isArabic ? 'إظهار رمز QR' : 'Show QR';
+  String get mirsaalCopyIdButton =>
+      isArabic ? 'نسخ المعرف' : 'Copy ID';
+  String get mirsaalIdCopiedSnack =>
+      isArabic ? 'تم نسخ المعرف' : 'ID copied';
+  String get mirsaalShareIdButton =>
+      isArabic ? 'مشاركة المعرف' : 'Share ID';
+  String get mirsaalBackupPassphraseButton =>
+      isArabic ? 'نسخة احتياطية (عبارة سرية)' : 'Backup (passphrase)';
+  String get mirsaalRestoreBackupButton =>
+      isArabic ? 'استعادة النسخة الاحتياطية' : 'Restore backup';
+  String get mirsaalBackupDialogTitle =>
+      isArabic ? 'لصق نص النسخة الاحتياطية' : 'Paste backup text';
+  String get mirsaalBackupDialogLabel =>
+      isArabic ? 'النسخة الاحتياطية' : 'Backup';
+  String get mirsaalDialogCancel =>
+      isArabic ? 'إلغاء' : 'Cancel';
+  String get mirsaalDialogOk =>
+      isArabic ? 'موافق' : 'OK';
+
+  // Mirsaal settings
+  String get mirsaalSettingsPrivacy =>
+      isArabic ? 'الخصوصية' : 'Privacy';
+  String get mirsaalSettingsAppearance =>
+      isArabic ? 'المظهر' : 'Appearance';
+  String get mirsaalSettingsNotifications =>
+      isArabic ? 'الإشعارات' : 'Notifications';
+  String get mirsaalSettingsChat =>
+      isArabic ? 'الدردشة' : 'Chat';
+  String get mirsaalSettingsMedia =>
+      isArabic ? 'الوسائط' : 'Media';
+  String get mirsaalSettingsStorage =>
+      isArabic ? 'إدارة التخزين' : 'Storage management';
+  String get mirsaalSettingsPasscode =>
+      isArabic ? 'قفل برمز' : 'Passcode lock';
+  String get mirsaalSettingsCalls =>
+      isArabic ? 'المكالمات' : 'Calls';
+  String get mirsaalSettingsRate =>
+      isArabic ? 'قيّم Mirsaal' : 'Rate Mirsaal';
+  String get mirsaalSettingsInviteFriends =>
+      isArabic ? 'دعوة الأصدقاء' : 'Invite friends';
+  String get mirsaalSettingsSupport =>
+      isArabic ? 'الدعم' : 'Support';
+  String get mirsaalSettingsPrivacyPolicy =>
+      isArabic ? 'سياسة الخصوصية' : 'Privacy Policy';
+  String get mirsaalSettingsTerms =>
+      isArabic ? 'شروط الاستخدام' : 'Terms of Service';
+  String get mirsaalSettingsLicense =>
+      isArabic ? 'الترخيص' : 'License';
+  String get mirsaalSettingsAdvanced =>
+      isArabic ? 'متقدم' : 'Advanced';
+
+  // Mirsaal bottom tabs
+  String get mirsaalTabContacts =>
+      isArabic ? 'جهات الاتصال' : 'Contacts';
+  String get mirsaalTabChats =>
+      isArabic ? 'الدردشات' : 'Chats';
+  String get mirsaalTabProfile =>
+      isArabic ? 'الملف الشخصي' : 'Profile';
+  String get mirsaalTabSettings =>
+      isArabic ? 'الإعدادات' : 'Settings';
+  String get mirsaalTabChannel =>
+      isArabic ? 'قناة Mirsaal' : 'Mirsaal Channel';
+
+  // Mirsaal chats / contacts
+  String get mirsaalChatsMarkAllRead =>
+      isArabic ? 'وضع الكل كمقروء' : 'Mark all as read';
+  String get mirsaalChatsSelection =>
+      isArabic ? 'تحديد المحادثات' : 'Selection';
+  String get mirsaalMessagePreviewsDisable =>
+      isArabic ? 'إيقاف معاينة الرسائل' : 'Disable message previews';
+  String get mirsaalMessagePreviewsEnable =>
+      isArabic ? 'تفعيل معاينة الرسائل' : 'Enable message previews';
+  String get mirsaalNoContactsHint =>
+      isArabic
+          ? 'لا توجد جهات اتصال بعد. أضِف جهة عبر مسح رمز QR أو استعلام عن المعرف.'
+          : 'No contacts yet. Add one via QR scan or by resolving an ID.';
+  String get mirsaalNoMessagesYet =>
+      isArabic ? 'لا توجد رسائل بعد.' : 'No messages yet.';
+  String get mirsaalAddContactFirst =>
+      isArabic ? 'أضِف جهة اتصال لبدء المحادثة.' : 'Add a contact to start chatting.';
+  String get mirsaalScanQr =>
+      isArabic ? 'مسح QR' : 'Scan QR';
+  String get mirsaalSyncInbox =>
+      isArabic ? 'مزامنة الوارد' : 'Sync inbox';
+  String get mirsaalHideLockedChats =>
+      isArabic ? 'إخفاء الدردشات المقفلة' : 'Hide locked chats';
+  String get mirsaalShowLockedChats =>
+      isArabic ? 'إظهار الدردشات المقفلة (يتطلب فتحاً)' : 'Show locked chats (requires auth)';
+  String get mirsaalPeerIdLabel =>
+      isArabic ? 'معرّف الطرف' : 'Peer ID';
+  String get mirsaalResolve =>
+      isArabic ? 'استعلام' : 'Resolve';
+  String get mirsaalVerifiedLabel =>
+      isArabic ? 'موثوق' : 'Verified';
+  String get mirsaalMarkVerifiedLabel =>
+      isArabic ? 'وضع علامة كموثوق' : 'Mark verified';
+  String get mirsaalDisableDisappear =>
+      isArabic ? 'إيقاف الاختفاء' : 'Disable disappear';
+  String get mirsaalEnableDisappear =>
+      isArabic ? 'تفعيل الاختفاء' : 'Enable disappear';
+  String get mirsaalDisappearAfter =>
+      isArabic ? 'الاختفاء بعد' : 'Disappear after';
+  String get mirsaalUnhideChat =>
+      isArabic ? 'إظهار المحادثة' : 'Unhide chat';
+  String get mirsaalHideChat =>
+      isArabic ? 'إخفاء المحادثة' : 'Hide chat';
+  String get mirsaalUnblock =>
+      isArabic ? 'إلغاء الحظر' : 'Unblock';
+  String get mirsaalBlock =>
+      isArabic ? 'حظر' : 'Block';
+  String get mirsaalTrustedFingerprint =>
+      isArabic ? 'بصمة موثوقة' : 'Trusted fingerprint';
+  String get mirsaalUnverifiedContact =>
+      isArabic ? 'جهة اتصال غير موثوقة' : 'Unverified contact';
+  String get mirsaalPeerFingerprintLabel =>
+      isArabic ? 'بصمة الطرف:' : 'Peer FP:';
+  String get mirsaalYourFingerprintLabel =>
+      isArabic ? 'بصمتك:' : 'Your FP:';
+  String get mirsaalSafetyLabel =>
+      isArabic ? 'السلامة:' : 'Safety:';
+  String get mirsaalResetSessionLabel =>
+      isArabic ? 'إعادة تعيين الجلسة' : 'Reset session';
+  String get mirsaalMessagesTitle =>
+      isArabic ? 'الرسائل' : 'Messages';
+  String get mirsaalAttachImage =>
+      isArabic ? 'إرفاق صورة' : 'Attach image';
+  String get mirsaalTypeMessage =>
+      isArabic ? 'اكتب رسالة' : 'Type a message';
+  String get mirsaalImageAttached =>
+      isArabic ? 'تم إرفاق صورة' : 'Image attached';
+  String get mirsaalRemoveAttachment =>
+      isArabic ? 'إزالة المرفق' : 'Remove attachment';
+  String get mirsaalSessionChangedTitle =>
+      isArabic ? 'تم تغيير الجلسة' : 'Session changed';
+  String get mirsaalSessionChangedBody =>
+      isArabic
+          ? 'تم تغيير مفتاح المرسل. تحقق من رقم الأمان مع جهة الاتصال. أعد تعيين الجلسة إذا لم تكن متأكدًا.'
+          : 'Sender key changed. Verify the safety number with your contact. Reset the session if unsure.';
+  String get mirsaalLater =>
+      isArabic ? 'لاحقًا' : 'Later';
+  String get mirsaalUnlockHiddenReason =>
+      isArabic ? 'فتح الدردشات المخفية' : 'Unlock hidden chats';
+  String get mirsaalScanContactQrTitle =>
+      isArabic ? 'مسح رمز QR لجهة الاتصال' : 'Scan contact QR';
+
+  // Mirsaal errors / backup / notifications
+  String get mirsaalAttachFailed =>
+      isArabic ? 'فشل إرفاق الملف' : 'Attach failed';
+  String get mirsaalShareFailed =>
+      isArabic ? 'فشل مشاركة الملف' : 'Share failed';
+  String get mirsaalBackupCreated =>
+      isArabic ? 'تم إنشاء النسخة الاحتياطية ونسخها. احتفظ بها بأمان.' : 'Backup created and copied. Keep it safe.';
+  String get mirsaalBackupFailed =>
+      isArabic ? 'فشل إنشاء النسخة الاحتياطية' : 'Backup failed';
+  String get mirsaalBackupInvalidFormat =>
+      isArabic ? 'تنسيق النسخة الاحتياطية غير صالح' : 'Invalid backup format';
+  String get mirsaalBackupMissingFields =>
+      isArabic ? 'النسخة الاحتياطية تفتقد حقولاً' : 'Backup missing fields';
+  String get mirsaalBackupCorrupt =>
+      isArabic ? 'النسخة الاحتياطية تالفة' : 'Backup corrupt';
+  String get mirsaalRestoreFailed =>
+      isArabic ? 'فشل الاستعادة' : 'Restore failed';
+  String get mirsaalBackupPassphraseTitleSet =>
+      isArabic ? 'تعيين عبارة مرور النسخة الاحتياطية' : 'Set backup passphrase';
+  String get mirsaalBackupPassphraseTitleEnter =>
+      isArabic ? 'إدخال عبارة مرور النسخة الاحتياطية' : 'Enter backup passphrase';
+  String get mirsaalBackupPassphraseLabel =>
+      isArabic ? 'عبارة المرور' : 'Passphrase';
+  String get mirsaalBackupPassphraseConfirm =>
+      isArabic ? 'تأكيد عبارة المرور' : 'Confirm';
+  String get mirsaalNewMessageTitle =>
+      isArabic ? 'رسالة جديدة' : 'New message';
+  String get mirsaalNewMessageBody =>
+      isArabic ? 'افتح المحادثة لعرض الرسالة.' : 'Open chat to view.';
+  String get mirsaalRatchetKeyMismatch =>
+      isArabic
+          ? 'تم اكتشاف عدم تطابق في المفتاح. أعد تعيين الجلسة.'
+          : 'Key mismatch detected. Reset session.';
+  String get mirsaalRatchetWindowWarning =>
+      isArabic
+          ? 'الرسالة خارج النافذة. فكّر في إعادة تعيين الجلسة.'
+          : 'Message outside window; consider resetting session.';
+  String get mirsaalRatchetAheadWarning =>
+      isArabic
+          ? 'الرسالة بعيدة جدًا للأمام؛ لم يتم تخزين المفاتيح.'
+          : 'Message too far ahead; keys not stored.';
+  String get mirsaalPreviewImage =>
+      isArabic ? '[صورة]' : '[Image]';
+  String get mirsaalPreviewUnknown =>
+      isArabic ? '<رسالة>' : '<message>';
+
+
+  // Mirsaal profile
+  String get mirsaalProfileShowQr =>
+      isArabic ? 'إظهار رمز QR' : 'Show QR';
+  String get mirsaalProfileShareId =>
+      isArabic ? 'مشاركة معرف Mirsaal' : 'Share Mirsaal ID';
+  String get mirsaalProfileSafe =>
+      isArabic ? 'خزنة Mirsaal' : 'Mirsaal safe';
+  String get mirsaalProfileExportId =>
+      isArabic ? 'تصدير المعرف' : 'Export ID';
+  String get mirsaalProfileRevocationPass =>
+      isArabic ? 'كلمة مرور إلغاء المعرف' : 'ID revocation passphrase';
+  String get mirsaalProfileLinkedPhone =>
+      isArabic ? 'رقم هاتف مرتبط' : 'Linked phone number';
+  String get mirsaalProfileLinkedEmail =>
+      isArabic ? 'بريد إلكتروني مرتبط' : 'Linked email';
+  String get mirsaalProfilePublicKey =>
+      isArabic ? 'المفتاح العام' : 'Public key';
+  String get mirsaalProfileDeleteId =>
+      isArabic ? 'حذف المعرف والبيانات' : 'Delete ID and data';
 
   // Sonic / Vouchers / Cash
   String get sonicFromWallet =>
@@ -433,7 +660,7 @@ class L10n {
   String get mobilityHistoryTitle =>
       isArabic ? 'سجل الحركة' : 'Mobility history';
   String get mobilityTitle =>
-      isArabic ? 'الحركة' : 'Mobility';
+      isArabic ? 'التنقل والسفر' : 'Mobility & Travel';
   String get filterLabel =>
       isArabic ? 'تصفية' : 'Filter';
   String get statusAll =>
@@ -567,7 +794,7 @@ class L10n {
 
   // Freight / Courier & Transport
   String get freightTitle =>
-      isArabic ? 'التوصيل والنقل' : 'Courier & Transport';
+      isArabic ? 'التوصيل' : 'Courier';
   String get freightQuoteLabel =>
       isArabic ? 'تسعير' : 'Quote';
   String get freightBookPayLabel =>
@@ -604,6 +831,8 @@ class L10n {
       isArabic ? 'تأجير وبيع السيارات' : 'Carrental & Carmarket';
   String get carrentalTitle =>
       isArabic ? 'تأجير وبيع السيارات' : 'Carrental & Carmarket';
+  String get equipmentTitle =>
+      isArabic ? 'تأجير المعدات' : 'Equipment rental';
 
   // Food orders
   String get foodOrdersTitle =>
