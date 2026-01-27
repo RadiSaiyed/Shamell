@@ -9,7 +9,7 @@ import re
 import os
 import uuid
 
-from sqlalchemy import create_engine, String, BigInteger, ForeignKey, Integer, DateTime, func
+from sqlalchemy import create_engine, String, BigInteger, ForeignKey, Integer, DateTime, func, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from sqlalchemy import select, func as sa_func
 from sqlalchemy import text as sa_text
@@ -65,6 +65,10 @@ KYC_LIMITS = {
         "daily_max": _env_int("KYC_L2_DAILY_MAX_CENTS", 3_000_000_000),
     },
 }
+
+# Red-packet defaults (WeChat-style hongbao)
+REDPACKET_DEFAULT_TTL_SECS = _env_int("REDPACKET_TTL_SECS", 24 * 3600)
+REDPACKET_MAX_COUNT = _env_int("REDPACKET_MAX_COUNT", 128)
 
 ALLOWED_ROLES = {
     # Core payment roles
@@ -264,6 +268,74 @@ class PaymentRequest(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|accepted|canceled|expired
     created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RedPacket(Base):
+    """
+    WeChat-style red-packet pool.
+
+    Funds are reserved from creator_wallet_id on issue and moved into a
+    global liability bucket (wallet_id=None). Individual claims then draw
+    down from remaining_amount_cents and credit claimant wallets.
+    """
+    __tablename__ = "red_packets"
+    __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    creator_wallet_id: Mapped[str] = mapped_column(String(36))
+    group_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # optional Mirsaal/group binding
+    total_amount_cents: Mapped[int] = mapped_column(BigInteger)
+    remaining_amount_cents: Mapped[int] = mapped_column(BigInteger)
+    total_count: Mapped[int] = mapped_column(Integer)
+    claimed_count: Mapped[int] = mapped_column(Integer, default=0)
+    mode: Mapped[str] = mapped_column(String(16), default="fixed")  # fixed|random
+    message: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active|exhausted|expired|cancelled
+    currency: Mapped[str] = mapped_column(String(3), default=DEFAULT_CURRENCY)
+    expires_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RedPacketClaim(Base):
+    """
+    Individual claim from a red packet.
+    """
+    __tablename__ = "red_packet_claims"
+    __table_args__ = (
+        UniqueConstraint("redpacket_id", "wallet_id", name="uq_redpacket_wallet"),
+        {"schema": DB_SCHEMA} if DB_SCHEMA else {},
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    redpacket_id: Mapped[str] = mapped_column(String(36))
+    wallet_id: Mapped[str] = mapped_column(String(36))
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    claim_index: Mapped[int] = mapped_column(Integer)  # 1-based claim order within packet
+    claimed_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SavingsAccount(Base):
+    __tablename__ = "savings_accounts"
+    __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    wallet_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    balance_cents: Mapped[int] = mapped_column(BigInteger, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default=DEFAULT_CURRENCY)
+    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BillPayment(Base):
+    __tablename__ = "bill_payments"
+    __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    from_wallet_id: Mapped[str] = mapped_column(String(36))
+    to_wallet_id: Mapped[str] = mapped_column(String(36))
+    biller_code: Mapped[str] = mapped_column(String(64))
+    reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    currency: Mapped[str] = mapped_column(String(3), default=DEFAULT_CURRENCY)
+    status: Mapped[str] = mapped_column(String(16), default="posted")  # posted|failed
+    txn_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # --- Roles/Directory (for BFF gating) ---
@@ -964,8 +1036,647 @@ def accept_request(rid: str, request: Request, body: AcceptRequestReq, s: Sessio
     return _accept_request_core(rid, ikey, s, to_wallet_id=body.to_wallet_id)
 
 
+# --- Red Packet (Hongbao-style pooled payments) ---
+class RedPacketIssueReq(BaseModel):
+    creator_wallet_id: str
+    amount_cents: int = Field(..., gt=0)
+    count: int = Field(1, ge=1)
+    mode: Optional[str] = Field(default=None, description="fixed|random; default random for count>1")
+    group_id: Optional[str] = Field(default=None, description="Optional Mirsaal/group identifier")
+    message: Optional[str] = Field(default=None, max_length=255)
+    expires_in_secs: Optional[int] = Field(default=None, ge=60, le=7 * 24 * 3600)
+
+
+class RedPacketIssueResp(BaseModel):
+    id: str
+    creator_wallet_id: str
+    total_amount_cents: int
+    total_count: int
+    mode: str
+    message: Optional[str]
+    status: str
+    currency: str
+    expires_at: Optional[str]
+
+
+@router.post("/redpacket/issue", response_model=RedPacketIssueResp)
+def redpacket_issue(req: RedPacketIssueReq, s: Session = Depends(get_session)):
+    if req.count < 1:
+        raise HTTPException(status_code=400, detail="count must be >= 1")
+    if req.count > REDPACKET_MAX_COUNT:
+        raise HTTPException(status_code=400, detail="count exceeds max per packet")
+    mode = (req.mode or ("fixed" if req.count == 1 else "random")).strip().lower()
+    if mode not in ("fixed", "random"):
+        raise HTTPException(status_code=400, detail="mode must be fixed or random")
+    # Basic wallet + KYC checks on creator
+    from_w = s.execute(
+        select(Wallet).where(Wallet.id == req.creator_wallet_id).with_for_update()
+    ).scalars().first()
+    if not from_w:
+        raise HTTPException(status_code=404, detail="Creator wallet not found")
+    amt = int(req.amount_cents)
+    if amt <= 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be > 0")
+    # For random splits, require at least 1 cent per share
+    if mode == "random" and amt < req.count:
+        raise HTTPException(status_code=400, detail="amount too small for random split")
+    # Simple per-transaction KYC guardrail (reuse transfer limits)
+    u = s.get(User, from_w.user_id)
+    level = u.kyc_level if u else 0
+    lim = KYC_LIMITS.get(level, KYC_LIMITS[0])
+    if amt > lim["tx_max"]:
+        raise HTTPException(status_code=400, detail="Exceeds per-transaction limit for KYC level")
+    if from_w.balance_cents < amt:
+        raise HTTPException(status_code=400, detail="Insufficient funds")
+    from_w.balance_cents -= amt
+    # Expiry
+    ttl = req.expires_in_secs or REDPACKET_DEFAULT_TTL_SECS
+    expires_at: Optional[datetime] = None
+    if ttl and ttl > 0:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(ttl))
+    rp_id = str(uuid.uuid4())
+    rp = RedPacket(
+        id=rp_id,
+        creator_wallet_id=from_w.id,
+        group_id=req.group_id or None,
+        total_amount_cents=amt,
+        remaining_amount_cents=amt,
+        total_count=req.count,
+        claimed_count=0,
+        mode=mode,
+        message=(req.message or None),
+        status="active",
+        currency=from_w.currency,
+        expires_at=expires_at,
+    )
+    s.add(rp)
+    # Reserve funds into pool (wallet_id=None liability)
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=from_w.id,
+            amount_cents=-amt,
+            txn_id=None,
+            description="redpacket_reserve_debit",
+        )
+    )
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=None,
+            amount_cents=amt,
+            txn_id=None,
+            description="redpacket_reserve_pool",
+        )
+    )
+    s.commit()
+    s.refresh(rp)
+    return RedPacketIssueResp(
+        id=rp.id,
+        creator_wallet_id=rp.creator_wallet_id,
+        total_amount_cents=rp.total_amount_cents,
+        total_count=rp.total_count,
+        mode=rp.mode,
+        message=rp.message,
+        status=rp.status,
+        currency=rp.currency,
+        expires_at=rp.expires_at.isoformat() if rp.expires_at else None,
+    )
+
+
+class RedPacketClaimReq(BaseModel):
+    redpacket_id: str
+    wallet_id: str
+
+
+class RedPacketClaimOut(BaseModel):
+    redpacket_id: str
+    wallet_id: str
+    amount_cents: int
+    claim_index: int
+    total_count: int
+    claimed_count: int
+    message: Optional[str]
+    currency: str
+    status: str
+
+
+@router.post("/redpacket/claim", response_model=RedPacketClaimOut)
+def redpacket_claim(req: RedPacketClaimReq, s: Session = Depends(get_session)):
+    rp = (
+        s.execute(
+            select(RedPacket)
+            .where(RedPacket.id == req.redpacket_id)
+            .with_for_update()
+        )
+        .scalars()
+        .first()
+    )
+    if not rp:
+        raise HTTPException(status_code=404, detail="red packet not found")
+    # Expiry handling (best-effort)
+    now = datetime.now(timezone.utc)
+    exp = rp.expires_at
+    if isinstance(exp, str):
+        try:
+            exp = datetime.fromisoformat(exp)
+        except Exception:
+            exp = None
+    if exp is not None:
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < now and rp.status == "active":
+            rp.status = "expired"
+            s.add(rp)
+            s.commit()
+            raise HTTPException(status_code=400, detail="red packet expired")
+    # Idempotent: if this wallet already claimed, return existing share
+    existing = (
+        s.execute(
+            select(RedPacketClaim).where(
+                RedPacketClaim.redpacket_id == rp.id,
+                RedPacketClaim.wallet_id == req.wallet_id,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing:
+        return RedPacketClaimOut(
+            redpacket_id=existing.redpacket_id,
+            wallet_id=existing.wallet_id,
+            amount_cents=existing.amount_cents,
+            claim_index=existing.claim_index,
+            total_count=rp.total_count,
+            claimed_count=rp.claimed_count,
+            message=rp.message,
+            currency=rp.currency,
+            status=rp.status,
+        )
+    if rp.status != "active":
+        raise HTTPException(status_code=400, detail="red packet not active")
+    if rp.claimed_count >= rp.total_count or rp.remaining_amount_cents <= 0:
+        rp.status = "exhausted"
+        s.add(rp)
+        s.commit()
+        raise HTTPException(status_code=400, detail="red packet empty")
+    # Lock claimant wallet row
+    to_w = (
+        s.execute(
+            select(Wallet).where(Wallet.id == req.wallet_id).with_for_update()
+        )
+        .scalars()
+        .first()
+    )
+    if not to_w:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    remaining_slots = rp.total_count - rp.claimed_count
+    if remaining_slots <= 0 or rp.remaining_amount_cents <= 0:
+        rp.status = "exhausted"
+        s.add(rp)
+        s.commit()
+        raise HTTPException(status_code=400, detail="red packet empty")
+    # Determine share
+    if rp.mode == "fixed":
+        base = rp.total_amount_cents // rp.total_count
+        if base <= 0:
+            base = max(1, rp.remaining_amount_cents // remaining_slots)
+        if remaining_slots == 1:
+            amount = rp.remaining_amount_cents
+        else:
+            # Ensure at least 1 cent remains for each future slot
+            max_for_this = rp.remaining_amount_cents - (remaining_slots - 1)
+            amount = min(base, max_for_this)
+    else:  # random
+        if remaining_slots == 1:
+            amount = rp.remaining_amount_cents
+        else:
+            min_per = 1
+            max_for_this = rp.remaining_amount_cents - (remaining_slots - 1) * min_per
+            if max_for_this < min_per:
+                max_for_this = min_per
+            spread = max_for_this - min_per
+            if spread <= 0:
+                amount = min_per
+            else:
+                amount = min_per + _secrets.randbelow(spread + 1)
+    if amount <= 0 or amount > rp.remaining_amount_cents:
+        raise HTTPException(status_code=500, detail="internal split error")
+    rp.remaining_amount_cents -= amount
+    rp.claimed_count += 1
+    if rp.remaining_amount_cents <= 0 or rp.claimed_count >= rp.total_count:
+        rp.status = "exhausted"
+    claim_index = rp.claimed_count
+    to_w.balance_cents += amount
+    txn_id = str(uuid.uuid4())
+    s.add(
+        Txn(
+            id=txn_id,
+            from_wallet_id=rp.creator_wallet_id,
+            to_wallet_id=to_w.id,
+            amount_cents=amount,
+            kind="redpacket",
+            fee_cents=0,
+        )
+    )
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=None,
+            amount_cents=-amount,
+            txn_id=txn_id,
+            description=f"redpacket_release:{rp.id}"
+            + (f"; group={rp.group_id}" if getattr(rp, "group_id", None) else ""),
+        )
+    )
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=to_w.id,
+            amount_cents=amount,
+            txn_id=txn_id,
+            description=f"redpacket_claim:{rp.id}"
+            + (f"; group={rp.group_id}" if getattr(rp, "group_id", None) else ""),
+        )
+    )
+    claim = RedPacketClaim(
+        id=str(uuid.uuid4()),
+        redpacket_id=rp.id,
+        wallet_id=to_w.id,
+        amount_cents=amount,
+        claim_index=claim_index,
+    )
+    s.add(claim)
+    s.commit()
+    s.refresh(rp)
+    s.refresh(claim)
+    return RedPacketClaimOut(
+        redpacket_id=claim.redpacket_id,
+        wallet_id=claim.wallet_id,
+        amount_cents=claim.amount_cents,
+        claim_index=claim.claim_index,
+        total_count=rp.total_count,
+        claimed_count=rp.claimed_count,
+        message=rp.message,
+        currency=rp.currency,
+        status=rp.status,
+    )
+
+
+class RedPacketClaimSummary(BaseModel):
+    wallet_id: str
+    amount_cents: int
+    claim_index: int
+    claimed_at: Optional[datetime]
+
+
+class RedPacketStatusOut(BaseModel):
+    id: str
+    creator_wallet_id: str
+    group_id: Optional[str]
+    total_amount_cents: int
+    remaining_amount_cents: int
+    total_count: int
+    claimed_count: int
+    mode: str
+    message: Optional[str]
+    status: str
+    currency: str
+    expires_at: Optional[str]
+    claims: List[RedPacketClaimSummary] = []
+
+
+@router.get("/redpacket/status/{rid}", response_model=RedPacketStatusOut)
+def redpacket_status(rid: str, s: Session = Depends(get_session)):
+    rp = s.get(RedPacket, rid)
+    if not rp:
+        raise HTTPException(status_code=404, detail="red packet not found")
+    # Auto-mark expired (best-effort)
+    now = datetime.now(timezone.utc)
+    exp = rp.expires_at
+    if isinstance(exp, str):
+        try:
+            exp = datetime.fromisoformat(exp)
+        except Exception:
+            exp = None
+    if exp is not None:
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < now and rp.status == "active":
+            rp.status = "expired"
+            s.add(rp)
+            s.commit()
+    claims = (
+        s.execute(
+            select(RedPacketClaim)
+            .where(RedPacketClaim.redpacket_id == rp.id)
+            .order_by(RedPacketClaim.claim_index.asc())
+        )
+        .scalars()
+        .all()
+    )
+    return RedPacketStatusOut(
+        id=rp.id,
+        creator_wallet_id=rp.creator_wallet_id,
+        group_id=rp.group_id,
+        total_amount_cents=rp.total_amount_cents,
+        remaining_amount_cents=rp.remaining_amount_cents,
+        total_count=rp.total_count,
+        claimed_count=rp.claimed_count,
+        mode=rp.mode,
+        message=rp.message,
+        status=rp.status,
+        currency=rp.currency,
+        expires_at=rp.expires_at.isoformat() if rp.expires_at else None,
+        claims=[
+            RedPacketClaimSummary(
+                wallet_id=c.wallet_id,
+                amount_cents=c.amount_cents,
+                claim_index=c.claim_index,
+                claimed_at=c.claimed_at if isinstance(c.claimed_at, datetime) else None,
+            )
+            for c in claims
+        ],
+    )
+
+
 # (External provider endpoints removed)
 
+
+# --- Savings (simple wallet-linked savings balance) ---
+class SavingsDepositReq(BaseModel):
+    wallet_id: str
+    amount_cents: int = Field(..., gt=0)
+
+
+class SavingsWithdrawReq(BaseModel):
+    wallet_id: str
+    amount_cents: int = Field(..., gt=0)
+
+
+class SavingsOverviewResp(BaseModel):
+    wallet_id: str
+    savings_balance_cents: int
+    currency: str
+
+
+def _get_or_create_savings_account(s: Session, wallet: Wallet) -> SavingsAccount:
+    sa = s.execute(
+        select(SavingsAccount).where(SavingsAccount.wallet_id == wallet.id).with_for_update()
+    ).scalars().first()
+    if not sa:
+        sa = SavingsAccount(
+            id=str(uuid.uuid4()),
+            wallet_id=wallet.id,
+            balance_cents=0,
+            currency=wallet.currency,
+        )
+        s.add(sa)
+        s.flush()
+    return sa
+
+
+@router.post("/savings/deposit", response_model=SavingsOverviewResp)
+def savings_deposit(req: SavingsDepositReq, s: Session = Depends(get_session)):
+    w = s.execute(
+        select(Wallet).where(Wallet.id == req.wallet_id).with_for_update()
+    ).scalars().first()
+    if not w:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    if req.amount_cents <= 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be > 0")
+    if w.balance_cents < req.amount_cents:
+        raise HTTPException(status_code=400, detail="insufficient funds")
+    sa = _get_or_create_savings_account(s, w)
+    w.balance_cents -= req.amount_cents
+    sa.balance_cents += req.amount_cents
+    sa.updated_at = datetime.now(timezone.utc)
+    # Ledger: move to savings liability pool
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=w.id,
+            amount_cents=-req.amount_cents,
+            txn_id=None,
+            description="savings_deposit_debit",
+        )
+    )
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=None,
+            amount_cents=req.amount_cents,
+            txn_id=None,
+            description="savings_reserve_credit",
+        )
+    )
+    # Txn record for history (does not affect KYC/velocity; filtered by kind)
+    s.add(
+        Txn(
+            id=str(uuid.uuid4()),
+            from_wallet_id=w.id,
+            to_wallet_id=w.id,
+            amount_cents=req.amount_cents,
+            kind="savings_deposit",
+            fee_cents=0,
+        )
+    )
+    s.commit()
+    s.refresh(sa)
+    return SavingsOverviewResp(
+        wallet_id=w.id,
+        savings_balance_cents=sa.balance_cents,
+        currency=sa.currency,
+    )
+
+
+@router.post("/savings/withdraw", response_model=SavingsOverviewResp)
+def savings_withdraw(req: SavingsWithdrawReq, s: Session = Depends(get_session)):
+    w = s.execute(
+        select(Wallet).where(Wallet.id == req.wallet_id).with_for_update()
+    ).scalars().first()
+    if not w:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    sa = s.execute(
+        select(SavingsAccount).where(SavingsAccount.wallet_id == w.id).with_for_update()
+    ).scalars().first()
+    if not sa or sa.balance_cents <= 0:
+        raise HTTPException(status_code=400, detail="no savings balance")
+    if req.amount_cents <= 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be > 0")
+    if sa.balance_cents < req.amount_cents:
+        raise HTTPException(status_code=400, detail="insufficient savings balance")
+    sa.balance_cents -= req.amount_cents
+    sa.updated_at = datetime.now(timezone.utc)
+    w.balance_cents += req.amount_cents
+    # Ledger: release from savings pool
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=None,
+            amount_cents=-req.amount_cents,
+            txn_id=None,
+            description="savings_reserve_debit",
+        )
+    )
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=w.id,
+            amount_cents=req.amount_cents,
+            txn_id=None,
+            description="savings_withdraw_credit",
+        )
+    )
+    # Txn record for history (does not affect KYC/velocity; filtered by kind)
+    s.add(
+        Txn(
+            id=str(uuid.uuid4()),
+            from_wallet_id=w.id,
+            to_wallet_id=w.id,
+            amount_cents=req.amount_cents,
+            kind="savings_withdraw",
+            fee_cents=0,
+        )
+    )
+    s.commit()
+    s.refresh(sa)
+    return SavingsOverviewResp(
+        wallet_id=w.id,
+        savings_balance_cents=sa.balance_cents,
+        currency=sa.currency,
+    )
+
+
+@router.get("/savings/overview", response_model=SavingsOverviewResp)
+def savings_overview(wallet_id: str, s: Session = Depends(get_session)):
+    w = s.get(Wallet, wallet_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="wallet not found")
+    sa = s.execute(
+        select(SavingsAccount).where(SavingsAccount.wallet_id == w.id)
+    ).scalars().first()
+    bal = sa.balance_cents if sa else 0
+    cur = sa.currency if sa else w.currency
+    return SavingsOverviewResp(
+        wallet_id=w.id,
+        savings_balance_cents=bal,
+        currency=cur,
+    )
+
+
+# --- Bill payments (utility-style payments) ---
+class BillPayReq(BaseModel):
+    from_wallet_id: str
+    to_wallet_id: str
+    biller_code: str
+    amount_cents: int = Field(..., gt=0)
+    reference: Optional[str] = None
+
+
+@router.post("/bills/pay", response_model=WalletResp)
+def bills_pay(req: BillPayReq, request: Request, s: Session = Depends(get_session)):
+    if req.from_wallet_id == req.to_wallet_id:
+        raise HTTPException(status_code=400, detail="Cannot pay bill to same wallet")
+    # Lock wallets
+    from_w = (
+        s.execute(
+            select(Wallet).where(Wallet.id == req.from_wallet_id).with_for_update()
+        )
+        .scalars()
+        .first()
+    )
+    to_w = (
+        s.execute(select(Wallet).where(Wallet.id == req.to_wallet_id).with_for_update())
+        .scalars()
+        .first()
+    )
+    if not from_w or not to_w:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    if req.amount_cents <= 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be > 0")
+    # Simple KYC per-transaction check (reuse transfer limits)
+    u = s.get(User, from_w.user_id)
+    level = u.kyc_level if u else 0
+    lim = KYC_LIMITS.get(level, KYC_LIMITS[0])
+    if req.amount_cents > lim["tx_max"]:
+        raise HTTPException(
+            status_code=400, detail="Exceeds per-transaction limit for KYC level"
+        )
+    # Daily total (best-effort)
+    today = datetime.now(timezone.utc).date()
+    start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    total_today = 0
+    for row in s.execute(
+        select(Txn.amount_cents).where(
+            Txn.from_wallet_id == from_w.id,
+            Txn.created_at >= start,
+            Txn.created_at < end,
+            ~Txn.kind.like("savings%"),
+        )
+    ):
+        total_today += int(row[0])
+    if total_today + req.amount_cents > lim["daily_max"]:
+        raise HTTPException(
+            status_code=400, detail="Exceeds daily limit for KYC level"
+        )
+    if from_w.balance_cents < req.amount_cents:
+        raise HTTPException(status_code=400, detail="Insufficient funds")
+    # Settle balances
+    from_w.balance_cents -= req.amount_cents
+    to_w.balance_cents += req.amount_cents
+    txn_id = str(uuid.uuid4())
+    s.add(
+        Txn(
+            id=txn_id,
+            from_wallet_id=from_w.id,
+            to_wallet_id=to_w.id,
+            amount_cents=req.amount_cents,
+            kind="bill",
+            fee_cents=0,
+        )
+    )
+    desc_meta = f"bill:{req.biller_code}"
+    if req.reference:
+        desc_meta += f" ref={req.reference}"
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=from_w.id,
+            amount_cents=-req.amount_cents,
+            txn_id=txn_id,
+            description="bill_debit;" + desc_meta,
+        )
+    )
+    s.add(
+        LedgerEntry(
+            id=str(uuid.uuid4()),
+            wallet_id=to_w.id,
+            amount_cents=req.amount_cents,
+            txn_id=txn_id,
+            description="bill_credit;" + desc_meta,
+        )
+    )
+    bp = BillPayment(
+        id=str(uuid.uuid4()),
+        from_wallet_id=from_w.id,
+        to_wallet_id=to_w.id,
+        biller_code=req.biller_code,
+        reference=(req.reference or None),
+        amount_cents=req.amount_cents,
+        currency=from_w.currency,
+        status="posted",
+        txn_id=txn_id,
+    )
+    s.add(bp)
+    s.commit()
+    s.refresh(from_w)
+    return WalletResp(
+        wallet_id=from_w.id,
+        balance_cents=from_w.balance_cents,
+        currency=from_w.currency,
+    )
 
 class TransferReq(BaseModel):
     from_wallet_id: str
@@ -1016,7 +1727,14 @@ def transfer(req: TransferReq, request: Request, s: Session = Depends(get_sessio
     start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     total_today = 0
-    for row in s.execute(select(Txn.amount_cents).where(Txn.from_wallet_id == from_w.id, Txn.created_at >= start, Txn.created_at < end)):
+    for row in s.execute(
+        select(Txn.amount_cents).where(
+            Txn.from_wallet_id == from_w.id,
+            Txn.created_at >= start,
+            Txn.created_at < end,
+            ~Txn.kind.like("savings%"),
+        )
+    ):
         total_today += int(row[0])
     if total_today + req.amount_cents > lim["daily_max"]:
         raise HTTPException(status_code=400, detail="Exceeds daily limit for KYC level")
@@ -1026,17 +1744,41 @@ def transfer(req: TransferReq, request: Request, s: Session = Depends(get_sessio
     # Velocity limits (per-minute) for alias payments (sender-side)
     if req.to_alias:
         start_min = datetime.now(timezone.utc) - timedelta(seconds=60)
-        cnt = s.execute(select(sa_func.count(Txn.id)).where(Txn.from_wallet_id == from_w.id, Txn.created_at >= start_min)).scalar() or 0
+        cnt = s.execute(
+            select(sa_func.count(Txn.id)).where(
+                Txn.from_wallet_id == from_w.id,
+                Txn.created_at >= start_min,
+                ~Txn.kind.like("savings%"),
+            )
+        ).scalar() or 0
         if int(cnt) >= ALIAS_VELOCITY_MAX_TX:
             raise HTTPException(status_code=429, detail="Too many transfers (alias velocity)")
-        sum_min = s.execute(select(sa_func.coalesce(sa_func.sum(Txn.amount_cents), 0)).where(Txn.from_wallet_id == from_w.id, Txn.created_at >= start_min)).scalar() or 0
+        sum_min = s.execute(
+            select(sa_func.coalesce(sa_func.sum(Txn.amount_cents), 0)).where(
+                Txn.from_wallet_id == from_w.id,
+                Txn.created_at >= start_min,
+                ~Txn.kind.like("savings%"),
+            )
+        ).scalar() or 0
         if int(sum_min) + req.amount_cents > ALIAS_VELOCITY_MAX_CENTS:
             raise HTTPException(status_code=429, detail="Amount velocity exceeded (alias)")
         # Inbound alias velocity (receiver-side)
-        rx_cnt = s.execute(select(sa_func.count(Txn.id)).where(Txn.to_wallet_id == to_w.id, Txn.created_at >= start_min)).scalar() or 0
+        rx_cnt = s.execute(
+            select(sa_func.count(Txn.id)).where(
+                Txn.to_wallet_id == to_w.id,
+                Txn.created_at >= start_min,
+                ~Txn.kind.like("savings%"),
+            )
+        ).scalar() or 0
         if int(rx_cnt) >= ALIAS_RX_VELOCITY_MAX_TX:
             raise HTTPException(status_code=429, detail="Receiver busy (alias inbound velocity)")
-        rx_sum = s.execute(select(sa_func.coalesce(sa_func.sum(Txn.amount_cents), 0)).where(Txn.to_wallet_id == to_w.id, Txn.created_at >= start_min)).scalar() or 0
+        rx_sum = s.execute(
+            select(sa_func.coalesce(sa_func.sum(Txn.amount_cents), 0)).where(
+                Txn.to_wallet_id == to_w.id,
+                Txn.created_at >= start_min,
+                ~Txn.kind.like("savings%"),
+            )
+        ).scalar() or 0
         if int(rx_sum) + req.amount_cents > ALIAS_RX_VELOCITY_MAX_CENTS:
             raise HTTPException(status_code=429, detail="Receiver amount velocity exceeded (alias)")
         # Device/IP heuristic + risk score
@@ -1164,6 +1906,7 @@ class TxnItem(BaseModel):
     fee_cents: int
     kind: str
     created_at: Optional[datetime]
+    meta: Optional[str] = None
 
 
 @router.get("/txns", response_model=List[TxnItem])
@@ -1175,6 +1918,21 @@ def list_txns(wallet_id: str, limit: int = 50, s: Session = Depends(get_session)
             (Txn.from_wallet_id == wallet_id) | (Txn.to_wallet_id == wallet_id)
         ).order_by(Txn.created_at.desc()).limit(limit)
     ).scalars().all()
+    meta_map: Dict[str, str] = {}
+    if rows:
+        ids = [t.id for t in rows]
+        le_rows = s.execute(
+            select(LedgerEntry.txn_id, LedgerEntry.description).where(
+                LedgerEntry.txn_id.in_(ids)
+            )
+        ).all()
+        for tid, desc in le_rows:
+            if not tid:
+                continue
+            if tid in meta_map:
+                continue
+            if desc:
+                meta_map[str(tid)] = str(desc)
     return [
         TxnItem(
             id=t.id,
@@ -1184,6 +1942,7 @@ def list_txns(wallet_id: str, limit: int = 50, s: Session = Depends(get_session)
             fee_cents=t.fee_cents or 0,
             kind=t.kind,
             created_at=t.created_at,
+            meta=meta_map.get(t.id),
         )
         for t in rows
     ]
@@ -1220,6 +1979,108 @@ def fees_summary(from_iso: Optional[str] = None, to_iso: Optional[str] = None, s
         q = q.where(and_(*conds))
     total = s.execute(q).scalar() or 0
     return FeesSummary(total_fee_cents=int(total), from_ts=(start.isoformat() if start else None), to_ts=(end.isoformat() if end else None))
+
+
+class RedPacketCampaignPaymentsStats(BaseModel):
+    campaign_id: str
+    total_packets_issued: int
+    total_packets_claimed: int
+    total_amount_cents: int
+    claimed_amount_cents: int
+    unique_creators: int
+    unique_claimants: int
+    from_ts: Optional[str] = None
+    to_ts: Optional[str] = None
+
+
+@router.get(
+    "/admin/redpacket_campaigns/payments_analytics",
+    response_model=RedPacketCampaignPaymentsStats,
+)
+def redpacket_campaign_payments_analytics(
+    campaign_id: str,
+    from_iso: Optional[str] = None,
+    to_iso: Optional[str] = None,
+    s: Session = Depends(get_session),
+    admin_ok: bool = Depends(require_admin),
+):
+    """
+    Aggregate Red‑Packet payments KPIs for a single campaign.
+
+    A campaign is identified via RedPacket.group_id, matching either
+    the plain campaign_id or 'campaign:<campaign_id>' for flexibility.
+    """
+    cid = (campaign_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="campaign_id required")
+    start = None
+    end = None
+    if from_iso:
+        try:
+            start = datetime.fromisoformat(from_iso.replace("Z", "+00:00"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid from_iso")
+    if to_iso:
+        try:
+            end = datetime.fromisoformat(to_iso.replace("Z", "+00:00"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid to_iso")
+    from sqlalchemy import and_, or_  # type: ignore
+
+    conds = [
+        or_(RedPacket.group_id == cid, RedPacket.group_id == f"campaign:{cid}")
+    ]
+    if start:
+        conds.append(RedPacket.created_at >= start)
+    if end:
+        conds.append(RedPacket.created_at <= end)
+    q = select(RedPacket).where(and_(*conds))
+    packets = s.execute(q).scalars().all()
+    total_packets_issued = len(packets)
+    total_amount_cents = 0
+    creators = set()
+    for p in packets:
+        try:
+            total_amount_cents += int(p.total_amount_cents or 0)
+        except Exception:
+            pass
+        if getattr(p, "creator_wallet_id", None):
+            creators.add(p.creator_wallet_id)
+    unique_creators = len(creators)
+
+    total_packets_claimed = 0
+    claimed_amount_cents = 0
+    unique_claimants = 0
+    if packets:
+        rp_ids = [p.id for p in packets]
+        cq = select(RedPacketClaim).where(RedPacketClaim.redpacket_id.in_(rp_ids))
+        if start:
+            cq = cq.where(RedPacketClaim.claimed_at >= start)
+        if end:
+            cq = cq.where(RedPacketClaim.claimed_at <= end)
+        claims = s.execute(cq).scalars().all()
+        total_packets_claimed = len(claims)
+        claimants = set()
+        for c in claims:
+            try:
+                claimed_amount_cents += int(c.amount_cents or 0)
+            except Exception:
+                pass
+            if getattr(c, "wallet_id", None):
+                claimants.add(c.wallet_id)
+        unique_claimants = len(claimants)
+
+    return RedPacketCampaignPaymentsStats(
+        campaign_id=cid,
+        total_packets_issued=int(total_packets_issued),
+        total_packets_claimed=int(total_packets_claimed),
+        total_amount_cents=int(total_amount_cents),
+        claimed_amount_cents=int(claimed_amount_cents),
+        unique_creators=int(unique_creators),
+        unique_claimants=int(unique_claimants),
+        from_ts=start.isoformat() if start else None,
+        to_ts=end.isoformat() if end else None,
+    )
 
 
 class MerchantQRReq(BaseModel):
@@ -1439,6 +2300,7 @@ def admin_txns_export(
 @router.get("/admin/txns/export_by_merchant")
 def admin_txns_export_by_merchant(
     merchant: str,
+    campaign_id: Optional[str] = None,
     from_iso: Optional[str] = None,
     to_iso: Optional[str] = None,
     limit: int = 1000,
@@ -1454,6 +2316,15 @@ def admin_txns_export_by_merchant(
         .join(LedgerEntry, LedgerEntry.txn_id == Txn.id)
         .where(sa_func.lower(LedgerEntry.description).like(f"%{mtag}%"))
     )
+    # Optional Kampagnen-Filter: group=campaign:<id> oder group=<id>
+    cid = (campaign_id or "").strip()
+    if cid:
+        ctag1 = f"group=campaign:{cid.lower()}"
+        ctag2 = f"group={cid.lower()}"
+        q = q.where(
+            sa_func.lower(LedgerEntry.description).like(f"%{ctag1}%")
+            | sa_func.lower(LedgerEntry.description).like(f"%{ctag2}%")
+        )
     if from_iso:
         try:
             start = datetime.fromisoformat(from_iso.replace("Z", "+00:00"))
@@ -1473,7 +2344,18 @@ def admin_txns_export_by_merchant(
     # For each txn, fetch the first matching ledger meta string (optional)
     meta_map = {}
     for t in rows:
-        le = s.execute(select(LedgerEntry).where(LedgerEntry.txn_id == t.id, sa_func.lower(LedgerEntry.description).like(f"%{mtag}%")).limit(1)).scalars().first()
+        le_q = select(LedgerEntry).where(
+            LedgerEntry.txn_id == t.id,
+            sa_func.lower(LedgerEntry.description).like(f"%{mtag}%"),
+        )
+        if cid:
+            ctag1 = f"group=campaign:{cid.lower()}"
+            ctag2 = f"group={cid.lower()}"
+            le_q = le_q.where(
+                sa_func.lower(LedgerEntry.description).like(f"%{ctag1}%")
+                | sa_func.lower(LedgerEntry.description).like(f"%{ctag2}%")
+            )
+        le = s.execute(le_q.limit(1)).scalars().first()
         meta_map[t.id] = le.description if le and le.description else ""
     import io, csv, datetime as _dt
     def _iter():

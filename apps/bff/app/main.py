@@ -6,10 +6,29 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse, StreamingRes
 from starlette.responses import RedirectResponse
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
 from pydantic import BaseModel
+from sqlalchemy import (
+    create_engine as _sa_create_engine,
+    String as _sa_String,
+    Integer as _sa_Integer,
+    Boolean as _sa_Boolean,
+    DateTime as _sa_DateTime,
+    Text as _sa_Text,
+    UniqueConstraint as _sa_UniqueConstraint,
+    func as _sa_func,
+    select as _sa_select,
+    text as _sa_text,
+    Float as _sa_Float,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase as _sa_DeclarativeBase,
+    Mapped as _sa_Mapped,
+    mapped_column as _sa_mapped_column,
+    Session as _sa_Session,
+)
 import httpx
 import logging
 import os
-import asyncio, json as _json
+import asyncio, json as _json, re
 import math
 from pathlib import Path
 import secrets as _secrets
@@ -36,6 +55,8 @@ except Exception:
 def _env_or(key: str, default: str) -> str:
     v = os.getenv(key)
     return v if v is not None else default
+
+from .events import emit_event
 
 
 app = FastAPI(title="Shamell BFF", version="0.1.0")
@@ -75,6 +96,7 @@ def _httpx_async_client() -> httpx.AsyncClient:
     return _HTTPX_ASYNC_CLIENT
 
 _audit_logger = logging.getLogger("shamell.audit")
+_metrics_logger = logging.getLogger("shamell.metrics")
 _AUDIT_EVENTS: list[dict[str, Any]] = []
 _MAX_AUDIT_EVENTS = 2000
 
@@ -126,6 +148,11 @@ _TAXI_ADMIN_SUMMARY_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 _OSM_GEOCODE_CACHE: dict[str, tuple[float, Any]] = {}
 _OSM_REVERSE_CACHE: dict[tuple[float, float], tuple[float, Any]] = {}
 _OSM_TAXI_CACHE: dict[tuple[float, float, float, float], tuple[float, Any]] = {}
+
+# Simple Moments cache / DB will be handled via dedicated SQLAlchemy models below.
+
+# In-memory VoIP signaling connections (device_id -> WebSocket)
+_CALL_WS_CONNECTIONS: dict[str, WebSocket] = {}
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -272,6 +299,11 @@ async def metrics_ingest(req: Request):
     _METRICS.append(item)
     if len(_METRICS) > 2000:
         del _METRICS[:len(_METRICS)-2000]
+    try:
+        _metrics_logger.info(item)
+    except Exception:
+        # Metrics logging must never break main flows
+        pass
     return {"ok": True}
 
 @app.get("/metrics", response_class=JSONResponse)
@@ -743,6 +775,8 @@ async def ws_wallet_events(websocket: WebSocket, wallet_id: str):
 # Upstream base URLs (prefer custom domains but allow service URLs)
 PAYMENTS_BASE = _env_or("PAYMENTS_BASE_URL", "")
 ESCROW_WALLET_ID = _env_or("ESCROW_WALLET_ID", "")
+STICKERS_MERCHANT_WALLET_ID = _env_or("STICKERS_MERCHANT_WALLET_ID", "")
+DEFAULT_CURRENCY = _env_or("DEFAULT_CURRENCY", "SYP")
 TAXI_BASE = _env_or("TAXI_BASE_URL", "")
 BUS_BASE = _env_or("BUS_BASE_URL", "")
 CARMARKET_BASE = _env_or("CARMARKET_BASE_URL", "")
@@ -814,8 +848,10 @@ MAINTENANCE_MODE_ENABLED = _env_or("MAINTENANCE_MODE", "false").lower() == "true
 # ---- Simple session auth (OTP via code; in-memory storage for demo) ----
 AUTH_SESSION_TTL_SECS = int(_env_or("AUTH_SESSION_TTL_SECS", "86400"))
 LOGIN_CODE_TTL_SECS = int(_env_or("LOGIN_CODE_TTL_SECS", "300"))
-_LOGIN_CODES = {}  # phone -> (code, expires_at)
-_SESSIONS = {}     # sid -> (phone, expires_at)
+DEVICE_LOGIN_TTL_SECS = int(_env_or("DEVICE_LOGIN_TTL_SECS", "300"))
+_LOGIN_CODES: dict[str, tuple[str, int]] = {}  # phone -> (code, expires_at)
+_SESSIONS: dict[str, tuple[str, int]] = {}     # sid -> (phone, expires_at)
+_DEVICE_LOGIN_CHALLENGES: dict[str, dict[str, Any]] = {}  # token -> metadata
 _BLOCKED_PHONES: set[str] = set()
 _PUSH_ENDPOINTS: dict[str, list[dict]] = {}
 _AUTH_CLEANUP_INTERVAL_SECS = 60
@@ -845,6 +881,16 @@ def _cleanup_auth_state(now: int | None = None) -> None:
         expired_sids = [sid for sid, (_, exp) in list(_SESSIONS.items()) if exp < ts]
         for sid in expired_sids:
             _SESSIONS.pop(sid, None)
+    except Exception:
+        pass
+    try:
+        expired_tokens = [
+            token
+            for token, rec in list(_DEVICE_LOGIN_CHALLENGES.items())
+            if int(rec.get("created_at") or 0) + DEVICE_LOGIN_TTL_SECS < ts
+        ]
+        for token in expired_tokens:
+            _DEVICE_LOGIN_CHALLENGES.pop(token, None)
     except Exception:
         pass
 
@@ -2360,6 +2406,140 @@ def auth_logout():
     resp.delete_cookie("sa_session", path="/")
     return resp
 
+
+@app.get("/auth/device_login_demo", response_class=HTMLResponse)
+def device_login_demo() -> HTMLResponse:
+    """
+    Simple HTML demo page for the QR-based device login flow.
+    Renders a QR code with a one-time device_login token and polls
+    the backend until the phone approves the login.
+    """
+    html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mirsaal · Device login demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 0; background: #020617; color: #e5e7eb; }
+      .page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+      .card { max-width: 480px; width: 100%; background: rgba(15,23,42,0.95); border-radius: 12px; padding: 20px 20px 16px; box-shadow: 0 18px 45px rgba(0,0,0,0.45); border: 1px solid rgba(148,163,184,0.45); }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p { margin: 4px 0; font-size: 14px; color: #9ca3af; }
+      label { display: block; font-size: 13px; margin-top: 10px; margin-bottom: 4px; color: #e5e7eb; }
+      input[type="text"] { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid #4b5563; background: #020617; color: #e5e7eb; font-size: 14px; }
+      button { margin-top: 12px; padding: 8px 14px; border-radius: 999px; border: none; background: #22c55e; color: #022c22; font-weight: 600; font-size: 14px; cursor: pointer; }
+      button:disabled { opacity: .6; cursor: default; }
+      .qr-wrap { margin-top: 14px; display: flex; align-items: center; justify-content: center; }
+      .qr-wrap img { border-radius: 8px; border: 1px solid rgba(75,85,99,0.8); background: white; }
+      .status { margin-top: 10px; font-size: 13px; color: #9ca3af; }
+      .payload { margin-top: 6px; font-size: 11px; color: #6b7280; word-break: break-all; }
+      a { color: #38bdf8; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="card">
+        <h1>Mirsaal · Device login</h1>
+        <p>Scan this code with Mirsaal on your phone (Scan &gt; Scan QR). Confirm the login on the phone to sign in this browser.</p>
+        <label for="dl_label">Device label (optional)</label>
+        <input id="dl_label" type="text" value="Web" autocomplete="off" />
+        <button id="dl_btn" type="button">Start new login QR</button>
+        <div class="qr-wrap">
+          <img id="dl_qr_img" src="" alt="Device login QR" width="220" height="220" />
+        </div>
+        <div id="dl_status" class="status">No active login yet.</div>
+        <div id="dl_payload" class="payload"></div>
+      </div>
+    </div>
+    <script>
+      let dlToken = null;
+      let dlPollTimer = null;
+
+      async function dlStart() {
+        const btn = document.getElementById('dl_btn');
+        const labEl = document.getElementById('dl_label');
+        const statusEl = document.getElementById('dl_status');
+        const payloadEl = document.getElementById('dl_payload');
+        const img = document.getElementById('dl_qr_img');
+        const label = (labEl.value || '').trim();
+        btn.disabled = true;
+        statusEl.textContent = 'Requesting login token…';
+        payloadEl.textContent = '';
+        if (dlPollTimer) {
+          clearInterval(dlPollTimer);
+          dlPollTimer = null;
+        }
+        try {
+          const resp = await fetch('/auth/device_login/start', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({label: label || null})
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.token) {
+            statusEl.textContent = 'Failed to start device login.';
+            btn.disabled = false;
+            return;
+          }
+          dlToken = data.token;
+          const url = new URL(window.location.href);
+          const base = url.origin || '';
+          const payload = 'shamell://device_login?token=' + encodeURIComponent(dlToken) + (label ? '&label=' + encodeURIComponent(label) : '');
+          img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(payload);
+          img.alt = 'Device login QR';
+          statusEl.textContent = 'Waiting for scan and approval on phone…';
+          payloadEl.textContent = payload;
+          dlPollTimer = setInterval(dlPoll, 2000);
+        } catch (e) {
+          console.error(e);
+          statusEl.textContent = 'Failed to start device login.';
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function dlPoll() {
+        if (!dlToken) return;
+        const statusEl = document.getElementById('dl_status');
+        try {
+          const resp = await fetch('/auth/device_login/redeem', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({token: dlToken})
+          });
+          if (!resp.ok) {
+            let detail = '';
+            try {
+              const err = await resp.json();
+              detail = (err && err.detail) || '';
+            } catch (_) {}
+            if (detail && (detail.indexOf('expired') !== -1 || detail.indexOf('not found') !== -1)) {
+              statusEl.textContent = 'Login token expired. Start a new QR.';
+              clearInterval(dlPollTimer);
+              dlPollTimer = null;
+              dlToken = null;
+            }
+            return;
+          }
+          const data = await resp.json();
+          const phone = (data && data.phone) || '';
+          statusEl.textContent = phone ? ('Login successful for ' + phone + '. This browser is now signed in.') : 'Login successful.';
+          clearInterval(dlPollTimer);
+          dlPollTimer = null;
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      document.getElementById('dl_btn').addEventListener('click', dlStart);
+    </script>
+  </body>
+</html>
+"""
+    return HTMLResponse(html)
+
 # --- Simple admin: block/unblock drivers by phone (in-memory) ---
 @app.post("/admin/block_driver")
 async def admin_block_driver(req: Request):
@@ -3820,7 +4000,7 @@ def wallet_snapshot(
         pass
     return out
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 @app.get("/payments/txns")
@@ -3919,6 +4099,19 @@ try:
         ReadReq as _ChatReadReq,
         PushTokenReq as _ChatPushTokenReq,
         ContactRuleReq as _ChatRuleReq,
+        GroupCreateReq as _ChatGroupCreateReq,
+        GroupOut as _ChatGroupOut,
+        GroupSendReq as _ChatGroupSendReq,
+        GroupMsgOut as _ChatGroupMsgOut,
+        GroupInviteReq as _ChatGroupInviteReq,
+        GroupLeaveReq as _ChatGroupLeaveReq,
+        GroupRoleReq as _ChatGroupRoleReq,
+        GroupUpdateReq as _ChatGroupUpdateReq,
+        GroupMemberOut as _ChatGroupMemberOut,
+        GroupPrefsReq as _ChatGroupPrefsReq,
+        GroupPrefsOut as _ChatGroupPrefsOut,
+        GroupKeyRotateReq as _ChatGroupKeyRotateReq,
+        GroupKeyEventOut as _ChatGroupKeyEventOut,
         register as _chat_register,
         get_device as _chat_get_device,
         send_message as _chat_send_message,
@@ -3926,8 +4119,25 @@ try:
         mark_read as _chat_mark_read,
         register_push_token as _chat_register_push,
         set_block as _chat_set_block,
+        create_group as _chat_create_group,
+        list_groups as _chat_list_groups,
+        send_group_message as _chat_send_group_message,
+        group_inbox as _chat_group_inbox,
+        group_members as _chat_group_members,
+        invite_members as _chat_invite_members,
+        leave_group as _chat_leave_group,
+        set_group_role as _chat_set_group_role,
+        update_group as _chat_update_group,
+        set_group_prefs as _chat_set_group_prefs,
+        list_group_prefs as _chat_list_group_prefs,
+        rotate_group_key as _chat_rotate_group_key,
+        list_key_events as _chat_list_key_events,
     )
     _CHAT_INTERNAL_AVAILABLE = True
+    try:
+        _chat_main._startup()  # type: ignore[attr-defined]
+    except Exception:
+        pass
 except Exception:
     _ChatSession = None  # type: ignore[assignment]
     _chat_engine = None  # type: ignore[assignment]
@@ -4058,6 +4268,53 @@ async def chat_block(device_id: str, req: Request):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.post("/chat/devices/{device_id}/group_prefs")
+async def chat_group_prefs(device_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                preq = _ChatGroupPrefsReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_set_group_prefs(device_id=device_id, req=preq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/devices/{device_id}/group_prefs"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/devices/{device_id}/group_prefs")
+def chat_list_group_prefs(device_id: str):
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            with _chat_internal_session() as s:
+                return _chat_list_group_prefs(device_id=device_id, s=s)  # type: ignore[arg-type]
+        r = httpx.get(_chat_url(f"/devices/{device_id}/group_prefs"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.post("/chat/messages/send")
 async def chat_send(req: Request):
     try:
@@ -4076,9 +4333,50 @@ async def chat_send(req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_send_message(req=sreq, s=s)
+                msg = _chat_send_message(req=sreq, s=s)
+            try:
+                _update_official_service_session_on_message(
+                    getattr(msg, "sender_id", None),
+                    getattr(msg, "recipient_id", None),
+                    getattr(msg, "created_at", None),
+                )
+            except Exception:
+                pass
+            try:
+                emit_event(
+                    "chat",
+                    "message_sent",
+                    {
+                        "id": getattr(msg, "id", None),
+                        "sender_id": getattr(msg, "sender_id", None),
+                        "recipient_id": getattr(msg, "recipient_id", None),
+                        "created_at": getattr(msg, "created_at", None),
+                    },
+                )
+            except Exception:
+                pass
+            return msg
         r = httpx.post(_chat_url("/messages/send"), json=body, timeout=10)
-        return r.json()
+        out = r.json()
+        try:
+            _update_official_service_session_on_message(
+                out.get("sender_id"),
+                out.get("recipient_id"),
+                out.get("created_at"),
+            )
+        except Exception:
+            pass
+        try:
+            payload = {
+                "id": out.get("id"),
+                "sender_id": out.get("sender_id"),
+                "recipient_id": out.get("recipient_id"),
+                "created_at": out.get("created_at"),
+            }
+            emit_event("chat", "message_sent", payload)
+        except Exception:
+            pass
+        return out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except HTTPException:
@@ -4129,6 +4427,287 @@ async def chat_mark_read(mid: str, req: Request):
             with _chat_internal_session() as s:
                 return _chat_mark_read(mid=mid, req=rreq, s=s)
         r = httpx.post(_chat_url(f"/messages/{mid}/read"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/create")
+async def chat_group_create(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                greq = _ChatGroupCreateReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_create_group(req=greq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url("/groups/create"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/groups/list")
+def chat_group_list(device_id: str):
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            with _chat_internal_session() as s:
+                return _chat_list_groups(device_id=device_id, s=s)
+        r = httpx.get(_chat_url("/groups/list"), params={"device_id": device_id}, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/{group_id}/update")
+async def chat_group_update(group_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                ureq = _ChatGroupUpdateReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_update_group(group_id=group_id, req=ureq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/groups/{group_id}/update"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/{group_id}/messages/send")
+async def chat_group_send(group_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                sreq = _ChatGroupSendReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_send_group_message(group_id=group_id, req=sreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/groups/{group_id}/messages/send"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/groups/{group_id}/messages/inbox")
+def chat_group_inbox(group_id: str, device_id: str, since_iso: str = "", limit: int = 50):
+    params = {"device_id": device_id, "limit": max(1, min(limit, 200))}
+    if since_iso:
+        params["since_iso"] = since_iso
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            with _chat_internal_session() as s:
+                sin = since_iso or None
+                return _chat_group_inbox(group_id=group_id, device_id=device_id, since_iso=sin, limit=limit, s=s)  # type: ignore[arg-type]
+        r = httpx.get(_chat_url(f"/groups/{group_id}/messages/inbox"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/groups/{group_id}/members")
+def chat_group_members(group_id: str, device_id: str):
+    params = {"device_id": device_id}
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            with _chat_internal_session() as s:
+                return _chat_group_members(group_id=group_id, device_id=device_id, s=s)
+        r = httpx.get(_chat_url(f"/groups/{group_id}/members"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/{group_id}/invite")
+async def chat_group_invite(group_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                ireq = _ChatGroupInviteReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_invite_members(group_id=group_id, req=ireq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/groups/{group_id}/invite"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/{group_id}/leave")
+async def chat_group_leave(group_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                lreq = _ChatGroupLeaveReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_leave_group(group_id=group_id, req=lreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/groups/{group_id}/leave"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/{group_id}/set_role")
+async def chat_group_set_role(group_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                rreq = _ChatGroupRoleReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_set_group_role(group_id=group_id, req=rreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/groups/{group_id}/set_role"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/groups/{group_id}/keys/rotate")
+async def chat_group_rotate_key(group_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                rreq = _ChatGroupKeyRotateReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_rotate_group_key(group_id=group_id, req=rreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(_chat_url(f"/groups/{group_id}/keys/rotate"), json=body, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/groups/{group_id}/keys/events")
+def chat_group_key_events(group_id: str, device_id: str, limit: int = 20):
+    params = {"device_id": device_id, "limit": max(1, min(limit, 200))}
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            with _chat_internal_session() as s:
+                return _chat_list_key_events(group_id=group_id, device_id=device_id, limit=limit, s=s)  # type: ignore[arg-type]
+        r = httpx.get(_chat_url(f"/groups/{group_id}/keys/events"), params=params, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4200,6 +4779,231 @@ async def chat_inbox_ws(ws: WebSocket):
                 await asyncio.sleep(2)
     except WebSocketDisconnect:
         return
+
+
+@app.websocket("/ws/chat/groups")
+async def chat_groups_ws(ws: WebSocket):
+    """
+    Real-time-ish group inbox stream.
+
+    Mirrors /ws/chat/inbox by polling group inbox endpoints and emitting
+    JSON frames of shape:
+      {"type":"group_inbox","group_id":"...","messages":[...]}
+    """
+    await ws.accept()
+    try:
+        params = dict(ws.query_params)
+        did = params.get("device_id")
+        last_by_gid: Dict[str, str] = {}
+        # Optional resume map: since_map={"gid":"iso",...}
+        since_map_raw = params.get("since_map") or ""
+        if since_map_raw:
+            try:
+                decoded = _json.loads(since_map_raw)
+                if isinstance(decoded, dict):
+                    last_by_gid = {
+                        str(k): str(v)
+                        for k, v in decoded.items()
+                        if str(k) and str(v)
+                    }
+            except Exception:
+                last_by_gid = {}
+
+        while True:
+            try:
+                groups: List[Any] = []
+                if _use_chat_internal():
+                    if not _CHAT_INTERNAL_AVAILABLE:
+                        raise RuntimeError("chat internal not available")
+                    with _chat_internal_session() as s:
+                        groups = _chat_list_groups(device_id=did, s=s)
+                else:
+                    r = httpx.get(
+                        _chat_url("/groups/list"),
+                        params={"device_id": did},
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        groups = r.json() or []
+
+                for g in groups:
+                    gid: str = ""
+                    try:
+                        gid = (
+                            getattr(g, "group_id", None)
+                            or getattr(g, "id", None)
+                            or ""
+                        )
+                    except Exception:
+                        gid = ""
+                    if not gid and isinstance(g, dict):
+                        gid = (g.get("group_id") or g.get("id") or "").strip()
+                    if not gid:
+                        continue
+
+                    last_iso = last_by_gid.get(gid, "")
+                    arr: List[Any] = []
+                    if _use_chat_internal():
+                        with _chat_internal_session() as s:
+                            sin = last_iso or None
+                            arr = _chat_group_inbox(
+                                group_id=gid,
+                                device_id=did,
+                                since_iso=sin,
+                                limit=100,
+                                s=s,
+                            )
+                        if arr:
+                            try:
+                                last_iso = (
+                                    max(
+                                        [
+                                            getattr(m, "created_at", "") or ""
+                                            for m in arr
+                                        ]
+                                    )
+                                    or last_iso
+                                )
+                            except Exception:
+                                pass
+                            last_by_gid[gid] = last_iso
+                            payload = [
+                                {
+                                    "id": getattr(m, "id", None),
+                                    "group_id": getattr(
+                                        m, "group_id", getattr(m, "groupId", None)
+                                    ),
+                                    "sender_id": getattr(m, "sender_id", None),
+                                    "text": getattr(m, "text", ""),
+                                    "kind": getattr(m, "kind", None),
+                                    "nonce_b64": getattr(m, "nonce_b64", None),
+                                    "box_b64": getattr(m, "box_b64", None),
+                                    "attachment_b64": getattr(m, "attachment_b64", None),
+                                    "attachment_mime": getattr(m, "attachment_mime", None),
+                                    "voice_secs": getattr(m, "voice_secs", None),
+                                    "created_at": getattr(m, "created_at", None),
+                                    "expire_at": getattr(m, "expire_at", None),
+                                }
+                                for m in arr
+                            ]
+                            await ws.send_json(
+                                {
+                                    "type": "group_inbox",
+                                    "group_id": gid,
+                                    "messages": payload,
+                                }
+                            )
+                    else:
+                        qparams: Dict[str, Any] = {
+                            "device_id": did,
+                            "limit": 100,
+                        }
+                        if last_iso:
+                            qparams["since_iso"] = last_iso
+                        r = httpx.get(
+                            _chat_url(f"/groups/{gid}/messages/inbox"),
+                            params=qparams,
+                            timeout=10,
+                        )
+                        if r.status_code == 200:
+                            arr = r.json() or []
+                            if arr:
+                                try:
+                                    last_iso = (
+                                        max(
+                                            [m.get("created_at") or "" for m in arr]
+                                        )
+                                        or last_iso
+                                    )
+                                except Exception:
+                                    pass
+                                last_by_gid[gid] = last_iso
+                                await ws.send_json(
+                                    {
+                                        "type": "group_inbox",
+                                        "group_id": gid,
+                                        "messages": arr,
+                                    }
+                                )
+
+                await asyncio.sleep(2)
+            except Exception as e:
+                await ws.send_json({"type": "error", "error": str(e)})
+                await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        return
+
+
+@app.websocket("/ws/call/signaling")
+async def call_signaling_ws(ws: WebSocket):
+    """
+    Lightweight VoIP signaling WebSocket.
+
+    This endpoint routes JSON messages between devices based on `device_id`
+    and `to` fields. It is intentionally kept stateless apart from an
+    in-memory mapping of active connections so that the Flutter client
+    (CallSignalingClient) can use it for invites/answers/hangups and
+    later WebRTC SDP/ICE exchange.
+    """
+    await ws.accept()
+    params = dict(ws.query_params)
+    device_id = params.get("device_id") or ""
+    if not device_id:
+        await ws.close(code=4000)
+        return
+    # Register connection
+    _CALL_WS_CONNECTIONS[device_id] = ws
+    try:
+        while True:
+            try:
+                payload = await ws.receive_text()
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                continue
+            try:
+                msg = _json.loads(payload)
+            except Exception:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            msg.setdefault("from", device_id)
+            t = str(msg.get("type") or "")
+            # For now we simply route based on explicit `to` field.
+            target = str(msg.get("to") or "")
+            if target and target in _CALL_WS_CONNECTIONS:
+                try:
+                    await _CALL_WS_CONNECTIONS[target].send_text(_json.dumps(msg))
+                except Exception:
+                    # Drop broken targets; they will be cleaned up on their side.
+                    try:
+                        _CALL_WS_CONNECTIONS.pop(target, None)
+                    except Exception:
+                        pass
+            # Optionally echo minimal ACK to sender for debugging
+            if t == "invite":
+                try:
+                    await ws.send_text(
+                        _json.dumps(
+                            {
+                                "type": "invite_ack",
+                                "call_id": msg.get("call_id"),
+                                "to": target,
+                            }
+                        )
+                    )
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+          # Remove only if mapping still points to this socket
+          existing = _CALL_WS_CONNECTIONS.get(device_id)
+          if existing is ws:
+              _CALL_WS_CONNECTIONS.pop(device_id, None)
+        except Exception:
+            pass
 
 
 # ---- Freight / Courier proxies ----
@@ -6621,18 +7425,10 @@ def livestock_listings(
         params["min_weight"] = min_weight
     if max_weight is not None:
         params["max_weight"] = max_weight
-    if min_power is not None:
-        params["min_power"] = min_power
-    if max_power is not None:
-        params["max_power"] = max_power
     if sex:
         params["sex"] = sex
     if order:
         params["order"] = order
-    if min_weight is not None:
-        params["min_weight"] = min_weight
-    if max_weight is not None:
-        params["max_weight"] = max_weight
     if negotiable is not None:
         params["negotiable"] = negotiable
     try:
@@ -8229,6 +9025,176 @@ def _equipment_internal_session():
     return _EquipmentSession(_equipment_engine)  # type: ignore[call-arg]
 
 
+@app.get("/equipment", response_class=HTMLResponse)
+def equipment_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
+    html = """
+<!doctype html>
+<html><head><meta name=viewport content="width=device-width, initial-scale=1" />
+<title>Equipment</title>
+<link rel="icon" href="/icons/equipment.svg" />
+<style>
+  body{font-family:sans-serif;margin:20px;max-width:1100px;background:#ffffff;color:#000000;}
+  header{position:sticky;top:0;z-index:10;background:#ffffff;padding:8px 10px;border-bottom:1px solid #dddddd;margin:0 0 12px 0;display:flex;align-items:center;gap:8px}
+  header h1{flex:1;font-size:20px;margin:0}
+  button{font-size:14px;padding:8px 10px;border-radius:10px;border:1px solid #cccccc;background:#f3f4f6;color:#000000}
+  input,select{font-size:14px;padding:8px 10px;border-radius:10px;border:1px solid #cccccc}
+  table{border-collapse:collapse;width:100%}
+  th,td{border:1px solid #e5e7eb;padding:8px;text-align:left;font-size:13px}
+  th{background:#f8fafc}
+  .card{border-radius:12px;border:1px solid #e5e7eb;padding:12px;background:#ffffff;margin-top:12px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .muted{opacity:.7;font-size:12px}
+  pre{background:#f5f5f5;padding:10px;white-space:pre-wrap;border-radius:10px;border:1px solid #e5e7eb}
+  .link{color:#2563eb;text-decoration:underline;cursor:pointer}
+  @media(max-width:820px){ body{margin:12px;} th,td{font-size:12px;} }
+  /* prevent DS auto-bg override */
+  body[data-bg="simple"]{background:#ffffff}
+  .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;border:1px solid #e5e7eb;background:#f8fafc;font-size:12px}
+  .ok{color:#15803d}
+  .warn{color:#b45309}
+</style>
+</head><body data-bg="simple">
+<header>
+  <h1>Equipment</h1>
+  <button onclick="loadAssets()">Refresh</button>
+</header>
+
+<section class="card">
+  <h2 style="margin:0 0 8px 0;">Browse</h2>
+  <div class="row">
+    <input id="q" placeholder="Search title…" style="flex:1;min-width:220px" />
+    <input id="city" placeholder="City" style="min-width:160px" />
+    <input id="category" placeholder="Category" style="min-width:160px" />
+    <label class="badge"><input id="avail" type="checkbox" style="margin-right:6px" /> Available only</label>
+    <button onclick="loadAssets()">Search</button>
+  </div>
+  <div id="cnt" class="muted" style="margin-top:8px;">Loading…</div>
+  <div style="overflow:auto;margin-top:10px">
+    <table id="tbl">
+      <thead><tr><th>ID</th><th>Title</th><th>City</th><th>Category</th><th>Daily</th><th>Avail</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2 style="margin:0 0 8px 0;">Details / Quote</h2>
+  <div class="row">
+    <input id="eid" placeholder="equipment_id" style="min-width:160px" />
+    <input id="from" placeholder="from_iso (YYYY-MM-DDTHH:MM:SSZ)" style="flex:1;min-width:220px" />
+    <input id="to" placeholder="to_iso (YYYY-MM-DDTHH:MM:SSZ)" style="flex:1;min-width:220px" />
+    <input id="qty" placeholder="qty" value="1" style="width:90px" />
+    <button onclick="loadOne()">Load</button>
+    <button onclick="quote()">Quote</button>
+    <button onclick="book()">Book</button>
+  </div>
+  <div class="muted" style="margin-top:6px;">Tip: tap a row above to prefill equipment_id.</div>
+  <pre id="detail_out" style="margin-top:10px;"></pre>
+  <pre id="quote_out" style="margin-top:10px;"></pre>
+  <pre id="book_out" style="margin-top:10px;"></pre>
+</section>
+
+<script>
+function gi(id){ return (document.getElementById(id).value || '').trim(); }
+function setv(id, v){ try{ document.getElementById(id).value = v; }catch(_){ } }
+function fmtMoney(cents, cur){
+  if(cents === null || cents === undefined) return '—';
+  const n = Number(cents);
+  if(Number.isNaN(n)) return '—';
+  return n + ' ' + (cur || '');
+}
+function safeText(s){ return (s===null||s===undefined) ? '' : (''+s); }
+async function fetchJson(url, opts){
+  const r = await fetch(url, opts);
+  const t = await r.text();
+  try{ return {ok:r.ok, status:r.status, json: JSON.parse(t), text:t}; }catch(_){ return {ok:r.ok, status:r.status, json:null, text:t}; }
+}
+async function loadAssets(){
+  const params = new URLSearchParams();
+  const q = gi('q'); const city = gi('city'); const cat = gi('category');
+  if(q) params.set('q', q);
+  if(city) params.set('city', city);
+  if(cat) params.set('category', cat);
+  if(document.getElementById('avail').checked) params.set('available_only', 'true');
+  params.set('limit','80');
+  const url = '/equipment/assets?' + params.toString();
+  const cnt = document.getElementById('cnt');
+  const tb = document.querySelector('#tbl tbody');
+  cnt.textContent = 'Loading…';
+  tb.innerHTML = '';
+  const res = await fetchJson(url);
+  if(!res.ok){
+    cnt.textContent = 'Error ' + res.status;
+    tb.innerHTML = '<tr><td colspan=\"7\"><pre>' + safeText(res.text) + '</pre></td></tr>';
+    return;
+  }
+  const arr = Array.isArray(res.json) ? res.json : [];
+  cnt.textContent = arr.length + ' results';
+  for(const x of arr){
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = ()=>{ setv('eid', x.id); loadOne(); };
+    const daily = fmtMoney(x.daily_rate_cents, x.currency);
+    const avail = (x.available_quantity !== null && x.available_quantity !== undefined) ? (''+x.available_quantity) : '—';
+    tr.innerHTML = '<td>' + safeText(x.id) + '</td>' +
+      '<td>' + safeText(x.title) + '</td>' +
+      '<td>' + safeText(x.city||'') + '</td>' +
+      '<td>' + safeText(x.category||'') + '</td>' +
+      '<td>' + daily + '</td>' +
+      '<td>' + avail + '</td>' +
+      '<td>' + safeText(x.status||'') + '</td>';
+    tb.appendChild(tr);
+  }
+}
+async function loadOne(){
+  const id = gi('eid');
+  const out = document.getElementById('detail_out');
+  if(!id){ out.textContent = 'equipment_id required'; return; }
+  out.textContent = 'Loading…';
+  const res = await fetchJson('/equipment/assets/' + encodeURIComponent(id));
+  out.textContent = res.json ? JSON.stringify(res.json, null, 2) : safeText(res.text);
+}
+async function quote(){
+  const id = gi('eid');
+  const out = document.getElementById('quote_out');
+  if(!id){ out.textContent = 'equipment_id required'; return; }
+  const from = gi('from'); const to = gi('to');
+  const qty = parseInt(gi('qty') || '1', 10) || 1;
+  const body = {equipment_id: parseInt(id,10), from_iso: from, to_iso: to, quantity: qty};
+  out.textContent = 'Loading…';
+  const res = await fetchJson('/equipment/quote', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
+  out.textContent = res.json ? JSON.stringify(res.json, null, 2) : safeText(res.text);
+}
+async function book(){
+  const id = gi('eid');
+  const out = document.getElementById('book_out');
+  if(!id){ out.textContent = 'equipment_id required'; return; }
+  const from = gi('from'); const to = gi('to');
+  const qty = parseInt(gi('qty') || '1', 10) || 1;
+  const body = {equipment_id: parseInt(id,10), from_iso: from, to_iso: to, quantity: qty, confirm: true};
+  out.textContent = 'Booking…';
+  const res = await fetchJson('/equipment/book', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
+  out.textContent = res.json ? JSON.stringify(res.json, null, 2) : safeText(res.text);
+}
+
+try{
+  const d = new Date();
+  const from = d.toISOString().slice(0,19) + 'Z';
+  const d2 = new Date(d.getTime() + 24*3600*1000);
+  const to = d2.toISOString().slice(0,19) + 'Z';
+  setv('from', from);
+  setv('to', to);
+}catch(_){ }
+
+loadAssets();
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
 @app.get("/equipment/assets")
 def equipment_list_assets(
     q: str = "",
@@ -8928,6 +9894,7 @@ try:
         engine as _pay_engine,
         CreateUserReq as _PayCreateUserReq,
         TransferReq as _PayTransferReq,
+        BillPayReq as _PayBillPayReq,
         PaymentRequestCreate as _PayRequestCreate,
         _accept_request_core as _pay_accept_request_core,
         TopupReq as _PayTopupReq,
@@ -8936,6 +9903,10 @@ try:
         CashCancelReq as _PayCashCancelReq,
         SonicIssueReq as _PaySonicIssueReq,
         SonicRedeemReq as _PaySonicRedeemReq,
+        RedPacketIssueReq as _PayRedPacketIssueReq,
+        RedPacketClaimReq as _PayRedPacketClaimReq,
+        SavingsDepositReq as _PaySavingsDepositReq,
+        SavingsWithdrawReq as _PaySavingsWithdrawReq,
         AliasRequest as _PayAliasRequest,
         AliasVerifyReq as _PayAliasVerifyReq,
         RoleUpsert as _PayRoleUpsert,
@@ -8957,6 +9928,13 @@ try:
         cash_status as _pay_cash_status,
         sonic_issue as _pay_sonic_issue,
         sonic_redeem as _pay_sonic_redeem,
+        redpacket_issue as _pay_redpacket_issue,
+        redpacket_claim as _pay_redpacket_claim,
+        redpacket_status as _pay_redpacket_status,
+        savings_deposit as _pay_savings_deposit,
+        savings_withdraw as _pay_savings_withdraw,
+        savings_overview as _pay_savings_overview,
+        bills_pay as _pay_bills_pay,
         idempotency_status as _pay_idempotency_status,
         alias_request as _pay_alias_request,
         alias_verify as _pay_alias_verify,
@@ -10201,7 +11179,7 @@ def taxi_admin_summary(request: Request):
 
 
 @app.get("/taxi/admin/summary_cached")
-def taxi_admin_summary_cached():
+def taxi_admin_summary_cached(request: Request):
     """
     Small cached variant for the Taxi admin summary.
     Reduces dashboard load when polled frequently.
@@ -10214,7 +11192,7 @@ def taxi_admin_summary_cached():
     # 10s TTL: reasonably fresh but reduces burst load
     if _TAXI_ADMIN_SUMMARY_CACHE.get("data") is not None and (time.time() - ts) < 10.0:
         return _TAXI_ADMIN_SUMMARY_CACHE.get("data")
-    data = taxi_admin_summary()
+    data = taxi_admin_summary(request)
     _TAXI_ADMIN_SUMMARY_CACHE = {"ts": time.time(), "data": data}
     return data
 
@@ -10695,6 +11673,8 @@ try:
         search_trips as _bus_search_trips,
         trip_detail as _bus_trip_detail,
         publish_trip as _bus_publish_trip,
+        unpublish_trip as _bus_unpublish_trip,
+        cancel_trip as _bus_cancel_trip,
         quote as _bus_quote,
         book_trip as _bus_book_trip,
         booking_status as _bus_booking_status,
@@ -10702,6 +11682,7 @@ try:
         booking_search as _bus_booking_search,
         cancel_booking as _bus_cancel_booking,
         ticket_board as _bus_ticket_board,
+        operator_trips as _bus_operator_trips,
         operator_stats as _bus_operator_stats,
         admin_summary as _bus_admin_summary,
     )
@@ -11884,6 +12865,282 @@ def me_roles(request: Request):
     return {"phone": phone, "roles": roles}
 
 
+@app.post("/auth/devices/register", response_class=JSONResponse)
+async def auth_devices_register(request: Request) -> dict[str, Any]:
+    """
+    Registriert oder aktualisiert einen Geräte-Eintrag für den aktuellen Benutzer.
+
+    Wird vom Client nach erfolgreichem Login aufgerufen und bildet die
+    Basis für eine Geräte-Liste im Me-Tab (Multi-Device à la WeChat).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id required")
+    device_type = (body.get("device_type") or "").strip() or None
+    device_name = (body.get("device_name") or "").strip() or None
+    platform = (body.get("platform") or "").strip() or None
+    app_version = (body.get("app_version") or "").strip() or None
+    ip = _auth_client_ip(request)
+    ua = request.headers.get("user-agent") or request.headers.get("User-Agent")
+    with _officials_session() as s:
+        row = (
+            s.execute(
+                _sa_select(DeviceSessionDB).where(
+                    DeviceSessionDB.phone == phone,
+                    DeviceSessionDB.device_id == device_id,
+                )
+            )
+            .scalars()
+            .first()
+        )
+        now = datetime.now(timezone.utc)
+        if row:
+            row.device_type = device_type or row.device_type
+            row.device_name = device_name or row.device_name
+            row.platform = platform or row.platform
+            row.app_version = app_version or row.app_version
+            row.last_ip = ip or row.last_ip
+            row.user_agent = ua or row.user_agent
+            row.last_seen_at = now
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+        else:
+            row = DeviceSessionDB(
+                phone=phone,
+                device_id=device_id,
+                device_type=device_type,
+                device_name=device_name,
+                platform=platform,
+                app_version=app_version,
+                last_ip=ip,
+                user_agent=ua,
+                last_seen_at=now,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+        return {
+            "id": row.id,
+            "phone": row.phone,
+            "device_id": row.device_id,
+            "device_type": row.device_type,
+            "device_name": row.device_name,
+            "platform": row.platform,
+            "app_version": row.app_version,
+            "last_ip": row.last_ip,
+            "user_agent": row.user_agent,
+            "created_at": getattr(row, "created_at", None),
+            "last_seen_at": getattr(row, "last_seen_at", None),
+        }
+
+
+@app.post("/auth/device_login/start", response_class=JSONResponse)
+async def auth_device_login_start(request: Request) -> dict[str, Any]:
+    """
+    Startet einen QR‑Login‑Flow für ein neues Gerät (z.B. Web/Desktop).
+
+    Unauthenticated endpoint: erstellt ein kurzlebiges Token, das als QR‑Code
+    dargestellt werden kann (z.B. shamell://device_login?token=...).
+    Das eigentliche Binden an einen Account passiert erst, wenn der Nutzer
+    den Login auf dem Telefon bestätigt.
+    """
+    try:
+      body = await request.json()
+    except Exception:
+      body = {}
+    if not isinstance(body, dict):
+        body = {}
+    label = (body.get("label") or "").strip()
+    token = _uuid.uuid4().hex
+    now = _now()
+    _DEVICE_LOGIN_CHALLENGES[token] = {
+        "created_at": now,
+        "status": "pending",
+        "label": label,
+        "phone": None,
+        "session": None,
+    }
+    return {"ok": True, "token": token, "label": label}
+
+
+@app.post("/auth/device_login/approve", response_class=JSONResponse)
+async def auth_device_login_approve(request: Request) -> dict[str, Any]:
+    """
+    Wird vom authentifizierten Telefon aufgerufen, nachdem ein QR‑Code
+    für den Geräte‑Login gescannt wurde. Markiert das Token als genehmigt
+    und erzeugt eine Session, die später vom neuen Gerät eingelöst wird.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    token = (body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+    _cleanup_auth_state()
+    rec = _DEVICE_LOGIN_CHALLENGES.get(token)
+    if not rec:
+        raise HTTPException(status_code=404, detail="challenge not found")
+    try:
+        created = int(rec.get("created_at") or 0)
+    except Exception:
+        created = 0
+    if created <= 0 or created + DEVICE_LOGIN_TTL_SECS < _now():
+        try:
+            _DEVICE_LOGIN_CHALLENGES.pop(token, None)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail="challenge expired")
+    # Create a fresh session for the new device and mark as approved.
+    sid = _create_session(phone)
+    rec["status"] = "approved"
+    rec["phone"] = phone
+    rec["session"] = sid
+    rec["approved_at"] = _now()
+    _DEVICE_LOGIN_CHALLENGES[token] = rec
+    return {"ok": True, "token": token}
+
+
+@app.post("/auth/device_login/redeem", response_class=JSONResponse)
+async def auth_device_login_redeem(request: Request):
+    """
+    Wird vom neuen Gerät (z.B. Web/Desktop) aufgerufen, nachdem der Nutzer
+    den QR‑Login auf dem Telefon bestätigt hat. Liefert eine Session‑ID und
+    setzt optional das sa_session‑Cookie.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    token = (body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+    _cleanup_auth_state()
+    rec = _DEVICE_LOGIN_CHALLENGES.get(token)
+    if not rec:
+        raise HTTPException(status_code=404, detail="challenge not found")
+    try:
+        created = int(rec.get("created_at") or 0)
+    except Exception:
+        created = 0
+    if created <= 0 or created + DEVICE_LOGIN_TTL_SECS < _now():
+        try:
+            _DEVICE_LOGIN_CHALLENGES.pop(token, None)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail="challenge expired")
+    status = (rec.get("status") or "").strip().lower()
+    if status != "approved":
+        raise HTTPException(status_code=400, detail="challenge not approved")
+    phone = (rec.get("phone") or "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="challenge not bound to user")
+    sid = rec.get("session")
+    if not isinstance(sid, str) or not sid:
+        sid = _create_session(phone)
+    try:
+        _DEVICE_LOGIN_CHALLENGES.pop(token, None)
+    except Exception:
+        pass
+    resp = JSONResponse({"ok": True, "phone": phone, "session": sid})
+    resp.set_cookie(
+        "sa_session",
+        sid,
+        max_age=AUTH_SESSION_TTL_SECS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+@app.get("/auth/devices", response_class=JSONResponse)
+def auth_devices_list(request: Request) -> dict[str, Any]:
+    """
+    Listet registrierte Geräte des aktuellen Benutzers auf.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    with _officials_session() as s:
+        rows = (
+            s.execute(
+                _sa_select(DeviceSessionDB)
+                .where(DeviceSessionDB.phone == phone)
+                .order_by(DeviceSessionDB.last_seen_at.desc(), DeviceSessionDB.id.desc())
+            )
+            .scalars()
+            .all()
+        )
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            items.append(
+                {
+                    "id": row.id,
+                    "phone": row.phone,
+                    "device_id": row.device_id,
+                    "device_type": row.device_type,
+                    "device_name": row.device_name,
+                    "platform": row.platform,
+                    "app_version": row.app_version,
+                    "last_ip": row.last_ip,
+                    "user_agent": row.user_agent,
+                    "created_at": getattr(row, "created_at", None),
+                    "last_seen_at": getattr(row, "last_seen_at", None),
+                }
+            )
+    return {"devices": items}
+
+
+@app.delete("/auth/devices/{device_id}", response_class=JSONResponse)
+def auth_devices_delete(device_id: str, request: Request) -> dict[str, Any]:
+    """
+    Entfernt einen Geräte-Eintrag für den aktuellen Benutzer.
+
+    Dies ist ein reines Verwaltungsfeature; bestehende Sessions werden
+    dadurch nicht hart invalidiert, da OTP-Sessions in-memory laufen.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    clean = (device_id or "").strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="device_id required")
+    with _officials_session() as s:
+        row = (
+            s.execute(
+                _sa_select(DeviceSessionDB).where(
+                    DeviceSessionDB.phone == phone,
+                    DeviceSessionDB.device_id == clean,
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if not row:
+            return {"status": "ignored"}
+        s.delete(row)
+        s.commit()
+    return {"status": "ok"}
+
+
 @app.post("/me/dsr/export")
 async def me_dsr_export(request: Request):
     """
@@ -12091,13 +13348,43 @@ async def payments_transfer(req: Request):
                     # Idempotency key is read from headers in the Payments API;
                     # simulating it via a request-like object is not needed here,
                     # because idempotency logic in the body (ikey) is not used.
-                    return _pay_transfer(req_model, request=req, s=s)
+                    result = _pay_transfer(req_model, request=req, s=s)
+                try:
+                    payload = {}
+                    if isinstance(body, dict):
+                        payload = {
+                            "from_wallet_id": body.get("from_wallet_id"),
+                            "to_wallet_id": body.get("to_wallet_id"),
+                            "to_alias": body.get("to_alias"),
+                            "amount_cents": body.get("amount_cents"),
+                            "currency": body.get("currency"),
+                            "device_id": dev,
+                        }
+                    emit_event("payments", "transfer", payload)
+                except Exception:
+                    pass
+                return result
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
         r = httpx.post(_payments_url("/transfer"), json=body, headers=headers, timeout=10)
-        return r.json()
+        out = r.json()
+        try:
+            payload = {}
+            if isinstance(body, dict):
+                payload = {
+                    "from_wallet_id": body.get("from_wallet_id"),
+                    "to_wallet_id": body.get("to_wallet_id"),
+                    "to_alias": body.get("to_alias"),
+                    "amount_cents": body.get("amount_cents"),
+                    "currency": body.get("currency"),
+                    "device_id": dev,
+                }
+            emit_event("payments", "transfer", payload)
+        except Exception:
+            pass
+        return out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except HTTPException:
@@ -12943,6 +14230,63 @@ def bus_operator_stats(operator_id: str, period: str = "today"):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.get("/bus/operators/{operator_id}/trips")
+def bus_operator_trips(
+    operator_id: str,
+    request: Request,
+    status: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    limit: int = 100,
+    order: str = "desc",
+):
+    """
+    List trips for a Bus operator (includes drafts). Protected via BFF auth.
+    """
+    if _ENV_LOWER in ("dev", "test"):
+        phone = _auth_phone(request)
+        if not phone:
+            raise HTTPException(status_code=401, detail="unauthorized")
+    else:
+        phone = _require_operator(request, "bus")
+    allowed_ops = _bus_operator_ids_for_phone(phone)
+    is_admin = _is_admin(phone)
+    if not allowed_ops and _ENV_LOWER in ("dev", "test"):
+        allowed_ops = _bus_all_operator_ids()
+        is_admin = True
+    if not allowed_ops and not is_admin:
+        raise HTTPException(status_code=403, detail="no bus operator linked to caller wallet")
+    if allowed_ops and operator_id not in allowed_ops and not is_admin:
+        raise HTTPException(status_code=403, detail="operator not allowed for caller")
+    params: dict[str, Any] = {"limit": limit, "order": order}
+    if status:
+        params["status"] = status
+    if from_date:
+        params["from_date"] = from_date
+    if to_date:
+        params["to_date"] = to_date
+    try:
+        if _use_bus_internal():
+            if not _BUS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="bus internal not available")
+            with _bus_internal_session() as s:
+                return _bus_operator_trips(
+                    operator_id=operator_id,
+                    status=status,
+                    from_date=from_date,
+                    to_date=to_date,
+                    limit=limit,
+                    order=order,
+                    s=s,
+                )
+        r = httpx.get(_bus_url(f"/operators/{operator_id}/trips"), params=params, timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.post("/bus/trips")
 async def bus_create_trip(req: Request):
     if _ENV_LOWER in ("dev", "test"):
@@ -13027,6 +14371,92 @@ def bus_publish_trip(trip_id: str, request: Request):
             with _bus_internal_session() as s:
                 return _bus_publish_trip(trip_id=trip_id, s=s)
         r = httpx.post(_bus_url(f"/trips/{trip_id}/publish"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/bus/trips/{trip_id}/unpublish")
+def bus_unpublish_trip(trip_id: str, request: Request):
+    """
+    Unpublish a bus trip (set to draft) so it does not show up in passenger search.
+    """
+    if _ENV_LOWER in ("dev", "test"):
+        phone = _auth_phone(request)
+        if not phone:
+            raise HTTPException(status_code=401, detail="unauthorized")
+    else:
+        phone = _require_operator(request, "bus")
+    allowed_ops = _bus_operator_ids_for_phone(phone)
+    is_admin = _is_admin(phone)
+    if not allowed_ops and _ENV_LOWER in ("dev", "test"):
+        allowed_ops = _bus_all_operator_ids()
+        is_admin = True
+    if not allowed_ops and not is_admin:
+        raise HTTPException(status_code=403, detail="no bus operator linked to caller wallet")
+    route_id: str | None = None
+    route_id = _bus_trip_route_id(trip_id)
+    if route_id is None:
+        raise HTTPException(status_code=404, detail="trip not found")
+    if not route_id:
+        raise HTTPException(status_code=400, detail="trip route missing")
+    owner = _bus_route_owner(route_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="route not found for trip")
+    if allowed_ops and owner not in allowed_ops and not is_admin:
+        raise HTTPException(status_code=403, detail="route not allowed for caller")
+    try:
+        if _use_bus_internal():
+            if not _BUS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="bus internal not available")
+            with _bus_internal_session() as s:
+                return _bus_unpublish_trip(trip_id=trip_id, s=s)
+        r = httpx.post(_bus_url(f"/trips/{trip_id}/unpublish"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/bus/trips/{trip_id}/cancel")
+def bus_cancel_trip(trip_id: str, request: Request):
+    """
+    Cancel a bus trip.
+    """
+    if _ENV_LOWER in ("dev", "test"):
+        phone = _auth_phone(request)
+        if not phone:
+            raise HTTPException(status_code=401, detail="unauthorized")
+    else:
+        phone = _require_operator(request, "bus")
+    allowed_ops = _bus_operator_ids_for_phone(phone)
+    is_admin = _is_admin(phone)
+    if not allowed_ops and _ENV_LOWER in ("dev", "test"):
+        allowed_ops = _bus_all_operator_ids()
+        is_admin = True
+    if not allowed_ops and not is_admin:
+        raise HTTPException(status_code=403, detail="no bus operator linked to caller wallet")
+    route_id: str | None = None
+    route_id = _bus_trip_route_id(trip_id)
+    if route_id is None:
+        raise HTTPException(status_code=404, detail="trip not found")
+    if not route_id:
+        raise HTTPException(status_code=400, detail="trip route missing")
+    owner = _bus_route_owner(route_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="route not found for trip")
+    if allowed_ops and owner not in allowed_ops and not is_admin:
+        raise HTTPException(status_code=403, detail="route not allowed for caller")
+    try:
+        if _use_bus_internal():
+            if not _BUS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="bus internal not available")
+            with _bus_internal_session() as s:
+                return _bus_cancel_trip(trip_id=trip_id, s=s)
+        r = httpx.post(_bus_url(f"/trips/{trip_id}/cancel"), timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -13439,6 +14869,185 @@ async def payments_sonic_redeem(req: Request):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+# ---- Red Packet (WeChat-style hongbao) proxies ----
+@app.post("/payments/redpacket/issue")
+async def payments_redpacket_issue(req: Request):
+    # User-initiated pooled payment; mirrors /payments/transfer semantics.
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key") if hasattr(req, "headers") else None
+        dev = req.headers.get("X-Device-ID") if hasattr(req, "headers") else None
+        ua = req.headers.get("User-Agent") if hasattr(req, "headers") else None
+    except Exception:
+        ikey = None
+        dev = None
+        ua = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    if dev:
+        headers["X-Device-ID"] = dev
+    if ua:
+        headers["User-Agent"] = ua
+    try:
+        body = _normalize_amount(body)
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                req_model = _PayRedPacketIssueReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            try:
+                with _pay_internal_session() as s:
+                    result = _pay_redpacket_issue(req_model, s=s)
+                try:
+                    payload = {}
+                    if isinstance(body, dict):
+                        payload = {
+                            "redpacket_id": getattr(result, "id", None),
+                            "creator_wallet_id": body.get("creator_wallet_id"),
+                            "amount_cents": body.get("amount_cents"),
+                            "count": body.get("count"),
+                            "mode": body.get("mode"),
+                            "group_id": body.get("group_id"),
+                        }
+                    emit_event("payments", "redpacket_issue", payload)
+                except Exception:
+                    pass
+                return result
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.post(_payments_url("/redpacket/issue"), json=body, headers=headers, timeout=10)
+        out = r.json()
+        try:
+            payload = {}
+            if isinstance(body, dict):
+                payload = {
+                    "redpacket_id": out.get("id"),
+                    "creator_wallet_id": body.get("creator_wallet_id"),
+                    "amount_cents": body.get("amount_cents"),
+                    "count": body.get("count"),
+                    "mode": body.get("mode"),
+                    "group_id": body.get("group_id"),
+                }
+            emit_event("payments", "redpacket_issue", payload)
+        except Exception:
+            pass
+        return out
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/payments/redpacket/claim")
+async def payments_redpacket_claim(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    # Auto-fill wallet_id for authenticated user when missing.
+    phone = _auth_phone(req)
+    wallet_id = (body.get("wallet_id") or "").strip()
+    if not wallet_id and phone:
+        try:
+            wallet_id = _resolve_wallet_id_for_phone(phone) or ""
+        except Exception:
+            wallet_id = ""
+        if wallet_id:
+            body["wallet_id"] = wallet_id
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key") if hasattr(req, "headers") else None
+    except Exception:
+        ikey = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    try:
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                req_model = _PayRedPacketClaimReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            try:
+                with _pay_internal_session() as s:
+                    result = _pay_redpacket_claim(req_model, s=s)
+                try:
+                    payload = {}
+                    if isinstance(body, dict):
+                        payload = {
+                            "redpacket_id": body.get("redpacket_id"),
+                            "wallet_id": body.get("wallet_id"),
+                        }
+                    emit_event("payments", "redpacket_claim", payload)
+                except Exception:
+                    pass
+                return result
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.post(_payments_url("/redpacket/claim"), json=body, headers=headers, timeout=10)
+        out = r.json()
+        try:
+            payload = {}
+            if isinstance(body, dict):
+                payload = {
+                    "redpacket_id": body.get("redpacket_id"),
+                    "wallet_id": body.get("wallet_id"),
+                    "amount_cents": out.get("amount_cents"),
+                }
+            emit_event("payments", "redpacket_claim", payload)
+        except Exception:
+            pass
+        return out
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/payments/redpacket/status/{rid}")
+def payments_redpacket_status(rid: str):
+    try:
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            try:
+                with _pay_internal_session() as s:
+                    return _pay_redpacket_status(rid=rid, s=s)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.get(_payments_url(f"/redpacket/status/{rid}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.get("/payments/idempotency/{ikey}")
 def payments_idempotency(ikey: str):
     try:
@@ -13448,6 +15057,305 @@ def payments_idempotency(ikey: str):
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# ---- Savings proxies ----
+@app.post("/payments/savings/deposit")
+async def payments_savings_deposit(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    # Auto-fill wallet_id from authenticated user.
+    phone = _auth_phone(req)
+    wid = (body.get("wallet_id") or "").strip()
+    if not wid and phone:
+        try:
+            wid = _resolve_wallet_id_for_phone(phone) or ""
+        except Exception:
+            wid = ""
+        if wid:
+            body["wallet_id"] = wid
+    body = _normalize_amount(body)
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key") if hasattr(req, "headers") else None
+    except Exception:
+        ikey = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    try:
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                req_model = _PaySavingsDepositReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            try:
+                with _pay_internal_session() as s:
+                    result = _pay_savings_deposit(req_model, s=s)
+                try:
+                    payload = {}
+                    if isinstance(body, dict):
+                        payload = {
+                            "wallet_id": body.get("wallet_id"),
+                            "amount_cents": body.get("amount_cents"),
+                        }
+                    emit_event("payments", "savings_deposit", payload)
+                except Exception:
+                    pass
+                return result
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.post(_payments_url("/savings/deposit"), json=body, headers=headers, timeout=10)
+        out = r.json()
+        try:
+            payload = {}
+            if isinstance(body, dict):
+                payload = {
+                    "wallet_id": body.get("wallet_id"),
+                    "amount_cents": body.get("amount_cents"),
+                }
+            emit_event("payments", "savings_deposit", payload)
+        except Exception:
+            pass
+        return out
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/payments/savings/withdraw")
+async def payments_savings_withdraw(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    phone = _auth_phone(req)
+    wid = (body.get("wallet_id") or "").strip()
+    if not wid and phone:
+        try:
+            wid = _resolve_wallet_id_for_phone(phone) or ""
+        except Exception:
+            wid = ""
+        if wid:
+            body["wallet_id"] = wid
+    body = _normalize_amount(body)
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key") if hasattr(req, "headers") else None
+    except Exception:
+        ikey = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    try:
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                req_model = _PaySavingsWithdrawReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            try:
+                with _pay_internal_session() as s:
+                    result = _pay_savings_withdraw(req_model, s=s)
+                try:
+                    payload = {}
+                    if isinstance(body, dict):
+                        payload = {
+                            "wallet_id": body.get("wallet_id"),
+                            "amount_cents": body.get("amount_cents"),
+                        }
+                    emit_event("payments", "savings_withdraw", payload)
+                except Exception:
+                    pass
+                return result
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.post(_payments_url("/savings/withdraw"), json=body, headers=headers, timeout=10)
+        out = r.json()
+        try:
+            payload = {}
+            if isinstance(body, dict):
+                payload = {
+                    "wallet_id": body.get("wallet_id"),
+                    "amount_cents": body.get("amount_cents"),
+                }
+            emit_event("payments", "savings_withdraw", payload)
+        except Exception:
+            pass
+        return out
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/payments/savings/overview")
+def payments_savings_overview(wallet_id: str):
+    try:
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            try:
+                with _pay_internal_session() as s:
+                    return _pay_savings_overview(wallet_id=wallet_id, s=s)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.get(_payments_url(f"/savings/overview?wallet_id={wallet_id}"), timeout=10)
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/payments/bills/pay")
+async def payments_bills_pay(req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    # Normalize amount payload so both internal + HTTP share the same format.
+    body = _normalize_amount(body)
+    headers: dict[str, str] = {}
+    try:
+        ikey = req.headers.get("Idempotency-Key") if hasattr(req, "headers") else None
+        dev = req.headers.get("X-Device-ID") if hasattr(req, "headers") else None
+        ua = req.headers.get("User-Agent") if hasattr(req, "headers") else None
+    except Exception:
+        ikey = None
+        dev = None
+        ua = None
+    if ikey:
+        headers["Idempotency-Key"] = ikey
+    if dev:
+        headers["X-Device-ID"] = dev
+    if ua:
+        headers["User-Agent"] = ua
+    try:
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(
+                    status_code=500, detail="payments internal not available"
+                )
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                req_model = _PayBillPayReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            try:
+                with _pay_internal_session() as s:
+                    result = _pay_bills_pay(req_model, request=req, s=s)
+                try:
+                    payload = {}
+                    if isinstance(body, dict):
+                        payload = {
+                            "from_wallet_id": body.get("from_wallet_id"),
+                            "to_wallet_id": body.get("to_wallet_id"),
+                            "biller_code": body.get("biller_code"),
+                            "amount_cents": body.get("amount_cents"),
+                            "device_id": dev,
+                        }
+                    emit_event("payments", "bill_pay", payload)
+                except Exception:
+                    pass
+                return result
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.post(_payments_url("/bills/pay"), json=body, headers=headers, timeout=10)
+        out = r.json()
+        try:
+            payload = {}
+            if isinstance(body, dict):
+                payload = {
+                    "from_wallet_id": body.get("from_wallet_id"),
+                    "to_wallet_id": body.get("to_wallet_id"),
+                    "biller_code": body.get("biller_code"),
+                    "amount_cents": body.get("amount_cents"),
+                    "device_id": dev,
+                }
+            emit_event("payments", "bill_pay", payload)
+        except Exception:
+            pass
+        return out
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+def _payments_billers_config() -> list[dict[str, str]]:
+    return [
+        {
+            "code": "electricity",
+            "label_en": "Electricity",
+            "label_ar": "الكهرباء",
+            "wallet_id": os.getenv("BILLER_ELECTRICITY_WALLET_ID", ""),
+        },
+        {
+            "code": "mobile",
+            "label_en": "Mobile top‑up",
+            "label_ar": "شحن الجوال",
+            "wallet_id": os.getenv("BILLER_MOBILE_WALLET_ID", ""),
+        },
+        {
+            "code": "internet",
+            "label_en": "Internet",
+            "label_ar": "الإنترنت",
+            "wallet_id": os.getenv("BILLER_INTERNET_WALLET_ID", ""),
+        },
+        {
+            "code": "water",
+            "label_en": "Water",
+            "label_ar": "المياه",
+            "wallet_id": os.getenv("BILLER_WATER_WALLET_ID", ""),
+        },
+    ]
+
+
+@app.get("/payments/billers")
+def payments_billers():
+    """
+    Static biller directory for enduser clients.
+
+    Wallet IDs can be configured via environment variables:
+      - BILLER_ELECTRICITY_WALLET_ID
+      - BILLER_MOBILE_WALLET_ID
+      - BILLER_INTERNET_WALLET_ID
+      - BILLER_WATER_WALLET_ID
+    """
+    return _payments_billers_config()
 
 
 # ---- Alias proxies ----
@@ -14787,7 +16695,6 @@ def bus_manifest():
 def merchant_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Merchant POS")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15083,7 +16990,6 @@ def admin_exports_page(request: Request):
 def carmarket_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Carmarket")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15169,7 +17075,6 @@ loadList();
 def carrental_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Carrental")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15254,7 +17159,6 @@ loadCars();
 def food_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Food")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15316,7 +17220,6 @@ loadRests();
 def realestate_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Realestate")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15406,7 +17309,6 @@ def realestate_page(request: Request):
 def stays_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Stays")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15683,7 +17585,6 @@ def courier_sla_page(request: Request):
 def freight_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    return _legacy_console_removed_page("Shamell · Freight")
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -15761,16 +17662,197 @@ def freight_page(request: Request):
     return HTMLResponse(content=html)
 
 
+@app.get("/bus", response_class=HTMLResponse)
+def bus_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
+    html = """
+<!doctype html>
+<html><head><meta name=viewport content="width=device-width, initial-scale=1" />
+<title>Bus</title>
+<link rel="icon" href="/icons/bus.svg" />
+<style>
+  body{font-family:sans-serif;margin:20px;max-width:1100px;background:#ffffff;color:#000000;}
+  header{position:sticky;top:0;z-index:10;background:#ffffff;padding:8px 10px;border-bottom:1px solid #dddddd;margin:0 0 12px 0;display:flex;align-items:center;gap:8px}
+  header h1{flex:1;font-size:20px;margin:0}
+  a{color:#2563eb;text-decoration:none}
+  button{font-size:14px;padding:6px 10px;border-radius:4px;border:1px solid #cccccc;background:#f3f4f6;color:#000000}
+  input,select{font-size:14px;padding:6px 8px;border-radius:4px;border:1px solid #cccccc}
+  table{border-collapse:collapse;width:100%}
+  th,td{border:1px solid #dddddd;padding:6px}
+  .card{border-radius:6px;border:1px solid #dddddd;padding:12px;background:#ffffff;margin-top:12px}
+  pre{background:#f5f5f5;padding:8px;white-space:pre-wrap;border-radius:6px;border:1px solid #dddddd}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .muted{opacity:.75;font-size:12px}
+  .btn{cursor:pointer}
+</style>
+</head><body>
+<header>
+  <h1>Bus</h1>
+  <a href="/bus/admin">Admin</a>
+</header>
+
+<section class="card">
+  <h2 style="margin:0 0 10px 0">Search trips</h2>
+  <div class="row">
+    <select id=origin></select>
+    <select id=dest></select>
+    <input id=date type=date />
+    <button class="btn" onclick="searchTrips()">Search</button>
+    <span class="muted" id=city_note></span>
+  </div>
+  <div style="overflow:auto;margin-top:12px">
+    <table id=trips>
+      <thead>
+        <tr>
+          <th>Trip ID</th>
+          <th>Operator</th>
+          <th>From</th>
+          <th>To</th>
+          <th>Depart</th>
+          <th>Arrive</th>
+          <th>Price</th>
+          <th>Seats</th>
+          <th>Book</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <pre id=out style="margin-top:12px;font-size:12px"></pre>
+</section>
+
+<script>
+function esc(s){ return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtIso(iso){
+  try{
+    if(!iso) return '';
+    const d=new Date(iso);
+    if(isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }catch(_){ return iso||''; }
+}
+async function loadCities(){
+  const note=document.getElementById('city_note');
+  note.textContent='Loading cities…';
+  try{
+    const r=await fetch('/bus/cities_cached?limit=200');
+    const arr=await r.json();
+    const origin=document.getElementById('origin');
+    const dest=document.getElementById('dest');
+    origin.innerHTML=''; dest.innerHTML='';
+    for(const c of arr){
+      const id = (c.id||'').toString();
+      const name = (c.name||'').toString();
+      const country = (c.country||'').toString();
+      const label = country ? (name + ' · ' + country) : name;
+      const opt=document.createElement('option');
+      opt.value=id; opt.textContent=label;
+      origin.appendChild(opt.cloneNode(true));
+      dest.appendChild(opt);
+    }
+    // default: first two cities if available
+    if(origin.options.length>0) origin.selectedIndex=0;
+    if(dest.options.length>1) dest.selectedIndex=1;
+    note.textContent = origin.options.length ? (origin.options.length + ' cities') : 'No cities';
+  }catch(e){
+    note.textContent='Failed to load cities';
+    document.getElementById('out').textContent='Error loading cities: ' + e;
+  }
+}
+
+async function searchTrips(){
+  const out=document.getElementById('out');
+  out.textContent='Searching…';
+  const origin=document.getElementById('origin').value;
+  const dest=document.getElementById('dest').value;
+  const date=document.getElementById('date').value;
+  if(!origin || !dest || !date){
+    out.textContent='Please select origin, destination and date.';
+    return;
+  }
+  try{
+    const u=new URLSearchParams({origin_city_id: origin, dest_city_id: dest, date: date});
+    const r=await fetch('/bus/trips/search?' + u.toString());
+    const text=await r.text();
+    if(r.status<200 || r.status>=300){
+      out.textContent = 'HTTP ' + r.status + ': ' + text;
+      return;
+    }
+    const arr=JSON.parse(text);
+    const tb=document.querySelector('#trips tbody');
+    tb.innerHTML='';
+    for(const row of arr){
+      const trip=row.trip||{};
+      const o=row.origin||{};
+      const d=row.dest||{};
+      const op=row.operator||{};
+      const tr=document.createElement('tr');
+      const tripId = esc(trip.id||'');
+      const seatsAvail = (trip.seats_available!=null) ? trip.seats_available : '';
+      const seatsTotal = (trip.seats_total!=null) ? trip.seats_total : '';
+      const seats = seatsAvail && seatsTotal ? (seatsAvail + '/' + seatsTotal) : '';
+      const price = (trip.price_cents!=null ? trip.price_cents : '') + ' ' + (trip.currency||'');
+      tr.innerHTML =
+        '<td>' + tripId + '</td>' +
+        '<td>' + esc(op.name||'') + '</td>' +
+        '<td>' + esc(o.name||'') + '</td>' +
+        '<td>' + esc(d.name||'') + '</td>' +
+        '<td>' + esc(fmtIso(trip.depart_at)) + '</td>' +
+        '<td>' + esc(fmtIso(trip.arrive_at)) + '</td>' +
+        '<td>' + esc(price.trim()) + '</td>' +
+        '<td>' + esc(seats) + '</td>' +
+        '<td><div class=\"row\" style=\"gap:6px\">' +
+          '<input id=\"seats_' + tripId + '\" type=number min=1 max=10 value=1 style=\"width:70px\" />' +
+          '<button class=\"btn\" onclick=\"bookTrip(\\'' + tripId + '\\')\">Book</button>' +
+        '</div></td>';
+      tb.appendChild(tr);
+    }
+    out.textContent = arr.length ? ('Found ' + arr.length + ' trips.') : 'No trips found.';
+  }catch(e){
+    out.textContent = 'Error: ' + e;
+  }
+}
+
+async function bookTrip(tripId){
+  const out=document.getElementById('out');
+  const inp=document.getElementById('seats_' + tripId);
+  let seats = 1;
+  try{ seats = parseInt(inp.value||'1',10); }catch(_){ seats = 1; }
+  if(!(seats>=1 && seats<=10)){
+    out.textContent='Seats must be 1..10';
+    return;
+  }
+  out.textContent='Booking…';
+  try{
+    const r=await fetch('/bus/trips/' + encodeURIComponent(tripId) + '/book', {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({seats: seats}),
+    });
+    out.textContent = 'HTTP ' + r.status + ': ' + (await r.text());
+  }catch(e){
+    out.textContent = 'Booking error: ' + e;
+  }
+}
+
+try{
+  const d = new Date();
+  const iso = d.toISOString().slice(0,10);
+  document.getElementById('date').value = iso;
+}catch(_){}
+
+loadCities();
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
 @app.get("/bus/admin", response_class=HTMLResponse)
 def bus_admin_page(request: Request):
     if not _auth_phone(request):
         return RedirectResponse(url="/login", status_code=303)
-    # In production the legacy Bus HTML console remains disabled; in
-    # dev/test we still expose it to make operator setup and debugging
-    # easier (cities, operators, routes, trips, tickets).
-    if _ENV_LOWER not in ("dev", "test"):
-        return _legacy_console_removed_page("Shamell · Bus admin")
-
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16074,8 +18156,9 @@ def ds_js():
     return Response(content=js, media_type="application/javascript")
 
 @app.get("/agriculture", response_class=HTMLResponse)
-def agriculture_page():
-    return _legacy_console_removed_page("Shamell · Agriculture")
+def agriculture_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16105,8 +18188,9 @@ async function health(){ try{ const r=await fetch('/agriculture/health'); docume
 
 
 @app.get("/commerce", response_class=HTMLResponse)
-def commerce_page():
-    return _legacy_console_removed_page("Shamell · Commerce")
+def commerce_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16366,8 +18450,9 @@ loadDoctors();
 
 
 @app.get("/flights", response_class=HTMLResponse)
-def flights_page():
-    return _legacy_console_removed_page("Shamell · Flights")
+def flights_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16397,8 +18482,9 @@ async function health(){ try{ const r=await fetch('/flights/health'); document.g
 
 
 @app.get("/jobs", response_class=HTMLResponse)
-def jobs_page():
-    return _legacy_console_removed_page("Shamell · Jobs")
+def jobs_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16428,8 +18514,9 @@ async function health(){ try{ const r=await fetch('/jobs/health'); document.getE
 
 
 @app.get("/livestock", response_class=HTMLResponse)
-def livestock_page():
-    return _legacy_console_removed_page("Shamell · Livestock")
+def livestock_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16643,9 +18730,122 @@ function connectWS(){ try{ if(!my.id){ return; } if(ws && (ws.readyState===1||ws
     return HTMLResponse(content=html)
 
 
+@app.get("/web/mirsaal", response_class=HTMLResponse)
+def web_mirsaal_readonly(request: Request) -> HTMLResponse:
+    """
+    Sehr leichtgewichtige Web-Shell für Mirsaal (read-only Stub).
+
+    Dient primär als Einstiegspunkt für zukünftige Multi-Device/Web
+    Features und verknüpft den bestehenden OTP-Login via sa_session.
+    """
+    base = request.base_url._url.rstrip("/")  # type: ignore[attr-defined]
+    html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mirsaal · Web (read‑only)</title>
+    <style>
+      body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 20px; max-width: 960px; color:#0f172a; background:#ffffff; }}
+      h1 {{ margin-bottom: 4px; }}
+      h2 {{ margin-top: 20px; margin-bottom: 6px; }}
+      p {{ margin: 4px 0; }}
+      code {{ background:#f3f4f6; padding:2px 4px; border-radius:3px; font-size:12px; }}
+      .muted {{ color:#6b7280; font-size:13px; }}
+      ul {{ padding-left:20px; }}
+    </style>
+  </head>
+  <body>
+    <h1>Mirsaal · Web (read‑only preview)</h1>
+    <p class="muted">
+      Dies ist eine erste Vorschau für Mirsaal im Browser – der Fokus liegt
+      aktuell auf OTP‑Login und Multi‑Device‑Sessions. Der eigentliche Chat‑Feed
+      bleibt in dieser Version noch in der mobilen App.
+    </p>
+
+    <h2>Login</h2>
+    <p>
+      Öffne die Shamell App, melde dich per OTP an und öffne dann
+      <code>{base}/web/mirsaal?sa_session=&lt;SESSION&gt;</code> im Browser.
+      Die Session‑ID wird von <code>/auth/verify</code> auch im JSON‑Body
+      zurückgegeben (<code>session</code> Feld) und kann so an Web‑Clients
+      weitergegeben werden.
+    </p>
+
+    <h2>Moments‑Feed (read‑only)</h2>
+    <p class="muted">
+      Unten siehst du eine vereinfachte Moments‑Liste auf Basis des
+      JSON‑Feeds <code>/moments/feed</code>. Inhalte sind read‑only, das
+      Posten erfolgt weiterhin in der mobilen App.
+    </p>
+    <div id="moments">
+      <p class="muted">Lade Moments…</p>
+    </div>
+
+    <script>
+      async function loadMoments(){
+        const out = document.getElementById('moments');
+        if(!out) return;
+        out.innerHTML = '<p class="muted">Lade Moments…</p>';
+        let headers = {};
+        try{
+          const params = new URLSearchParams(window.location.search || '');
+          const sess = params.get('sa_session') || '';
+          if(sess){
+            headers['sa_cookie'] = 'sa_session=' + sess;
+          }
+        }catch(e){}
+        try{
+          const r = await fetch('/moments/feed?limit=30', {headers});
+          if(!r.ok){
+            out.innerHTML = '<p class="muted">Fehler beim Laden: ' + r.status + '</p>';
+            return;
+          }
+          const j = await r.json();
+          const items = Array.isArray(j) ? j : (Array.isArray(j.items)? j.items : []);
+          if(!items.length){
+            out.innerHTML = '<p class="muted">Noch keine Moments vorhanden.</p>';
+            return;
+          }
+          const parts = [];
+          parts.push('<ul>');
+          for(const m of items){
+            const txt = (m.text||'').toString();
+            const ts = (m.ts||'').toString();
+            const author = (m.author_name||'') || '';
+            const likes = Number(m.likes||0);
+            const comments = Number(m.comments||0);
+            let meta = [];
+            if(author) meta.push(author);
+            if(ts) meta.push(ts);
+            meta.push('♥ ' + likes);
+            meta.push('💬 ' + comments);
+            parts.push('<li><div><strong>' +
+              (txt.length>120 ? txt.slice(0,117)+'…' : txt.replace(/</g,'&lt;').replace(/>/g,'&gt;')) +
+              '</strong></div><div class="muted">' +
+              meta.join(' · ') +
+              '</div></li>');
+          }
+          parts.push('</ul>');
+          out.innerHTML = parts.join('');
+        }catch(e){
+          out.innerHTML = '<p class="muted">Fehler: ' + e + '</p>';
+        }
+      }
+      loadMoments();
+    </script>
+  </body>
+</html>
+"""
+    html = html.format(base=base)
+    return HTMLResponse(content=html)
+
+
 @app.get("/taxi/driver", response_class=HTMLResponse)
-def taxi_driver_page():
-    return _legacy_console_removed_page("Shamell · Taxi driver")
+def taxi_driver_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16736,8 +18936,9 @@ try{
 
 
 @app.get("/taxi/rider", response_class=HTMLResponse)
-def taxi_rider_page():
-    return _legacy_console_removed_page("Shamell · Taxi rider")
+def taxi_rider_page(request: Request):
+    if not _auth_phone(request):
+        return RedirectResponse(url="/login", status_code=303)
     html = """
 <!doctype html>
 <html><head><meta name=viewport content="width=device-width, initial-scale=1" />
@@ -16901,9 +19102,105 @@ async def taxi_book_pay(req: Request):
 
 
 @app.get("/taxi/admin", response_class=HTMLResponse)
-def taxi_admin_page():
-    # Legacy HTML admin console for Taxi has been removed.
-    return _legacy_console_removed_page("Shamell · Taxi admin")
+def taxi_admin_page(request: Request):
+    phone = _auth_phone(request)
+    if not phone:
+        return RedirectResponse(url="/login", status_code=303)
+    if not _is_operator(phone, "taxi"):
+        raise HTTPException(status_code=403, detail="operator for taxi required")
+    html = """
+<!doctype html>
+<html><head><meta name=viewport content="width=device-width, initial-scale=1" />
+<title>Taxi Admin</title>
+<link rel="icon" href="/icons/taxi.svg" />
+<script src="/ds.js"></script>
+<style>
+  body{font-family:sans-serif;margin:20px;max-width:980px;background:#ffffff;color:#000000;}
+  button{border:1px solid #cccccc;background:#f3f4f6;border-radius:12px;color:#000000;box-shadow:none;padding:10px 14px;font-size:14px}
+  pre{background:#f5f5f5;padding:10px;white-space:pre-wrap;border-radius:12px;border:1px solid #dddddd}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:16px}
+  .full{grid-column:1/-1}
+  h1{margin:0 0 14px 0}
+  h2{margin:0 0 10px 0;font-size:16px}
+  .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+  .muted{opacity:.75;font-size:13px}
+  .pill{display:inline-flex;gap:8px;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid #e5e7eb;background:#f8fafc;font-size:12px}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap}
+  .kpi .pill strong{font-weight:700}
+  [data-ds="card"]{padding:14px}
+  body{background:#ffffff}
+</style>
+</head><body data-accent="#f59e0b" data-bg="simple">
+<h1>Taxi Admin</h1>
+<div class="muted">Operator dashboard (WebView / Mini‑Program).</div>
+<div class="grid" style="margin-top:14px">
+  <div data-ds="card">
+    <div class="row">
+      <h2>Summary</h2>
+      <button onclick="loadSummary()">Refresh</button>
+    </div>
+    <div id="kpis" class="kpi" style="margin:8px 0 12px 0"></div>
+    <pre id="summary_out"></pre>
+  </div>
+  <div data-ds="card">
+    <div class="row">
+      <h2>Online drivers</h2>
+      <button onclick="loadDrivers()">Refresh</button>
+    </div>
+    <pre id="drivers_out"></pre>
+  </div>
+  <div class="full" data-ds="card">
+    <div class="row">
+      <h2>Requested rides</h2>
+      <button onclick="loadRides()">Refresh</button>
+    </div>
+    <pre id="rides_out"></pre>
+  </div>
+</div>
+<script>
+async function fetchPretty(url){
+  const r = await fetch(url);
+  const t = await r.text();
+  try{ return JSON.stringify(JSON.parse(t), null, 2); }catch(_){ return t; }
+}
+function setKpis(summary){
+  const box = document.getElementById('kpis');
+  if(!box) return;
+  const m = summary || {};
+  const rides = (m.rides_today ?? m.rides_total_today ?? 0);
+  const done = (m.rides_completed_today ?? m.completed_today ?? 0);
+  const fare = (m.total_fare_cents_today ?? m.revenue_cents_today ?? 0);
+  const parts = [
+    `<span class="pill"><strong>${rides}</strong> rides</span>`,
+    `<span class="pill"><strong>${done}</strong> completed</span>`,
+    `<span class="pill"><strong>${fare}</strong> cents</span>`
+  ];
+  box.innerHTML = parts.join('');
+}
+async function loadSummary(){
+  const out = document.getElementById('summary_out');
+  out.textContent = 'Loading...';
+  const raw = await fetchPretty('/taxi/admin/summary_cached');
+  out.textContent = raw;
+  try{ setKpis(JSON.parse(raw)); }catch(_){ }
+}
+async function loadDrivers(){
+  const out = document.getElementById('drivers_out');
+  out.textContent = 'Loading...';
+  out.textContent = await fetchPretty('/taxi/drivers?status=online&limit=200');
+}
+async function loadRides(){
+  const out = document.getElementById('rides_out');
+  out.textContent = 'Loading...';
+  out.textContent = await fetchPretty('/taxi/rides?status=requested&limit=200');
+}
+loadSummary();
+loadDrivers();
+loadRides();
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
 
 
 @app.get("/taxi/events")
@@ -17658,3 +19955,16294 @@ def _normalize_amount(body: dict | None) -> dict | None:
         elif 'amount_syp' in body and body['amount_syp'] not in (None, ''):
             body['amount_cents'] = _to_cents(body['amount_syp'])
     return body
+
+
+# ---- Moments (lightweight social feed, BFF-side) ----
+
+_MOMENTS_DB_URL = _env_or(
+    "MOMENTS_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/moments.db")
+)
+
+
+class _MomentsBase(_sa_DeclarativeBase):
+    pass
+
+
+class MomentPostDB(_MomentsBase):
+    __tablename__ = "moments_posts"
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    text: _sa_Mapped[str] = _sa_mapped_column(_sa_Text)
+    visibility: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="public"
+    )
+    audience_tag: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    location_label: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(128), nullable=True
+    )
+    images_b64_json: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_Text, nullable=True
+    )
+    image_b64: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_Text, nullable=True
+    )
+    image_url: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(255), nullable=True
+    )
+    origin_official_account_id: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    origin_official_item_id: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class MomentLikeDB(_MomentsBase):
+    __tablename__ = "moments_likes"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "post_id",
+            name="uq_moments_likes_user_post",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    post_id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, index=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class MomentCommentDB(_MomentsBase):
+    __tablename__ = "moments_comments"
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    post_id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, index=True)
+    user_key: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    text: _sa_Mapped[str] = _sa_mapped_column(_sa_Text)
+    reply_to_id: _sa_Mapped[int | None] = _sa_mapped_column(
+        _sa_Integer, nullable=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class MomentCommentLikeDB(_MomentsBase):
+    __tablename__ = "moments_comment_likes"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "comment_id",
+            name="uq_moments_comment_likes_user_comment",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    comment_id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, index=True)
+    user_key: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class MomentTagDB(_MomentsBase):
+    __tablename__ = "moments_tags"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "post_id",
+            "tag",
+            name="uq_moments_tags_post_tag",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    post_id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, index=True)
+    tag: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+_moments_engine = _sa_create_engine(_MOMENTS_DB_URL, future=True)
+
+
+def _moments_session() -> _sa_Session:
+    return _sa_Session(_moments_engine)
+
+
+class MomentPostOut(BaseModel):
+    id: str
+    text: str
+    ts: str
+    likes: int = 0
+    liked_by_me: bool = False
+    liked_by: list[str] | None = None
+    comments: int = 0
+    has_official_reply: bool = False
+    visibility: str = "public"
+    image_b64: str | None = None
+    image_url: str | None = None
+    author_name: str | None = None
+    audience_tag: str | None = None
+    location_label: str | None = None
+    images: list[str] | None = None
+    origin_official_account_id: str | None = None
+    origin_official_item_id: str | None = None
+
+
+class MomentCommentOut(BaseModel):
+    id: str
+    text: str
+    ts: str
+    author_name: str | None = None
+    reply_to_id: str | None = None
+    reply_to_name: str | None = None
+    likes: int = 0
+    liked_by_me: bool = False
+
+
+class MomentNotificationsOut(BaseModel):
+    last_comment_ts: str | None = None
+    total_comments: int = 0
+    redpacket_posts_30d: int = 0
+
+
+class OfficialMomentsStatsOut(BaseModel):
+    service_shares: int = 0
+    subscription_shares: int = 0
+    total_shares: int = 0
+    redpacket_shares_30d: int = 0
+    hot_accounts: int = 0
+
+
+def _moments_cookie_key(request: Request) -> str:
+    cookie = request.headers.get("sa_cookie") or request.cookies.get("sa_cookie") or ""
+    if not cookie:
+        cookie = "anon"
+    return cookie
+
+
+def _channels_user_key(request: Request) -> str:
+    """
+    Derive a stable per-user key for the Channels follower graph.
+
+    Prefer an authenticated phone-based key when available so
+    follows survive device changes, otherwise fall back to the
+    Moments cookie key for anonymous users.
+    """
+    try:
+        phone = _auth_phone(request)
+    except Exception:
+        phone = None
+    if phone:
+        return f"phone:{phone}"
+    return _moments_cookie_key(request)
+
+
+def _moments_pseudonym_for_user_key(user_key: str) -> str | None:
+    """
+    Stable but privacy-friendly label for a Moments author.
+    Mirrors the comment labelling (User <hash>) without exposing phone or name.
+    """
+    uk = (user_key or "").strip()
+    if not uk:
+        return None
+    try:
+        import hashlib
+
+        h = hashlib.sha1(uk.encode("utf-8")).hexdigest()[:6]
+        return f"User {h}"
+    except Exception:
+        return None
+
+
+def _phone_from_moments_user_key(user_key: str) -> str | None:
+    """
+    Best-effort mapping from a Moments user_key (sa_cookie value)
+    back to the phone number via the in-memory _SESSIONS store.
+    """
+    try:
+        uk = (user_key or "").strip()
+        if not uk or uk == "anon":
+            return None
+        token = uk
+        if "sa_session=" in token:
+            for part in token.split(";"):
+                part = part.strip()
+                if part.startswith("sa_session="):
+                    token = part.split("=", 1)[1]
+                    break
+        sid = token.strip()
+        if not sid:
+            return None
+        rec = _SESSIONS.get(sid)
+        if not rec:
+            return None
+        phone, exp = rec
+        if exp < _now():
+            return None
+        return str(phone or "").strip() or None
+    except Exception:
+        return None
+
+
+_MOMENTS_HASHTAG_RE = re.compile(r"#([\w]+)", re.UNICODE)
+
+
+def _moments_extract_tags(text: str) -> list[str]:
+    try:
+        tags: set[str] = set()
+        for m in _MOMENTS_HASHTAG_RE.finditer(text or ""):
+            raw = (m.group(1) or "").strip().lower()
+            if not raw:
+                continue
+            tag = raw[:64]
+            tags.add(tag)
+        return sorted(tags)
+    except Exception:
+        return []
+
+
+_MOMENTS_OFFICIAL_RE = re.compile(
+    r"shamell://official/([^/\s]+)(?:/([^\s]+))?", re.IGNORECASE
+)
+
+
+def _moments_extract_official_origin(text: str) -> tuple[str | None, str | None]:
+    try:
+        m = _MOMENTS_OFFICIAL_RE.search(text)
+        if not m:
+            return None, None
+        acc = (m.group(1) or "").strip()
+        item = (m.group(2) or "").strip() or None
+        if not acc:
+            return None, None
+        return acc, item
+    except Exception:
+        return None, None
+
+
+def _moments_startup() -> None:
+    logger = logging.getLogger("shamell.moments")
+    try:
+        _MomentsBase.metadata.create_all(_moments_engine)
+    except Exception:
+        logger.exception("failed to init moments tables")
+    # Best-effort schema upgrade for audience_tag column on existing deployments.
+    try:
+        with _moments_engine.begin() as conn:
+            if _MOMENTS_DB_URL.startswith("sqlite"):
+                conn.execute(
+                    _sa_text(
+                        "ALTER TABLE moments_posts ADD COLUMN audience_tag VARCHAR(64)"
+                    )
+                )
+            else:
+                conn.execute(
+                    _sa_text(
+                        "ALTER TABLE moments_posts ADD COLUMN audience_tag VARCHAR(64)"
+                    )
+                )
+    except Exception:
+        # Ignore migration errors (column may already exist).
+        pass
+    # Best-effort schema upgrade for location_label column on existing deployments.
+    try:
+        with _moments_engine.begin() as conn:
+            conn.execute(
+                _sa_text(
+                    "ALTER TABLE moments_posts ADD COLUMN location_label VARCHAR(128)"
+                )
+            )
+    except Exception:
+        # Ignore migration errors (column may already exist).
+        pass
+    # Best-effort schema upgrade for images_b64_json column on existing deployments.
+    try:
+        with _moments_engine.begin() as conn:
+            conn.execute(
+                _sa_text(
+                    "ALTER TABLE moments_posts ADD COLUMN images_b64_json TEXT"
+                )
+            )
+    except Exception:
+        # Ignore migration errors (column may already exist).
+        pass
+
+
+app.router.on_startup.append(_moments_startup)
+
+
+# ---- Friends (simple phone-based graph for Moments visibility and chat) ----
+
+FRIENDS_DB_URL = _env_or(
+    "FRIENDS_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/friends.db")
+)
+
+
+class _FriendsBase(_sa_DeclarativeBase):
+    pass
+
+
+class FriendDB(_FriendsBase):
+    __tablename__ = "friends"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_phone",
+            "friend_phone",
+            name="uq_friends_user_friend",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    friend_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class FriendTagDB(_FriendsBase):
+    __tablename__ = "friend_tags"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_phone",
+            "friend_phone",
+            "tag",
+            name="uq_friend_tags_user_friend_tag",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    friend_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    tag: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class CloseFriendDB(_FriendsBase):
+    __tablename__ = "close_friends"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_phone",
+            "friend_phone",
+            name="uq_close_friends_user_friend",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    friend_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class FriendRequestDB(_FriendsBase):
+    __tablename__ = "friend_requests"
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    from_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    to_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    status: _sa_Mapped[str] = _sa_mapped_column(_sa_String(16), default="pending")
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+_friends_engine = _sa_create_engine(FRIENDS_DB_URL, future=True)
+_friends_inited = False
+
+
+def _friends_session() -> _sa_Session:
+    """
+    Returns a session for the friends DB.
+
+    Similar to _officials_session, this lazily initialises the schema so that
+    deployments that bypass FastAPI's startup events still get the friends
+    tables (friends, close_friends, friend_tags, friend_requests).
+    """
+    global _friends_inited
+    if not _friends_inited:
+        try:
+            _friends_startup()  # type: ignore[name-defined]
+        except Exception:
+            logging.getLogger("shamell.friends").exception(
+                "failed to init friends DB from session helper"
+            )
+        _friends_inited = True
+    return _sa_Session(_friends_engine)
+
+
+def _friends_startup() -> None:
+    logger = logging.getLogger("shamell.friends")
+    try:
+        _FriendsBase.metadata.create_all(_friends_engine)
+    except Exception:
+        logger.exception("failed to init friends tables via metadata")
+    # Best-effort schema upgrade for FriendsDB on existing deployments,
+    # mirroring the pattern used for Officials/Channels.
+    try:
+        with _friends_engine.begin() as conn:
+            if FRIENDS_DB_URL.startswith("sqlite"):
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS friends ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "friend_phone VARCHAR(32) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_friends_user_friend UNIQUE (user_phone, friend_phone)"
+                        ")"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS friend_tags ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "friend_phone VARCHAR(32) NOT NULL, "
+                        "tag VARCHAR(64) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_friend_tags_user_friend_tag "
+                        "UNIQUE (user_phone, friend_phone, tag)"
+                        ")"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS close_friends ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "friend_phone VARCHAR(32) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_close_friends_user_friend "
+                        "UNIQUE (user_phone, friend_phone)"
+                        ")"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS friend_requests ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "from_phone VARCHAR(32) NOT NULL, "
+                        "to_phone VARCHAR(32) NOT NULL, "
+                        "status VARCHAR(16) DEFAULT 'pending', "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP"
+                        ")"
+                    )
+                )
+            else:
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS friends ("
+                        "id SERIAL PRIMARY KEY, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "friend_phone VARCHAR(32) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_friends_user_friend UNIQUE (user_phone, friend_phone)"
+                        ")"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS friend_tags ("
+                        "id SERIAL PRIMARY KEY, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "friend_phone VARCHAR(32) NOT NULL, "
+                        "tag VARCHAR(64) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_friend_tags_user_friend_tag "
+                        "UNIQUE (user_phone, friend_phone, tag)"
+                        ")"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS close_friends ("
+                        "id SERIAL PRIMARY KEY, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "friend_phone VARCHAR(32) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_close_friends_user_friend "
+                        "UNIQUE (user_phone, friend_phone)"
+                        ")"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS friend_requests ("
+                        "id SERIAL PRIMARY KEY, "
+                        "from_phone VARCHAR(32) NOT NULL, "
+                        "to_phone VARCHAR(32) NOT NULL, "
+                        "status VARCHAR(16) DEFAULT 'pending', "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP"
+                        ")"
+                    )
+                )
+    except Exception:
+        logger.exception("failed to ensure friends tables exist")
+
+
+app.router.on_startup.append(_friends_startup)
+
+
+# ---- People Nearby (demo presence for \"People nearby\" feature) ----
+
+NEARBY_DB_URL = _env_or(
+    "NEARBY_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/nearby.db")
+)
+NEARBY_TTL_SECS = int(os.getenv("NEARBY_TTL_SECS", "10800"))  # default: 3 hours
+
+
+class _NearbyBase(_sa_DeclarativeBase):
+    pass
+
+
+class NearbyPresenceDB(_NearbyBase):
+    """
+    Lightweight presence/profile table for People Nearby.
+
+    Stores coarse location and optional status/gender/age metadata
+    so the client can implement a WeChat-style People Nearby list.
+    """
+
+    __tablename__ = "nearby_presence"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_phone",
+            name="uq_nearby_presence_user_phone",
+        ),
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    status: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(160), nullable=True
+    )
+    gender: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(16), nullable=True
+    )
+    age_years: _sa_Mapped[int | None] = _sa_mapped_column(
+        _sa_Integer, nullable=True
+    )
+    last_lat: _sa_Mapped[float | None] = _sa_mapped_column(
+        _sa_Float, nullable=True
+    )
+    last_lon: _sa_Mapped[float | None] = _sa_mapped_column(
+        _sa_Float, nullable=True
+    )
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        index=True,
+    )
+
+
+_nearby_engine = _sa_create_engine(NEARBY_DB_URL, future=True)
+_nearby_inited = False
+
+
+def _nearby_session() -> _sa_Session:
+    """
+    Returns a session for the nearby presence DB.
+
+    Lazily ensures the nearby_presence table exists so that \"People nearby\"
+    queries do not fail with missing-table errors even when startup hooks
+    are not triggered.
+    """
+    global _nearby_inited
+    if not _nearby_inited:
+        try:
+            _nearby_startup()  # type: ignore[name-defined]
+        except Exception:
+            logging.getLogger("shamell.nearby").exception(
+                "failed to init nearby DB from session helper"
+            )
+        _nearby_inited = True
+    return _sa_Session(_nearby_engine)
+
+
+def _nearby_startup() -> None:
+    logger = logging.getLogger("shamell.nearby")
+    try:
+        _NearbyBase.metadata.create_all(_nearby_engine)
+    except Exception:
+        logger.exception("failed to init nearby tables via metadata")
+    # Best-effort schema upgrade for NearbyPresenceDB on existing deployments.
+    try:
+        with _nearby_engine.begin() as conn:
+            if NEARBY_DB_URL.startswith("sqlite"):
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS nearby_presence ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "status VARCHAR(160), "
+                        "gender VARCHAR(16), "
+                        "age_years INTEGER, "
+                        "last_lat FLOAT, "
+                        "last_lon FLOAT, "
+                        "updated_at TIMESTAMP WITH TIME ZONE "
+                        "DEFAULT CURRENT_TIMESTAMP"
+                        ")"
+                    )
+                )
+            else:
+                conn.execute(
+                    _sa_text(
+                        "CREATE TABLE IF NOT EXISTS nearby_presence ("
+                        "id SERIAL PRIMARY KEY, "
+                        "user_phone VARCHAR(32) NOT NULL, "
+                        "status VARCHAR(160), "
+                        "gender VARCHAR(16), "
+                        "age_years INTEGER, "
+                        "last_lat DOUBLE PRECISION, "
+                        "last_lon DOUBLE PRECISION, "
+                        "updated_at TIMESTAMP WITH TIME ZONE "
+                        "DEFAULT CURRENT_TIMESTAMP"
+                        ")"
+                    )
+                )
+    except Exception:
+        logger.exception("failed to ensure nearby_presence table exists")
+
+
+app.router.on_startup.append(_nearby_startup)
+
+
+# ---- Stickers (online sticker marketplace, BFF-side) ----
+
+STICKERS_DB_URL = _env_or(
+    "STICKERS_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/stickers.db")
+)
+_STICKERS_DB_SCHEMA = os.getenv("DB_SCHEMA") if not STICKERS_DB_URL.startswith("sqlite") else None
+
+
+class _StickersBase(_sa_DeclarativeBase):
+    pass
+
+
+class StickerPurchaseDB(_StickersBase):
+    __tablename__ = "sticker_purchases"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_phone",
+            "pack_id",
+            name="uq_sticker_purchases_user_pack",
+        ),
+        {"schema": _STICKERS_DB_SCHEMA} if _STICKERS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_phone: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    pack_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    amount_cents: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, default=0
+    )
+    currency: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(8), default=DEFAULT_CURRENCY
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+_stickers_engine = _sa_create_engine(STICKERS_DB_URL, future=True)
+
+
+def _stickers_session() -> _sa_Session:
+    return _sa_Session(_stickers_engine)
+
+
+def _stickers_startup() -> None:
+    logger = logging.getLogger("shamell.stickers")
+    try:
+        _StickersBase.metadata.create_all(_stickers_engine)
+    except Exception:
+        logger.exception("failed to init stickers tables")
+
+
+app.router.on_startup.append(_stickers_startup)
+
+
+@app.get("/moments/feed", response_class=JSONResponse)
+def moments_feed(
+    request: Request,
+    limit: int = 50,
+    official_account_id: str | None = None,
+    official_category: str | None = None,
+    official_city: str | None = None,
+    own_only: bool = False,
+):
+    """
+    Returns latest Moments posts.
+    Visibility rules: public + own \"only_me\" posts.
+
+    When own_only is true, only posts authored by the current user are returned.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        limit_val = max(1, min(limit, 100))
+        account_ids_filter: set[str] | None = None
+        if not official_account_id and (official_category or official_city):
+            try:
+                with _officials_session() as osess:
+                    stmt = _sa_select(OfficialAccountDB.id).where(
+                        OfficialAccountDB.enabled == True  # type: ignore[comparison-overlap]
+                    )
+                    if official_category:
+                        stmt = stmt.where(OfficialAccountDB.category == official_category)
+                    if official_city:
+                        stmt = stmt.where(OfficialAccountDB.city == official_city)
+                    rows = osess.execute(stmt).scalars().all()
+                    account_ids_filter = {str(r) for r in rows}
+            except Exception:
+                account_ids_filter = set()
+        with _moments_session() as s:
+            stmt = _sa_select(MomentPostDB)
+            if own_only:
+                stmt = stmt.where(MomentPostDB.user_key == user_key)
+            if official_account_id:
+                stmt = stmt.where(
+                    MomentPostDB.origin_official_account_id == official_account_id
+                )
+            elif account_ids_filter:
+                stmt = stmt.where(
+                    MomentPostDB.origin_official_account_id.in_(account_ids_filter)
+                )
+            stmt = stmt.order_by(
+                MomentPostDB.created_at.desc(), MomentPostDB.id.desc()
+            ).limit(limit_val)
+            rows = s.execute(stmt).scalars().all()
+            post_ids = [r.id for r in rows]
+            likes_map: dict[int, int] = {}
+            liked_by_me: set[int] = set()
+            liked_by_map: dict[int, list[str]] = {}
+            comments_map: dict[int, int] = {}
+            official_reply_ids: set[int] = set()
+            if post_ids:
+                likes_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentLikeDB.post_id, _sa_func.count(MomentLikeDB.id)
+                        ).where(MomentLikeDB.post_id.in_(post_ids)
+                        ).group_by(MomentLikeDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in likes_rows:
+                    likes_map[int(pid)] = int(cnt)
+                like_user_rows = (
+                    s.execute(
+                        _sa_select(MomentLikeDB.post_id, MomentLikeDB.user_key)
+                        .where(MomentLikeDB.post_id.in_(post_ids))
+                        .order_by(MomentLikeDB.created_at.asc(), MomentLikeDB.id.asc())
+                    )
+                    .all()
+                )
+                for pid, uk in like_user_rows:
+                    try:
+                        pid_int = int(pid)
+                    except Exception:
+                        continue
+                    lst = liked_by_map.get(pid_int)
+                    if lst is None:
+                        lst = []
+                        liked_by_map[pid_int] = lst
+                    if len(lst) >= 8:
+                        continue
+                    try:
+                        label = _moments_pseudonym_for_user_key(str(uk))
+                    except Exception:
+                        label = None
+                    if label:
+                        lst.append(label)
+                comments_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentCommentDB.post_id,
+                            _sa_func.count(MomentCommentDB.id),
+                        )
+                        .where(MomentCommentDB.post_id.in_(post_ids))
+                        .group_by(MomentCommentDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in comments_rows:
+                    comments_map[int(pid)] = int(cnt)
+                official_rows = (
+                    s.execute(
+                        _sa_select(MomentCommentDB.post_id)
+                        .where(
+                            MomentCommentDB.post_id.in_(post_ids),
+                            MomentCommentDB.user_key.like("official:%"),
+                        )
+                        .group_by(MomentCommentDB.post_id)
+                    )
+                    .scalars()
+                    .all()
+                )
+                official_reply_ids = {int(pid) for pid in official_rows}
+                my_likes = (
+                    s.execute(
+                        _sa_select(MomentLikeDB.post_id).where(
+                            MomentLikeDB.post_id.in_(post_ids),
+                            MomentLikeDB.user_key == user_key,
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                liked_by_me.update(int(pid) for pid in my_likes)
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                vis = (row.visibility or "public").strip().lower()
+                if vis in ("only_me", "private") and row.user_key != user_key:
+                    continue
+                if vis in (
+                    "friends",
+                    "friends_only",
+                    "close_friends",
+                    "friends_tag",
+                    "friends_except_tag",
+                ) and row.user_key != user_key:
+                    viewer_phone: str | None
+                    author_phone: str | None
+                    try:
+                        viewer_phone = _auth_phone(request) or None
+                    except Exception:
+                        viewer_phone = None
+                    try:
+                        author_phone = _phone_from_moments_user_key(row.user_key)
+                    except Exception:
+                        author_phone = None
+                    if not viewer_phone or not author_phone:
+                        # Hide friends-only posts when we cannot validate the graph.
+                        continue
+                    try:
+                        with _friends_session() as fs:
+                            rel = fs.execute(
+                                _sa_select(FriendDB).where(
+                                    FriendDB.user_phone == viewer_phone,
+                                    FriendDB.friend_phone == author_phone,
+                                )
+                            ).scalars().first()
+                            if rel is None:
+                                continue
+                            if vis in ("close_friends", "friends_only"):
+                                rel_cf = fs.execute(
+                                    _sa_select(CloseFriendDB).where(
+                                        CloseFriendDB.user_phone
+                                        == author_phone,
+                                        CloseFriendDB.friend_phone
+                                        == viewer_phone,
+                                    )
+                                ).scalars().first()
+                                if rel_cf is None:
+                                    continue
+                            if vis == "friends_tag":
+                                tag = (
+                                    getattr(row, "audience_tag", None) or ""
+                                ).strip()
+                                if tag:
+                                    rel_tag = fs.execute(
+                                        _sa_select(FriendTagDB).where(
+                                            FriendTagDB.user_phone
+                                            == author_phone,
+                                            FriendTagDB.friend_phone
+                                            == viewer_phone,
+                                            FriendTagDB.tag == tag,
+                                        )
+                                    ).scalars().first()
+                                    if rel_tag is None:
+                                        continue
+                            elif vis == "friends_except_tag":
+                                tag = (
+                                    getattr(row, "audience_tag", None) or ""
+                                ).strip()
+                                if tag:
+                                    rel_tag = fs.execute(
+                                        _sa_select(FriendTagDB).where(
+                                            FriendTagDB.user_phone
+                                            == author_phone,
+                                            FriendTagDB.friend_phone
+                                            == viewer_phone,
+                                            FriendTagDB.tag == tag,
+                                        )
+                                    ).scalars().first()
+                                    # If the viewer has this tag, they are excluded.
+                                    if rel_tag is not None:
+                                        continue
+                    except Exception:
+                        continue
+                try:
+                    ts = row.created_at
+                except Exception:
+                    ts = None
+                ts_str = (
+                    ts.isoformat().replace("+00:00", "Z")
+                    if isinstance(ts, datetime)
+                    else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+                try:
+                    author_label = _moments_pseudonym_for_user_key(row.user_key)
+                except Exception:
+                    author_label = None
+                images: list[str] = []
+                try:
+                    raw_images = (getattr(row, "images_b64_json", None) or "").strip()
+                    if raw_images:
+                        decoded_images = json.loads(raw_images)
+                        if isinstance(decoded_images, list):
+                            for it in decoded_images:
+                                try:
+                                    s = (it or "").strip()
+                                except Exception:
+                                    s = ""
+                                if not s:
+                                    continue
+                                images.append(s)
+                                if len(images) >= 9:
+                                    break
+                except Exception:
+                    images = []
+                images_out = images if len(images) > 1 else None
+                image_b64_out = row.image_b64 or (images[0] if images else None)
+                out.append(
+                    MomentPostOut(
+                        id=str(row.id),
+                        text=row.text,
+                        ts=ts_str,
+                        likes=likes_map.get(row.id, 0),
+                        liked_by_me=row.id in liked_by_me,
+                        liked_by=liked_by_map.get(row.id) or None,
+                        comments=comments_map.get(row.id, 0),
+                        has_official_reply=row.id in official_reply_ids,
+                        visibility=row.visibility or "public",
+                        image_b64=image_b64_out,
+                        image_url=row.image_url,
+                        author_name=author_label,
+                        origin_official_account_id=getattr(
+                            row, "origin_official_account_id", None
+                        ),
+                        origin_official_item_id=getattr(
+                            row, "origin_official_item_id", None
+                        ),
+                        audience_tag=getattr(row, "audience_tag", None),
+                        location_label=getattr(row, "location_label", None),
+                        images=images_out,
+                    ).dict()
+                )
+        try:
+            emit_event(
+                "moments",
+                "feed_view",
+                {"user_key": user_key, "count": len(out)},
+            )
+        except Exception:
+            pass
+        return {"items": out}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/topic/{tag}", response_class=JSONResponse)
+def moments_topic(
+    request: Request,
+    tag: str,
+    limit: int = 50,
+):
+    """
+    Returns latest Moments posts for a given hashtag/topic.
+
+    Hashtags are stored without the leading '#', case-insensitive.
+    """
+    user_key = _moments_cookie_key(request)
+    tag_norm = (tag or "").strip().lstrip("#").lower()
+    if not tag_norm:
+        return {"items": []}
+    try:
+        limit_val = max(1, min(limit, 100))
+        with _moments_session() as s:
+            stmt = (
+                _sa_select(MomentPostDB)
+                .join(MomentTagDB, MomentTagDB.post_id == MomentPostDB.id)
+                .where(MomentTagDB.tag == tag_norm)
+                .order_by(MomentPostDB.created_at.desc(), MomentPostDB.id.desc())
+                .limit(limit_val)
+            )
+            rows = s.execute(stmt).scalars().all()
+            post_ids = [r.id for r in rows]
+            likes_map: dict[int, int] = {}
+            liked_by_me: set[int] = set()
+            liked_by_map: dict[int, list[str]] = {}
+            comments_map: dict[int, int] = {}
+            official_reply_ids: set[int] = set()
+            if post_ids:
+                likes_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentLikeDB.post_id, _sa_func.count(MomentLikeDB.id)
+                        )
+                        .where(MomentLikeDB.post_id.in_(post_ids))
+                        .group_by(MomentLikeDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in likes_rows:
+                    likes_map[int(pid)] = int(cnt)
+                like_user_rows = (
+                    s.execute(
+                        _sa_select(MomentLikeDB.post_id, MomentLikeDB.user_key)
+                        .where(MomentLikeDB.post_id.in_(post_ids))
+                        .order_by(MomentLikeDB.created_at.asc(), MomentLikeDB.id.asc())
+                    )
+                    .all()
+                )
+                for pid, uk in like_user_rows:
+                    try:
+                        pid_int = int(pid)
+                    except Exception:
+                        continue
+                    lst = liked_by_map.get(pid_int)
+                    if lst is None:
+                        lst = []
+                        liked_by_map[pid_int] = lst
+                    if len(lst) >= 8:
+                        continue
+                    try:
+                        label = _moments_pseudonym_for_user_key(str(uk))
+                    except Exception:
+                        label = None
+                    if label:
+                        lst.append(label)
+                comments_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentCommentDB.post_id,
+                            _sa_func.count(MomentCommentDB.id),
+                        )
+                        .where(MomentCommentDB.post_id.in_(post_ids))
+                        .group_by(MomentCommentDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in comments_rows:
+                    comments_map[int(pid)] = int(cnt)
+                official_rows = (
+                    s.execute(
+                        _sa_select(MomentCommentDB.post_id)
+                        .where(
+                            MomentCommentDB.post_id.in_(post_ids),
+                            MomentCommentDB.user_key.like("official:%"),
+                        )
+                        .group_by(MomentCommentDB.post_id)
+                    )
+                    .scalars()
+                    .all()
+                )
+                official_reply_ids = {int(pid) for pid in official_rows}
+                my_likes = (
+                    s.execute(
+                        _sa_select(MomentLikeDB.post_id).where(
+                            MomentLikeDB.post_id.in_(post_ids),
+                            MomentLikeDB.user_key == user_key,
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                liked_by_me.update(int(pid) for pid in my_likes)
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                if row.visibility in ("only_me", "private") and row.user_key != user_key:
+                    continue
+                if row.visibility in ("friends", "friends_only", "close_friends") and row.user_key != user_key:
+                    viewer_phone: str | None
+                    author_phone: str | None
+                    try:
+                        viewer_phone = _auth_phone(request) or None
+                    except Exception:
+                        viewer_phone = None
+                    try:
+                        author_phone = _phone_from_moments_user_key(row.user_key)
+                    except Exception:
+                        author_phone = None
+                    if not viewer_phone or not author_phone:
+                        continue
+                    try:
+                        with _friends_session() as fs:
+                            rel = fs.execute(
+                                _sa_select(FriendDB).where(
+                                    (
+                                        (FriendDB.user_phone == author_phone)
+                                        & (FriendDB.friend_phone == viewer_phone)
+                                    )
+                                    | (
+                                        (FriendDB.user_phone == viewer_phone)
+                                        & (FriendDB.friend_phone == author_phone)
+                                    )
+                                )
+                            ).scalars().first()
+                            if rel is None:
+                                continue
+                            if row.visibility in ("close_friends", "friends_only"):
+                                rel_cf = fs.execute(
+                                    _sa_select(CloseFriendDB).where(
+                                        CloseFriendDB.user_phone
+                                        == author_phone,
+                                        CloseFriendDB.friend_phone
+                                        == viewer_phone,
+                                    )
+                                ).scalars().first()
+                                if rel_cf is None:
+                                    continue
+                    except Exception:
+                        continue
+                try:
+                    ts = row.created_at
+                except Exception:
+                    ts = None
+                ts_str = (
+                    ts.isoformat().replace("+00:00", "Z")
+                    if isinstance(ts, datetime)
+                    else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+                try:
+                    author_label = _moments_pseudonym_for_user_key(row.user_key)
+                except Exception:
+                    author_label = None
+                images: list[str] = []
+                try:
+                    raw_images = (getattr(row, "images_b64_json", None) or "").strip()
+                    if raw_images:
+                        decoded_images = json.loads(raw_images)
+                        if isinstance(decoded_images, list):
+                            for it in decoded_images:
+                                try:
+                                    s = (it or "").strip()
+                                except Exception:
+                                    s = ""
+                                if not s:
+                                    continue
+                                images.append(s)
+                                if len(images) >= 9:
+                                    break
+                except Exception:
+                    images = []
+                images_out = images if len(images) > 1 else None
+                image_b64_out = row.image_b64 or (images[0] if images else None)
+                out.append(
+                    MomentPostOut(
+                        id=str(row.id),
+                        text=row.text,
+                        ts=ts_str,
+                        likes=likes_map.get(row.id, 0),
+                        liked_by_me=row.id in liked_by_me,
+                        liked_by=liked_by_map.get(row.id) or None,
+                        comments=comments_map.get(row.id, 0),
+                        has_official_reply=row.id in official_reply_ids,
+                        visibility=row.visibility or "public",
+                        image_b64=image_b64_out,
+                        image_url=row.image_url,
+                        author_name=author_label,
+                        origin_official_account_id=getattr(
+                            row, "origin_official_account_id", None
+                        ),
+                        origin_official_item_id=getattr(
+                            row, "origin_official_item_id", None
+                        ),
+                        audience_tag=getattr(row, "audience_tag", None),
+                        location_label=getattr(row, "location_label", None),
+                        images=images_out,
+                    ).dict()
+                )
+        try:
+            emit_event(
+                "moments",
+                "topic_view",
+                {"user_key": user_key, "tag": tag_norm, "count": len(out)},
+            )
+        except Exception:
+            pass
+        return {"items": out}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class MomentPostIn(BaseModel):
+    text: str
+    visibility: str = "public"
+    image_b64: str | None = None
+    images_b64: list[str] | None = None
+    location_label: str | None = None
+
+
+class MomentPostUpdateIn(BaseModel):
+    visibility: str | None = None
+
+
+class MomentCommentIn(BaseModel):
+    text: str
+    reply_to_id: int | None = None
+
+
+class MomentReportIn(BaseModel):
+    reason: str | None = None
+
+
+@app.post("/moments", response_class=JSONResponse)
+def moments_create(request: Request, body: MomentPostIn):
+    """
+    Creates a new moment for the current user.
+    """
+    user_key = _moments_cookie_key(request)
+    text = (body.text or "").strip()
+    images: list[str] = []
+    seen_images: set[str] = set()
+    for raw in body.images_b64 or []:
+        try:
+            s = (raw or "").strip()
+        except Exception:
+            s = ""
+        if not s:
+            continue
+        if s in seen_images:
+            continue
+        seen_images.add(s)
+        images.append(s)
+        if len(images) >= 9:
+            break
+    if not images:
+        single = (body.image_b64 or "").strip()
+        if single:
+            images.append(single)
+    if not text and not images:
+        raise HTTPException(status_code=400, detail="empty moment")
+    visibility_raw = (body.visibility or "public").strip()
+    visibility_norm = visibility_raw.lower()
+    visibility = visibility_norm
+    audience_tag: str | None = None
+    if visibility_norm.startswith("tag:"):
+        # Visibility restricted to friends with a specific tag label.
+        visibility = "friends_tag"
+        # Preserve the original label casing after the "tag:" prefix so it
+        # matches the user's contact label (e.g. "Family", "Work").
+        audience_tag = visibility_raw.split(":", 1)[1].strip() or None
+    elif visibility_norm.startswith("friends_except:"):
+        # Visibility: all friends except those with a specific tag.
+        visibility = "friends_except_tag"
+        audience_tag = visibility_raw.split(":", 1)[1].strip() or None
+    if visibility not in {
+        "public",
+        "friends",
+        "friends_only",
+        "close_friends",
+        "only_me",
+        "private",
+        "friends_tag",
+        "friends_except_tag",
+    }:
+        visibility = "public"
+        audience_tag = None
+    origin_acc_id, origin_item_id = _moments_extract_official_origin(text)
+    tags = _moments_extract_tags(text)
+    location_label = (body.location_label or "").strip()
+    if location_label:
+        location_label = location_label[:128]
+    images_json: str | None = None
+    if len(images) > 1:
+        try:
+            images_json = json.dumps(images)
+        except Exception:
+            images_json = None
+    image_b64 = images[0] if images else None
+    try:
+        with _moments_session() as s:
+            row = MomentPostDB(
+                user_key=user_key,
+                text=text,
+                visibility=visibility,
+                audience_tag=audience_tag,
+                location_label=location_label or None,
+                images_b64_json=images_json,
+                image_b64=image_b64,
+                origin_official_account_id=origin_acc_id,
+                origin_official_item_id=origin_item_id,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            if tags:
+                for tag in tags:
+                    try:
+                        s.add(MomentTagDB(post_id=row.id, tag=tag))
+                    except Exception:
+                        # Best-effort; ignore duplicates or failures.
+                        pass
+                try:
+                    s.commit()
+                except Exception:
+                    s.rollback()
+            ts = row.created_at
+            ts_str = (
+                ts.isoformat().replace("+00:00", "Z")
+                if isinstance(ts, datetime)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            try:
+                author_label = _moments_pseudonym_for_user_key(row.user_key)
+            except Exception:
+                author_label = None
+            out = MomentPostOut(
+                id=str(row.id),
+                text=row.text,
+                ts=ts_str,
+                likes=0,
+                liked_by_me=False,
+                has_official_reply=False,
+                visibility=row.visibility or "public",
+                image_b64=row.image_b64,
+                image_url=row.image_url,
+                author_name=author_label,
+                audience_tag=row.audience_tag,
+                location_label=getattr(row, "location_label", None),
+                images=images if len(images) > 1 else None,
+            ).dict()
+        try:
+            emit_event(
+                "moments",
+                "post_create",
+                {"user_key": user_key},
+            )
+        except Exception:
+            pass
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/moments/{post_id}", response_class=JSONResponse)
+def moments_update(post_id: int, request: Request, body: MomentPostUpdateIn):
+    """
+    Updates selected fields of a Moments post (currently visibility/audience_tag)
+    for the post owner.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+            if post.user_key != user_key:
+                raise HTTPException(status_code=403, detail="forbidden")
+            changed = False
+            visibility_raw = (
+                (body.visibility or "").strip()
+                if body.visibility is not None
+                else ""
+            )
+            if visibility_raw:
+                visibility_norm = visibility_raw.lower()
+                visibility = visibility_norm
+                audience_tag: str | None = None
+                if visibility_norm.startswith("tag:"):
+                    visibility = "friends_tag"
+                    audience_tag = visibility_raw.split(":", 1)[1].strip() or None
+                elif visibility_norm.startswith("friends_except:"):
+                    visibility = "friends_except_tag"
+                    audience_tag = visibility_raw.split(":", 1)[1].strip() or None
+                if visibility not in {
+                    "public",
+                    "friends",
+                    "friends_only",
+                    "close_friends",
+                    "only_me",
+                    "private",
+                    "friends_tag",
+                    "friends_except_tag",
+                }:
+                    visibility = "public"
+                    audience_tag = None
+                post.visibility = visibility
+                setattr(post, "audience_tag", audience_tag)
+                changed = True
+            if changed:
+                s.commit()
+            return {
+                "status": "ok",
+                "visibility": getattr(post, "visibility", "public"),
+                "audience_tag": getattr(post, "audience_tag", None),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/moments/{post_id}/report", response_class=JSONResponse)
+def moments_report(post_id: int, request: Request, body: MomentReportIn | None = None):
+    """
+    Lightweight report endpoint for Moments posts.
+    Does not persist anything, but emits an analytics/moderation event
+    that backoffice tooling can consume.
+    """
+    user_key = _moments_cookie_key(request)
+    reason = ""
+    try:
+        if body is not None:
+            reason = (body.reason or "").strip()
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+        try:
+            emit_event(
+                "moments",
+                "post_report",
+                {
+                    "user_key": user_key,
+                    "post_id": post_id,
+                    "reason": reason[:280] if reason else "",
+                },
+            )
+        except Exception:
+            # Reporting should never break the client.
+            pass
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/moments/{post_id}/like", response_class=JSONResponse)
+def moments_like(post_id: int, request: Request):
+    """
+    Idempotent like endpoint; increments like count once per user.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        send_push = False
+        post_author_phone: str | None = None
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+            existing = (
+                s.execute(
+                    _sa_select(MomentLikeDB).where(
+                        MomentLikeDB.post_id == post_id,
+                        MomentLikeDB.user_key == user_key,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is None:
+                like = MomentLikeDB(post_id=post_id, user_key=user_key)
+                s.add(like)
+                s.commit()
+                send_push = True
+            try:
+                post_author_phone = _phone_from_moments_user_key(post.user_key)
+            except Exception:
+                post_author_phone = None
+        try:
+            emit_event(
+                "moments",
+                "post_like",
+                {"user_key": user_key, "post_id": post_id},
+            )
+        except Exception:
+            pass
+        # Fire-and-forget push notification to post author (if different user)
+        if send_push and post_author_phone:
+            try:
+                liker_phone = _auth_phone(request) or ""
+            except Exception:
+                liker_phone = ""
+            if liker_phone != post_author_phone:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(
+                            _send_driver_push(
+                                post_author_phone,
+                                "New like on your Moment",
+                                f"Your post #{post_id} received a new like.",
+                                {"type": "moments_post_like", "post_id": post_id},
+                            )
+                        )
+                except Exception:
+                    pass
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/moments/{post_id}/like", response_class=JSONResponse)
+def moments_unlike(post_id: int, request: Request):
+    """
+    Idempotent unlike endpoint; removes the user's like when present.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+            existing = (
+                s.execute(
+                    _sa_select(MomentLikeDB).where(
+                        MomentLikeDB.post_id == post_id,
+                        MomentLikeDB.user_key == user_key,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is not None:
+                s.delete(existing)
+                s.commit()
+        try:
+            emit_event(
+                "moments",
+                "post_unlike",
+                {"user_key": user_key, "post_id": post_id},
+            )
+        except Exception:
+            pass
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/notifications", response_class=JSONResponse)
+def moments_notifications(request: Request) -> dict[str, Any]:
+    """
+    Aggregated notification info for Moments:
+    latest comment timestamp on the user's posts (excluding own comments)
+    and total comment count.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        with _moments_session() as s:
+            post_ids = (
+                s.execute(
+                    _sa_select(MomentPostDB.id).where(
+                        MomentPostDB.user_key == user_key
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not post_ids:
+                return MomentNotificationsOut(
+                    last_comment_ts=None, total_comments=0, redpacket_posts_30d=0
+                ).dict()
+
+            row = (
+                s.execute(
+                    _sa_select(
+                        _sa_func.count(MomentCommentDB.id),
+                        _sa_func.max(MomentCommentDB.created_at),
+                    ).where(
+                        MomentCommentDB.post_id.in_(post_ids),
+                        MomentCommentDB.user_key != user_key,
+                    )
+                )
+                .first()
+            )
+            cnt = 0
+            last_dt: Any = None
+            if row:
+                cnt, last_dt = row
+            total = int(cnt or 0)
+
+            # Red-packet mentions on my Moments in the last 30 days
+            redpacket_30d = 0
+            try:
+                since = datetime.now(timezone.utc) - timedelta(days=30)
+                rp_stmt = _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                    MomentPostDB.user_key == user_key,
+                    MomentPostDB.created_at >= since,
+                    (
+                        MomentPostDB.text.contains("Red packet")
+                        | MomentPostDB.text.contains(
+                            "I am sending red packets via Shamell Pay"
+                        )
+                        | MomentPostDB.text.contains("حزمة حمراء")
+                    ),
+                )
+                rp_count = s.execute(rp_stmt).scalar() or 0
+                redpacket_30d = int(rp_count)
+            except Exception:
+                redpacket_30d = 0
+
+            if not last_dt:
+                return MomentNotificationsOut(
+                    last_comment_ts=None,
+                    total_comments=total,
+                    redpacket_posts_30d=redpacket_30d,
+                ).dict()
+            ts_str = (
+                last_dt.isoformat().replace("+00:00", "Z")
+                if isinstance(last_dt, datetime)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            return MomentNotificationsOut(
+                last_comment_ts=ts_str,
+                total_comments=total,
+                redpacket_posts_30d=redpacket_30d,
+            ).dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/official_moments_stats", response_class=JSONResponse)
+def me_official_moments_stats(request: Request) -> dict[str, Any]:
+    """
+    Aggregated Moments share counts per Official kind for the current user.
+
+    Counts how many Moments the user has posted that originate from
+    service vs. subscription Official accounts (based on origin_official_account_id).
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        # Collect per-account share counts for this user's Moments.
+        per_account: dict[str, int] = {}
+        per_account_30d: dict[str, int] = {}
+        with _moments_session() as ms:
+            since_30 = datetime.now(timezone.utc) - timedelta(days=30)
+            rows = (
+                ms.execute(
+                    _sa_select(
+                        MomentPostDB.origin_official_account_id,
+                        _sa_func.count(MomentPostDB.id),
+                    )
+                    .where(
+                        MomentPostDB.user_key == user_key,
+                        MomentPostDB.origin_official_account_id.is_not(None),
+                    )
+                    .group_by(MomentPostDB.origin_official_account_id)
+                )
+                .all()
+            )
+            for acc_id, cnt in rows:
+                if not acc_id:
+                    continue
+                per_account[str(acc_id)] = int(cnt or 0)
+            # Last 30 days counts per official for this user.
+            try:
+                rows_30 = (
+                    ms.execute(
+                        _sa_select(
+                            MomentPostDB.origin_official_account_id,
+                            _sa_func.count(MomentPostDB.id),
+                        )
+                        .where(
+                            MomentPostDB.user_key == user_key,
+                            MomentPostDB.origin_official_account_id.is_not(
+                                None
+                            ),
+                            MomentPostDB.created_at >= since_30,
+                        )
+                        .group_by(MomentPostDB.origin_official_account_id)
+                    )
+                    .all()
+                )
+                for acc_id, cnt in rows_30:
+                    if not acc_id:
+                        continue
+                    per_account_30d[str(acc_id)] = int(cnt or 0)
+            except Exception:
+                per_account_30d = {}
+        if not per_account:
+            return OfficialMomentsStatsOut(
+                service_shares=0,
+                subscription_shares=0,
+                total_shares=0,
+                redpacket_shares_30d=0,
+                hot_accounts=0,
+            ).dict()
+
+        # Look up Official kind per account_id.
+        service_shares = 0
+        subscription_shares = 0
+        hot_accounts = 0
+        acc_ids = list(per_account.keys())
+        try:
+            with _officials_session() as os:
+                acc_rows = (
+                    os.execute(
+                        _sa_select(
+                            OfficialAccountDB.id,
+                            OfficialAccountDB.kind,
+                        ).where(OfficialAccountDB.id.in_(acc_ids))
+                    )
+                    .all()
+                )
+                kinds: dict[str, str] = {}
+                for acc_id, kind in acc_rows:
+                    kinds[str(acc_id)] = (kind or "service").strip().lower()
+        except Exception:
+            kinds = {}
+
+        for acc_id, cnt in per_account.items():
+            kind = kinds.get(acc_id, "service")
+            if kind == "service":
+                service_shares += cnt
+            else:
+                subscription_shares += cnt
+            try:
+                recent_cnt = int(per_account_30d.get(acc_id, 0) or 0)
+                # Hot if either strong all-time or active in last 30 days.
+                if int(cnt) >= 10 or recent_cnt >= 3:
+                    hot_accounts += 1
+            except Exception:
+                continue
+
+        total_shares = int(service_shares + subscription_shares)
+
+        # Red-packet Moments by this user in the last 30 days (with official origin)
+        redpacket_30d = 0
+        try:
+            since = datetime.now(timezone.utc) - timedelta(days=30)
+            rp_rows = (
+                ms.execute(  # type: ignore[name-defined]
+                    _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                        MomentPostDB.user_key == user_key,
+                        MomentPostDB.origin_official_account_id.is_not(None),
+                        MomentPostDB.created_at >= since,
+                        (
+                            MomentPostDB.text.contains("Red packet")
+                            | MomentPostDB.text.contains(
+                                "I am sending red packets via Shamell Pay"
+                            )
+                            | MomentPostDB.text.contains("حزمة حمراء")
+                        ),
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            redpacket_30d = int(rp_rows)
+        except Exception:
+            redpacket_30d = 0
+
+        return OfficialMomentsStatsOut(
+            service_shares=service_shares,
+            subscription_shares=subscription_shares,
+            total_shares=total_shares,
+            redpacket_shares_30d=redpacket_30d,
+            hot_accounts=hot_accounts,
+        ).dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/{post_id}/comments", response_class=JSONResponse)
+def moments_comments(post_id: int, request: Request, limit: int = 100):
+    """
+    Returns comments for a given moment post.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        limit_val = max(1, min(limit, 200))
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+            stmt = (
+                _sa_select(MomentCommentDB)
+                .where(MomentCommentDB.post_id == post_id)
+                .order_by(
+                    MomentCommentDB.created_at.asc(), MomentCommentDB.id.asc()
+                )
+                .limit(limit_val)
+            )
+            rows = s.execute(stmt).scalars().all()
+            comment_ids = [r.id for r in rows]
+            # Build stable but privacy-friendly labels from user_key
+            label_map: dict[str, str] = {}
+            likes_map: dict[int, int] = {}
+            liked_set: set[int] = set()
+            if comment_ids:
+                likes_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentCommentLikeDB.comment_id,
+                            _sa_func.count(MomentCommentLikeDB.id),
+                        )
+                        .where(MomentCommentLikeDB.comment_id.in_(comment_ids))
+                        .group_by(MomentCommentLikeDB.comment_id)
+                    )
+                    .all()
+                )
+                for cid, cnt in likes_rows:
+                    likes_map[int(cid)] = int(cnt or 0)
+                liked_rows = (
+                    s.execute(
+                        _sa_select(MomentCommentLikeDB.comment_id).where(
+                            MomentCommentLikeDB.comment_id.in_(comment_ids),
+                            MomentCommentLikeDB.user_key == user_key,
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                liked_set.update(int(cid) for cid in liked_rows)
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                ts = row.created_at
+                ts_str = (
+                    ts.isoformat().replace("+00:00", "Z")
+                    if isinstance(ts, datetime)
+                    else datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                author = None
+                try:
+                    uk = (row.user_key or "").strip()
+                    if uk:
+                        if uk.startswith("official:"):
+                            author = f"Official · {uk.split(':', 1)[1]}"
+                        elif uk in label_map:
+                            author = label_map[uk]
+                        else:
+                            import hashlib
+
+                            h = hashlib.sha1(uk.encode("utf-8")).hexdigest()[:6]
+                            author = f"User {h}"
+                            label_map[uk] = author
+                except Exception:
+                    author = None
+                items.append(
+                    MomentCommentOut(
+                        id=str(row.id),
+                        text=row.text,
+                        ts=ts_str,
+                        author_name=author,
+                        reply_to_id=str(row.reply_to_id)
+                        if getattr(row, "reply_to_id", None)
+                        else None,
+                        reply_to_name=None,
+                        likes=likes_map.get(row.id, 0),
+                        liked_by_me=row.id in liked_set,
+                    ).dict()
+                )
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/moments/{post_id}/comments", response_class=JSONResponse)
+def moments_add_comment(post_id: int, request: Request, body: MomentCommentIn):
+    """
+    Adds a new comment to a moment post.
+    """
+    user_key = _moments_cookie_key(request)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty comment")
+    reply_to_id = body.reply_to_id
+    try:
+        post_author_phone: str | None = None
+        commenter_phone: str | None = None
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+            if reply_to_id is not None:
+                target = s.get(MomentCommentDB, reply_to_id)
+                if not target or target.post_id != post_id:
+                    reply_to_id = None
+            row = MomentCommentDB(
+                post_id=post_id,
+                user_key=user_key,
+                text=text,
+                reply_to_id=reply_to_id,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            ts = row.created_at
+            ts_str = (
+                ts.isoformat().replace("+00:00", "Z")
+                if isinstance(ts, datetime)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            author = None
+            try:
+                uk = (row.user_key or "").strip()
+                if uk:
+                    import hashlib
+
+                    h = hashlib.sha1(uk.encode("utf-8")).hexdigest()[:6]
+                    author = f"User {h}"
+            except Exception:
+                author = None
+            out = MomentCommentOut(
+                id=str(row.id),
+                text=row.text,
+                ts=ts_str,
+                author_name=author,
+                reply_to_id=str(row.reply_to_id)
+                if getattr(row, "reply_to_id", None)
+                else None,
+                reply_to_name=None,
+            ).dict()
+            try:
+                post_author_phone = _phone_from_moments_user_key(post.user_key)
+            except Exception:
+                post_author_phone = None
+        try:
+            commenter_phone = _auth_phone(request) or None
+        except Exception:
+            commenter_phone = None
+        try:
+            emit_event(
+                "moments",
+                "comment_create",
+                {"user_key": user_key, "post_id": post_id},
+            )
+        except Exception:
+            pass
+        # Fire-and-forget push notification to post author (if different user)
+        if post_author_phone and commenter_phone != post_author_phone:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(
+                        _send_driver_push(
+                            post_author_phone,
+                            "New comment on your Moment",
+                            text[:120],
+                            {
+                                "type": "moments_comment",
+                                "post_id": post_id,
+                                "comment_id": row.id,
+                            },
+                        )
+                    )
+            except Exception:
+                pass
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/admin", response_class=JSONResponse)
+def moments_admin_list(
+    request: Request,
+    limit: int = 100,
+    redpacket_only: bool = False,
+    origin_official_account_id: str | None = None,
+    origin_official_item_id: str | None = None,
+    campaign_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Simple debug listing for Moments posts (QA only).
+    Shows latest posts with basic metadata and like counts.
+    """
+    _require_admin_v2(request)
+    try:
+        limit_val = max(1, min(limit, 200))
+        with _moments_session() as s:
+            stmt = _sa_select(MomentPostDB)
+            if redpacket_only:
+                stmt = stmt.where(
+                    MomentPostDB.text.contains("Red packet")
+                    | MomentPostDB.text.contains(
+                        "I am sending red packets via Shamell Pay"
+                    )
+                    | MomentPostDB.text.contains("حزمة حمراء")
+                )
+            if origin_official_account_id:
+                stmt = stmt.where(
+                    MomentPostDB.origin_official_account_id
+                    == origin_official_account_id
+                )
+            target_item = origin_official_item_id or campaign_id
+            if target_item:
+                stmt = stmt.where(
+                    MomentPostDB.origin_official_item_id == target_item
+                )
+            stmt = stmt.order_by(
+                MomentPostDB.created_at.desc(), MomentPostDB.id.desc()
+            ).limit(limit_val)
+            rows = s.execute(stmt).scalars().all()
+            post_ids = [r.id for r in rows]
+            likes_map: dict[int, int] = {}
+            comments_map: dict[int, int] = {}
+            if post_ids:
+                likes_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentLikeDB.post_id, _sa_func.count(MomentLikeDB.id)
+                        ).where(MomentLikeDB.post_id.in_(post_ids)
+                        ).group_by(MomentLikeDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in likes_rows:
+                    likes_map[int(pid)] = int(cnt)
+                comments_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentCommentDB.post_id, _sa_func.count(MomentCommentDB.id)
+                        ).where(MomentCommentDB.post_id.in_(post_ids)
+                        ).group_by(MomentCommentDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in comments_rows:
+                    comments_map[int(pid)] = int(cnt)
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                ts = row.created_at
+                ts_str = (
+                    ts.isoformat().replace("+00:00", "Z")
+                    if isinstance(ts, datetime)
+                    else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+                items.append(
+                    {
+                        "id": row.id,
+                        "user_key": row.user_key,
+                        "text": row.text,
+                        "visibility": row.visibility,
+                        "created_at": ts_str,
+                        "likes": likes_map.get(row.id, 0),
+                        "has_image": bool(row.image_b64 or row.image_url),
+                        "origin_official_account_id": getattr(
+                            row, "origin_official_account_id", None
+                        ),
+                        "origin_official_item_id": getattr(
+                            row, "origin_official_item_id", None
+                        ),
+                    }
+                )
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/topics/trending", response_class=JSONResponse)
+def moments_trending_topics(request: Request, limit: int = 10) -> dict[str, Any]:
+    """
+    Returns simple trending hashtags for Moments.
+
+    Currently ranks by total occurrences across all posts (best-effort).
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        limit_val = max(1, min(limit, 50))
+        with _moments_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(MomentTagDB.tag, _sa_func.count(MomentTagDB.id))
+                    .group_by(MomentTagDB.tag)
+                    .order_by(_sa_func.count(MomentTagDB.id).desc())
+                    .limit(limit_val)
+                )
+                .all()
+            )
+        items: list[dict[str, Any]] = []
+        for tag, cnt in rows:
+            items.append(
+                {
+                    "tag": str(tag or ""),
+                    "count": int(cnt or 0),
+                }
+            )
+        try:
+            emit_event(
+                "moments",
+                "trending_topics_view",
+                {"user_key": user_key, "count": len(items)},
+            )
+        except Exception:
+            pass
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/admin/comments", response_class=JSONResponse)
+def moments_admin_comments(
+    request: Request,
+    post_id: int | None = None,
+    limit: int = 100,
+    official_account_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Admin JSON view for comments, optionally filtered by post_id.
+    """
+    _require_admin_v2(request)
+    try:
+        limit_val = max(1, min(limit, 500))
+        with _moments_session() as s:
+            stmt = (
+                _sa_select(MomentCommentDB)
+                .order_by(
+                    MomentCommentDB.created_at.desc(),
+                    MomentCommentDB.id.desc(),
+                )
+                .limit(limit_val)
+            )
+            if official_account_id:
+                stmt = (
+                    stmt.join(
+                        MomentPostDB,
+                        MomentCommentDB.post_id == MomentPostDB.id,
+                    ).where(
+                        MomentPostDB.origin_official_account_id
+                        == official_account_id
+                    )
+                )
+            if post_id is not None:
+                stmt = stmt.where(MomentCommentDB.post_id == post_id)
+            rows = s.execute(stmt).scalars().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                ts = row.created_at
+                ts_str = (
+                    ts.isoformat().replace("+00:00", "Z")
+                    if isinstance(ts, datetime)
+                    else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+                items.append(
+                    {
+                        "id": row.id,
+                        "post_id": row.post_id,
+                        "user_key": row.user_key,
+                        "text": row.text,
+                        "created_at": ts_str,
+                        "reply_to_id": row.reply_to_id,
+                    }
+                )
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/moments/admin/comments/{comment_id}", response_class=JSONResponse)
+def moments_admin_delete_comment(comment_id: int, request: Request) -> dict[str, Any]:
+    """
+    Deletes a single comment (admin only).
+    """
+    _require_admin_v2(request)
+    try:
+        with _moments_session() as s:
+            row = s.get(MomentCommentDB, comment_id)
+            if not row:
+                raise HTTPException(status_code=404, detail="comment not found")
+            s.delete(row)
+            s.commit()
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/moments/comments/{comment_id}", response_class=JSONResponse)
+def moments_delete_comment(comment_id: int, request: Request) -> dict[str, Any]:
+    """
+    Deletes a comment if it belongs to the current user (or admin).
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        with _moments_session() as s:
+            row = s.get(MomentCommentDB, comment_id)
+            if not row:
+                raise HTTPException(status_code=404, detail="comment not found")
+            is_admin = False
+            try:
+                _require_admin_v2(request)
+                is_admin = True
+            except Exception:
+                is_admin = False
+            if not is_admin and (row.user_key or "") != user_key:
+                raise HTTPException(status_code=403, detail="forbidden")
+
+            likes = (
+                s.execute(
+                    _sa_select(MomentCommentLikeDB).where(
+                        MomentCommentLikeDB.comment_id == comment_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for like_row in likes:
+                s.delete(like_row)
+            s.delete(row)
+            s.commit()
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class MomentAdminReplyIn(BaseModel):
+    text: str
+    official_account_id: str
+    reply_to_id: int | None = None
+
+
+@app.post("/moments/comments/{comment_id}/like", response_class=JSONResponse)
+def moments_comment_like(comment_id: int, request: Request) -> dict[str, Any]:
+    """
+    Idempotent like endpoint for Moments comments.
+    """
+    user_key = _moments_cookie_key(request)
+    try:
+        send_push = False
+        comment_author_phone: str | None = None
+        post_id: int | None = None
+        with _moments_session() as s:
+            comment = s.get(MomentCommentDB, comment_id)
+            if not comment:
+                raise HTTPException(status_code=404, detail="comment not found")
+            post_id = int(comment.post_id)
+            existing = (
+                s.execute(
+                    _sa_select(MomentCommentLikeDB).where(
+                        MomentCommentLikeDB.comment_id == comment_id,
+                        MomentCommentLikeDB.user_key == user_key,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is None:
+                row = MomentCommentLikeDB(comment_id=comment_id, user_key=user_key)
+                s.add(row)
+                s.commit()
+                send_push = True
+            likes = (
+                s.execute(
+                    _sa_select(_sa_func.count(MomentCommentLikeDB.id)).where(
+                        MomentCommentLikeDB.comment_id == comment_id
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            try:
+                comment_author_phone = _phone_from_moments_user_key(comment.user_key)
+            except Exception:
+                comment_author_phone = None
+        try:
+            emit_event(
+                "moments",
+                "comment_like",
+                {
+                    "user_key": user_key,
+                    "comment_id": comment_id,
+                    "post_id": post_id,
+                },
+            )
+        except Exception:
+            pass
+        # Fire-and-forget push notification to comment author (if different user)
+        if send_push and comment_author_phone:
+            try:
+                liker_phone = _auth_phone(request) or ""
+            except Exception:
+                liker_phone = ""
+            if liker_phone != comment_author_phone:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(
+                            _send_driver_push(
+                                comment_author_phone,
+                                "New like on your comment",
+                                f"Your comment on post #{post_id} received a new like.",
+                                {
+                                    "type": "moments_comment_like",
+                                    "comment_id": comment_id,
+                                    "post_id": post_id,
+                                },
+                            )
+                        )
+                except Exception:
+                    pass
+        return {"likes": int(likes), "liked_by_me": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/friends", response_class=JSONResponse)
+def me_friends(request: Request) -> dict[str, Any]:
+    """
+    Returns the current user's friends (simple phone-based graph).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        with _friends_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(FriendDB).where(FriendDB.user_phone == phone)
+                )
+                .scalars()
+                .all()
+            )
+            # Preload close-friend flags for this user for convenience.
+            cf_rows = (
+                s.execute(
+                    _sa_select(CloseFriendDB.friend_phone).where(
+                        CloseFriendDB.user_phone == phone
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            cf_set = {r for r in cf_rows}
+            # Preload tags per friend for this user.
+            tag_rows = (
+                s.execute(
+                    _sa_select(
+                        FriendTagDB.friend_phone, FriendTagDB.tag
+                    ).where(FriendTagDB.user_phone == phone)
+                )
+                .all()
+            )
+            tags_map: dict[str, list[str]] = {}
+            for fp, tag in tag_rows:
+                try:
+                    f = (fp or "").strip()
+                    t = (tag or "").strip()
+                except Exception:
+                    continue
+                if not f or not t:
+                    continue
+                tags_map.setdefault(f, []).append(t)
+            friends: list[dict[str, Any]] = []
+            for row in rows:
+                fp = row.friend_phone
+                friends.append(
+                    {
+                        "id": fp,
+                        "phone": fp,
+                        "close": fp in cf_set,
+                        "tags": tags_map.get(fp, []),
+                    }
+                )
+        return {"friends": friends}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/me/contacts/sync", response_class=JSONResponse)
+async def me_contacts_sync(req: Request) -> dict[str, Any]:
+    """
+    Best‑effort Contact‑Sync:
+
+    - Client sends a list of phone numbers from the address book.
+    - Server returns a list of phones that also use Shamell so the
+      client can show \"People you may know\" / add suggestions.
+    """
+    phone = _auth_phone(req)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    numbers = []
+    if isinstance(body, dict):
+        raw = body.get("phones") or []
+        if isinstance(raw, list):
+            for v in raw:
+                try:
+                    s = (v or "").strip()
+                except Exception:
+                    s = ""
+                if not s:
+                    continue
+                # Normalize very lightly: remove spaces; keep leading + if present.
+                s = s.replace(" ", "")
+                if not s:
+                    continue
+                # Do not include own phone
+                if s == phone:
+                    continue
+                numbers.append(s)
+    if not numbers:
+        return {"matches": []}
+    try:
+        # Use Payments user directory as a proxy for \"is Shamell user\".
+        # Prefer internal Payments integration when available.
+        matches: list[dict[str, Any]] = []
+        uniq = sorted({n for n in numbers})
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            try:
+                from apps.payments.app.main import User as _PayUser  # type: ignore[import]
+            except Exception:
+                _PayUser = None  # type: ignore[assignment]
+            if _PayUser is None:
+                return {"matches": []}
+            with _pay_internal_session() as s:  # type: ignore[name-defined]
+                rows = (
+                    s.execute(
+                        _sa_select(_PayUser).where(_PayUser.phone.in_(uniq))  # type: ignore[arg-type]
+                    )
+                    .scalars()
+                    .all()
+                )
+                for u in rows:
+                    try:
+                        p = getattr(u, "phone", None)
+                        if not p:
+                            continue
+                        matches.append(
+                            {
+                                "phone": p,
+                                "name": getattr(u, "full_name", "") or "",
+                            }
+                        )
+                    except Exception:
+                        continue
+        elif PAYMENTS_BASE:
+            base = PAYMENTS_BASE.rstrip("/")
+            for chunk_start in range(0, len(uniq), 50):
+                chunk = uniq[chunk_start : chunk_start + 50]
+                try:
+                    url = f"{base}/admin/users/lookup"
+                    r = httpx.post(
+                        url,
+                        json={"phones": chunk},
+                        headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}
+                        if PAYMENTS_INTERNAL_SECRET
+                        else None,
+                        timeout=6.0,
+                    )
+                    if r.status_code >= 200 and r.status_code < 300:
+                        decoded = r.json()
+                        arr = decoded.get("users") if isinstance(decoded, dict) else None
+                        if isinstance(arr, list):
+                            for u in arr:
+                                if not isinstance(u, dict):
+                                    continue
+                                p = (u.get("phone") or "").strip()
+                                if not p:
+                                    continue
+                                matches.append(
+                                    {
+                                        "phone": p,
+                                        "name": (u.get("full_name") or "").strip(),
+                                    }
+                                )
+                except Exception:
+                    continue
+        return {"matches": matches}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/friend_requests", response_class=JSONResponse)
+def me_friend_requests(request: Request) -> dict[str, Any]:
+    """
+    Returns incoming and outgoing friend requests for the current user.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        with _friends_session() as s:
+            incoming_rows = (
+                s.execute(
+                    _sa_select(FriendRequestDB).where(
+                        FriendRequestDB.to_phone == phone,
+                        FriendRequestDB.status == "pending",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            outgoing_rows = (
+                s.execute(
+                    _sa_select(FriendRequestDB).where(
+                        FriendRequestDB.from_phone == phone,
+                        FriendRequestDB.status == "pending",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            incoming: list[dict[str, Any]] = []
+            outgoing: list[dict[str, Any]] = []
+            for r in incoming_rows:
+                incoming.append(
+                    {
+                        "id": r.id,
+                        "request_id": r.id,
+                        "from": r.from_phone,
+                        "to": r.to_phone,
+                        "status": r.status,
+                    }
+                )
+            for r in outgoing_rows:
+                outgoing.append(
+                    {
+                        "id": r.id,
+                        "request_id": r.id,
+                        "from": r.from_phone,
+                        "to": r.to_phone,
+                        "status": r.status,
+                    }
+                )
+        return {"incoming": incoming, "outgoing": outgoing}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class FriendRequestIn(BaseModel):
+    target_id: str
+
+
+@app.post("/friends/request", response_class=JSONResponse)
+async def friends_request(req: Request, body: FriendRequestIn) -> dict[str, Any]:
+    """
+    Creates a friend request from the current user to target_id (phone).
+    """
+    phone = _auth_phone(req)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    target = (body.target_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target_id required")
+    if target == phone:
+        raise HTTPException(status_code=400, detail="cannot add yourself")
+    try:
+        with _friends_session() as s:
+            # Already friends?
+            existing_friend = s.execute(
+                _sa_select(FriendDB).where(
+                    FriendDB.user_phone == phone,
+                    FriendDB.friend_phone == target,
+                )
+            ).scalars().first()
+            if existing_friend:
+                return {"status": "already_friends"}
+            # Existing pending request?
+            existing_req = s.execute(
+                _sa_select(FriendRequestDB).where(
+                    FriendRequestDB.from_phone == phone,
+                    FriendRequestDB.to_phone == target,
+                    FriendRequestDB.status == "pending",
+                )
+            ).scalars().first()
+            if existing_req:
+                return {
+                    "status": "pending",
+                    "request_id": existing_req.id,
+                }
+            row = FriendRequestDB(
+                from_phone=phone,
+                to_phone=target,
+                status="pending",
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            return {
+                "status": "ok",
+                "request_id": row.id,
+                "from": row.from_phone,
+                "to": row.to_phone,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class FriendAcceptIn(BaseModel):
+    request_id: int
+
+
+@app.post("/friends/accept", response_class=JSONResponse)
+async def friends_accept(req: Request, body: FriendAcceptIn) -> dict[str, Any]:
+    """
+    Accepts a pending friend request and establishes a bidirectional friend relation.
+    """
+    phone = _auth_phone(req)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    rid = body.request_id
+    try:
+        with _friends_session() as s:
+            r = s.get(FriendRequestDB, rid)
+            if not r or r.to_phone != phone or r.status != "pending":
+                raise HTTPException(status_code=404, detail="request not found")
+            r.status = "accepted"
+            # Create symmetric friend rows
+            def _ensure_friend(a: str, b: str) -> None:
+                existing = s.execute(
+                    _sa_select(FriendDB).where(
+                        FriendDB.user_phone == a,
+                        FriendDB.friend_phone == b,
+                    )
+                ).scalars().first()
+                if not existing:
+                    s.add(FriendDB(user_phone=a, friend_phone=b))
+
+            _ensure_friend(r.from_phone, r.to_phone)
+            _ensure_friend(r.to_phone, r.from_phone)
+            s.add(r)
+            s.commit()
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class FriendTagsIn(BaseModel):
+    tags: list[str]
+
+
+@app.post("/me/friends/{friend_phone}/tags", response_class=JSONResponse)
+async def me_friend_tags_set(friend_phone: str, request: Request, body: FriendTagsIn) -> dict[str, Any]:
+    """
+    Sets the label/tags for a friend (per user).
+
+    This replaces any existing tags between (user_phone, friend_phone)
+    and is used for WeChat‑style contact labels like \"Family\" or \"Work\".
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    target = (friend_phone or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="friend_phone required")
+    # Normalise tags: trim, deduplicate, drop empty.
+    tags_norm: list[str] = []
+    seen: set[str] = set()
+    for t in body.tags:
+        try:
+            v = (t or "").strip()
+        except Exception:
+            v = ""
+        if not v:
+            continue
+        key = v.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags_norm.append(v)
+    try:
+        with _friends_session() as s:
+            # Ensure the relation exists before tagging.
+            rel = (
+                s.execute(
+                    _sa_select(FriendDB).where(
+                        FriendDB.user_phone == phone,
+                        FriendDB.friend_phone == target,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if rel is None:
+                raise HTTPException(status_code=404, detail="friend not found")
+            # Remove existing tags for this pair.
+            s.execute(
+                _sa_text(
+                    "DELETE FROM friend_tags WHERE user_phone = :u AND friend_phone = :f"
+                ),
+                {"u": phone, "f": target},
+            )
+            # Insert new tags.
+            for v in tags_norm:
+                s.add(
+                    FriendTagDB(
+                        user_phone=phone,
+                        friend_phone=target,
+                        tag=v,
+                    )
+                )
+            s.commit()
+        return {"status": "ok", "tags": tags_norm}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/close_friends", response_class=JSONResponse)
+def me_close_friends(request: Request) -> dict[str, Any]:
+    """
+    Returns the current user's close friends (subset of friends).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        with _friends_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(CloseFriendDB).where(
+                        CloseFriendDB.user_phone == phone
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            friends: list[dict[str, Any]] = []
+            for row in rows:
+                friends.append(
+                    {
+                        "id": row.friend_phone,
+                        "phone": row.friend_phone,
+                    }
+                )
+        return {"friends": friends}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/me/close_friends/{friend_phone}", response_class=JSONResponse)
+def me_close_friends_add(friend_phone: str, request: Request) -> dict[str, Any]:
+    """
+    Marks an existing friend as close friend for Moments visibility.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    target = friend_phone.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="friend_phone required")
+    if target == phone:
+        raise HTTPException(status_code=400, detail="cannot mark yourself")
+    try:
+        with _friends_session() as s:
+            rel = (
+                s.execute(
+                    _sa_select(FriendDB).where(
+                        FriendDB.user_phone == phone,
+                        FriendDB.friend_phone == target,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if rel is None:
+                raise HTTPException(
+                    status_code=400, detail="not a friend"
+                )
+            existing = (
+                s.execute(
+                    _sa_select(CloseFriendDB).where(
+                        CloseFriendDB.user_phone == phone,
+                        CloseFriendDB.friend_phone == target,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is None:
+                row = CloseFriendDB(
+                    user_phone=phone,
+                    friend_phone=target,
+                )
+                s.add(row)
+                s.commit()
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class NearbyProfileIn(BaseModel):
+    """
+    Input model for updating the user's People Nearby profile.
+
+    All fields are optional; empty strings / out-of-range values are normalised.
+    """
+
+    status: str | None = None
+    gender: str | None = None  # \"male\", \"female\", \"other\" (best-effort)
+    age_years: int | None = None
+
+
+@app.delete("/me/close_friends/{friend_phone}", response_class=JSONResponse)
+def me_close_friends_remove(friend_phone: str, request: Request) -> dict[str, Any]:
+    """
+    Removes a friend from the close-friends list.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    target = friend_phone.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="friend_phone required")
+    try:
+        with _friends_session() as s:
+            row = (
+                s.execute(
+                    _sa_select(CloseFriendDB).where(
+                        CloseFriendDB.user_phone == phone,
+                        CloseFriendDB.friend_phone == target,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is not None:
+                s.delete(row)
+                s.commit()
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/nearby", response_class=JSONResponse)
+def me_nearby(request: Request, lat: float, lon: float, limit: int = 40) -> dict[str, Any]:
+    """
+    Returns nearby Shamell users for the People Nearby feature.
+
+    - Upserts the caller's latest location (coarse presence).
+    - Returns other users seen recently (within NEARBY_TTL_SECS), sorted by distance.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    now = datetime.now(timezone.utc)
+    try:
+        limit_val = max(1, min(limit, 100))
+        cutoff = now - timedelta(seconds=NEARBY_TTL_SECS)
+        with _nearby_session() as s:
+            # Upsert caller presence.
+            row = (
+                s.execute(
+                    _sa_select(NearbyPresenceDB).where(
+                        NearbyPresenceDB.user_phone == phone
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is None:
+                row = NearbyPresenceDB(
+                    user_phone=phone,
+                    last_lat=float(lat),
+                    last_lon=float(lon),
+                    updated_at=now,
+                )
+                s.add(row)
+            else:
+                row.last_lat = float(lat)
+                row.last_lon = float(lon)
+                row.updated_at = now
+            s.commit()
+
+        # Load other recent presences in a second transaction to keep scope small.
+        with _nearby_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(NearbyPresenceDB).where(
+                        NearbyPresenceDB.updated_at >= cutoff,
+                        NearbyPresenceDB.user_phone != phone,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                plat = float(r.last_lat or 0.0)
+                plon = float(r.last_lon or 0.0)
+            except Exception:
+                plat, plon = 0.0, 0.0
+            try:
+                d_km = _haversine_km(float(lat), float(lon), plat, plon)
+            except Exception:
+                d_km = 0.0
+            distance_m = max(0.0, d_km * 1000.0)
+            # Basic, privacy‑friendly payload – phone as ID; no exact location.
+            items.append(
+                {
+                    "id": r.user_phone,
+                    "shamell_id": r.user_phone,
+                    "name": r.user_phone,
+                    "distance_m": distance_m,
+                    "status": (r.status or "").strip(),
+                    "gender": (r.gender or "").strip().lower(),
+                    "age_years": r.age_years,
+                }
+            )
+
+        items.sort(key=lambda it: float(it.get("distance_m") or 0.0))
+        return {"results": items[:limit_val]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/nearby/profile", response_class=JSONResponse)
+def me_nearby_profile_get(request: Request) -> dict[str, Any]:
+    """
+    Returns the current user's People Nearby profile (status/gender/age).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        with _nearby_session() as s:
+            row = (
+                s.execute(
+                    _sa_select(NearbyPresenceDB).where(
+                        NearbyPresenceDB.user_phone == phone
+                    )
+                )
+                .scalars()
+                .first()
+            )
+        if not row:
+            return {"status": "", "gender": "", "age_years": None}
+        return {
+            "status": (row.status or "").strip(),
+            "gender": (row.gender or "").strip().lower(),
+            "age_years": row.age_years,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/me/nearby/profile", response_class=JSONResponse)
+async def me_nearby_profile_set(request: Request, body: NearbyProfileIn) -> dict[str, Any]:
+    """
+    Updates the current user's People Nearby profile (status/gender/age).
+
+    This does not change the last known location; that is updated via /me/nearby.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    raw_status = (body.status or "").strip()
+    # Keep status reasonably short for UI.
+    status = raw_status[:160]
+    gender_raw = (body.gender or "").strip().lower()
+    gender: str | None
+    if gender_raw in ("male", "female", "other"):
+        gender = gender_raw
+    elif not gender_raw:
+        gender = None
+    else:
+        # Unknown values are normalised to None to avoid surprises.
+        gender = None
+
+    age_val: int | None = None
+    if body.age_years is not None:
+        try:
+            a = int(body.age_years)
+        except Exception:
+            a = None
+        if a is not None and 13 <= a <= 120:
+            age_val = a
+
+    now = datetime.now(timezone.utc)
+    try:
+        with _nearby_session() as s:
+            row = (
+                s.execute(
+                    _sa_select(NearbyPresenceDB).where(
+                        NearbyPresenceDB.user_phone == phone
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is None:
+                row = NearbyPresenceDB(
+                    user_phone=phone,
+                    status=status or None,
+                    gender=gender,
+                    age_years=age_val,
+                    updated_at=now,
+                )
+                s.add(row)
+            else:
+                row.status = status or None
+                row.gender = gender
+                row.age_years = age_val
+                row.updated_at = now
+            s.commit()
+        return {
+            "status": status,
+            "gender": gender or "",
+            "age_years": age_val,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/moments/admin/posts/{post_id}/comment", response_class=JSONResponse)
+def moments_admin_add_official_comment(post_id: int, request: Request, body: MomentAdminReplyIn):
+    """
+    Adds a comment as Official account for a given post (admin/ops only).
+    """
+    _require_admin_v2(request)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty comment")
+    acc_id = (body.official_account_id or "").strip()
+    if not acc_id:
+        raise HTTPException(status_code=400, detail="official_account_id required")
+    reply_to_id = body.reply_to_id
+    try:
+        with _officials_session() as osess:
+            acc = osess.get(OfficialAccountDB, acc_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="official account not found")
+        user_key = f"official:{acc_id}"
+        with _moments_session() as s:
+            post = s.get(MomentPostDB, post_id)
+            if not post:
+                raise HTTPException(status_code=404, detail="moment not found")
+            if reply_to_id is not None:
+                target = s.get(MomentCommentDB, reply_to_id)
+                if not target or target.post_id != post_id:
+                    reply_to_id = None
+            row = MomentCommentDB(
+                post_id=post_id,
+                user_key=user_key,
+                text=text,
+                reply_to_id=reply_to_id,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            ts = row.created_at
+            ts_str = (
+                ts.isoformat().replace("+00:00", "Z")
+                if isinstance(ts, datetime)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            author = f"Official · {acc_id}"
+            out = MomentCommentOut(
+                id=str(row.id),
+                text=row.text,
+                ts=ts_str,
+                author_name=author,
+                reply_to_id=str(row.reply_to_id)
+                if getattr(row, "reply_to_id", None)
+                else None,
+                reply_to_name=None,
+            ).dict()
+        try:
+            emit_event(
+                "moments",
+                "comment_create_official",
+                {"account_id": acc_id, "post_id": post_id},
+            )
+        except Exception:
+            pass
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/admin/html", response_class=HTMLResponse)
+def moments_admin_html(
+    request: Request,
+    limit: int = 100,
+    redpacket_only: bool = False,
+    origin_official_account_id: str | None = None,
+    origin_official_item_id: str | None = None,
+    campaign_id: str | None = None,
+) -> HTMLResponse:
+    """
+    Minimal HTML view for QA to inspect Moments posts.
+    """
+    _require_admin_v2(request)
+    try:
+        limit_val = max(1, min(limit, 200))
+        with _moments_session() as s:
+            stmt = _sa_select(MomentPostDB)
+            if redpacket_only:
+                stmt = stmt.where(
+                    MomentPostDB.text.contains("Red packet")
+                    | MomentPostDB.text.contains(
+                        "I am sending red packets via Shamell Pay"
+                    )
+                    | MomentPostDB.text.contains("حزمة حمراء")
+                )
+            # Optional filtering by origin official account / campaign (WeChat-style QA).
+            if origin_official_account_id:
+                stmt = stmt.where(
+                    MomentPostDB.origin_official_account_id
+                    == origin_official_account_id
+                )
+            target_item = origin_official_item_id or campaign_id
+            if target_item:
+                stmt = stmt.where(
+                    MomentPostDB.origin_official_item_id == target_item
+                )
+            # Default ordering: latest first. For debugging "top" posts,
+            # admins can bump limit and then sort by likes/comments in the UI.
+            stmt = stmt.order_by(
+                MomentPostDB.created_at.desc(), MomentPostDB.id.desc()
+            ).limit(limit_val)
+            rows = s.execute(stmt).scalars().all()
+            post_ids = [r.id for r in rows]
+            likes_map: dict[int, int] = {}
+            comments_map: dict[int, int] = {}
+            if post_ids:
+                likes_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentLikeDB.post_id, _sa_func.count(MomentLikeDB.id)
+                        ).where(MomentLikeDB.post_id.in_(post_ids)
+                        ).group_by(MomentLikeDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in likes_rows:
+                    likes_map[int(pid)] = int(cnt)
+                comments_rows = (
+                    s.execute(
+                        _sa_select(
+                            MomentCommentDB.post_id, _sa_func.count(MomentCommentDB.id)
+                        ).where(MomentCommentDB.post_id.in_(post_ids)
+                        ).group_by(MomentCommentDB.post_id)
+                    )
+                    .all()
+                )
+                for pid, cnt in comments_rows:
+                    comments_map[int(pid)] = int(cnt)
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        rows_html = []
+        for row in rows:
+            ts = row.created_at
+            ts_str = (
+                ts.isoformat().replace("+00:00", "Z")
+                if isinstance(ts, datetime)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            origin_acc = getattr(row, "origin_official_account_id", None)
+            origin_item = getattr(row, "origin_official_item_id", None)
+            origin = ""
+            if origin_acc:
+                origin = esc(origin_acc)
+                if origin_item:
+                    origin += "/" + esc(origin_item)
+            comments_count = comments_map.get(row.id, 0)
+            comments_cell = (
+                f'<a href="/moments/admin/comments/html?post_id={row.id}">{comments_count}</a>'
+            )
+            rows_html.append(
+                f"<tr>"
+                f"<td>{row.id}</td>"
+                f"<td>{esc(row.user_key)}</td>"
+                f"<td>{esc(row.visibility or 'public')}</td>"
+                f"<td>{esc(ts_str)}</td>"
+                f"<td>{likes_map.get(row.id, 0)}</td>"
+                f"<td>{comments_cell}</td>"
+                f"<td>{'✓' if (row.image_b64 or row.image_url) else ''}</td>"
+                f"<td>{origin}</td>"
+                f"<td><pre>{esc(row.text[:280])}</pre></td>"
+                f"</tr>"
+            )
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moments Admin</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:960px;color:#0f172a;}}
+    h1{{margin-bottom:8px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:12px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    pre{{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;margin:0;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:4px;}}
+  </style>
+</head><body>
+  <h1>Moments Admin</h1>
+  <div class="meta">Latest {len(rows)} moments (limit={limit_val}).</div>
+  <p class="meta">
+    <a href="/moments/admin/html">All</a> ·
+    <a href="/moments/admin/html?redpacket_only=1">Only red‑packet posts</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>User</th>
+        <th>Visibility</th>
+        <th>Created</th>
+        <th>Likes</th>
+        <th>Comments</th>
+        <th>Img</th>
+        <th>Origin (official)</th>
+        <th>Text (truncated)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="9">No moments yet.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/moments/admin/comments/html", response_class=HTMLResponse)
+def moments_admin_comments_html(request: Request) -> HTMLResponse:
+    """
+    Minimal HTML console for inspecting and moderating Moments comments.
+    """
+    _require_admin_v2(request)
+    html = """
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moments Comments Admin</title>
+  <style>
+    body{font-family:sans-serif;margin:20px;max-width:960px;color:#0f172a;}
+    h1{margin-bottom:8px;}
+    table{border-collapse:collapse;width:100%;margin-top:12px;}
+    th,td{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}
+    th{background:#f9fafb;font-weight:600;}
+    pre{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;margin:0;}
+    .meta{color:#6b7280;font-size:12px;margin-top:4px;}
+    .row-actions{white-space:nowrap;}
+    input{font-size:13px;padding:4px 6px;margin:2px 0;}
+    button{font-size:13px;padding:4px 8px;margin:0 2px;cursor:pointer;}
+    .error{color:#b91c1c;margin-top:4px;}
+    .success{color:#166534;margin-top:4px;}
+  </style>
+</head><body>
+  <h1>Moments Comments</h1>
+  <div class="meta">QA/Moderation for comments. Filter by post ID and delete problematic comments.</div>
+
+  <div>
+    <label>Post ID:
+      <input id="post_id" type="number" placeholder="optional: filter by post" />
+    </label>
+    <label>Official account ID:
+      <input id="official_id" type="text" placeholder="optional: filter by official" />
+    </label>
+    <label>Limit:
+      <input id="limit" type="number" value="100" min="1" max="500" />
+    </label>
+    <button onclick="loadComments()">Load</button>
+  </div>
+  <div class="meta" style="margin-top:4px;">
+    Reply as Official:
+    <select id="reply_official">
+      <option value="">– select account –</option>
+    </select>
+    <button onclick="reloadOfficials()">Reload accounts</button>
+  </div>
+  <div id="flash" class="meta"></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Post</th>
+        <th>User</th>
+        <th>Created</th>
+        <th>Reply&nbsp;to</th>
+        <th>Text</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="comments-body">
+      <tr><td colspan="7">Use the filter above and click Load.</td></tr>
+    </tbody>
+  </table>
+
+  <script>
+    function getInitialPostId() {
+      try {
+        const params = new URLSearchParams(window.location.search || '');
+        return params.get('post_id') || '';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    function getInitialOfficialId() {
+      try {
+        const params = new URLSearchParams(window.location.search || '');
+        return params.get('official_account_id') || '';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    async function loadComments() {
+      const bodyEl = document.getElementById('comments-body');
+      const flash = document.getElementById('flash');
+      flash.textContent = '';
+      const postId = document.getElementById('post_id').value.trim();
+       const officialIdInput = document.getElementById('official_id');
+      const officialId = officialIdInput ? officialIdInput.value.trim() : '';
+      const limitEl = document.getElementById('limit');
+      let limit = parseInt(limitEl.value || '100', 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 100;
+      let url = '/moments/admin/comments?limit=' + encodeURIComponent(String(limit));
+      if (postId) {
+        url += '&post_id=' + encodeURIComponent(postId);
+      }
+      if (officialId) {
+        url += '&official_account_id=' + encodeURIComponent(officialId);
+      }
+      try {
+        const r = await fetch(url);
+        if (!r.ok) {
+          bodyEl.innerHTML = '<tr><td colspan="7">Fehler beim Laden: ' + r.status + '</td></tr>';
+          return;
+        }
+        const data = await r.json();
+        const items = data.items || [];
+        if (!items.length) {
+          bodyEl.innerHTML = '<tr><td colspan="7">Keine Kommentare gefunden.</td></tr>';
+          return;
+        }
+        bodyEl.innerHTML = '';
+        for (const c of items) {
+          const tr = document.createElement('tr');
+          const text = (c.text || '').toString();
+          const short = text.length > 260 ? text.slice(0, 260) + '…' : text;
+          const rawUser = (c.user_key || '').toString();
+          let userLabel = rawUser;
+          if (rawUser.startsWith('official:')) {
+            userLabel = 'Official · ' + rawUser.slice('official:'.length);
+          }
+          tr.innerHTML = `
+            <td>${c.id}</td>
+            <td>${c.post_id}</td>
+            <td><pre>${userLabel.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre></td>
+            <td><span class="meta">${c.created_at || ''}</span></td>
+            <td>${c.reply_to_id != null ? c.reply_to_id : ''}</td>
+            <td><pre>${short.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre></td>
+            <td class="row-actions">
+              <button onclick="replyToComment(${c.id}, ${c.post_id})">Reply as official</button>
+              <button onclick="deleteComment(${c.id})">Delete</button>
+            </td>
+          `;
+          bodyEl.appendChild(tr);
+        }
+      } catch (e) {
+        bodyEl.innerHTML = '<tr><td colspan="7">Fehler: ' + e + '</td></tr>';
+      }
+    }
+
+    async function deleteComment(id) {
+      if (!id && id !== 0) return;
+      const flash = document.getElementById('flash');
+      flash.textContent = '';
+      try {
+        const r = await fetch('/moments/admin/comments/' + encodeURIComponent(String(id)), {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const txt = await r.text();
+          flash.textContent = 'Fehler beim Löschen: ' + r.status + ' ' + txt;
+          flash.className = 'error';
+        } else {
+          flash.textContent = 'Kommentar gelöscht.';
+          flash.className = 'success';
+          loadComments();
+        }
+      } catch (e) {
+        flash.textContent = 'Fehler: ' + e;
+        flash.className = 'error';
+      }
+    }
+
+    async function reloadOfficials() {
+      const sel = document.getElementById('reply_official');
+      if (!sel) return;
+      sel.innerHTML = '<option value=\"\">…loading…</option>';
+      try {
+        const r = await fetch('/admin/official_accounts');
+        if (!r.ok) {
+          sel.innerHTML = '<option value=\"\">(error)</option>';
+          return;
+        }
+        const data = await r.json();
+        const items = data.accounts || [];
+        if (!items.length) {
+          sel.innerHTML = '<option value=\"\">(no accounts)</option>';
+          return;
+        }
+        sel.innerHTML = '<option value=\"\">– select account –</option>';
+        for (const acc of items) {
+          const opt = document.createElement('option');
+          opt.value = acc.id;
+          opt.textContent = acc.id + ' – ' + (acc.name || '');
+          sel.appendChild(opt);
+        }
+      } catch (e) {
+        sel.innerHTML = '<option value=\"\">(error)</option>';
+      }
+    }
+
+    async function replyToComment(id, postId) {
+      const flash = document.getElementById('flash');
+      flash.textContent = '';
+      const sel = document.getElementById('reply_official');
+      if (!sel) {
+        flash.textContent = 'No official account selector.';
+        flash.className = 'error';
+        return;
+      }
+      const accId = sel.value.trim();
+      if (!accId) {
+        flash.textContent = 'Bitte Official-Account auswählen.';
+        flash.className = 'error';
+        return;
+      }
+      const text = window.prompt('Reply text:');
+      if (!text || !text.trim()) {
+        return;
+      }
+      try {
+        const payload = {
+          text: text.trim(),
+          official_account_id: accId,
+          reply_to_id: id,
+        };
+        const r = await fetch('/moments/admin/posts/' + encodeURIComponent(String(postId)) + '/comment', {
+          method: 'POST',
+          headers: {'content-type':'application/json'},
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) {
+          const txt = await r.text();
+          flash.textContent = 'Fehler beim Antworten: ' + r.status + ' ' + txt;
+          flash.className = 'error';
+        } else {
+          flash.textContent = 'Antwort gesendet.';
+          flash.className = 'success';
+          loadComments();
+        }
+      } catch (e) {
+        flash.textContent = 'Fehler: ' + e;
+        flash.className = 'error';
+      }
+    }
+
+    (function init() {
+      const initialPost = getInitialPostId();
+      const initialOfficial = getInitialOfficialId();
+      reloadOfficials();
+      if (initialPost) {
+        const input = document.getElementById('post_id');
+        if (input) input.value = initialPost;
+        // ignore: discarded_futures
+        loadComments();
+      } else if (initialOfficial) {
+        const input = document.getElementById('official_id');
+        if (input) input.value = initialOfficial;
+        // ignore: discarded_futures
+        loadComments();
+      }
+    })();
+  </script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/moments/admin/analytics", response_class=HTMLResponse)
+def moments_admin_analytics(request: Request) -> HTMLResponse:
+    """
+    Lightweight HTML analytics for Moments.
+
+    Shows total posts/likes/comments and simple per-user aggregates,
+    similar to WeChat Moments QA dashboards.
+    """
+    _require_admin_v2(request)
+    try:
+        with _moments_session() as s:
+            total_posts = (
+                s.execute(_sa_select(_sa_func.count(MomentPostDB.id)))
+                .scalar()
+                or 0
+            )
+            total_likes = (
+                s.execute(_sa_select(_sa_func.count(MomentLikeDB.id)))
+                .scalar()
+                or 0
+            )
+            total_comments = (
+                s.execute(_sa_select(_sa_func.count(MomentCommentDB.id)))
+                .scalar()
+                or 0
+            )
+            total_official_shares = (
+                s.execute(
+                    _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                        MomentPostDB.origin_official_account_id.is_not(None)
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            redpacket_posts = 0
+            try:
+                rp1 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.text.contains("Red packet")
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp2 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.text.contains(
+                                "I am sending red packets via Shamell Pay"
+                            )
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp3 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.text.contains("حزمة حمراء")
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                redpacket_posts = int((rp1 or 0) + (rp2 or 0) + (rp3 or 0))
+            except Exception:
+                redpacket_posts = 0
+
+            # Last 30 days activity
+            since = datetime.now(timezone.utc) - timedelta(days=30)
+            recent_posts = (
+                s.execute(
+                    _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                        MomentPostDB.created_at >= since
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            recent_likes = (
+                s.execute(
+                    _sa_select(_sa_func.count(MomentLikeDB.id)).where(
+                        MomentLikeDB.created_at >= since
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            recent_comments = (
+                s.execute(
+                    _sa_select(_sa_func.count(MomentCommentDB.id)).where(
+                        MomentCommentDB.created_at >= since
+                    )
+                )
+                .scalar()
+                or 0
+            )
+
+            # Red-packet mentions in the last 30 days
+            recent_redpacket_posts = 0
+            try:
+                rp1_30 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.created_at >= since,
+                            MomentPostDB.text.contains("Red packet"),
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp2_30 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.created_at >= since,
+                            MomentPostDB.text.contains(
+                                "I am sending red packets via Shamell Pay"
+                            ),
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp3_30 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.created_at >= since,
+                            MomentPostDB.text.contains("حزمة حمراء"),
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                recent_redpacket_posts = int((rp1_30 or 0) + (rp2_30 or 0) + (rp3_30 or 0))
+            except Exception:
+                recent_redpacket_posts = 0
+
+            # Top posters and commenters by user_key
+            top_posters = (
+                s.execute(
+                    _sa_select(
+                        MomentPostDB.user_key,
+                        _sa_func.count(MomentPostDB.id),
+                    )
+                    .group_by(MomentPostDB.user_key)
+                    .order_by(_sa_func.count(MomentPostDB.id).desc())
+                    .limit(20)
+                )
+                .all()
+            )
+            top_commenters = (
+                s.execute(
+                    _sa_select(
+                        MomentCommentDB.user_key,
+                        _sa_func.count(MomentCommentDB.id),
+                    )
+                    .group_by(MomentCommentDB.user_key)
+                    .order_by(_sa_func.count(MomentCommentDB.id).desc())
+                    .limit(20)
+                )
+                .all()
+            )
+
+            top_topics = (
+                s.execute(
+                    _sa_select(
+                        MomentTagDB.tag,
+                        _sa_func.count(MomentTagDB.id),
+                    )
+                    .group_by(MomentTagDB.tag)
+                    .order_by(_sa_func.count(MomentTagDB.id).desc())
+                    .limit(20)
+                )
+                .all()
+            )
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        posters_rows: list[str] = []
+        for user_key, cnt in top_posters:
+            posters_rows.append(
+                "<tr>"
+                f"<td><pre>{esc(str(user_key or ''))}</pre></td>"
+                f"<td>{int(cnt or 0)}</td>"
+                "</tr>"
+            )
+
+        commenters_rows: list[str] = []
+        for user_key, cnt in top_commenters:
+            commenters_rows.append(
+                "<tr>"
+                f"<td><pre>{esc(str(user_key or ''))}</pre></td>"
+                f"<td>{int(cnt or 0)}</td>"
+                "</tr>"
+            )
+
+        topics_rows: list[str] = []
+        for tag, cnt in top_topics:
+            topics_rows.append(
+                "<tr>"
+                f"<td><pre>{esc(str(tag or ''))}</pre></td>"
+                f"<td>{int(cnt or 0)}</td>"
+                "</tr>"
+            )
+
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moments · Analytics</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:1100px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    h2{{margin-top:24px;margin-bottom:8px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:8px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:4px;}}
+    pre{{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;margin:0;}}
+  </style>
+</head><body>
+  <h1>Moments · Analytics</h1>
+  <div class="meta">
+    Total posts: {int(total_posts)} · likes: {int(total_likes)} · comments: {int(total_comments)} · official shares: {int(total_official_shares)} · red-packet mentions: {int(redpacket_posts)}.
+  </div>
+  <div class="meta">
+    Last 30 days — posts: {int(recent_posts)}, likes: {int(recent_likes)}, comments: {int(recent_comments)}, red-packet mentions: {int(recent_redpacket_posts)}.
+  </div>
+  <p class="meta">
+    <a href="/moments/admin/html">Zurück zur Moments-Admin-Übersicht</a>
+  </p>
+
+  <h2>Top posters (by user_key)</h2>
+  <table>
+    <thead>
+      <tr><th>User key</th><th>Posts</th></tr>
+    </thead>
+    <tbody>
+      {''.join(posters_rows) if posters_rows else '<tr><td colspan="2">Keine Posts gefunden.</td></tr>'}
+    </tbody>
+  </table>
+
+  <h2>Top commenters (by user_key)</h2>
+  <table>
+    <thead>
+      <tr><th>User key</th><th>Comments</th></tr>
+    </thead>
+    <tbody>
+      {''.join(commenters_rows) if commenters_rows else '<tr><td colspan="2">Keine Kommentare gefunden.</td></tr>'}
+    </tbody>
+  </table>
+
+  <h2>Top topics (hashtags)</h2>
+  <table>
+    <thead>
+      <tr><th>Tag</th><th>Posts</th></tr>
+    </thead>
+    <tbody>
+      {''.join(topics_rows) if topics_rows else '<tr><td colspan="2">Keine Hashtag-Daten gefunden.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---- Official accounts (merchant / brand layer, BFF-side) ----
+
+_OFFICIALS_DB_URL = _env_or("OFFICIALS_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/officials.db"))
+_OFFICIALS_DB_SCHEMA = os.getenv("DB_SCHEMA") if not _OFFICIALS_DB_URL.startswith("sqlite") else None
+
+
+class _OfficialBase(_sa_DeclarativeBase):
+    pass
+
+
+class OfficialAccountDB(_OfficialBase):
+    __tablename__ = "official_accounts"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+    id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), primary_key=True)
+    kind: _sa_Mapped[str] = _sa_mapped_column(_sa_String(16), default="service")
+    name: _sa_Mapped[str] = _sa_mapped_column(_sa_String(200))
+    name_ar: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(200), nullable=True)
+    avatar_url: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    verified: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=True)
+    mini_app_id: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    description: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    chat_peer_id: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    category: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    city: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    address: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    opening_hours: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    website_url: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    qr_payload: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    featured: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=False)
+    enabled: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=True)
+    official: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=True)
+    created_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class OfficialAccountRequestDB(_OfficialBase):
+    __tablename__ = "official_account_requests"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+    id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, primary_key=True, autoincrement=True)
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    kind: _sa_Mapped[str] = _sa_mapped_column(_sa_String(16), default="service")
+    name: _sa_Mapped[str] = _sa_mapped_column(_sa_String(200))
+    name_ar: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(200), nullable=True)
+    description: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    category: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    city: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    address: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    opening_hours: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    website_url: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    mini_app_id: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    owner_name: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(200), nullable=True)
+    contact_phone: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    contact_email: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    requester_phone: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    status: _sa_Mapped[str] = _sa_mapped_column(_sa_String(16), default="submitted")
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class OfficialFeedItemDB(_OfficialBase):
+    __tablename__ = "official_feed_items"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+    id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, primary_key=True, autoincrement=True)
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    slug: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), unique=True)
+    type: _sa_Mapped[str] = _sa_mapped_column(_sa_String(16), default="promo")
+    title: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    snippet: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(512), nullable=True)
+    thumb_url: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    ts: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    deeplink_json: _sa_Mapped[str | None] = _sa_mapped_column(_sa_Text, nullable=True)
+
+
+class OfficialLocationDB(_OfficialBase):
+    __tablename__ = "official_locations"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+    id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, primary_key=True, autoincrement=True)
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    name: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(120), nullable=True)
+    city: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    address: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    lat: _sa_Mapped[float | None] = _sa_mapped_column(_sa_Float, nullable=True)
+    lon: _sa_Mapped[float | None] = _sa_mapped_column(_sa_Float, nullable=True)
+    phone: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(32), nullable=True)
+    opening_hours: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+
+
+class MiniAppDB(_OfficialBase):
+    __tablename__ = "mini_apps"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+    id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, primary_key=True, autoincrement=True)
+    app_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), unique=True, index=True)
+    title_en: _sa_Mapped[str] = _sa_mapped_column(_sa_String(200))
+    title_ar: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(200), nullable=True)
+    category_en: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    category_ar: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    description: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    icon: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
+    official: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=False)
+    enabled: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=True)
+    beta: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=False)
+    runtime_app_id: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    rating: _sa_Mapped[float | None] = _sa_mapped_column(_sa_Float, nullable=True)
+    usage_score: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, default=0)
+    moments_shares: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, default=0)
+    created_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class MiniAppRatingDB(_OfficialBase):
+    __tablename__ = "mini_app_ratings"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "app_id",
+            name="uq_mini_app_ratings_user_app",
+        ),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    app_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    rating: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class MiniProgramDB(_OfficialBase):
+    """
+    Lightweight registry for Mini‑Programs (WeChat‑style mini‑apps).
+
+    This is intentionally minimal for the MVP: it tracks ownership and
+    display metadata, while versions and releases are stored in the
+    companion tables MiniProgramVersionDB and MiniProgramReleaseDB.
+    """
+
+    __tablename__ = "mini_programs"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    app_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), unique=True, index=True
+    )
+    title_en: _sa_Mapped[str] = _sa_mapped_column(_sa_String(200))
+    title_ar: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(200), nullable=True
+    )
+    description_en: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(512), nullable=True
+    )
+    description_ar: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(512), nullable=True
+    )
+    actions_json: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_Text, nullable=True
+    )
+    owner_name: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(200), nullable=True
+    )
+    owner_contact: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(200), nullable=True
+    )
+    scopes_json: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_Text, nullable=True
+    )
+    status: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), default="draft", server_default="draft"
+    )
+    review_status: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), default="draft", server_default="draft"
+    )
+    rating: _sa_Mapped[float | None] = _sa_mapped_column(
+        _sa_Float, nullable=True
+    )
+    usage_score: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, default=0)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class MiniProgramVersionDB(_OfficialBase):
+    """
+    Individual version records for a Mini‑Program.
+
+    A version references a static bundle_url (e.g. H5/JS bundle) and
+    optional changelog text. Releases point at concrete versions.
+    """
+
+    __tablename__ = "mini_program_versions"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    program_id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, index=True)
+    version: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32))
+    bundle_url: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(512), nullable=True
+    )
+    changelog_en: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(512), nullable=True
+    )
+    changelog_ar: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(512), nullable=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class MiniProgramReleaseDB(_OfficialBase):
+    """
+    Tracks which Mini‑Program version is currently released per channel.
+
+    For now we keep this simple: each call to the release endpoint
+    appends a new row; clients can query the newest row per program+channel.
+    """
+
+    __tablename__ = "mini_program_releases"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    program_id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, index=True)
+    version_id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, index=True)
+    channel: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), default="prod", server_default="prod"
+    )
+    status: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), default="active", server_default="active"
+    )
+
+
+class MiniProgramRatingDB(_OfficialBase):
+    """
+    Per-user star ratings for Mini‑Programs (1–5).
+
+    Mirrors MiniAppRatingDB so WeChat‑ähnliche Bewertungen auch
+    für Mini‑Programs verfügbar sind.
+    """
+
+    __tablename__ = "mini_program_ratings"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "app_id",
+            name="uq_mini_program_ratings_user_app",
+        ),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    app_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    rating: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class ChannelLikeDB(_OfficialBase):
+    __tablename__ = "channel_likes"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "item_id",
+            name="uq_channel_likes_user_item",
+        ),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    item_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class ChannelViewDB(_OfficialBase):
+    __tablename__ = "channel_views"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "item_id",
+            name="uq_channel_views_item",
+        ),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    item_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    views: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, default=0)
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class ChannelCommentDB(_OfficialBase):
+    __tablename__ = "channel_comments"
+    __table_args__ = (
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    item_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    user_key: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    text: _sa_Mapped[str] = _sa_mapped_column(_sa_Text)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class RedPacketCampaignDB(_OfficialBase):
+    __tablename__ = "redpacket_campaigns"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+    id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), primary_key=True)
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    title: _sa_Mapped[str] = _sa_mapped_column(_sa_String(255))
+    note: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    default_amount_cents: _sa_Mapped[int | None] = _sa_mapped_column(
+        _sa_Integer, nullable=True
+    )
+    default_count: _sa_Mapped[int | None] = _sa_mapped_column(
+        _sa_Integer, nullable=True
+    )
+    created_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+    active: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=True)
+
+
+class OfficialFollowDB(_OfficialBase):
+    __tablename__ = "official_follows"
+    __table_args__ = (
+        _sa_UniqueConstraint("user_key", "account_id", name="uq_official_follows_user_account"),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, primary_key=True, autoincrement=True)
+    user_key: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    created_at: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class ChannelFollowDB(_OfficialBase):
+    """
+    Lightweight follower graph for Channels, separated from Officials.
+
+    This models WeChat‑style \"Follow channel\" state per user and
+    account, independent of whether the same Official is followed
+    as a service/subscription account.
+    """
+
+    __tablename__ = "channel_follows"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "account_id",
+            name="uq_channel_follows_user_account",
+        ),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    account_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+class OfficialNotificationDB(_OfficialBase):
+    __tablename__ = "official_notifications"
+    __table_args__ = (
+        _sa_UniqueConstraint(
+            "user_key",
+            "account_id",
+            name="uq_official_notifications_user_account",
+        ),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    account_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    mode: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="full"
+    )
+
+
+class OfficialAutoReplyDB(_OfficialBase):
+    """
+    Lightweight per‑Official auto‑reply configuration.
+
+    For now this is intentionally minimal and focuses on "welcome"
+    style replies that can be surfaced client‑side in a WeChat‑like
+    way without breaking end‑to‑end chat encryption.
+    """
+
+    __tablename__ = "official_auto_replies"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    account_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    kind: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="welcome"
+    )
+    keyword: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    text: _sa_Mapped[str] = _sa_mapped_column(_sa_Text)
+    enabled: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=True)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    updated_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+class OfficialTemplateMessageDB(_OfficialBase):
+    """
+    Lightweight per-user template messages for Officials.
+
+    This models WeChat‑style one‑time subscription messages that can
+    be delivered from an Official account to a user without going
+    through the end‑to‑end encrypted chat channel.
+    """
+
+    __tablename__ = "official_template_messages"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    account_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    user_phone: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    title: _sa_Mapped[str] = _sa_mapped_column(_sa_String(200))
+    body: _sa_Mapped[str] = _sa_mapped_column(_sa_Text)
+    deeplink_json: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_Text, nullable=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    read_at: _sa_Mapped[datetime | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), nullable=True
+    )
+
+
+class OfficialServiceSessionDB(_OfficialBase):
+    """
+    Lightweight per-customer service session for Official accounts.
+
+    This models a WeChat-like customer service "session" or ticket
+    that can be surfaced in a unified service inbox for operators.
+    """
+
+    __tablename__ = "official_service_sessions"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    customer_phone: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    chat_peer_id: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    status: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="open", index=True
+    )
+    last_message_ts: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    unread_by_operator: _sa_Mapped[bool] = _sa_mapped_column(
+        _sa_Boolean, default=True
+    )
+
+
+class DeviceSessionDB(_OfficialBase):
+    """
+    Lightweight per-device session registry for multi-device/Web login.
+
+    Stores a row per (phone, device_id) so the Me-tab can show a
+    list of active devices, similar to WeChat's device management.
+    """
+
+    __tablename__ = "device_sessions"
+    __table_args__ = ({"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {})
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    phone: _sa_Mapped[str] = _sa_mapped_column(_sa_String(32), index=True)
+    device_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    device_type: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(32), nullable=True
+    )
+    device_name: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(128), nullable=True
+    )
+    platform: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(32), nullable=True
+    )
+    app_version: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(32), nullable=True
+    )
+    last_ip: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(64), nullable=True
+    )
+    user_agent: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(255), nullable=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    last_seen_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True),
+        server_default=_sa_func.now(),
+        onupdate=_sa_func.now(),
+    )
+
+
+_officials_engine = _sa_create_engine(_OFFICIALS_DB_URL, future=True)
+_officials_inited = False
+
+
+def _officials_session() -> _sa_Session:
+    """
+    Returns a session for the officials DB.
+
+    In addition to relying on FastAPI's startup hook, this lazily ensures
+    that the officials schema exists so that deployments that construct the
+    app without running startup events still get the required tables
+    (e.g. official_feed_items, official_template_messages).
+    """
+    global _officials_inited
+    if not _officials_inited:
+        try:
+            # Best-effort; failures are logged inside _officials_startup.
+            _officials_startup()  # type: ignore[name-defined]
+        except Exception:
+            logging.getLogger("shamell.officials").exception(
+                "failed to init officials DB from session helper"
+            )
+        _officials_inited = True
+    return _sa_Session(_officials_engine)
+
+
+class OfficialAccountOut(BaseModel):
+    id: str
+    kind: str = "service"
+    featured: bool = False
+    name: str
+    name_ar: str | None = None
+    avatar_url: str | None = None
+    verified: bool = True
+    mini_app_id: str | None = None
+    description: str | None = None
+    chat_peer_id: str | None = None
+    category: str | None = None
+    city: str | None = None
+    address: str | None = None
+    opening_hours: str | None = None
+    website_url: str | None = None
+    qr_payload: str | None = None
+    unread_count: int = 0
+    last_item: dict[str, Any] | None = None
+    followed: bool = True
+    menu_items: list[dict[str, Any]] | None = None
+
+
+class OfficialTemplateMessageIn(BaseModel):
+    account_id: str
+    user_phone: str
+    title: str
+    body: str
+    deeplink_json: dict[str, Any] | None = None
+
+
+class OfficialTemplateMessageOut(BaseModel):
+    id: int
+    account_id: str
+    title: str
+    body: str
+    deeplink_json: dict[str, Any] | None = None
+    created_at: str
+    read_at: str | None = None
+
+
+def _update_official_service_session_on_message(
+    sender_id: str | None,
+    recipient_id: str | None,
+    created_at: Any,
+) -> None:
+    """
+    Best-effort hook that keeps OfficialServiceSessionDB in sync with chat traffic.
+
+    When a message goes between a service Official (via chat_peer_id) and a
+    user device, we create or update a lightweight session so the operator
+    sees it in the customer-service inbox.
+    """
+    try:
+        s_id = (sender_id or "").strip()
+        r_id = (recipient_id or "").strip()
+        if not s_id or not r_id:
+            return
+        with _officials_session() as s:
+            # Determine which side (if any) is an Official service account.
+            off_sender = (
+                s.execute(
+                    _sa_select(OfficialAccountDB).where(
+                        OfficialAccountDB.chat_peer_id == s_id
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            off_recipient = (
+                s.execute(
+                    _sa_select(OfficialAccountDB).where(
+                        OfficialAccountDB.chat_peer_id == r_id
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            official = None
+            customer_device_id: str | None = None
+            incoming_for_operator = False
+            if off_sender and not off_recipient:
+                official = off_sender
+                customer_device_id = r_id
+                incoming_for_operator = False  # operator is sender
+            elif off_recipient and not off_sender:
+                official = off_recipient
+                customer_device_id = s_id
+                incoming_for_operator = True  # operator is recipient
+            else:
+                return
+            # Only treat "service" officials as customer-service endpoints.
+            try:
+                kind_val = (getattr(official, "kind", "") or "").strip().lower()
+                if kind_val and kind_val != "service":
+                    return
+            except Exception:
+                return
+            if not customer_device_id:
+                return
+            # Resolve customer phone from DeviceSessionDB.
+            dev_row = (
+                s.execute(
+                    _sa_select(DeviceSessionDB)
+                    .where(DeviceSessionDB.device_id == customer_device_id)
+                    .order_by(
+                        DeviceSessionDB.last_seen_at.desc(),
+                        DeviceSessionDB.id.desc(),
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not dev_row:
+                return
+            phone = (getattr(dev_row, "phone", "") or "").strip()
+            if not phone:
+                return
+            # Determine timestamp for last_message_ts.
+            ts_val: datetime
+            try:
+                if isinstance(created_at, datetime):
+                    ts_val = created_at
+                elif isinstance(created_at, str) and created_at:
+                    ts_val = datetime.fromisoformat(
+                        created_at.replace("Z", "+00:00")
+                    )
+                else:
+                    ts_val = datetime.now(timezone.utc)
+            except Exception:
+                ts_val = datetime.now(timezone.utc)
+            # Upsert session.
+            sess = (
+                s.execute(
+                    _sa_select(OfficialServiceSessionDB)
+                    .where(
+                        OfficialServiceSessionDB.account_id == official.id,
+                        OfficialServiceSessionDB.customer_phone == phone,
+                    )
+                    .order_by(
+                        OfficialServiceSessionDB.last_message_ts.desc(),
+                        OfficialServiceSessionDB.id.desc(),
+                    )
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if sess:
+                sess.last_message_ts = ts_val
+                if incoming_for_operator:
+                    sess.unread_by_operator = True
+                if not getattr(sess, "chat_peer_id", None):
+                    try:
+                        sess.chat_peer_id = getattr(official, "chat_peer_id", None)
+                    except Exception:
+                        pass
+                if getattr(sess, "status", "open") != "closed":
+                    sess.status = "open"
+                s.add(sess)
+                s.commit()
+            else:
+                sess = OfficialServiceSessionDB(
+                    account_id=official.id,
+                    customer_phone=phone,
+                    chat_peer_id=getattr(official, "chat_peer_id", None),
+                    status="open",
+                    last_message_ts=ts_val,
+                    unread_by_operator=incoming_for_operator,
+                )
+                s.add(sess)
+                s.commit()
+    except Exception:
+        # Never break the main chat flow because of service-session bookkeeping.
+        return
+
+
+class OfficialFeedItemOut(BaseModel):
+    id: str
+    type: str = "promo"
+    title: str | None = None
+    snippet: str | None = None
+    thumb_url: str | None = None
+    ts: str | None = None
+    deeplink: dict[str, Any] | None = None
+
+
+class OfficialLocationOut(BaseModel):
+    id: int
+    name: str | None = None
+    city: str | None = None
+    address: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    phone: str | None = None
+    opening_hours: str | None = None
+
+
+class ChannelItemOut(BaseModel):
+    id: str
+    title: str | None = None
+    snippet: str | None = None
+    thumb_url: str | None = None
+    ts: str | None = None
+    item_type: str | None = None
+    official_account_id: str | None = None
+    official_name: str | None = None
+    official_avatar_url: str | None = None
+    official_city: str | None = None
+    official_category: str | None = None
+    likes: int = 0
+    liked_by_me: bool = False
+    views: int = 0
+    comments: int = 0
+    official_is_hot: bool = False
+    channel_followers: int = 0
+    channel_followed_by_me: bool = False
+    gifts: int = 0
+    gifts_by_me: int = 0
+    score: float | None = None
+
+
+class ChannelGiftDB(_OfficialBase):
+    """
+    Simple per-user gift / coin log for Channels.
+
+    This is a lightweight WeChat-style gift system that tracks how
+    many "coins" a user sent to a given Channels clip. Money flows
+    are intentionally decoupled and can be implemented later via
+    the payments layer.
+    """
+
+    __tablename__ = "channel_gifts"
+    __table_args__ = (
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    user_key: _sa_Mapped[str] = _sa_mapped_column(_sa_String(128), index=True)
+    account_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    item_id: _sa_Mapped[str] = _sa_mapped_column(_sa_String(64), index=True)
+    gift_kind: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), default="coin"
+    )
+    coins: _sa_Mapped[int] = _sa_mapped_column(_sa_Integer, default=1)
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+
+
+def _sticker_packs_config() -> list[dict[str, Any]]:
+    """
+    Static sticker pack catalog for the Shamell sticker store.
+
+    This is intentionally simple and mirrors the built‑in packs
+    in the Flutter client so that the marketplace can render a
+    WeChat‑like catalog without requiring binary updates for
+    basic metadata changes.
+    """
+    return [
+        {
+            "id": "classic_smileys",
+            "name_en": "Classic smileys",
+            "name_ar": "الابتسامات الكلاسيكية",
+            "stickers": ["😀", "😂", "🥲", "😅", "😍", "😎", "😭", "😡"],
+            "price_cents": 0,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["free", "starter"],
+            "recommended": True,
+        },
+        {
+            "id": "shamell_taxi",
+            "name_en": "Shamell Taxi",
+            "name_ar": "شامل تاكسي",
+            "stickers": ["🚕", "🛣️", "📍", "⏱️", "💳", "⭐"],
+            "price_cents": 0,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["free", "transport"],
+            "recommended": True,
+        },
+        {
+            "id": "food_lovers",
+            "name_en": "Food lovers",
+            "name_ar": "محبو الطعام",
+            "stickers": ["🍕", "🍔", "🍟", "🍣", "🍰", "☕", "🥙", "🥗"],
+            "price_cents": 1500,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["paid", "food"],
+            "recommended": False,
+        },
+        {
+            "id": "celebration",
+            "name_en": "Celebrations",
+            "name_ar": "الاحتفالات",
+            "stickers": ["🎉", "🎂", "🎁", "🕌", "🕋", "🕯️", "🪅", "🥳"],
+            "price_cents": 2000,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["paid", "events"],
+            "recommended": False,
+        },
+    ]
+
+
+_OFFICIAL_ACCOUNTS: dict[str, OfficialAccountOut] = {
+    "shamell_taxi": OfficialAccountOut(
+        id="shamell_taxi",
+        kind="service",
+        featured=True,
+        name="Shamell Taxi",
+        name_ar="شامل تاكسي",
+        avatar_url="/icons/taxi.svg",
+        verified=True,
+        mini_app_id="taxi_rider",
+        description="Taxi service integrated with Shamell Pay.",
+        chat_peer_id="shamell_taxi",
+        category="transport",
+        city="Damascus",
+        opening_hours="24/7",
+        website_url="https://shamell.taxi",
+        menu_items=[
+            {
+                "id": "open_taxi",
+                "kind": "mini_app",
+                "mini_app_id": "taxi_rider",
+                "label_en": "Open Taxi",
+                "label_ar": "فتح تاكسي",
+            }
+        ],
+    ),
+    "shamell_food": OfficialAccountOut(
+        id="shamell_food",
+        kind="service",
+        featured=True,
+        name="Shamell Food",
+        name_ar="شامل فود",
+        avatar_url="/icons/food.svg",
+        verified=True,
+        mini_app_id="food",
+        description="Order food from nearby restaurants.",
+        chat_peer_id="shamell_food",
+        category="food_delivery",
+        city="Damascus",
+        opening_hours="10:00–23:00",
+        menu_items=[
+            {
+                "id": "open_food",
+                "kind": "mini_app",
+                "mini_app_id": "food",
+                "label_en": "Open Food service",
+                "label_ar": "فتح خدمة الطعام",
+            }
+        ],
+    ),
+    "shamell_pay": OfficialAccountOut(
+        id="shamell_pay",
+        kind="service",
+        featured=True,
+        name="Shamell Pay",
+        name_ar="شامل باي",
+        avatar_url="/icons/pay.svg",
+        verified=True,
+        mini_app_id="payments",
+        description="Scan & Pay, send money and manage your wallet.",
+        chat_peer_id="shamell_pay",
+        category="payments",
+        city="Damascus",
+        website_url="https://pay.shamell.app",
+        menu_items=[
+            {
+                "id": "open_wallet",
+                "kind": "mini_app",
+                "mini_app_id": "payments",
+                "label_en": "Open Wallet",
+                "label_ar": "فتح المحفظة",
+            }
+        ],
+    ),
+    "shamell_stays": OfficialAccountOut(
+        id="shamell_stays",
+        kind="service",
+        featured=False,
+        name="Shamell Stays",
+        name_ar="شامل ستايز",
+        avatar_url="/icons/stays.svg",
+        verified=True,
+        mini_app_id="stays",
+        description="Book hotels and stays inside Shamell.",
+        chat_peer_id="shamell_stays",
+        category="travel",
+        city="Damascus",
+        menu_items=[
+            {
+                "id": "open_stays",
+                "kind": "mini_app",
+                "mini_app_id": "stays",
+                "label_en": "Open Stays",
+                "label_ar": "فتح الإقامات",
+            }
+        ],
+    ),
+}
+
+_OFFICIAL_FEED_SEED: dict[str, list[dict[str, Any]]] = {
+    "shamell_taxi": [
+        {
+            "id": "taxi_airport_30",
+            "type": "promo",
+            "title": "30% off airport rides this week",
+            "snippet": "Book your airport ride with Shamell Taxi and save 30%.",
+            "thumb_url": "/assets/feed/taxi_airport.jpg",
+            "ts": "2025-01-10T10:00:00Z",
+            "deeplink": {"mini_app_id": "taxi_rider", "payload": {"campaign": "airport_30"}},
+        },
+    ],
+    "shamell_food": [
+        {
+            "id": "food_free_delivery",
+            "type": "promo",
+            "title": "Free delivery on your next order",
+            "snippet": "Use Shamell Food and get free delivery on selected restaurants.",
+            "thumb_url": "/assets/feed/food_promo.jpg",
+            "ts": "2025-01-09T18:00:00Z",
+            "deeplink": {"mini_app_id": "food", "payload": {"campaign": "free_delivery"}},
+        },
+    ],
+    "shamell_pay": [
+        {
+            "id": "pay_hb_newyear",
+            "type": "promo",
+            "title": "New Year red packets",
+            "snippet": "Send New Year red packets to friends via Shamell Pay.",
+            "thumb_url": "/assets/feed/pay_hb.jpg",
+            "ts": "2025-01-01T09:00:00Z",
+            "deeplink": {"mini_app_id": "payments", "payload": {"section": "redpacket"}},
+        },
+    ],
+    "shamell_stays": [
+        {
+            "id": "stays_winter",
+            "type": "promo",
+            "title": "Winter stays offers",
+            "snippet": "Discover discounted winter stays in your favourite cities.",
+            "thumb_url": "/assets/feed/stays_winter.jpg",
+            "ts": "2025-01-05T12:00:00Z",
+            "deeplink": {"mini_app_id": "stays", "payload": {"campaign": "winter_offers"}},
+        },
+    ],
+}
+
+# Per-user follow state: in-memory fallback keyed by sa_cookie.
+_OFFICIAL_FOLLOWS: dict[str, set[str]] = {}
+
+
+def _official_cookie_key(request: Request) -> str:
+    cookie = request.headers.get("sa_cookie") or request.cookies.get("sa_cookie") or ""
+    if not cookie:
+        cookie = "anon"
+    return cookie
+
+
+def _officials_startup() -> None:
+    logger = logging.getLogger("shamell.officials")
+    try:
+        _OfficialBase.metadata.create_all(_officials_engine)
+    except Exception:
+        logger.exception("failed to init official accounts tables")
+        return
+    # Best-effort schema upgrade for chat_peer_id and campaign defaults on existing deployments.
+    try:
+        with _officials_engine.begin() as conn:
+            if _OFFICIALS_DB_URL.startswith("sqlite"):
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN chat_peer_id VARCHAR(64)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN category VARCHAR(64)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN city VARCHAR(64)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN address VARCHAR(255)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN opening_hours VARCHAR(255)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN website_url VARCHAR(255)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN qr_payload VARCHAR(255)")
+                )
+                conn.execute(
+                    _sa_text("ALTER TABLE official_accounts ADD COLUMN featured BOOLEAN DEFAULT 0")
+                )
+            else:
+                table_name = "official_accounts"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN chat_peer_id VARCHAR(64)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN category VARCHAR(64)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN city VARCHAR(64)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN address VARCHAR(255)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN opening_hours VARCHAR(255)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN website_url VARCHAR(255)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN qr_payload VARCHAR(255)"
+                    )
+                )
+                conn.execute(
+                    _sa_text(
+                        f"ALTER TABLE {table_name} ADD COLUMN featured BOOLEAN DEFAULT FALSE"
+                    )
+                )
+            # Best-effort schema upgrade for MiniAppDB.moments_shares and runtime_app_id.
+            if _OFFICIALS_DB_URL.startswith("sqlite"):
+                try:
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_apps ADD COLUMN moments_shares INTEGER DEFAULT 0"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_apps ADD COLUMN runtime_app_id VARCHAR(64)"
+                        )
+                    )
+                except Exception:
+                    pass
+            # Best-effort schema upgrade for MiniProgramDB.actions_json on existing deployments.
+            try:
+                if _OFFICIALS_DB_URL.startswith("sqlite"):
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_programs ADD COLUMN actions_json TEXT"
+                        )
+                    )
+                else:
+                    prog_table = "mini_programs"
+                    if _OFFICIALS_DB_SCHEMA:
+                        prog_table = f"{_OFFICIALS_DB_SCHEMA}.{prog_table}"
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {prog_table} ADD COLUMN actions_json TEXT"
+                        )
+                    )
+            except Exception:
+                pass
+            # Best-effort schema upgrade for ChannelFollowDB on existing deployments.
+            try:
+                table_name = "channel_follows"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                conn.execute(
+                    _sa_text(
+                        f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_key VARCHAR(128) NOT NULL, "
+                        "account_id VARCHAR(64) NOT NULL, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "CONSTRAINT uq_channel_follows_user_account UNIQUE (user_key, account_id)"
+                        ")"
+                    )
+                )
+            except Exception:
+                pass
+            # Best-effort schema upgrade for ChannelGiftDB on existing deployments.
+            try:
+                table_name = "channel_gifts"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                conn.execute(
+                    _sa_text(
+                        f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_key VARCHAR(128) NOT NULL, "
+                        "account_id VARCHAR(64) NOT NULL, "
+                        "item_id VARCHAR(64) NOT NULL, "
+                        "gift_kind VARCHAR(32) DEFAULT 'coin', "
+                        "coins INTEGER DEFAULT 1, "
+                        "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP"
+                        ")"
+                    )
+                )
+            except Exception:
+                pass
+            # Best-effort schema upgrade for OfficialFeedItemDB on existing deployments.
+            try:
+                table_name = "official_feed_items"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                if _OFFICIALS_DB_URL.startswith("sqlite"):
+                    conn.execute(
+                        _sa_text(
+                            f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                            "account_id VARCHAR(64) NOT NULL, "
+                            "slug VARCHAR(64) NOT NULL UNIQUE, "
+                            "type VARCHAR(16) DEFAULT 'promo', "
+                            "title VARCHAR(255), "
+                            "snippet VARCHAR(512), "
+                            "thumb_url VARCHAR(255), "
+                            "ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                            "deeplink_json TEXT"
+                            ")"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        _sa_text(
+                            f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                            "id SERIAL PRIMARY KEY, "
+                            "account_id VARCHAR(64) NOT NULL, "
+                            "slug VARCHAR(64) NOT NULL UNIQUE, "
+                            "type VARCHAR(16) DEFAULT 'promo', "
+                            "title VARCHAR(255), "
+                            "snippet VARCHAR(512), "
+                            "thumb_url VARCHAR(255), "
+                            "ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                            "deeplink_json TEXT"
+                            ")"
+                        )
+                    )
+            except Exception:
+                pass
+            # Best-effort schema upgrade for OfficialServiceSessionDB on existing deployments.
+            try:
+                table_name = "official_service_sessions"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                conn.execute(
+                    _sa_text(
+                        f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "account_id VARCHAR(64) NOT NULL, "
+                        "customer_phone VARCHAR(32) NOT NULL, "
+                        "chat_peer_id VARCHAR(64), "
+                        "status VARCHAR(16) DEFAULT 'open', "
+                        "last_message_ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                        "unread_by_operator BOOLEAN DEFAULT TRUE"
+                        ")"
+                    )
+                )
+            except Exception:
+                pass
+            # Best-effort schema upgrade for OfficialTemplateMessageDB on existing deployments.
+            try:
+                table_name = "official_template_messages"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                if _OFFICIALS_DB_URL.startswith("sqlite"):
+                    conn.execute(
+                        _sa_text(
+                            f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                            "account_id VARCHAR(64) NOT NULL, "
+                            "user_phone VARCHAR(32) NOT NULL, "
+                            "title VARCHAR(200) NOT NULL, "
+                            "body TEXT NOT NULL, "
+                            "deeplink_json TEXT, "
+                            "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                            "read_at TIMESTAMP WITH TIME ZONE"
+                            ")"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        _sa_text(
+                            f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                            "id SERIAL PRIMARY KEY, "
+                            "account_id VARCHAR(64) NOT NULL, "
+                            "user_phone VARCHAR(32) NOT NULL, "
+                            "title VARCHAR(200) NOT NULL, "
+                            "body TEXT NOT NULL, "
+                            "deeplink_json TEXT, "
+                            "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, "
+                            "read_at TIMESTAMP WITH TIME ZONE"
+                            ")"
+                        )
+                    )
+            except Exception:
+                pass
+            # Best-effort schema upgrade for MiniProgramDB.usage_score, rating and scopes/review_status.
+            try:
+                if _OFFICIALS_DB_URL.startswith("sqlite"):
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_programs ADD COLUMN usage_score INTEGER DEFAULT 0"
+                        )
+                    )
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_programs ADD COLUMN rating REAL"
+                        )
+                    )
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_programs ADD COLUMN scopes_json TEXT"
+                        )
+                    )
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE mini_programs ADD COLUMN review_status VARCHAR(32) DEFAULT 'draft'"
+                        )
+                    )
+                else:
+                    prog_table = "mini_programs"
+                    if _OFFICIALS_DB_SCHEMA:
+                        prog_table = f"{_OFFICIALS_DB_SCHEMA}.{prog_table}"
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {prog_table} ADD COLUMN usage_score INTEGER DEFAULT 0"
+                        )
+                    )
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {prog_table} ADD COLUMN rating DOUBLE PRECISION"
+                        )
+                    )
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {prog_table} ADD COLUMN scopes_json TEXT"
+                        )
+                    )
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {prog_table} ADD COLUMN review_status VARCHAR(32) DEFAULT 'draft'"
+                        )
+                    )
+            except Exception:
+                pass
+            else:
+                mini_table = "mini_apps"
+                if _OFFICIALS_DB_SCHEMA:
+                    mini_table = f"{_OFFICIALS_DB_SCHEMA}.{mini_table}"
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {mini_table} ADD COLUMN moments_shares INTEGER DEFAULT 0"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {mini_table} ADD COLUMN runtime_app_id VARCHAR(64)"
+                        )
+                    )
+                except Exception:
+                    pass
+            # Red-packet campaign defaults (amount/count/note) – best-effort.
+            if _OFFICIALS_DB_URL.startswith("sqlite"):
+                try:
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE redpacket_campaigns ADD COLUMN default_amount_cents INTEGER"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE redpacket_campaigns ADD COLUMN default_count INTEGER"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE redpacket_campaigns ADD COLUMN note VARCHAR(255)"
+                        )
+                    )
+                except Exception:
+                    pass
+            else:
+                camp_table = "redpacket_campaigns"
+                if _OFFICIALS_DB_SCHEMA:
+                    camp_table = f"{_OFFICIALS_DB_SCHEMA}.{camp_table}"
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {camp_table} ADD COLUMN default_amount_cents INTEGER"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {camp_table} ADD COLUMN note VARCHAR(255)"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {camp_table} ADD COLUMN default_count INTEGER"
+                        )
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        # Ignore if column already exists or migration fails; model uses nullable field.
+        pass
+    # Seed built-in Official accounts and their feed items using a direct
+    # SQLAlchemy Session bound to _officials_engine. We deliberately avoid
+    # calling _officials_session() here to prevent recursive startup calls,
+    # because _officials_session() itself triggers _officials_startup() on
+    # first use.
+    try:
+        with _sa_Session(_officials_engine) as s:
+            existing_ids = set(s.execute(_sa_select(OfficialAccountDB.id)).scalars().all())
+            for acc in _OFFICIAL_ACCOUNTS.values():
+                if acc.id in existing_ids:
+                    continue
+                row = OfficialAccountDB(
+                    id=acc.id,
+                    kind=acc.kind,
+                    name=acc.name,
+                    name_ar=acc.name_ar,
+                    avatar_url=acc.avatar_url,
+                    verified=acc.verified,
+                    mini_app_id=acc.mini_app_id,
+                    description=acc.description,
+                    chat_peer_id=acc.chat_peer_id,
+                    enabled=True,
+                    official=True,
+                )
+                s.add(row)
+            for account_id, items in _OFFICIAL_FEED_SEED.items():
+                for item in items:
+                    slug = item.get("id")
+                    if not slug:
+                        continue
+                    exists = s.execute(
+                        _sa_select(OfficialFeedItemDB).where(OfficialFeedItemDB.slug == slug)
+                    ).scalars().first()
+                    if exists:
+                        continue
+                    ts_val = None
+                    ts_str = item.get("ts")
+                    if ts_str:
+                        try:
+                            ts_val = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        except Exception:
+                            ts_val = None
+                    s.add(
+                        OfficialFeedItemDB(
+                            account_id=account_id,
+                            slug=slug,
+                            type=item.get("type") or "promo",
+                            title=item.get("title"),
+                            snippet=item.get("snippet"),
+                            thumb_url=item.get("thumb_url"),
+                            ts=ts_val,
+                            deeplink_json=_json.dumps(item.get("deeplink"))
+                            if item.get("deeplink") is not None
+                            else None,
+                        )
+                    )
+            s.commit()
+    except Exception:
+        logger.exception("failed to seed official accounts")
+
+
+app.router.on_startup.append(_officials_startup)
+
+
+def _official_menu_items_for(acc: OfficialAccountDB) -> list[dict[str, Any]] | None:
+    """
+    Lightweight, mini_app_id-based menu config for Official accounts.
+    This avoids schema changes by deriving a simple menu from the mini_app_id.
+    """
+    mid = (acc.mini_app_id or "").strip()
+    if not mid:
+        return None
+    items: list[dict[str, Any]] = []
+    if mid in ("payments", "alias", "merchant"):
+        items.append(
+            {
+                "id": "open_wallet",
+                "kind": "mini_app",
+                "mini_app_id": "payments",
+                "label_en": "Open Wallet",
+                "label_ar": "فتح المحفظة",
+            }
+        )
+    elif mid == "taxi_rider":
+        items.append(
+            {
+                "id": "open_taxi",
+                "kind": "mini_app",
+                "mini_app_id": "taxi_rider",
+                "label_en": "Open Taxi",
+                "label_ar": "فتح تاكسي",
+            }
+        )
+    elif mid == "food":
+        items.append(
+            {
+                "id": "open_food",
+                "kind": "mini_app",
+                "mini_app_id": "food",
+                "label_en": "Open Food service",
+                "label_ar": "فتح خدمة الطعام",
+            }
+        )
+    elif mid == "stays":
+        items.append(
+            {
+                "id": "open_stays",
+                "kind": "mini_app",
+                "mini_app_id": "stays",
+                "label_en": "Open Stays",
+                "label_ar": "فتح الإقامات",
+            }
+        )
+    return items or None
+
+
+class OfficialAccountAdminIn(BaseModel):
+    id: str
+    kind: str = "service"
+    name: str
+    name_ar: str | None = None
+    avatar_url: str | None = None
+    verified: bool = True
+    mini_app_id: str | None = None
+    description: str | None = None
+    chat_peer_id: str | None = None
+    category: str | None = None
+    city: str | None = None
+    address: str | None = None
+    opening_hours: str | None = None
+    website_url: str | None = None
+    qr_payload: str | None = None
+    featured: bool = False
+    enabled: bool = True
+    official: bool = True
+
+
+class OfficialAccountSelfRegisterIn(BaseModel):
+    """
+    Lightweight payload for self‑service Official account registration.
+
+    Merchants can propose a new WeChat‑style Official account; the
+    request is stored separately and can later be reviewed and
+    approved by ops before the actual OfficialAccountDB entry is
+    created.
+    """
+
+    account_id: str
+    kind: str = "service"
+    name: str
+    name_ar: str | None = None
+    description: str | None = None
+    category: str | None = None
+    city: str | None = None
+    address: str | None = None
+    opening_hours: str | None = None
+    website_url: str | None = None
+    mini_app_id: str | None = None
+    owner_name: str | None = None
+    contact_phone: str | None = None
+    contact_email: str | None = None
+
+
+class OfficialAccountRequestOut(BaseModel):
+    id: int
+    account_id: str
+    kind: str
+    name: str
+    name_ar: str | None = None
+    description: str | None = None
+    category: str | None = None
+    city: str | None = None
+    address: str | None = None
+    opening_hours: str | None = None
+    website_url: str | None = None
+    mini_app_id: str | None = None
+    owner_name: str | None = None
+    contact_phone: str | None = None
+    contact_email: str | None = None
+    requester_phone: str | None = None
+    status: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class OfficialNotificationIn(BaseModel):
+    mode: str | None = None
+
+
+class OfficialAutoReplyIn(BaseModel):
+    kind: str = "welcome"
+    keyword: str | None = None
+    text: str
+    enabled: bool = True
+
+
+class OfficialAutoReplyOut(BaseModel):
+    id: int
+    account_id: str
+    kind: str = "welcome"
+    keyword: str | None = None
+    text: str
+    enabled: bool = True
+
+
+class OfficialFeedItemAdminIn(BaseModel):
+    account_id: str
+    id: str
+    type: str = "promo"
+    title: str | None = None
+    snippet: str | None = None
+    thumb_url: str | None = None
+    ts: str | None = None
+    deeplink: dict[str, Any] | None = None
+
+
+class OfficialLocationAdminIn(BaseModel):
+    account_id: str
+    name: str | None = None
+    city: str | None = None
+    address: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    phone: str | None = None
+    opening_hours: str | None = None
+
+
+class RedPacketCampaignAdminIn(BaseModel):
+    id: str
+    account_id: str
+    title: str
+    active: bool = True
+    default_amount_cents: int | None = None
+    default_count: int | None = None
+    note: str | None = None
+
+
+class RedPacketCampaignTemplateOut(BaseModel):
+    campaign_id: str
+    account_id: str
+    title: str
+    text_en: str
+    text_ar: str
+
+
+class RedPacketCampaignTopMomentOut(BaseModel):
+    post_id: int
+    text: str | None = None
+    ts: str | None = None
+    likes: int = 0
+    comments: int = 0
+    score: float = 0.0
+
+
+class MiniProgramActionConfig(BaseModel):
+    """
+    Single action/button in a Mini‑Program manifest.
+
+    kind:
+      - open_mod: open a Shamell module (taxi, wallet, ...)
+      - open_url: open external URL
+      - close: close the Mini‑Program shell
+    """
+
+    id: str
+    label_en: str
+    label_ar: str
+    kind: str = "open_mod"
+    mod_id: str | None = None
+    url: str | None = None
+
+
+class MiniProgramAdminIn(BaseModel):
+    """
+    Admin payload for registering a Mini‑Program in the catalogue.
+
+    This is deliberately minimal and focuses on identifiers and
+    ownership; versioning is handled via MiniProgramVersionIn.
+    """
+
+    app_id: str
+    title_en: str
+    title_ar: str | None = None
+    description_en: str | None = None
+    description_ar: str | None = None
+    owner_name: str | None = None
+    owner_contact: str | None = None
+    actions: list[MiniProgramActionConfig] | None = None
+    scopes: list[str] | None = None
+
+
+class MiniProgramVersionIn(BaseModel):
+    """
+    Admin payload for registering a new Mini‑Program version.
+    """
+
+    version: str
+    bundle_url: str | None = None
+    changelog_en: str | None = None
+    changelog_ar: str | None = None
+
+
+class MiniProgramReleaseIn(BaseModel):
+    """
+    Marks a specific Mini‑Program version as released on a channel.
+    """
+
+    version: str
+    channel: str | None = "prod"
+
+
+class MiniAppAdminIn(BaseModel):
+    app_id: str
+    title_en: str
+    title_ar: str | None = None
+    category_en: str | None = None
+    category_ar: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    official: bool = False
+    enabled: bool = True
+    beta: bool = False
+    runtime_app_id: str | None = None
+    rating: float | None = None
+    usage_score: int | None = None
+
+
+class MiniAppRatingIn(BaseModel):
+    rating: int
+
+
+class MiniProgramRatingIn(BaseModel):
+    rating: int
+
+
+class MiniProgramSelfRegisterIn(BaseModel):
+    """
+    Lightweight payload for third‑party Mini‑Program self‑registration.
+
+    Developers can register basic metadata for their Mini‑Program; the
+    entry starts in status "draft" and can later be reviewed and
+    activated by the Shamell ops team via the admin console.
+    """
+
+    app_id: str
+    title_en: str
+    title_ar: str | None = None
+    description_en: str | None = None
+    description_ar: str | None = None
+    owner_name: str | None = None
+    owner_contact: str | None = None
+    scopes: list[str] | None = None
+
+
+class MiniProgramSelfVersionIn(BaseModel):
+    """
+    Minimal payload for developers to propose a new Mini‑Program version.
+
+    These versions are stored in MiniProgramVersionDB but do not
+    automatically create a Release; publishing remains an ops action.
+    """
+
+    version: str
+    bundle_url: str
+    changelog_en: str | None = None
+    changelog_ar: str | None = None
+
+
+class ChannelCommentIn(BaseModel):
+    text: str
+
+
+class ChannelUploadIn(BaseModel):
+    """
+    Lightweight payload for creator-style Channels uploads.
+
+    Creates a new OfficialFeedItemDB row of type "clip" (or "live"
+    when requested) for a given Official account. Intended as a
+    WeChat-like creator tool for merchants and ops; binary media
+    is referenced via thumb_url / deeplink rather than uploaded
+    directly. The same payload is also used for the lightweight
+    /channels/live/start endpoint.
+    """
+
+    official_account_id: str
+    title: str | None = None
+    snippet: str | None = None
+    thumb_url: str | None = None
+    deeplink: dict[str, Any] | None = None
+    # Optional WeChat-style livestream flag – when true the feed
+    # item is stored as type "live" instead of a normal clip.
+    is_live: bool | None = None
+
+
+@app.post("/channels/live/start", response_class=JSONResponse)
+def channels_live_start(request: Request, body: ChannelUploadIn) -> dict[str, Any]:
+    """
+    Convenience endpoint to start a Channels livestream.
+
+    This behaves like /channels/upload but always stores the
+    item as type "live" so that the Channels feed and Official
+    feed can highlight it as a live session, similar to WeChat
+    Channels "Go Live".
+    """
+
+    # Force live type regardless of caller-provided flag to keep
+    # the semantics explicit for this endpoint.
+    body.is_live = True
+    return channels_upload(request, body)
+
+
+@app.get("/admin/official_accounts", response_class=JSONResponse)
+def admin_official_accounts_list(request: Request, kind: str | None = None) -> dict[str, Any]:
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        stmt = _sa_select(OfficialAccountDB)
+        if kind:
+            stmt = stmt.where(OfficialAccountDB.kind == kind)
+        rows = s.execute(stmt.order_by(OfficialAccountDB.id)).scalars().all()
+        items: list[dict[str, Any]] = []
+        for acc in rows:
+            items.append(
+                {
+                    "id": acc.id,
+                    "kind": acc.kind,
+                    "name": acc.name,
+                    "name_ar": acc.name_ar,
+                    "avatar_url": acc.avatar_url,
+                    "verified": acc.verified,
+                    "mini_app_id": acc.mini_app_id,
+                    "description": acc.description,
+                    "chat_peer_id": getattr(acc, "chat_peer_id", None),
+                    "category": getattr(acc, "category", None),
+                    "city": getattr(acc, "city", None),
+                    "address": getattr(acc, "address", None),
+                    "opening_hours": getattr(acc, "opening_hours", None),
+                    "website_url": getattr(acc, "website_url", None),
+                    "qr_payload": getattr(acc, "qr_payload", None),
+                    "featured": getattr(acc, "featured", False),
+                    "enabled": acc.enabled,
+                    "official": acc.official,
+                    "created_at": getattr(acc, "created_at", None),
+                    "updated_at": getattr(acc, "updated_at", None),
+                }
+            )
+    return {"accounts": items}
+
+
+@app.get("/admin/official_account_requests", response_class=JSONResponse)
+def admin_official_account_requests_list(
+    request: Request, status: str | None = None
+) -> dict[str, Any]:
+    """
+    Lists self‑service Official account registration requests (admin only).
+
+    Ops can filter by status (submitted/approved/rejected) and use the
+    separate approve/reject endpoints to drive verification, ähnlich
+    zum Mini‑Programs‑Review‑Center.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            stmt = _sa_select(OfficialAccountRequestDB)
+            if status:
+                stmt = stmt.where(OfficialAccountRequestDB.status == status)
+            rows = (
+                s.execute(
+                    stmt.order_by(OfficialAccountRequestDB.created_at.desc())
+                )
+                .scalars()
+                .all()
+            )
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                items.append(
+                    OfficialAccountRequestOut(
+                        id=row.id,
+                        account_id=row.account_id,
+                        kind=row.kind,
+                        name=row.name,
+                        name_ar=row.name_ar,
+                        description=row.description,
+                        category=row.category,
+                        city=row.city,
+                        address=row.address,
+                        opening_hours=row.opening_hours,
+                        website_url=row.website_url,
+                        mini_app_id=row.mini_app_id,
+                        owner_name=row.owner_name,
+                        contact_phone=row.contact_phone,
+                        contact_email=row.contact_email,
+                        requester_phone=row.requester_phone,
+                        status=row.status,
+                        created_at=row.created_at,
+                        updated_at=row.updated_at,
+                    ).dict()
+                )
+        return {"requests": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/official_accounts", response_class=JSONResponse)
+def admin_official_accounts_create(request: Request, body: OfficialAccountAdminIn) -> dict[str, Any]:
+    _require_admin_v2(request)
+    data = body
+    with _officials_session() as s:
+        existing = s.get(OfficialAccountDB, data.id)
+        if existing:
+            raise HTTPException(status_code=409, detail="official account already exists")
+        row = OfficialAccountDB(
+            id=data.id,
+            kind=data.kind,
+            name=data.name,
+            name_ar=data.name_ar,
+            avatar_url=data.avatar_url,
+            verified=data.verified,
+            mini_app_id=data.mini_app_id,
+            description=data.description,
+            chat_peer_id=data.chat_peer_id,
+            category=data.category,
+            city=data.city,
+            address=data.address,
+            opening_hours=data.opening_hours,
+            website_url=data.website_url,
+            qr_payload=data.qr_payload,
+            featured=data.featured,
+            enabled=data.enabled,
+            official=data.official,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "id": row.id,
+            "kind": row.kind,
+            "name": row.name,
+            "name_ar": row.name_ar,
+            "avatar_url": row.avatar_url,
+            "verified": row.verified,
+            "mini_app_id": row.mini_app_id,
+            "description": row.description,
+            "chat_peer_id": getattr(row, "chat_peer_id", None),
+            "category": getattr(row, "category", None),
+            "city": getattr(row, "city", None),
+            "address": getattr(row, "address", None),
+            "opening_hours": getattr(row, "opening_hours", None),
+            "website_url": getattr(row, "website_url", None),
+            "qr_payload": getattr(row, "qr_payload", None),
+            "featured": getattr(row, "featured", False),
+            "enabled": row.enabled,
+            "official": row.official,
+        }
+
+
+@app.patch("/admin/official_accounts/{account_id}", response_class=JSONResponse)
+def admin_official_accounts_update(account_id: str, request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    allowed_fields = {
+        "kind",
+        "name",
+        "name_ar",
+        "avatar_url",
+        "verified",
+        "mini_app_id",
+        "description",
+        "chat_peer_id",
+        "category",
+        "city",
+        "address",
+        "opening_hours",
+        "website_url",
+        "qr_payload",
+        "featured",
+        "enabled",
+        "official",
+    }
+    with _officials_session() as s:
+        row = s.get(OfficialAccountDB, account_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="official account not found")
+        for k, v in body.items():
+            if k in allowed_fields:
+                setattr(row, k, v)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "id": row.id,
+            "kind": row.kind,
+            "name": row.name,
+            "name_ar": row.name_ar,
+            "avatar_url": row.avatar_url,
+            "verified": row.verified,
+            "mini_app_id": row.mini_app_id,
+            "description": row.description,
+            "chat_peer_id": getattr(row, "chat_peer_id", None),
+            "category": getattr(row, "category", None),
+            "city": getattr(row, "city", None),
+            "address": getattr(row, "address", None),
+            "opening_hours": getattr(row, "opening_hours", None),
+            "website_url": getattr(row, "website_url", None),
+            "qr_payload": getattr(row, "qr_payload", None),
+            "featured": getattr(row, "featured", False),
+            "enabled": row.enabled,
+            "official": row.official,
+        }
+
+
+@app.delete("/admin/official_accounts/{account_id}", response_class=JSONResponse)
+def admin_official_accounts_delete(account_id: str, request: Request) -> dict[str, Any]:
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        row = s.get(OfficialAccountDB, account_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="official account not found")
+        s.delete(row)
+        s.commit()
+    return {"status": "ok"}
+
+
+@app.post(
+    "/admin/official_account_requests/{request_id}/approve",
+    response_class=JSONResponse,
+)
+def admin_official_account_request_approve(
+    request_id: int, request: Request
+) -> dict[str, Any]:
+    """
+    Approves a self‑service Official account request and, if needed,
+    creates the corresponding OfficialAccountDB entry.
+
+    The created account is enabled and verified but marked as
+    partner/third‑party (official=False) by default; Ops can later
+    adjust flags via the Official‑Admin‑Konsole.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            req_row = s.get(OfficialAccountRequestDB, request_id)
+            if not req_row:
+                raise HTTPException(status_code=404, detail="request not found")
+            # Ensure the target account exists or create it.
+            acc_row = s.get(OfficialAccountDB, req_row.account_id)
+            if not acc_row:
+                kind = (req_row.kind or "service").strip() or "service"
+                # Only accept basic kinds from self‑service; admin can
+                # later reclassify (merchant/brand/gov).
+                if kind not in {"service", "subscription"}:
+                    kind = "service"
+                acc_row = OfficialAccountDB(
+                    id=req_row.account_id,
+                    kind=kind,
+                    name=req_row.name,
+                    name_ar=req_row.name_ar,
+                    description=req_row.description,
+                    mini_app_id=req_row.mini_app_id,
+                    category=req_row.category,
+                    city=req_row.city,
+                    address=req_row.address,
+                    opening_hours=req_row.opening_hours,
+                    website_url=req_row.website_url,
+                    verified=True,
+                    enabled=True,
+                    official=False,
+                )
+                s.add(acc_row)
+            req_row.status = "approved"
+            s.add(req_row)
+            s.commit()
+            s.refresh(req_row)
+            try:
+                emit_event(
+                    "officials",
+                    "request_approved",
+                    {
+                        "request_id": req_row.id,
+                        "account_id": req_row.account_id,
+                        "requester_phone": req_row.requester_phone,
+                    },
+                )
+            except Exception:
+                pass
+            out = OfficialAccountRequestOut(
+                id=req_row.id,
+                account_id=req_row.account_id,
+                kind=req_row.kind,
+                name=req_row.name,
+                name_ar=req_row.name_ar,
+                description=req_row.description,
+                category=req_row.category,
+                city=req_row.city,
+                address=req_row.address,
+                opening_hours=req_row.opening_hours,
+                website_url=req_row.website_url,
+                mini_app_id=req_row.mini_app_id,
+                owner_name=req_row.owner_name,
+                contact_phone=req_row.contact_phone,
+                contact_email=req_row.contact_email,
+                requester_phone=req_row.requester_phone,
+                status=req_row.status,
+                created_at=req_row.created_at,
+                updated_at=req_row.updated_at,
+            )
+            return out.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/admin/official_account_requests/{request_id}/reject",
+    response_class=JSONResponse,
+)
+def admin_official_account_request_reject(
+    request_id: int, request: Request
+) -> dict[str, Any]:
+    """
+    Marks a self‑service Official account request as rejected.
+
+    Does not delete any existing OfficialAccountDB entries – this is
+    purely a review/verification decision.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            req_row = s.get(OfficialAccountRequestDB, request_id)
+            if not req_row:
+                raise HTTPException(status_code=404, detail="request not found")
+            req_row.status = "rejected"
+            s.add(req_row)
+            s.commit()
+            s.refresh(req_row)
+            try:
+                emit_event(
+                    "officials",
+                    "request_rejected",
+                    {
+                        "request_id": req_row.id,
+                        "account_id": req_row.account_id,
+                        "requester_phone": req_row.requester_phone,
+                    },
+                )
+            except Exception:
+                pass
+            out = OfficialAccountRequestOut(
+                id=req_row.id,
+                account_id=req_row.account_id,
+                kind=req_row.kind,
+                name=req_row.name,
+                name_ar=req_row.name_ar,
+                description=req_row.description,
+                category=req_row.category,
+                city=req_row.city,
+                address=req_row.address,
+                opening_hours=req_row.opening_hours,
+                website_url=req_row.website_url,
+                mini_app_id=req_row.mini_app_id,
+                owner_name=req_row.owner_name,
+                contact_phone=req_row.contact_phone,
+                contact_email=req_row.contact_email,
+                requester_phone=req_row.requester_phone,
+                status=req_row.status,
+                created_at=req_row.created_at,
+                updated_at=req_row.updated_at,
+            )
+            return out.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/official_accounts/{account_id}/auto_replies", response_class=JSONResponse)
+def admin_official_auto_replies_list(account_id: str, request: Request) -> dict[str, Any]:
+    """
+    Lists all auto‑reply rules for a single Official account.
+
+    This is used by the in‑app owner console to configure welcome
+    messages and, in the future, keyword‑based replies.
+    """
+
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        acc = s.get(OfficialAccountDB, account_id)
+        if not acc:
+            raise HTTPException(status_code=404, detail="official account not found")
+        stmt = _sa_select(OfficialAutoReplyDB).where(
+            OfficialAutoReplyDB.account_id == account_id
+        ).order_by(OfficialAutoReplyDB.id.asc())
+        rows = s.execute(stmt).scalars().all()
+        rules: list[dict[str, Any]] = []
+        for row in rows:
+            rules.append(
+                {
+                    "id": row.id,
+                    "account_id": row.account_id,
+                    "kind": row.kind,
+                    "keyword": row.keyword,
+                    "text": row.text,
+                    "enabled": bool(row.enabled),
+                }
+            )
+    return {"rules": rules}
+
+
+@app.post("/admin/official_accounts/{account_id}/auto_replies", response_class=JSONResponse)
+def admin_official_auto_replies_create(
+    account_id: str, request: Request, body: OfficialAutoReplyIn
+) -> dict[str, Any]:
+    """
+    Creates a single auto‑reply rule for an Official account.
+
+    For now the primary use‑case is a "welcome" style message that
+    can be surfaced in chat when a user first opens a conversation
+    with the Official account.
+    """
+
+    _require_admin_v2(request)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    kind = (body.kind or "welcome").strip().lower() or "welcome"
+    keyword = (body.keyword or "").strip() or None
+    with _officials_session() as s:
+        acc = s.get(OfficialAccountDB, account_id)
+        if not acc:
+            raise HTTPException(status_code=404, detail="official account not found")
+        row = OfficialAutoReplyDB(
+            account_id=account_id,
+            kind=kind,
+            keyword=keyword,
+            text=text,
+            enabled=bool(body.enabled),
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "kind": row.kind,
+            "keyword": row.keyword,
+            "text": row.text,
+            "enabled": bool(row.enabled),
+        }
+
+
+@app.patch("/admin/official_auto_replies/{rule_id}", response_class=JSONResponse)
+def admin_official_auto_replies_update(
+    rule_id: int, request: Request, body: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Updates a single auto‑reply rule.
+    """
+
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    allowed_fields = {"kind", "keyword", "text", "enabled"}
+    with _officials_session() as s:
+        row = s.get(OfficialAutoReplyDB, rule_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="auto‑reply not found")
+        for k, v in body.items():
+            if k not in allowed_fields:
+                continue
+            if k == "kind" and isinstance(v, str):
+                v = v.strip().lower() or "welcome"
+            if k == "keyword":
+                v = (v or "").strip() or None
+            if k == "text":
+                v = (v or "").strip()
+                if not v:
+                    raise HTTPException(status_code=400, detail="text is required")
+            setattr(row, k, v)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "kind": row.kind,
+            "keyword": row.keyword,
+            "text": row.text,
+            "enabled": bool(row.enabled),
+        }
+
+
+@app.delete("/admin/official_auto_replies/{rule_id}", response_class=JSONResponse)
+def admin_official_auto_replies_delete(rule_id: int, request: Request) -> dict[str, Any]:
+    """
+    Deletes a single auto‑reply rule.
+    """
+
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        row = s.get(OfficialAutoReplyDB, rule_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="auto‑reply not found")
+        s.delete(row)
+        s.commit()
+    return {"status": "ok"}
+
+
+@app.get("/admin/official_feeds", response_class=JSONResponse)
+def admin_official_feeds_list(request: Request, account_id: str = "", limit: int = 100) -> dict[str, Any]:
+    _require_admin_v2(request)
+    limit_val = max(1, min(limit, 500))
+    with _officials_session() as s:
+        stmt = _sa_select(OfficialFeedItemDB)
+        if account_id:
+            stmt = stmt.where(OfficialFeedItemDB.account_id == account_id)
+        stmt = stmt.order_by(OfficialFeedItemDB.ts.desc(), OfficialFeedItemDB.id.desc()).limit(limit_val)
+        rows = s.execute(stmt).scalars().all()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                deeplink = _json.loads(row.deeplink_json) if row.deeplink_json else None
+            except Exception:
+                deeplink = None
+            items.append(
+                {
+                    "account_id": row.account_id,
+                    "id": row.slug,
+                    "type": row.type,
+                    "title": row.title,
+                    "snippet": row.snippet,
+                    "thumb_url": row.thumb_url,
+                    "ts": row.ts.isoformat() if getattr(row, "ts", None) else None,
+                    "deeplink": deeplink,
+                }
+            )
+    return {"items": items}
+
+
+@app.post("/admin/official_feeds", response_class=JSONResponse)
+def admin_official_feeds_create(request: Request, body: OfficialFeedItemAdminIn) -> dict[str, Any]:
+    _require_admin_v2(request)
+    data = body
+    with _officials_session() as s:
+        acc = s.get(OfficialAccountDB, data.account_id)
+        if not acc:
+            raise HTTPException(status_code=404, detail="official account not found")
+        exists = s.execute(
+            _sa_select(OfficialFeedItemDB).where(OfficialFeedItemDB.slug == data.id)
+        ).scalars().first()
+        if exists:
+            raise HTTPException(status_code=409, detail="feed item already exists")
+        ts_val = None
+        if data.ts:
+            try:
+                ts_val = datetime.fromisoformat(data.ts.replace("Z", "+00:00"))
+            except Exception:
+                ts_val = None
+        deeplink_json = _json.dumps(data.deeplink) if data.deeplink is not None else None
+        row = OfficialFeedItemDB(
+            account_id=data.account_id,
+            slug=data.id,
+            type=data.type or "promo",
+            title=data.title,
+            snippet=data.snippet,
+            thumb_url=data.thumb_url,
+            ts=ts_val,
+            deeplink_json=deeplink_json,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "account_id": row.account_id,
+            "id": row.slug,
+            "type": row.type,
+            "title": row.title,
+            "snippet": row.snippet,
+            "thumb_url": row.thumb_url,
+            "ts": row.ts.isoformat() if getattr(row, "ts", None) else None,
+            "deeplink": data.deeplink,
+        }
+
+
+@app.patch("/admin/official_feeds/{slug}", response_class=JSONResponse)
+def admin_official_feeds_update(slug: str, request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    with _officials_session() as s:
+        row = s.execute(
+            _sa_select(OfficialFeedItemDB).where(OfficialFeedItemDB.slug == slug)
+        ).scalars().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="feed item not found")
+        if "account_id" in body and body["account_id"]:
+            new_acc = s.get(OfficialAccountDB, body["account_id"])
+            if not new_acc:
+                raise HTTPException(status_code=404, detail="official account not found")
+            row.account_id = body["account_id"]
+        for field in ("type", "title", "snippet", "thumb_url"):
+            if field in body:
+                setattr(row, field, body[field])
+        if "ts" in body:
+            ts_val = None
+            ts_str = body.get("ts")
+            if ts_str:
+                try:
+                    ts_val = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                except Exception:
+                    ts_val = None
+            row.ts = ts_val
+        if "deeplink" in body:
+            val = body.get("deeplink")
+            row.deeplink_json = _json.dumps(val) if val is not None else None
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        deeplink_val = None
+        try:
+            deeplink_val = _json.loads(row.deeplink_json) if row.deeplink_json else None
+        except Exception:
+            deeplink_val = None
+        return {
+            "account_id": row.account_id,
+            "id": row.slug,
+            "type": row.type,
+            "title": row.title,
+            "snippet": row.snippet,
+            "thumb_url": row.thumb_url,
+            "ts": row.ts.isoformat() if getattr(row, "ts", None) else None,
+            "deeplink": deeplink_val,
+        }
+
+
+@app.delete("/admin/official_feeds/{slug}", response_class=JSONResponse)
+def admin_official_feeds_delete(slug: str, request: Request) -> dict[str, Any]:
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        row = s.execute(
+            _sa_select(OfficialFeedItemDB).where(OfficialFeedItemDB.slug == slug)
+        ).scalars().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="feed item not found")
+        s.delete(row)
+        s.commit()
+    return {"status": "ok"}
+
+
+@app.get(
+    "/admin/official_accounts/{account_id}/service_inbox",
+    response_class=JSONResponse,
+)
+def admin_official_service_inbox(
+    account_id: str,
+    request: Request,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """
+    Lists lightweight customer-service sessions for an Official account (admin only).
+
+    This provides a WeChat-like unified service inbox with basic
+    session state such as open/closed and unread-by-operator flag.
+    """
+    _require_admin_v2(request)
+    limit_val = max(1, min(limit, 500))
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc:
+                raise HTTPException(
+                    status_code=404, detail="official account not found"
+                )
+            stmt = _sa_select(OfficialServiceSessionDB).where(
+                OfficialServiceSessionDB.account_id == account_id
+            )
+            if status:
+                stmt = stmt.where(OfficialServiceSessionDB.status == status)
+            stmt = stmt.order_by(
+                OfficialServiceSessionDB.unread_by_operator.desc(),
+                OfficialServiceSessionDB.last_message_ts.desc(),
+            ).limit(limit_val)
+            rows = s.execute(stmt).scalars().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                items.append(
+                    {
+                        "id": row.id,
+                        "account_id": row.account_id,
+                        "customer_phone": row.customer_phone,
+                        "chat_peer_id": row.chat_peer_id,
+                        "status": row.status,
+                        "last_message_ts": row.last_message_ts.isoformat(),
+                        "unread_by_operator": row.unread_by_operator,
+                    }
+                )
+        return {"sessions": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/admin/official_accounts/{account_id}/service_inbox/{session_id}/mark_read",
+    response_class=JSONResponse,
+)
+def admin_official_service_inbox_mark_read(
+    account_id: str, session_id: int, request: Request
+) -> dict[str, Any]:
+    """
+    Marks a service session as read from the operator perspective.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            sess = s.get(OfficialServiceSessionDB, session_id)
+            if not sess or sess.account_id != account_id:
+                raise HTTPException(status_code=404, detail="session not found")
+            if sess.unread_by_operator:
+                sess.unread_by_operator = False
+                s.add(sess)
+                s.commit()
+                s.refresh(sess)
+            return {
+                "id": sess.id,
+                "account_id": sess.account_id,
+                "customer_phone": sess.customer_phone,
+                "chat_peer_id": sess.chat_peer_id,
+                "status": sess.status,
+                "last_message_ts": sess.last_message_ts.isoformat(),
+                "unread_by_operator": sess.unread_by_operator,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/admin/official_accounts/{account_id}/service_inbox/{session_id}/close",
+    response_class=JSONResponse,
+)
+def admin_official_service_inbox_close(
+    account_id: str, session_id: int, request: Request
+) -> dict[str, Any]:
+    """
+    Closes a customer-service session (sets status=closed).
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            sess = s.get(OfficialServiceSessionDB, session_id)
+            if not sess or sess.account_id != account_id:
+                raise HTTPException(status_code=404, detail="session not found")
+            sess.status = "closed"
+            sess.unread_by_operator = False
+            s.add(sess)
+            s.commit()
+            s.refresh(sess)
+            return {
+                "id": sess.id,
+                "account_id": sess.account_id,
+                "customer_phone": sess.customer_phone,
+                "chat_peer_id": sess.chat_peer_id,
+                "status": sess.status,
+                "last_message_ts": sess.last_message_ts.isoformat(),
+                "unread_by_operator": sess.unread_by_operator,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/admin/official_accounts/{account_id}/service_inbox/{session_id}/template_messages",
+    response_class=JSONResponse,
+)
+def admin_official_service_inbox_send_template_message(
+    account_id: str,
+    session_id: int,
+    request: Request,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Sends a one-time Official template message to the customer behind a service session.
+
+    This is a convenience wrapper around OfficialTemplateMessageDB so that
+    operators can send WeChat-like subscription messages directly from
+    the service inbox without handling phone numbers manually.
+    """
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    title = (body.get("title") or "").strip()
+    msg_body = (body.get("body") or "").strip()
+    deeplink = body.get("deeplink_json")
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    if not msg_body:
+        raise HTTPException(status_code=400, detail="body required")
+    try:
+        with _officials_session() as s:
+            sess = s.get(OfficialServiceSessionDB, session_id)
+            if not sess or sess.account_id != account_id:
+                raise HTTPException(status_code=404, detail="session not found")
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc:
+                raise HTTPException(
+                    status_code=404, detail="official account not found"
+                )
+            deeplink_json = (
+                _json.dumps(deeplink) if isinstance(deeplink, dict) else None
+            )
+            row = OfficialTemplateMessageDB(
+                account_id=account_id,
+                user_phone=sess.customer_phone,
+                title=title,
+                body=msg_body,
+                deeplink_json=deeplink_json,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            try:
+                emit_event(
+                    "officials",
+                    "template_message_sent",
+                    {
+                        "account_id": row.account_id,
+                        "user_phone": row.user_phone,
+                        "message_id": row.id,
+                        "session_id": sess.id,
+                    },
+                )
+            except Exception:
+                pass
+            try:
+                dl = (
+                    _json.loads(row.deeplink_json)
+                    if row.deeplink_json
+                    else None
+                )
+            except Exception:
+                dl = None
+            out = OfficialTemplateMessageOut(
+                id=row.id,
+                account_id=row.account_id,
+                title=row.title,
+                body=row.body,
+                deeplink_json=dl,
+                created_at=row.created_at,
+                read_at=row.read_at,
+            )
+            return out.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/official_template_messages", response_class=JSONResponse)
+def admin_official_template_messages_create(
+    request: Request, body: OfficialTemplateMessageIn
+) -> dict[str, Any]:
+    """
+    Creates a lightweight per-user Official template message (admin only).
+
+    This models WeChat-like one-time subscription messages that are
+    delivered outside the end-to-end encrypted chat stream.
+    """
+    _require_admin_v2(request)
+    data = body
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, data.account_id)
+            if not acc:
+                raise HTTPException(
+                    status_code=404, detail="official account not found"
+                )
+            deeplink_json = (
+                _json.dumps(data.deeplink_json)
+                if data.deeplink_json is not None
+                else None
+            )
+            row = OfficialTemplateMessageDB(
+                account_id=data.account_id,
+                user_phone=data.user_phone,
+                title=data.title,
+                body=data.body,
+                deeplink_json=deeplink_json,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            try:
+                emit_event(
+                    "officials",
+                    "template_message_sent",
+                    {
+                        "account_id": row.account_id,
+                        "user_phone": row.user_phone,
+                        "message_id": row.id,
+                    },
+                )
+            except Exception:
+                pass
+            try:
+                deeplink = (
+                    _json.loads(row.deeplink_json)
+                    if row.deeplink_json
+                    else None
+                )
+            except Exception:
+                deeplink = None
+            out = OfficialTemplateMessageOut(
+                id=row.id,
+                account_id=row.account_id,
+                title=row.title,
+                body=row.body,
+                deeplink_json=deeplink,
+                created_at=row.created_at,
+                read_at=row.read_at,
+            )
+            return out.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/official_locations", response_class=JSONResponse)
+def admin_official_locations_list(request: Request, account_id: str = "", limit: int = 500) -> dict[str, Any]:
+    _require_admin_v2(request)
+    limit_val = max(1, min(limit, 1000))
+    with _officials_session() as s:
+        stmt = _sa_select(OfficialLocationDB)
+        if account_id:
+            stmt = stmt.where(OfficialLocationDB.account_id == account_id)
+        stmt = stmt.order_by(OfficialLocationDB.id.desc()).limit(limit_val)
+        rows = s.execute(stmt).scalars().all()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            items.append(
+                {
+                    "id": row.id,
+                    "account_id": row.account_id,
+                    "name": row.name,
+                    "city": row.city,
+                    "address": row.address,
+                    "lat": row.lat,
+                    "lon": row.lon,
+                    "phone": row.phone,
+                    "opening_hours": row.opening_hours,
+                }
+            )
+    return {"locations": items}
+
+
+@app.post("/admin/official_locations", response_class=JSONResponse)
+def admin_official_locations_create(request: Request, body: OfficialLocationAdminIn) -> dict[str, Any]:
+    _require_admin_v2(request)
+    data = body
+    with _officials_session() as s:
+        acc = s.get(OfficialAccountDB, data.account_id)
+        if not acc:
+            raise HTTPException(status_code=404, detail="official account not found")
+        row = OfficialLocationDB(
+            account_id=data.account_id,
+            name=data.name,
+            city=data.city,
+            address=data.address,
+            lat=data.lat,
+            lon=data.lon,
+            phone=data.phone,
+            opening_hours=data.opening_hours,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "name": row.name,
+            "city": row.city,
+            "address": row.address,
+            "lat": row.lat,
+            "lon": row.lon,
+            "phone": row.phone,
+            "opening_hours": row.opening_hours,
+        }
+
+
+@app.patch("/admin/official_locations/{loc_id}", response_class=JSONResponse)
+def admin_official_locations_update(loc_id: int, request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    allowed_fields = {"account_id", "name", "city", "address", "lat", "lon", "phone", "opening_hours"}
+    with _officials_session() as s:
+        row = s.get(OfficialLocationDB, loc_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="location not found")
+        if "account_id" in body and body["account_id"]:
+            acc = s.get(OfficialAccountDB, body["account_id"])
+            if not acc:
+                raise HTTPException(status_code=404, detail="official account not found")
+        for k, v in body.items():
+            if k in allowed_fields:
+                setattr(row, k, v)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "name": row.name,
+            "city": row.city,
+            "address": row.address,
+            "lat": row.lat,
+            "lon": row.lon,
+            "phone": row.phone,
+            "opening_hours": row.opening_hours,
+        }
+
+
+@app.delete("/admin/official_locations/{loc_id}", response_class=JSONResponse)
+def admin_official_locations_delete(loc_id: int, request: Request) -> dict[str, Any]:
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        row = s.get(OfficialLocationDB, loc_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="location not found")
+        s.delete(row)
+        s.commit()
+    return {"status": "ok"}
+
+
+@app.get("/admin/redpacket_campaigns", response_class=JSONResponse)
+def admin_redpacket_campaigns_list(
+    request: Request, account_id: str = "", only_active: bool = False
+) -> dict[str, Any]:
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        stmt = _sa_select(RedPacketCampaignDB)
+        if account_id:
+            stmt = stmt.where(RedPacketCampaignDB.account_id == account_id)
+        if only_active:
+            stmt = stmt.where(RedPacketCampaignDB.active.is_(True))
+        rows = s.execute(stmt.order_by(RedPacketCampaignDB.created_at.desc())).scalars().all()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            created = getattr(row, "created_at", None)
+            updated = getattr(row, "updated_at", None)
+            created_str = None
+            updated_str = None
+            try:
+                created_str = created.isoformat().replace("+00:00", "Z") if created else None
+            except Exception:
+                created_str = str(created) if created is not None else None
+            try:
+                updated_str = updated.isoformat().replace("+00:00", "Z") if updated else None
+            except Exception:
+                updated_str = str(updated) if updated is not None else None
+            items.append(
+                {
+                    "id": row.id,
+                    "account_id": row.account_id,
+                    "title": row.title,
+                    "active": bool(getattr(row, "active", True)),
+                    "created_at": created_str,
+                    "updated_at": updated_str,
+                    "default_amount_cents": getattr(row, "default_amount_cents", None),
+                    "default_count": getattr(row, "default_count", None),
+                    "note": getattr(row, "note", None),
+                }
+            )
+    return {"campaigns": items}
+
+
+@app.post("/admin/redpacket_campaigns", response_class=JSONResponse)
+def admin_redpacket_campaigns_create(
+    request: Request, body: RedPacketCampaignAdminIn
+) -> dict[str, Any]:
+    _require_admin_v2(request)
+    data = body
+    cid = (data.id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="id is required")
+    with _officials_session() as s:
+        acc = s.get(OfficialAccountDB, data.account_id)
+        if not acc:
+            raise HTTPException(status_code=404, detail="official account not found")
+        existing = s.get(RedPacketCampaignDB, cid)
+        if existing:
+            raise HTTPException(status_code=409, detail="campaign already exists")
+        row = RedPacketCampaignDB(
+            id=cid,
+            account_id=data.account_id,
+            title=data.title,
+            active=data.active,
+            default_amount_cents=data.default_amount_cents,
+            default_count=data.default_count,
+            note=data.note,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        created = getattr(row, "created_at", None)
+        created_str = None
+        try:
+            created_str = created.isoformat().replace("+00:00", "Z") if created else None
+        except Exception:
+            created_str = str(created) if created is not None else None
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "title": row.title,
+            "active": bool(getattr(row, "active", True)),
+            "created_at": created_str,
+        }
+
+
+@app.patch("/admin/redpacket_campaigns/{campaign_id}", response_class=JSONResponse)
+def admin_redpacket_campaigns_update(
+    campaign_id: str, request: Request, body: dict[str, Any]
+) -> dict[str, Any]:
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    allowed_fields = {"account_id", "title", "active", "default_amount_cents", "default_count", "note"}
+    with _officials_session() as s:
+        row = s.get(RedPacketCampaignDB, campaign_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        if "account_id" in body and body["account_id"]:
+            acc = s.get(OfficialAccountDB, body["account_id"])
+            if not acc:
+                raise HTTPException(status_code=404, detail="official account not found")
+        for k, v in body.items():
+            if k in allowed_fields:
+                setattr(row, k, v)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        created = getattr(row, "created_at", None)
+        updated = getattr(row, "updated_at", None)
+        created_str = None
+        updated_str = None
+        try:
+            created_str = created.isoformat().replace("+00:00", "Z") if created else None
+        except Exception:
+            created_str = str(created) if created is not None else None
+        try:
+            updated_str = updated.isoformat().replace("+00:00", "Z") if updated else None
+        except Exception:
+            updated_str = str(updated) if updated is not None else None
+        return {
+            "id": row.id,
+            "account_id": row.account_id,
+            "title": row.title,
+            "active": bool(getattr(row, "active", True)),
+            "created_at": created_str,
+            "updated_at": updated_str,
+            "default_amount_cents": getattr(row, "default_amount_cents", None),
+            "default_count": getattr(row, "default_count", None),
+            "note": getattr(row, "note", None),
+        }
+
+
+@app.delete("/admin/redpacket_campaigns/{campaign_id}", response_class=JSONResponse)
+def admin_redpacket_campaigns_delete(campaign_id: str, request: Request) -> dict[str, Any]:
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        row = s.get(RedPacketCampaignDB, campaign_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        # Soft-delete: mark inactive but keep row for historical analytics.
+        row.active = False
+        s.add(row)
+        s.commit()
+    return {"status": "ok"}
+
+
+@app.get(
+    "/redpacket/campaigns/{campaign_id}/moments_template",
+    response_class=JSONResponse,
+)
+def redpacket_campaign_moments_template(campaign_id: str) -> dict[str, Any]:
+    """
+    Returns a best-effort Moments share template for a given Red‑Packet campaign.
+
+    Text is generated from the campaign title and Official account name and
+    includes a shamell://official deep-link so Moments can later reconstruct
+    origin_official_account_id/origin_official_item_id.
+    """
+    cid = (campaign_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="campaign_id required")
+    try:
+        with _officials_session() as s:
+            camp = s.get(RedPacketCampaignDB, cid)
+            if not camp:
+                raise HTTPException(status_code=404, detail="campaign not found")
+            acc = s.get(OfficialAccountDB, camp.account_id)
+            acc_name = (acc.name or camp.account_id) if acc else camp.account_id
+        base_link = f"shamell://official/{camp.account_id}/{camp.id}"
+        title = (camp.title or "").strip() or camp.id
+        note = (camp.note or "").strip()
+        def_amt = getattr(camp, "default_amount_cents", None)
+        def_count = getattr(camp, "default_count", None)
+        extra_en = ""
+        extra_ar = ""
+        try:
+            if def_amt and isinstance(def_amt, (int, float)) and def_amt > 0:
+                major = float(def_amt) / 100.0
+                if def_count and isinstance(def_count, (int, float)) and def_count > 0:
+                    extra_en = f"\nDefault: total {major:.2f}, {int(def_count)} recipients."
+                    extra_ar = f"\nالإعداد الافتراضي: مجموع {major:.2f}، {int(def_count)} مستلمين."
+                else:
+                    extra_en = f"\nDefault: total {major:.2f}."
+                    extra_ar = f"\nالإعداد الافتراضي: مجموع {major:.2f}."
+            elif def_count and isinstance(def_count, (int, float)) and def_count > 0:
+                extra_en = f"\nDefault: {int(def_count)} recipients."
+                extra_ar = f"\nالإعداد الافتراضي: {int(def_count)} مستلمين."
+        except Exception:
+            extra_en = ""
+            extra_ar = ""
+        text_en = (
+            f"Red packet campaign from {acc_name}: {title}.\n"
+            f"I am sending red packets via Shamell Pay 🎁"
+            f"{extra_en}\n"
+            f"{base_link}"
+        )
+        if note:
+            text_en = f"{text_en}\n{note}"
+        text_ar = (
+            f"حملة حزم حمراء من {acc_name}: {title}.\n"
+            f"أرسل حزمًا حمراء عبر Shamell Pay 🎁"
+            f"{extra_ar}\n"
+            f"{base_link}"
+        )
+        if note:
+            text_ar = f"{text_ar}\n{note}"
+        return RedPacketCampaignTemplateOut(
+            campaign_id=camp.id,
+            account_id=camp.account_id,
+            title=camp.title,
+            text_en=text_en,
+            text_ar=text_ar,
+        ).dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/officials", response_class=HTMLResponse)
+def admin_officials_console(request: Request) -> HTMLResponse:
+    """
+    Sehr einfache HTML-Konsole für Offizielle Accounts.
+
+    Nutzt die JSON-Admin-API-Endpunkte und lässt bestehende Ops/Admins
+    (über _require_admin_v2) neue Accounts anlegen, bearbeiten und
+    aktivieren/deaktivieren – ohne zusätzliche Tools.
+    """
+    _require_admin_v2(request)
+    html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shamell · Official Accounts</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; max-width: 1100px; color: #0f172a; background:#ffffff; }
+      h1 { margin-bottom: 4px; }
+      h2 { margin-top: 24px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+      th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
+      th { background: #f9fafb; font-weight: 600; }
+      input, select, textarea { font-size: 13px; padding: 4px 6px; margin: 2px 0; width: 100%; box-sizing: border-box; }
+      textarea { min-height: 48px; }
+      button { font-size: 13px; padding: 4px 8px; margin: 0 2px; cursor: pointer; }
+      .pill { display:inline-block; padding:2px 6px; border-radius:999px; font-size:11px; }
+      .pill-on { background:#dcfce7; color:#166534; }
+      .pill-off { background:#fee2e2; color:#991b1b; }
+      .pill-official { background:#dbeafe; color:#1d4ed8; }
+      .pill-beta { background:#fef3c7; color:#92400e; }
+      .pill-featured { background:#fef9c3; color:#92400e; }
+      .row-actions { white-space: nowrap; }
+      .muted { color:#6b7280; font-size:12px; }
+      .error { color:#b91c1c; margin-top:4px; }
+      .success { color:#166534; margin-top:4px; }
+      .flex { display:flex; gap:8px; flex-wrap:wrap; }
+      .flex > div { flex:1 1 260px; min-width:220px; }
+      code { font-size:12px; background:#f3f4f6; padding:2px 4px; border-radius:4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Official Accounts</h1>
+    <p class="muted">
+      <a href="/admin/officials/analytics">Analytics-Dashboard für Official Accounts öffnen</a>
+      · <a href="/admin/redpacket_campaigns/analytics">Red‑Packet‑Kampagnen-Analytics</a>
+    </p>
+    <p class="muted">WeChat-ähnliche Service-/Merchant-Accounts für Shamell Discover &amp; Feeds.</p>
+
+    <div id="flash" class="muted"></div>
+
+    <h2>Bestehende Accounts</h2>
+    <p class="muted">Toggle <code>enabled</code>/<code>official</code> für Partner-Mini-Apps, Merchants, Beta-Experimente.</p>
+    <table id="accounts-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Kind</th>
+          <th>Mini-App</th>
+          <th>Chat ID</th>
+          <th>Kategorie/Ort</th>
+          <th>Status</th>
+          <th>Beschreibung</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="accounts-body">
+        <tr><td colspan="9">Lade Daten…</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Neuen Official Account anlegen</h2>
+    <div class="flex">
+      <div>
+        <label>ID (z.B. <code>shamell_taxi</code>)<br/>
+          <input id="new_id" placeholder="eindeutige ID" />
+        </label>
+      </div>
+      <div>
+        <label>Name<br/>
+          <input id="new_name" placeholder="Anzeigename (EN)" />
+        </label>
+      </div>
+      <div>
+        <label>Name (AR)<br/>
+          <input id="new_name_ar" placeholder="Anzeigename (AR, optional)" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Kind<br/>
+          <select id="new_kind">
+            <option value="service">service</option>
+            <option value="merchant">merchant</option>
+            <option value="brand">brand</option>
+            <option value="gov">gov</option>
+          </select>
+        </label>
+      </div>
+      <div>
+        <label>Mini-App ID<br/>
+          <input id="new_mini_app_id" placeholder="z.B. payments, taxi_rider, food" />
+        </label>
+      </div>
+      <div>
+        <label>Avatar URL<br/>
+          <input id="new_avatar_url" placeholder="/icons/… oder https://…" />
+        </label>
+      </div>
+      <div>
+        <label>Chat Peer ID<br/>
+          <input id="new_chat_peer_id" placeholder="optional: Chat device ID" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Beschreibung<br/>
+          <textarea id="new_description" placeholder="Kurzbeschreibung"></textarea>
+        </label>
+      </div>
+      <div>
+        <label><input type="checkbox" id="new_verified" checked /> Verified</label><br/>
+        <label><input type="checkbox" id="new_enabled" checked /> Enabled</label><br/>
+        <label><input type="checkbox" id="new_official" checked /> Official (Shamell-Account)</label><br/>
+        <label><input type="checkbox" id="new_featured" /> Featured (starred in clients)</label>
+      </div>
+      <div>
+        <label>Kategorie<br/>
+          <input id="new_category" placeholder="z.B. taxi, food, pay" />
+        </label>
+        <label>Stadt<br/>
+          <input id="new_city" placeholder="z.B. Damascus" />
+        </label>
+        <label>Öffnungszeiten<br/>
+          <input id="new_opening_hours" placeholder="z.B. 09:00–18:00" />
+        </label>
+        <label>Website URL<br/>
+          <input id="new_website_url" placeholder="https://…" />
+        </label>
+        <label>QR Payload<br/>
+          <input id="new_qr_payload" placeholder="optional: Inhalt für QR" />
+        </label>
+      </div>
+    </div>
+    <p>
+      <button onclick="createAccount()">Account anlegen</button>
+    </p>
+
+    <h2>Self‑Service Official‑Account‑Requests</h2>
+    <p class="muted">
+      WeChat‑ähnlicher Registrierungs‑Flow: Merchants können im Client
+      eigene Official Accounts vorschlagen; hier siehst du die
+      eingehenden Requests und kannst sie approven/rejecten.
+    </p>
+    <p class="muted">
+      JSON‑API: <code>/admin/official_account_requests?status=submitted</code>
+    </p>
+    <p>
+      <button onclick="loadOfficialRequests()">Requests laden</button>
+      <select id="req_filter">
+        <option value="">Alle</option>
+        <option value="submitted">Nur submitted</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+      </select>
+    </p>
+    <table id="requests-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Account</th>
+          <th>Kind</th>
+          <th>Owner/Contact</th>
+          <th>Ort</th>
+          <th>Status</th>
+          <th>Erstellt</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="requests-body">
+        <tr><td colspan="8">Noch keine Requests geladen.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Feed-Items (Promos) pro Account</h2>
+    <p class="muted">Einfacher WeChat-ähnlicher Feed: pro Official Account Promotions/News pflegen.</p>
+    <div class="flex">
+      <div>
+        <label>Account wählen<br/>
+          <select id="feed_account" onchange="loadFeedsForSelected(); loadCampaignsForSelected()">
+            <option value="">– bitte wählen –</option>
+          </select>
+        </label>
+      </div>
+      <div>
+        <label>Feed-ID (Slug)<br/>
+          <input id="feed_id" placeholder="z.B. taxi_airport_30" />
+        </label>
+      </div>
+      <div>
+        <label>Typ<br/>
+          <input id="feed_type" placeholder="promo, update …" value="promo" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Title<br/>
+          <input id="feed_title" placeholder="Titel" />
+        </label>
+      </div>
+      <div>
+        <label>Thumb URL<br/>
+          <input id="feed_thumb" placeholder="/assets/feed/… oder https://…" />
+        </label>
+      </div>
+      <div>
+        <label>Timestamp (ISO, optional)<br/>
+          <input id="feed_ts" placeholder="2025-01-10T10:00:00Z" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Snippet<br/>
+          <textarea id="feed_snippet" placeholder="Kurztext"></textarea>
+        </label>
+      </div>
+      <div>
+        <label>Deeplink JSON<br/>
+          <textarea id="feed_deeplink" placeholder='{"mini_app_id":"payments","payload":{"section":"redpacket"}}'></textarea>
+        </label>
+      </div>
+    </div>
+    <p>
+      <button onclick="createFeed()">Feed-Item speichern</button>
+      <button onclick="presetRedpacketCampaign()">Red‑Packet‑Kampagne vorbelegen</button>
+      <button onclick="wizardRedpacketCampaign()">Kampagnen‑Wizard (Feed + DB)</button>
+    </p>
+
+    <table id="feeds-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Typ</th>
+          <th>TS</th>
+          <th>Snippet</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="feeds-body">
+        <tr><td colspan="6">Bitte Account wählen.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Red‑Packet‑Kampagnen</h2>
+    <p class="muted">Pro ausgewähltem Account (oben) WeChat‑ähnliche Red‑Packet‑Kampagnen pflegen.</p>
+    <div class="flex">
+      <div>
+        <label>Kampagnen-ID<br/>
+          <input id="campaign_id" placeholder="z.B. redpacket_newyear" />
+        </label>
+      </div>
+      <div>
+        <label>Titel<br/>
+          <input id="campaign_title" placeholder="z.B. New Year red packets" />
+        </label>
+      </div>
+      <div>
+        <label>Aktiv<br/>
+          <input type="checkbox" id="campaign_active" checked />
+        </label>
+      </div>
+      <div>
+        <label>Default-Betrag (Cent, optional)<br/>
+          <input id="campaign_default_amount" placeholder="z.B. 100000" />
+        </label>
+      </div>
+      <div>
+        <label>Default-Anzahl (optional)<br/>
+          <input id="campaign_default_count" placeholder="z.B. 10" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Notiz (optional)<br/>
+          <input id="campaign_note" placeholder="z.B. Happy New Year red packets" />
+        </label>
+      </div>
+    </div>
+    <input type="hidden" id="campaign_edit_id" />
+    <p>
+      <button onclick="saveCampaign()">Kampagne speichern</button>
+    </p>
+
+    <table id="campaigns-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Erstellt</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="campaigns-body">
+        <tr><td colspan="5">Bitte Account wählen.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Standorte / Filialen</h2>
+    <p class="muted">Mehrere Standorte pro Official Account pflegen (z.B. Filialen, Büros, Depots).</p>
+    <div class="flex">
+      <div>
+        <label>Account wählen<br/>
+          <select id="loc_account" onchange="loadLocationsForSelected()">
+            <option value="">– bitte wählen –</option>
+          </select>
+        </label>
+      </div>
+      <div>
+        <label>Name<br/>
+          <input id="loc_name" placeholder="z.B. Shamell Taxi Damascus" />
+        </label>
+      </div>
+      <div>
+        <label>Stadt<br/>
+          <input id="loc_city" placeholder="z.B. Damascus" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Adresse<br/>
+          <input id="loc_address" placeholder="Straße, Hausnummer, Bezirk" />
+        </label>
+      </div>
+      <div>
+        <label>Telefon<br/>
+          <input id="loc_phone" placeholder="+963…" />
+        </label>
+      </div>
+      <div>
+        <label>Öffnungszeiten<br/>
+          <input id="loc_opening_hours" placeholder="z.B. 09:00–18:00" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Latitude<br/>
+          <input id="loc_lat" placeholder="optional: 33.5138" />
+        </label>
+      </div>
+      <div>
+        <label>Longitude<br/>
+          <input id="loc_lon" placeholder="optional: 36.2765" />
+        </label>
+      </div>
+    </div>
+    <input type="hidden" id="loc_id" />
+    <p>
+      <button onclick="saveLocation()">Location speichern</button>
+    </p>
+
+    <table id="locations-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Stadt</th>
+          <th>Adresse</th>
+          <th>Telefon</th>
+          <th>Öffnungszeiten</th>
+          <th>Koordinaten</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="locations-body">
+        <tr><td colspan="8">Bitte Account wählen.</td></tr>
+      </tbody>
+    </table>
+
+    <script>
+      async function loadAccounts() {
+        const bodyEl = document.getElementById('accounts-body');
+        const feedSelect = document.getElementById('feed_account');
+        const locSelect = document.getElementById('loc_account');
+        try {
+          const r = await fetch('/admin/official_accounts');
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="9">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.accounts || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="9">Noch keine Accounts.</td></tr>';
+            if (feedSelect) {
+              feedSelect.innerHTML = '<option value="">– keine Accounts –</option>';
+            }
+            if (locSelect) {
+              locSelect.innerHTML = '<option value="">– keine Accounts –</option>';
+            }
+            return;
+          }
+          if (feedSelect) {
+            feedSelect.innerHTML = '<option value=\"\">– bitte wählen –</option>';
+          }
+          if (locSelect) {
+            locSelect.innerHTML = '<option value=\"\">– bitte wählen –</option>';
+          }
+          bodyEl.innerHTML = '';
+          for (const acc of items) {
+            const tr = document.createElement('tr');
+            const meta = [
+              acc.category || '',
+              acc.city || '',
+            ].filter(Boolean).join(' · ');
+            const statusHtml = [
+              '<span class="pill ' + (acc.enabled ? 'pill-on' : 'pill-off') + '">' + (acc.enabled ? 'enabled' : 'disabled') + '</span>',
+              acc.official ? '<span class="pill pill-official">official</span>' : '',
+              acc.featured ? '<span class="pill pill-featured">featured</span>' : '',
+              acc.kind && acc.kind !== 'service' ? '<span class="pill pill-beta">' + acc.kind + '</span>' : '',
+            ].filter(Boolean).join(' ');
+            tr.innerHTML = `
+              <td><code>${acc.id}</code></td>
+              <td>${acc.name || ''}<br/><span class="muted">${acc.name_ar || ''}</span></td>
+              <td>${acc.kind || ''}</td>
+              <td><span class="muted">${acc.mini_app_id || ''}</span></td>
+              <td><span class="muted">${acc.chat_peer_id || ''}</span></td>
+              <td>${meta || ''}</td>
+              <td>${statusHtml}</td>
+              <td>${acc.description || ''}</td>
+              <td class="row-actions">
+                <button onclick="toggleEnabled('${acc.id}', ${acc.enabled ? 'false' : 'true'})">${acc.enabled ? 'Disable' : 'Enable'}</button>
+                <button onclick="toggleOfficial('${acc.id}', ${acc.official ? 'false' : 'true'})">${acc.official ? 'Set partner' : 'Set official'}</button>
+                <button onclick="toggleFeatured('${acc.id}', ${acc.featured ? 'false' : 'true'})">${acc.featured ? 'Unstar' : 'Star'}</button>
+              </td>
+            `;
+            bodyEl.appendChild(tr);
+            if (feedSelect) {
+              const optFeed = document.createElement('option');
+              optFeed.value = acc.id;
+              optFeed.textContent = acc.id + ' – ' + (acc.name || '');
+              feedSelect.appendChild(optFeed);
+            }
+            if (locSelect) {
+              const optLoc = document.createElement('option');
+              optLoc.value = acc.id;
+              optLoc.textContent = acc.id + ' – ' + (acc.name || '');
+              locSelect.appendChild(optLoc);
+            }
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="9">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      async function patchAccount(id, patch) {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/admin/official_accounts/' + encodeURIComponent(id), {
+            method: 'PATCH',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(patch),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Gespeichert.';
+            flash.className = 'success';
+            loadAccounts();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      function toggleEnabled(id, enabled) {
+        patchAccount(id, {enabled: !!enabled});
+      }
+
+      function toggleOfficial(id, official) {
+        patchAccount(id, {official: !!official});
+      }
+
+      function toggleFeatured(id, featured) {
+        patchAccount(id, {featured: !!featured});
+      }
+
+      async function createAccount() {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        const id = document.getElementById('new_id').value.trim();
+        const name = document.getElementById('new_name').value.trim();
+        const name_ar = document.getElementById('new_name_ar').value.trim();
+        const kind = document.getElementById('new_kind').value.trim() || 'service';
+        const mini_app_id = document.getElementById('new_mini_app_id').value.trim();
+        const avatar_url = document.getElementById('new_avatar_url').value.trim();
+        const chat_peer_id = document.getElementById('new_chat_peer_id').value.trim();
+        const description = document.getElementById('new_description').value.trim();
+        const category = document.getElementById('new_category').value.trim();
+        const city = document.getElementById('new_city').value.trim();
+        const opening_hours = document.getElementById('new_opening_hours').value.trim();
+        const website_url = document.getElementById('new_website_url').value.trim();
+        const qr_payload = document.getElementById('new_qr_payload').value.trim();
+        const verified = document.getElementById('new_verified').checked;
+        const enabled = document.getElementById('new_enabled').checked;
+        const official = document.getElementById('new_official').checked;
+        const featured = document.getElementById('new_featured').checked;
+        if (!id || !name) {
+          flash.textContent = 'ID und Name sind Pflicht.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {
+          id,
+          kind,
+          name,
+          name_ar: name_ar || null,
+          avatar_url: avatar_url || null,
+          verified,
+          mini_app_id: mini_app_id || null,
+          description: description || null,
+          chat_peer_id: chat_peer_id || null,
+          category: category || null,
+          city: city || null,
+          opening_hours: opening_hours || null,
+          website_url: website_url || null,
+          qr_payload: qr_payload || null,
+          featured,
+          enabled,
+          official,
+        };
+        try {
+          const r = await fetch('/admin/official_accounts', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Account angelegt.';
+            flash.className = 'success';
+            document.getElementById('new_id').value = '';
+            document.getElementById('new_name').value = '';
+            document.getElementById('new_name_ar').value = '';
+            document.getElementById('new_mini_app_id').value = '';
+            document.getElementById('new_avatar_url').value = '';
+            document.getElementById('new_chat_peer_id').value = '';
+            document.getElementById('new_description').value = '';
+            document.getElementById('new_category').value = '';
+            document.getElementById('new_city').value = '';
+            document.getElementById('new_opening_hours').value = '';
+            document.getElementById('new_website_url').value = '';
+            document.getElementById('new_qr_payload').value = '';
+            document.getElementById('new_verified').checked = true;
+            document.getElementById('new_enabled').checked = true;
+            document.getElementById('new_official').checked = true;
+            document.getElementById('new_featured').checked = false;
+            loadAccounts();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      async function loadFeedsForSelected() {
+        const accId = document.getElementById('feed_account').value;
+        const bodyEl = document.getElementById('feeds-body');
+        if (!accId) {
+          bodyEl.innerHTML = '<tr><td colspan="6">Bitte Account wählen.</td></tr>';
+          return;
+        }
+        try {
+          const r = await fetch('/admin/official_feeds?account_id=' + encodeURIComponent(accId));
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="6">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.items || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="6">Noch keine Feed-Items.</td></tr>';
+            return;
+          }
+          bodyEl.innerHTML = '';
+          for (const it of items) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td><code>${it.id}</code></td>
+              <td>${it.title || ''}</td>
+              <td>${it.type || ''}</td>
+              <td><span class="muted">${it.ts || ''}</span></td>
+              <td>${it.snippet || ''}</td>
+              <td class="row-actions">
+                <button onclick="copyFeedToForm('${it.id.replace(/'/g, '')}')">Bearbeiten</button>
+                <button onclick="deleteFeed('${it.id.replace(/'/g, '')}')">Löschen</button>
+              </td>
+            `;
+            tr.dataset.feedId = it.id;
+            tr.dataset.feedTitle = it.title || '';
+            tr.dataset.feedType = it.type || '';
+            tr.dataset.feedTs = it.ts || '';
+            tr.dataset.feedSnippet = it.snippet || '';
+            tr.dataset.feedThumb = it.thumb_url || '';
+            tr.dataset.feedDeeplink = it.deeplink ? JSON.stringify(it.deeplink) : '';
+            bodyEl.appendChild(tr);
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="6">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      function copyFeedToForm(id) {
+        const bodyEl = document.getElementById('feeds-body');
+        const rows = bodyEl.querySelectorAll('tr');
+        for (const tr of rows) {
+          if (tr.dataset.feedId === id) {
+            document.getElementById('feed_id').value = tr.dataset.feedId || '';
+            document.getElementById('feed_title').value = tr.dataset.feedTitle || '';
+            document.getElementById('feed_type').value = tr.dataset.feedType || 'promo';
+            document.getElementById('feed_ts').value = tr.dataset.feedTs || '';
+            document.getElementById('feed_snippet').value = tr.dataset.feedSnippet || '';
+            document.getElementById('feed_thumb').value = tr.dataset.feedThumb || '';
+            document.getElementById('feed_deeplink').value = tr.dataset.feedDeeplink || '';
+            break;
+          }
+        }
+      }
+
+      async function deleteFeed(id) {
+        const accId = document.getElementById('feed_account').value;
+        if (!accId || !id) return;
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/admin/official_feeds/' + encodeURIComponent(id), { method: 'DELETE' });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Löschen: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Feed-Item gelöscht.';
+            flash.className = 'success';
+            loadFeedsForSelected();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      async function createFeed() {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        const account_id = document.getElementById('feed_account').value.trim();
+        const id = document.getElementById('feed_id').value.trim();
+        const type = document.getElementById('feed_type').value.trim() || 'promo';
+        const title = document.getElementById('feed_title').value.trim();
+        const thumb = document.getElementById('feed_thumb').value.trim();
+        const ts = document.getElementById('feed_ts').value.trim();
+        const snippet = document.getElementById('feed_snippet').value.trim();
+        const deeplinkStr = document.getElementById('feed_deeplink').value.trim();
+        if (!account_id || !id) {
+          flash.textContent = 'Account und Feed-ID sind Pflicht.';
+          flash.className = 'error';
+          return;
+        }
+        let deeplink = null;
+        if (deeplinkStr) {
+          try {
+            deeplink = JSON.parse(deeplinkStr);
+          } catch (e) {
+            flash.textContent = 'Deeplink ist kein gültiges JSON.';
+            flash.className = 'error';
+            return;
+          }
+        }
+        const payload = {
+          account_id,
+          id,
+          type,
+          title: title || null,
+          snippet: snippet || null,
+          thumb_url: thumb || null,
+          ts: ts || null,
+          deeplink,
+        };
+        try {
+          const r = await fetch('/admin/official_feeds', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Speichern: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Feed-Item gespeichert.';
+            flash.className = 'success';
+            loadFeedsForSelected();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      function presetRedpacketCampaign() {
+        const accId = document.getElementById('feed_account').value.trim();
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        if (!accId) {
+          flash.textContent = 'Bitte zuerst einen Official-Account auswählen.';
+          flash.className = 'error';
+          return;
+        }
+        const slug = window.prompt('Kampagnen-ID (z.B. newyear_redpacket):', 'redpacket_' + accId);
+        if (!slug || !slug.trim()) {
+          return;
+        }
+        const now = new Date().toISOString();
+        document.getElementById('feed_id').value = slug.trim();
+        document.getElementById('feed_type').value = 'promo';
+        if (!document.getElementById('feed_title').value.trim()) {
+          document.getElementById('feed_title').value = 'Red‑packet campaign';
+        }
+        if (!document.getElementById('feed_snippet').value.trim()) {
+          document.getElementById('feed_snippet').value = 'Launch a red‑packet promotion for this merchant.';
+        }
+        if (!document.getElementById('feed_ts').value.trim()) {
+          document.getElementById('feed_ts').value = now;
+        }
+        const deeplink = {
+          mini_app_id: 'payments',
+          payload: {
+            section: 'redpacket',
+            campaign: slug.trim(),
+            merchant_official_id: accId
+          }
+        };
+        document.getElementById('feed_deeplink').value = JSON.stringify(deeplink);
+        flash.textContent = 'Vorlage für Red‑Packet‑Kampagne befüllt – Felder ggf. anpassen und dann speichern.';
+        flash.className = 'success';
+      }
+
+      async function wizardRedpacketCampaign() {
+        const accId = document.getElementById('feed_account').value.trim();
+        const flash = document.getElementById('flash');
+        if (flash) {
+          flash.textContent = '';
+        }
+        if (!accId) {
+          if (flash) {
+            flash.textContent = 'Bitte zuerst einen Official-Account auswählen.';
+            flash.className = 'error';
+          }
+          return;
+        }
+        let slug = document.getElementById('campaign_id').value.trim();
+        if (!slug) {
+          slug = window.prompt('Kampagnen-ID (z.B. newyear_redpacket):', 'redpacket_' + accId) || '';
+          slug = slug.trim();
+        }
+        if (!slug) {
+          return;
+        }
+        const now = new Date().toISOString();
+        // Prefill feed fields (wie presetRedpacketCampaign)
+        document.getElementById('feed_id').value = slug;
+        document.getElementById('feed_type').value = 'promo';
+        if (!document.getElementById('feed_title').value.trim()) {
+          document.getElementById('feed_title').value = 'Red‑packet campaign';
+        }
+        if (!document.getElementById('feed_snippet').value.trim()) {
+          document.getElementById('feed_snippet').value = 'Launch a red‑packet promotion for this merchant.';
+        }
+        if (!document.getElementById('feed_ts').value.trim()) {
+          document.getElementById('feed_ts').value = now;
+        }
+        const deeplink = {
+          mini_app_id: 'payments',
+          payload: {
+            section: 'redpacket',
+            campaign: slug,
+            merchant_official_id: accId
+          }
+        };
+        document.getElementById('feed_deeplink').value = JSON.stringify(deeplink);
+        // Build campaign payload (mit Defaults, falls gesetzt)
+        const title = (document.getElementById('campaign_title').value.trim() ||
+                       document.getElementById('feed_title').value.trim() ||
+                       'Red‑packet campaign');
+        const defAmountStr = document.getElementById('campaign_default_amount').value.trim();
+        const defCountStr = document.getElementById('campaign_default_count').value.trim();
+        const campPayload = {
+          id: slug,
+          account_id: accId,
+          title,
+          active: true,
+        };
+        if (defAmountStr) {
+          const v = Number(defAmountStr);
+          if (!Number.isNaN(v)) {
+            campPayload.default_amount_cents = Math.trunc(v);
+          }
+        }
+        if (defCountStr) {
+          const v = Number(defCountStr);
+          if (!Number.isNaN(v)) {
+            campPayload.default_count = Math.trunc(v);
+          }
+        }
+        const noteStr = document.getElementById('campaign_note').value.trim();
+        if (noteStr) {
+          campPayload.note = noteStr;
+        }
+        try {
+          const r = await fetch('/admin/redpacket_campaigns', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(campPayload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            if (flash) {
+              flash.textContent = 'Fehler beim Anlegen der Kampagne: ' + r.status + ' ' + txt;
+              flash.className = 'error';
+            }
+            return;
+          }
+        } catch (e) {
+          if (flash) {
+            flash.textContent = 'Fehler beim Anlegen der Kampagne: ' + e;
+            flash.className = 'error';
+          }
+          return;
+        }
+        try {
+          // Feed-Item direkt erstellen
+          await createFeed();
+          if (flash) {
+            flash.textContent = 'Kampagne und Feed-Item angelegt.';
+            flash.className = 'success';
+          }
+          // Formular etwas aufräumen
+          document.getElementById('campaign_id').value = slug;
+          document.getElementById('campaign_title').value = title;
+          loadCampaignsForSelected();
+        } catch (e) {
+          if (flash) {
+            flash.textContent = 'Kampagne angelegt, aber Fehler beim Feed-Item: ' + e;
+            flash.className = 'error';
+          }
+        }
+      }
+
+      async function loadCampaignsForSelected() {
+        const bodyEl = document.getElementById('campaigns-body');
+        if (!bodyEl) return;
+        const accId = document.getElementById('feed_account').value;
+        if (!accId) {
+          bodyEl.innerHTML = '<tr><td colspan="5">Bitte Account wählen.</td></tr>';
+          return;
+        }
+        try {
+          const r = await fetch('/admin/redpacket_campaigns?account_id=' + encodeURIComponent(accId));
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="5">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.campaigns || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="5">Noch keine Kampagnen.</td></tr>';
+            return;
+          }
+          bodyEl.innerHTML = '';
+          for (const c of items) {
+            const idSafe = String(c.id || '').replace(/'/g, '');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td><code>${c.id}</code></td>
+              <td>${c.title || ''}</td>
+              <td>${c.active ? 'aktiv' : 'inaktiv'}</td>
+              <td><span class="muted">${c.created_at || ''}</span></td>
+              <td class="row-actions">
+                <button onclick="copyCampaignToForm('${idSafe}')">Bearbeiten</button>
+                <button onclick="toggleCampaignActive('${idSafe}', ${c.active ? 'false' : 'true'})">${c.active ? 'Deaktivieren' : 'Aktivieren'}</button>
+              </td>
+            `;
+            tr.dataset.campaignId = String(c.id || '');
+            tr.dataset.campaignTitle = c.title || '';
+            tr.dataset.campaignActive = c.active ? 'true' : 'false';
+            tr.dataset.campaignDefaultAmount = (c.default_amount_cents != null ? String(c.default_amount_cents) : '');
+            tr.dataset.campaignDefaultCount = (c.default_count != null ? String(c.default_count) : '');
+            tr.dataset.campaignNote = (c.note || '');
+            bodyEl.appendChild(tr);
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="5">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      function copyCampaignToForm(id) {
+        const bodyEl = document.getElementById('campaigns-body');
+        if (!bodyEl) return;
+        const rows = bodyEl.querySelectorAll('tr');
+        for (const tr of rows) {
+          if (!tr.dataset) continue;
+          if (tr.dataset.campaignId === String(id)) {
+            document.getElementById('campaign_edit_id').value = tr.dataset.campaignId || '';
+            document.getElementById('campaign_id').value = tr.dataset.campaignId || '';
+            document.getElementById('campaign_title').value = tr.dataset.campaignTitle || '';
+            document.getElementById('campaign_active').checked = (tr.dataset.campaignActive === 'true');
+            document.getElementById('campaign_default_amount').value = tr.dataset.campaignDefaultAmount || '';
+            document.getElementById('campaign_default_count').value = tr.dataset.campaignDefaultCount || '';
+            document.getElementById('campaign_note').value = tr.dataset.campaignNote || '';
+            break;
+          }
+        }
+      }
+
+      async function saveCampaign() {
+        const flash = document.getElementById('flash');
+        if (flash) {
+          flash.textContent = '';
+        }
+        const accId = document.getElementById('feed_account').value.trim();
+        const editId = document.getElementById('campaign_edit_id').value.trim();
+        const id = document.getElementById('campaign_id').value.trim();
+        const title = document.getElementById('campaign_title').value.trim();
+        const active = document.getElementById('campaign_active').checked;
+        const defaultAmountStr = document.getElementById('campaign_default_amount').value.trim();
+        const defaultCountStr = document.getElementById('campaign_default_count').value.trim();
+        const noteStr = document.getElementById('campaign_note').value.trim();
+        if (!accId || !id || !title) {
+          if (flash) {
+            flash.textContent = 'Account, Kampagnen-ID und Titel sind Pflicht.';
+            flash.className = 'error';
+          }
+          return;
+        }
+        const payload = {
+          account_id: accId,
+          title,
+          active,
+        };
+        if (defaultAmountStr) {
+          const v = Number(defaultAmountStr);
+          if (!Number.isNaN(v)) {
+            payload.default_amount_cents = Math.trunc(v);
+          }
+        }
+        if (defaultCountStr) {
+          const v = Number(defaultCountStr);
+          if (!Number.isNaN(v)) {
+            payload.default_count = Math.trunc(v);
+          }
+        }
+        if (noteStr) {
+          payload.note = noteStr;
+        }
+        let url = '/admin/redpacket_campaigns';
+        let method = 'POST';
+        if (editId && editId === id) {
+          url = '/admin/redpacket_campaigns/' + encodeURIComponent(id);
+          method = 'PATCH';
+        } else {
+          payload.id = id;
+        }
+        try {
+          const r = await fetch(url, {
+            method,
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            if (flash) {
+              flash.textContent = 'Fehler beim Speichern der Kampagne: ' + r.status + ' ' + txt;
+              flash.className = 'error';
+            }
+          } else {
+            if (flash) {
+              flash.textContent = 'Kampagne gespeichert.';
+              flash.className = 'success';
+            }
+            document.getElementById('campaign_edit_id').value = '';
+            document.getElementById('campaign_id').value = '';
+            document.getElementById('campaign_title').value = '';
+            document.getElementById('campaign_active').checked = true;
+            document.getElementById('campaign_default_amount').value = '';
+            document.getElementById('campaign_default_count').value = '';
+            document.getElementById('campaign_note').value = '';
+            loadCampaignsForSelected();
+          }
+        } catch (e) {
+          if (flash) {
+            flash.textContent = 'Fehler: ' + e;
+            flash.className = 'error';
+          }
+        }
+      }
+
+      async function toggleCampaignActive(id, active) {
+        const flash = document.getElementById('flash');
+        if (flash) {
+          flash.textContent = '';
+        }
+        if (!id) return;
+        const payload = {active: !!active};
+        try {
+          const r = await fetch('/admin/redpacket_campaigns/' + encodeURIComponent(id), {
+            method: 'PATCH',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            if (flash) {
+              flash.textContent = 'Fehler beim Aktualisieren der Kampagne: ' + r.status + ' ' + txt;
+              flash.className = 'error';
+            }
+          } else {
+            if (flash) {
+              flash.textContent = 'Kampagnenstatus aktualisiert.';
+              flash.className = 'success';
+            }
+            loadCampaignsForSelected();
+          }
+        } catch (e) {
+          if (flash) {
+            flash.textContent = 'Fehler: ' + e;
+            flash.className = 'error';
+          }
+        }
+      }
+
+      async function loadLocationsForSelected() {
+        const accSelect = document.getElementById('loc_account');
+        const bodyEl = document.getElementById('locations-body');
+        if (!accSelect || !bodyEl) return;
+        const accId = accSelect.value;
+        if (!accId) {
+          bodyEl.innerHTML = '<tr><td colspan="8">Bitte Account wählen.</td></tr>';
+          return;
+        }
+        try {
+          const r = await fetch('/admin/official_locations?account_id=' + encodeURIComponent(accId));
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="8">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.locations || data.items || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="8">Noch keine Locations.</td></tr>';
+            return;
+          }
+          bodyEl.innerHTML = '';
+          for (const loc of items) {
+            const tr = document.createElement('tr');
+            const lat = loc.lat != null ? String(loc.lat) : '';
+            const lon = loc.lon != null ? String(loc.lon) : '';
+            tr.innerHTML = `
+              <td>${loc.id}</td>
+              <td>${loc.name || ''}</td>
+              <td>${loc.city || ''}</td>
+              <td>${loc.address || ''}</td>
+              <td>${loc.phone || ''}</td>
+              <td>${loc.opening_hours || ''}</td>
+              <td>${lat && lon ? lat + ', ' + lon : ''}</td>
+              <td class="row-actions">
+                <button onclick="copyLocationToForm('${loc.id}')">Bearbeiten</button>
+                <button onclick="deleteLocation('${loc.id}')">Löschen</button>
+              </td>
+            `;
+            tr.dataset.locId = String(loc.id);
+            tr.dataset.locName = loc.name || '';
+            tr.dataset.locCity = loc.city || '';
+            tr.dataset.locAddress = loc.address || '';
+            tr.dataset.locPhone = loc.phone || '';
+            tr.dataset.locOpening = loc.opening_hours || '';
+            tr.dataset.locLat = lat;
+            tr.dataset.locLon = lon;
+            bodyEl.appendChild(tr);
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="8">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      function copyLocationToForm(id) {
+        const bodyEl = document.getElementById('locations-body');
+        if (!bodyEl) return;
+        const rows = bodyEl.querySelectorAll('tr');
+        for (const tr of rows) {
+          if (!tr.dataset) continue;
+          if (tr.dataset.locId === String(id)) {
+            document.getElementById('loc_id').value = tr.dataset.locId || '';
+            document.getElementById('loc_name').value = tr.dataset.locName || '';
+            document.getElementById('loc_city').value = tr.dataset.locCity || '';
+            document.getElementById('loc_address').value = tr.dataset.locAddress || '';
+            document.getElementById('loc_phone').value = tr.dataset.locPhone || '';
+            document.getElementById('loc_opening_hours').value = tr.dataset.locOpening || '';
+            document.getElementById('loc_lat').value = tr.dataset.locLat || '';
+            document.getElementById('loc_lon').value = tr.dataset.locLon || '';
+            break;
+          }
+        }
+      }
+
+      async function deleteLocation(id) {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/admin/official_locations/' + encodeURIComponent(id), { method: 'DELETE' });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Löschen: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Location gelöscht.';
+            flash.className = 'success';
+            loadLocationsForSelected();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      async function saveLocation() {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        const locId = document.getElementById('loc_id').value.trim();
+        const account_id = document.getElementById('loc_account').value.trim();
+        const name = document.getElementById('loc_name').value.trim();
+        const city = document.getElementById('loc_city').value.trim();
+        const address = document.getElementById('loc_address').value.trim();
+        const phone = document.getElementById('loc_phone').value.trim();
+        const opening_hours = document.getElementById('loc_opening_hours').value.trim();
+        const latStr = document.getElementById('loc_lat').value.trim();
+        const lonStr = document.getElementById('loc_lon').value.trim();
+        if (!account_id) {
+          flash.textContent = 'Bitte Account wählen.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {
+          account_id,
+          name: name || null,
+          city: city || null,
+          address: address || null,
+          phone: phone || null,
+          opening_hours: opening_hours || null,
+        };
+        if (latStr) {
+          const v = Number(latStr);
+          if (!Number.isNaN(v)) payload.lat = v;
+        }
+        if (lonStr) {
+          const v = Number(lonStr);
+          if (!Number.isNaN(v)) payload.lon = v;
+        }
+        let url = '/admin/official_locations';
+        let method = 'POST';
+        if (locId) {
+          url = '/admin/official_locations/' + encodeURIComponent(locId);
+          method = 'PATCH';
+        }
+        try {
+          const r = await fetch(url, {
+            method,
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Speichern: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Location gespeichert.';
+            flash.className = 'success';
+            document.getElementById('loc_id').value = '';
+            loadLocationsForSelected();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      function escHtml(s) {
+        if (!s) return '';
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }
+
+      async function loadOfficialRequests() {
+        const tbody = document.getElementById('requests-body');
+        const flash = document.getElementById('flash');
+        if (!tbody) return;
+        if (flash) {
+          flash.textContent = '';
+          flash.className = 'muted';
+        }
+        tbody.innerHTML = '<tr><td colspan="8">Lade Requests…</td></tr>';
+        const sel = document.getElementById('req_filter');
+        const status = sel ? (sel.value || '').trim() : '';
+        let url = '/admin/official_account_requests';
+        if (status) {
+          url += '?status=' + encodeURIComponent(status);
+        }
+        try {
+          const r = await fetch(url);
+          if (!r.ok) {
+            const txt = await r.text();
+            tbody.innerHTML = '<tr><td colspan="8">Fehler: ' + r.status + ' ' + txt + '</td></tr>';
+            if (flash) {
+              flash.textContent = 'Fehler beim Laden der Requests.';
+              flash.className = 'error';
+            }
+            return;
+          }
+          const data = await r.json();
+          const items = data.requests || [];
+          if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="8">Keine Requests gefunden.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = '';
+          for (const req of items) {
+            const tr = document.createElement('tr');
+            const created = req.created_at || '';
+            const owner = [
+              req.owner_name || '',
+              req.contact_phone || '',
+              req.contact_email || '',
+            ].filter(Boolean).join(' · ');
+            const place = [
+              req.city || '',
+              req.category || '',
+            ].filter(Boolean).join(' · ');
+            const statusVal = req.status || '';
+            let statusPillClass = 'pill-off';
+            if (statusVal === 'submitted') statusPillClass = 'pill-beta';
+            else if (statusVal === 'approved') statusPillClass = 'pill-on';
+            const statusHtml = '<span class="pill ' + statusPillClass + '">' + escHtml(statusVal) + '</span>';
+            tr.innerHTML = `
+              <td>${req.id}</td>
+              <td><code>${escHtml(req.account_id)}</code><br/><span class="muted">${escHtml(req.name || '')}</span></td>
+              <td>${escHtml(req.kind || '')}</td>
+              <td>${escHtml(owner)}</td>
+              <td>${escHtml(place)}</td>
+              <td>${statusHtml}</td>
+              <td><span class="muted">${escHtml(created)}</span></td>
+              <td class="row-actions">
+                <button onclick="approveOfficialRequest(${req.id})">Approve &amp; create</button>
+                <button onclick="rejectOfficialRequest(${req.id})">Reject</button>
+              </td>
+            `;
+            tbody.appendChild(tr);
+          }
+        } catch (e) {
+          tbody.innerHTML = '<tr><td colspan="8">Fehler: ' + e + '</td></tr>';
+          if (flash) {
+            flash.textContent = 'Fehler beim Laden der Requests.';
+            flash.className = 'error';
+          }
+        }
+      }
+
+      async function approveOfficialRequest(id) {
+        const flash = document.getElementById('flash');
+        if (flash) {
+          flash.textContent = '';
+          flash.className = 'muted';
+        }
+        if (!id && id !== 0) return;
+        try {
+          const r = await fetch('/admin/official_account_requests/' + encodeURIComponent(String(id)) + '/approve', {
+            method: 'POST',
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            if (flash) {
+              flash.textContent = 'Fehler beim Approven: ' + r.status + ' ' + txt;
+              flash.className = 'error';
+            }
+          } else {
+            if (flash) {
+              flash.textContent = 'Request approved und Official Account ggf. angelegt.';
+              flash.className = 'success';
+            }
+            loadAccounts();
+            loadOfficialRequests();
+          }
+        } catch (e) {
+          if (flash) {
+            flash.textContent = 'Fehler: ' + e;
+            flash.className = 'error';
+          }
+        }
+      }
+
+      async function rejectOfficialRequest(id) {
+        const flash = document.getElementById('flash');
+        if (flash) {
+          flash.textContent = '';
+          flash.className = 'muted';
+        }
+        if (!id && id !== 0) return;
+        try {
+          const r = await fetch('/admin/official_account_requests/' + encodeURIComponent(String(id)) + '/reject', {
+            method: 'POST',
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            if (flash) {
+              flash.textContent = 'Fehler beim Rejecten: ' + r.status + ' ' + txt;
+              flash.className = 'error';
+            }
+          } else {
+            if (flash) {
+              flash.textContent = 'Request rejected.';
+              flash.className = 'success';
+            }
+            loadOfficialRequests();
+          }
+        } catch (e) {
+          if (flash) {
+            flash.textContent = 'Fehler: ' + e;
+            flash.className = 'error';
+          }
+        }
+      }
+
+      loadAccounts();
+      loadOfficialRequests();
+    </script>
+  </body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/admin/miniapps", response_class=HTMLResponse)
+def admin_miniapps_console(request: Request) -> HTMLResponse:
+    """
+    Einfache HTML-Konsole für Mini-Apps (Mini-Programme).
+
+    Nutzt die JSON-Admin-Endpunkte /admin/mini_apps, um Partner- und
+    Drittanbieter-Apps ähnlich wie WeChat Mini-Programs zu verwalten.
+    """
+    _require_admin_v2(request)
+    html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shamell · Mini-Apps</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; max-width: 960px; color: #0f172a; background:#ffffff; }
+      h1 { margin-bottom: 4px; }
+      h2 { margin-top: 24px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+      th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
+      th { background: #f9fafb; font-weight: 600; }
+      input, select, textarea { font-size: 13px; padding: 4px 6px; margin: 2px 0; width: 100%; box-sizing: border-box; }
+      textarea { min-height: 48px; }
+      button { font-size: 13px; padding: 4px 8px; margin: 0 2px; cursor: pointer; }
+      .pill { display:inline-block; padding:2px 6px; border-radius:999px; font-size:11px; }
+      .pill-official { background:#dbeafe; color:#1d4ed8; }
+      .pill-beta { background:#fef3c7; color:#92400e; }
+      .pill-disabled { background:#fee2e2; color:#991b1b; }
+      .muted { color:#6b7280; font-size:12px; }
+      .row-actions { white-space: nowrap; }
+      .error { color:#b91c1c; margin-top:4px; }
+      .success { color:#166534; margin-top:4px; }
+      .flex { display:flex; gap:8px; flex-wrap:wrap; }
+      .flex > div { flex:1 1 220px; min-width:200px; }
+      code { font-size:12px; background:#f3f4f6; padding:2px 4px; border-radius:4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Mini-Apps</h1>
+    <p class="muted">
+      WeChat-ähnliche Mini-Programme für das Shamell-Ökosystem.<br/>
+      Diese Konsole steuert den Katalog unter <code>/mini_apps</code> und den Mini-Apps-Tab in der Super-App.
+    </p>
+    <p class="muted">
+      <a href="/admin/officials">Official-Accounts-Konsole</a>
+      · <a href="/admin/redpacket_campaigns/analytics">Red‑Packet‑Kampagnen-Analytics</a>
+      · <a href="/admin/miniapps/analytics">Mini‑Apps‑Analytics</a>
+    </p>
+
+    <div id="flash" class="muted"></div>
+
+    <h2>Bestehende Mini-Apps</h2>
+    <p class="muted">Status, Rating und Usage-Scores dienen als einfache Trending-Signale (analog zu WeChat Popular Mini-Programs).</p>
+    <table id="miniapps-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Kategorie</th>
+          <th>Runtime</th>
+          <th>Status</th>
+          <th>Rating</th>
+          <th>Usage</th>
+          <th>Beschreibung</th>
+          <th>Aktionen</th>
+        </tr>
+      </thead>
+      <tbody id="miniapps-body">
+        <tr><td colspan="9">Lade Daten…</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Neue Mini-App registrieren</h2>
+    <div class="flex">
+      <div>
+        <label>App-ID<br/>
+          <input id="new_app_id" placeholder="z.B. partner_shop" />
+        </label>
+      </div>
+      <div>
+        <label>Titel (EN)<br/>
+          <input id="new_title_en" placeholder="Display title (EN)" />
+        </label>
+      </div>
+      <div>
+        <label>Titel (AR, optional)<br/>
+          <input id="new_title_ar" placeholder="Display title (AR)" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Kategorie (EN)<br/>
+          <input id="new_category_en" placeholder="z.B. Mobility, Marketplace" />
+        </label>
+      </div>
+      <div>
+        <label>Kategorie (AR)<br/>
+          <input id="new_category_ar" placeholder="optional (AR)" />
+        </label>
+      </div>
+      <div>
+        <label>Icon (optional)<br/>
+          <input id="new_icon" placeholder="Material-Icon-Name oder custom key" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Runtime-App-ID (optional, Mini‑Program)<br/>
+          <input id="new_runtime_app_id" placeholder="z.B. taxi_demo (Mini-Program app_id)" />
+        </label>
+      </div>
+      <div></div>
+      <div></div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Beschreibung<br/>
+          <textarea id="new_description" placeholder="Kurzbeschreibung (z.B. Partner-Shop oder Service)"></textarea>
+        </label>
+      </div>
+      <div>
+        <label><input type="checkbox" id="new_official" /> Official (Shamell-first-party)</label><br/>
+        <label><input type="checkbox" id="new_beta" /> Beta</label><br/>
+        <label><input type="checkbox" id="new_enabled" checked /> Enabled</label>
+      </div>
+      <div>
+        <label>Rating (0–5, optional)<br/>
+          <input id="new_rating" placeholder="z.B. 4.5" />
+        </label>
+        <label>Usage-Score (optional)<br/>
+          <input id="new_usage" placeholder="z.B. 50" />
+        </label>
+      </div>
+    </div>
+    <p>
+      <button onclick="createMiniApp()">Mini-App registrieren</button>
+    </p>
+
+    <script>
+      async function loadMiniApps() {
+        const bodyEl = document.getElementById('miniapps-body');
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/admin/mini_apps');
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="9">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.apps || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="9">Noch keine Mini-Apps registriert.</td></tr>';
+            return;
+          }
+          bodyEl.innerHTML = '';
+          for (const app of items) {
+            const tr = document.createElement('tr');
+            const statusHtml = [
+              app.enabled ? '' : '<span class="pill pill-disabled">disabled</span>',
+              app.official ? '<span class="pill pill-official">official</span>' : '',
+              app.beta ? '<span class="pill pill-beta">beta</span>' : '',
+            ].filter(Boolean).join(' ');
+            const rating = (app.rating != null ? app.rating : 0).toFixed ? Number(app.rating).toFixed(1) : String(app.rating || '');
+            const usage = app.usage_score != null ? String(app.usage_score) : '';
+            const cat = [app.category_en || '', app.category_ar || ''].filter(Boolean).join(' / ');
+            const runtime = app.runtime_app_id || '';
+            tr.innerHTML = `
+              <td><code>${app.app_id || ''}</code></td>
+              <td>${app.title_en || ''}<br/><span class="muted">${app.title_ar || ''}</span></td>
+              <td>${cat}</td>
+              <td>${runtime ? '<code>' + runtime + '</code>' : '<span class="muted">–</span>'}</td>
+              <td>${statusHtml || '<span class="muted">–</span>'}</td>
+              <td>${rating || ''}</td>
+              <td>${usage || ''}</td>
+              <td>${app.description || ''}</td>
+              <td class="row-actions">
+                <button onclick="toggleMiniAppEnabled('${app.app_id}', ${app.enabled ? 'false' : 'true'})">${app.enabled ? 'Disable' : 'Enable'}</button>
+                <button onclick="toggleMiniAppOfficial('${app.app_id}', ${app.official ? 'false' : 'true'})">${app.official ? 'Set partner' : 'Set official'}</button>
+                <button onclick="editMiniApp('${app.app_id}')">Edit</button>
+              </td>
+            `;
+            tr.dataset.appId = app.app_id || '';
+            tr.dataset.titleEn = app.title_en || '';
+            tr.dataset.titleAr = app.title_ar || '';
+            tr.dataset.categoryEn = app.category_en || '';
+            tr.dataset.categoryAr = app.category_ar || '';
+            tr.dataset.description = app.description || '';
+            tr.dataset.icon = app.icon || '';
+            tr.dataset.runtimeAppId = app.runtime_app_id || '';
+            tr.dataset.official = app.official ? 'true' : 'false';
+            tr.dataset.enabled = app.enabled ? 'true' : 'false';
+            tr.dataset.beta = app.beta ? 'true' : 'false';
+            tr.dataset.rating = rating || '';
+            tr.dataset.usage = usage || '';
+            bodyEl.appendChild(tr);
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="8">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      async function patchMiniApp(appId, patch) {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/admin/mini_apps/' + encodeURIComponent(appId), {
+            method: 'PATCH',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(patch),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Gespeichert.';
+            flash.className = 'success';
+            loadMiniApps();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      function toggleMiniAppEnabled(appId, enabled) {
+        patchMiniApp(appId, {enabled: !!enabled});
+      }
+
+      function toggleMiniAppOfficial(appId, official) {
+        patchMiniApp(appId, {official: !!official});
+      }
+
+      function editMiniApp(appId) {
+        const bodyEl = document.getElementById('miniapps-body');
+        const rows = bodyEl.querySelectorAll('tr');
+        for (const tr of rows) {
+          if (!tr.dataset) continue;
+          if (tr.dataset.appId === String(appId)) {
+            document.getElementById('new_app_id').value = tr.dataset.appId || '';
+            document.getElementById('new_title_en').value = tr.dataset.titleEn || '';
+            document.getElementById('new_title_ar').value = tr.dataset.titleAr || '';
+            document.getElementById('new_category_en').value = tr.dataset.categoryEn || '';
+            document.getElementById('new_category_ar').value = tr.dataset.categoryAr || '';
+            document.getElementById('new_description').value = tr.dataset.description || '';
+            document.getElementById('new_icon').value = tr.dataset.icon || '';
+            document.getElementById('new_runtime_app_id').value = tr.dataset.runtimeAppId || '';
+            document.getElementById('new_official').checked = (tr.dataset.official === 'true');
+            document.getElementById('new_enabled').checked = (tr.dataset.enabled === 'true');
+            document.getElementById('new_beta').checked = (tr.dataset.beta === 'true');
+            document.getElementById('new_rating').value = tr.dataset.rating || '';
+            document.getElementById('new_usage').value = tr.dataset.usage || '';
+            break;
+          }
+        }
+      }
+
+      async function createMiniApp() {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        const app_id = document.getElementById('new_app_id').value.trim();
+        const title_en = document.getElementById('new_title_en').value.trim();
+        const title_ar = document.getElementById('new_title_ar').value.trim();
+        const category_en = document.getElementById('new_category_en').value.trim();
+        const category_ar = document.getElementById('new_category_ar').value.trim();
+        const description = document.getElementById('new_description').value.trim();
+        const icon = document.getElementById('new_icon').value.trim();
+        const official = document.getElementById('new_official').checked;
+        const beta = document.getElementById('new_beta').checked;
+        const enabled = document.getElementById('new_enabled').checked;
+        const ratingStr = document.getElementById('new_rating').value.trim();
+        const usageStr = document.getElementById('new_usage').value.trim();
+        const runtimeAppId = document.getElementById('new_runtime_app_id').value.trim();
+        if (!app_id || !title_en) {
+          flash.textContent = 'App-ID und Titel (EN) sind Pflicht.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {
+          app_id,
+          title_en,
+          title_ar: title_ar || null,
+          category_en: category_en || null,
+          category_ar: category_ar || null,
+          description: description || null,
+          icon: icon || null,
+          official,
+          beta,
+          enabled,
+          runtime_app_id: runtimeAppId || null,
+        };
+        if (ratingStr) {
+          const v = Number(ratingStr.replace(',', '.'));
+          if (!Number.isNaN(v)) {
+            payload.rating = v;
+          }
+        }
+        if (usageStr) {
+          const v = Number(usageStr);
+          if (!Number.isNaN(v)) {
+            payload.usage_score = Math.trunc(v);
+          }
+        }
+        try {
+          const r = await fetch('/admin/mini_apps', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Mini-App registriert.';
+            flash.className = 'success';
+            document.getElementById('new_app_id').value = '';
+            document.getElementById('new_title_en').value = '';
+            document.getElementById('new_title_ar').value = '';
+            document.getElementById('new_category_en').value = '';
+            document.getElementById('new_category_ar').value = '';
+            document.getElementById('new_description').value = '';
+            document.getElementById('new_icon').value = '';
+            document.getElementById('new_official').checked = false;
+            document.getElementById('new_beta').checked = false;
+            document.getElementById('new_enabled').checked = true;
+            document.getElementById('new_rating').value = '';
+            document.getElementById('new_usage').value = '';
+            document.getElementById('new_runtime_app_id').value = '';
+            loadMiniApps();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      loadMiniApps();
+    </script>
+  </body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/admin/miniprograms", response_class=HTMLResponse)
+def admin_miniprograms_console(request: Request) -> HTMLResponse:
+    """
+    Einfache HTML-Konsole für Mini-Programme (Mini-Programs).
+
+    Nutzt die öffentlichen JSON-Endpunkte /mini_programs und
+    /mini_programs/{id}, um WeChat-ähnliche Mini-Programs zu
+    inspizieren und neue Einträge anzulegen.
+    """
+    _require_admin_v2(request)
+    html = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shamell · Mini-Programs</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; max-width: 960px; color: #0f172a; background:#ffffff; }
+      h1 { margin-bottom: 4px; }
+      h2 { margin-top: 24px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+      th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
+      th { background: #f9fafb; font-weight: 600; }
+      input, textarea { font-size: 13px; padding: 4px 6px; margin: 2px 0; width: 100%; box-sizing: border-box; }
+      textarea { min-height: 64px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      button { font-size: 13px; padding: 4px 8px; margin: 0 2px; cursor: pointer; }
+      .muted { color:#6b7280; font-size:12px; }
+      .pill { display:inline-block; padding:2px 6px; border-radius:999px; font-size:11px; }
+      .pill-active { background:#dcfce7; color:#15803d; }
+      .pill-draft { background:#e5e7eb; color:#374151; }
+      .pill-owner { background:#e0f2fe; color:#1d4ed8; }
+      .pill-review-draft { background:#f3f4f6; color:#374151; }
+      .pill-review-submitted { background:#fffbeb; color:#92400e; }
+      .pill-review-approved { background:#dcfce7; color:#166534; }
+      .pill-review-rejected { background:#fee2e2; color:#b91c1c; }
+      .pill-review-suspended { background:#fef9c3; color:#854d0e; }
+      .flex { display:flex; gap:8px; flex-wrap:wrap; }
+      .flex > div { flex:1 1 220px; min-width:200px; }
+      code { font-size:12px; background:#f3f4f6; padding:2px 4px; border-radius:4px; }
+      #flash { margin: 4px 0 8px; }
+      #flash.error { color:#b91c1c; }
+      #flash.success { color:#166534; }
+    </style>
+  </head>
+  <body>
+    <h1>Mini-Programs</h1>
+    <p class="muted">
+      WeChat-ähnliche Mini-Programme, die in der Shamell-Shell laufen.<br/>
+      Diese Konsole zeigt den Katalog aus <code>/mini_programs</code> und erlaubt das Anlegen neuer Einträge.
+    </p>
+    <p class="muted">
+      <a href="/admin/miniapps">Mini-Apps-Konsole</a>
+      · <a href="/admin/officials">Official-Accounts-Konsole</a>
+      · <a href="/admin/mini_programs/analytics">Mini‑Programs‑Analytics</a>
+    </p>
+
+    <div id="flash" class="muted"></div>
+
+    <h2>Registrierte Mini-Programs</h2>
+    <table id="programs-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Owner</th>
+          <th>Status</th>
+          <th>Review</th>
+          <th>Scopes</th>
+          <th>Released</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="programs-body">
+        <tr><td colspan="7">Lade Daten…</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Neues Mini-Program registrieren</h2>
+    <div class="flex">
+      <div>
+        <label>App-ID<br/>
+          <input id="mp_app_id" placeholder="z.B. taxi_demo" />
+        </label>
+      </div>
+      <div>
+        <label>Titel (EN)<br/>
+          <input id="mp_title_en" placeholder="Display title (EN)" />
+        </label>
+      </div>
+      <div>
+        <label>Titel (AR, optional)<br/>
+          <input id="mp_title_ar" placeholder="Display title (AR)" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Beschreibung (EN, optional)<br/>
+          <textarea id="mp_desc_en" placeholder="Kurzbeschreibung (EN)"></textarea>
+        </label>
+      </div>
+      <div>
+        <label>Beschreibung (AR, optional)<br/>
+          <textarea id="mp_desc_ar" placeholder="Kurzbeschreibung (AR)"></textarea>
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Owner-Name (optional)<br/>
+          <input id="mp_owner_name" placeholder="z.B. Partner oder Marke" />
+        </label>
+      </div>
+      <div>
+        <label>Owner-Kontakt (optional)<br/>
+          <input id="mp_owner_contact" placeholder="Kontakt/E-Mail" />
+        </label>
+      </div>
+    </div>
+    <div>
+      <label>Actions (JSON-Array, optional)<br/>
+        <textarea id="mp_actions_json" placeholder='[
+  {"id":"open_taxi","label_en":"Open Taxi","label_ar":"فتح التاكسي","kind":"open_mod","mod_id":"taxi_rider"},
+  {"id":"close","label_en":"Close","label_ar":"إغلاق","kind":"close"}
+]'></textarea>
+      </label>
+      <p class="muted">
+        Felder: <code>id</code>, <code>label_en</code>, <code>label_ar</code>, <code>kind</code> (open_mod | open_url | close),
+        optional <code>mod_id</code> bzw. <code>url</code>.
+      </p>
+    </div>
+    <p>
+      <button onclick="createMiniProgram()">Mini-Program registrieren</button>
+    </p>
+
+    <script>
+      async function loadMiniPrograms() {
+        const bodyEl = document.getElementById('programs-body');
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/mini_programs');
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="7">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.programs || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="7">Noch keine Mini-Programs registriert.</td></tr>';
+            return;
+          }
+          bodyEl.innerHTML = '';
+          for (const prog of items) {
+            const tr = document.createElement('tr');
+            const status = (prog.status || '').toLowerCase();
+            const reviewStatus = (prog.review_status || 'draft').toString();
+            const scopes = Array.isArray(prog.scopes) ? prog.scopes : [];
+            let statusHtml = '';
+            if (status === 'active') {
+              statusHtml = '<span class="pill pill-active">active</span>';
+            } else {
+              statusHtml = '<span class="pill pill-draft">' + (status || 'draft') + '</span>';
+            }
+            let reviewClass = 'pill-review-draft';
+            const rs = reviewStatus.toLowerCase();
+            if (rs === 'submitted') reviewClass = 'pill-review-submitted';
+            else if (rs === 'approved') reviewClass = 'pill-review-approved';
+            else if (rs === 'rejected') reviewClass = 'pill-review-rejected';
+            else if (rs === 'suspended') reviewClass = 'pill-review-suspended';
+            const reviewHtml = '<span class="pill ' + reviewClass + '">' + reviewStatus + '</span>';
+            let scopesHtml = '<span class="muted">–</span>';
+            if (scopes.length) {
+              scopesHtml = scopes.map(s => '<code>' + String(s) + '</code>').join(' ');
+            }
+            const ownerBits = [];
+            if (prog.owner_name) ownerBits.push(prog.owner_name);
+            if (prog.owner_contact) ownerBits.push('<span class="muted">' + prog.owner_contact + '</span>');
+            const ownerHtml = ownerBits.length
+              ? '<span class="pill pill-owner">' + ownerBits.join(' · ') + '</span>'
+              : '<span class="muted">–</span>';
+            const relVer = prog.released_version || '';
+            const relChan = prog.released_channel || '';
+            const relHtml = relVer
+              ? '<code>' + relVer + '</code>' + (relChan ? ' <span class="muted">(' + relChan + ')</span>' : '')
+              : '<span class="muted">–</span>';
+            const appIdSafe = prog.app_id || '';
+            tr.innerHTML = `
+              <td><code>${appIdSafe}</code></td>
+              <td>${prog.title_en || ''}<br/><span class="muted">${prog.title_ar || ''}</span></td>
+              <td>${ownerHtml}</td>
+              <td>${statusHtml}</td>
+              <td>${reviewHtml}</td>
+              <td>${scopesHtml}</td>
+              <td>${relHtml}</td>
+              <td>
+                <a href="/mini_programs/${encodeURIComponent(appIdSafe)}" target="_blank">JSON</a><br/>
+                <button type="button" onclick="updateMiniProgramStatus('${appIdSafe}','active','approved')">Approve &amp; activate</button>
+                <button type="button" onclick="updateMiniProgramStatus('${appIdSafe}','disabled','rejected')">Reject</button>
+              </td>
+            `;
+            bodyEl.appendChild(tr);
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="7">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      async function updateMiniProgramStatus(appId, status, reviewStatus) {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        flash.className = 'muted';
+        if (!appId) {
+          flash.textContent = 'App-ID fehlt.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {};
+        if (status) payload.status = status;
+        if (reviewStatus) payload.review_status = reviewStatus;
+        try {
+          const r = await fetch('/admin/mini_programs/' + encodeURIComponent(appId), {
+            method: 'PATCH',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Aktualisieren: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Mini-Program aktualisiert.';
+            flash.className = 'success';
+            loadMiniPrograms();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      async function createMiniProgram() {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        flash.className = 'muted';
+        const app_id = document.getElementById('mp_app_id').value.trim();
+        const title_en = document.getElementById('mp_title_en').value.trim();
+        const title_ar = document.getElementById('mp_title_ar').value.trim();
+        const desc_en = document.getElementById('mp_desc_en').value.trim();
+        const desc_ar = document.getElementById('mp_desc_ar').value.trim();
+        const owner_name = document.getElementById('mp_owner_name').value.trim();
+        const owner_contact = document.getElementById('mp_owner_contact').value.trim();
+        const actionsRaw = document.getElementById('mp_actions_json').value.trim();
+        if (!app_id || !title_en) {
+          flash.textContent = 'App-ID und Titel (EN) sind Pflicht.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {
+          app_id,
+          title_en,
+          title_ar: title_ar || null,
+          description_en: desc_en || null,
+          description_ar: desc_ar || null,
+          owner_name: owner_name || null,
+          owner_contact: owner_contact || null,
+        };
+        if (actionsRaw) {
+          try {
+            const parsed = JSON.parse(actionsRaw);
+            if (Array.isArray(parsed)) {
+              payload.actions = parsed;
+            } else {
+              flash.textContent = 'Actions JSON muss ein Array sein.';
+              flash.className = 'error';
+              return;
+            }
+          } catch (e) {
+            flash.textContent = 'Fehler im Actions JSON: ' + e;
+            flash.className = 'error';
+            return;
+          }
+        }
+        try {
+          const r = await fetch('/mini_programs', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Mini-Program registriert.';
+            flash.className = 'success';
+            document.getElementById('mp_app_id').value = '';
+            document.getElementById('mp_title_en').value = '';
+            document.getElementById('mp_title_ar').value = '';
+            document.getElementById('mp_desc_en').value = '';
+            document.getElementById('mp_desc_ar').value = '';
+            document.getElementById('mp_owner_name').value = '';
+            document.getElementById('mp_owner_contact').value = '';
+            // Actions-Template bewusst nicht leeren, damit es als Vorlage dient.
+            loadMiniPrograms();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      loadMiniPrograms();
+    </script>
+  </body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/admin/mini_programs/analytics", response_class=HTMLResponse)
+def admin_miniprograms_analytics(request: Request) -> HTMLResponse:
+    """
+    Lightweight HTML analytics für Mini-Programs.
+
+    Nutzt usage_score als einfache KPI – ähnlich zu WeChat
+    Mini-Program \"popular\" / \"top\" Rankings.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(MiniProgramDB).order_by(
+                        MiniProgramDB.usage_score.desc(), MiniProgramDB.app_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        total_usage = 0
+        for row in rows:
+            try:
+                total_usage += int(getattr(row, "usage_score", 0) or 0)
+            except Exception:
+                continue
+
+        # Best-effort Moments share counts pro Mini-Program für Analytics:
+        # lifetime und letzte 30 Tage (WeChat-like "hot last 30 days").
+        moments_all: dict[str, int] = {}
+        moments_30d: dict[str, int] = {}
+        try:
+            app_ids = [r.app_id for r in rows if getattr(r, "app_id", None)]
+            if app_ids:
+                with _moments_session() as ms:
+                    since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+                    for app_id in app_ids:
+                        try:
+                            pattern = f"shamell://mini_program/{app_id}"
+                            base_stmt = _sa_select(
+                                _sa_func.count(MomentPostDB.id)
+                            ).where(MomentPostDB.text.contains(pattern))
+                            cnt_all = ms.execute(base_stmt).scalar() or 0
+                            cnt_30 = (
+                                ms.execute(
+                                    base_stmt.where(
+                                        MomentPostDB.created_at >= since_30d
+                                    )
+                                ).scalar()
+                                or 0
+                            )
+                            moments_all[str(app_id)] = int(cnt_all or 0)
+                            moments_30d[str(app_id)] = int(cnt_30 or 0)
+                        except Exception:
+                            continue
+        except Exception:
+            moments_all = {}
+            moments_30d = {}
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        rows_html: list[str] = []
+        for row in rows:
+            app_id = row.app_id
+            title_en = row.title_en or ""
+            title_ar = row.title_ar or ""
+            owner = getattr(row, "owner_name", "") or ""
+            status = (row.status or "").strip()
+            try:
+                usage = int(getattr(row, "usage_score", 0) or 0)
+            except Exception:
+                usage = 0
+            share = 0.0
+            if total_usage > 0 and usage > 0:
+                try:
+                    share = (usage / float(total_usage)) * 100.0
+                except Exception:
+                    share = 0.0
+            try:
+                rating_val = float(getattr(row, "rating", 0.0) or 0.0)
+            except Exception:
+                rating_val = 0.0
+            try:
+                m_all = int(
+                    moments_all.get(app_id, 0)
+                    or getattr(row, "moments_shares", 0)
+                    or 0
+                )
+            except Exception:
+                m_all = 0
+            try:
+                m_30 = int(moments_30d.get(app_id, 0) or 0)
+            except Exception:
+                m_30 = 0
+            rows_html.append(
+                "<tr>"
+                f"<td><code>{esc(app_id)}</code></td>"
+                f"<td>{esc(title_en)}<br/><span class=\"meta\">{esc(title_ar)}</span></td>"
+                f"<td>{esc(owner)}</td>"
+                f"<td>{esc(status)}</td>"
+                f"<td>{usage}</td>"
+                f"<td>{share:.1f}%</td>"
+                f"<td>{rating_val:.1f}</td>"
+                f"<td>{m_all}</td>"
+                f"<td>{m_30}</td>"
+                "</tr>"
+            )
+
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini-Programs · Analytics</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:960px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:12px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:2px;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Mini-Programs · Analytics</h1>
+  <div class="meta">
+    Basierend auf usage_score (Open-Events via /mini_programs/&lt;id&gt;/track_open)
+    und Moments-Sharing (Deep-Links auf shamell://mini_program/&lt;id&gt;).<br/>
+    Dient als WeChat‑ähnliche Übersicht der beliebtesten und zuletzt in Moments
+    geteilten Mini‑Programme.
+  </div>
+  <p class="meta">
+    <a href="/admin/miniprograms">Zurück zur Mini‑Programs-Konsole</a>
+    · <a href="/admin/mini_programs/review">Review‑Center</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>App ID</th>
+        <th>Title</th>
+        <th>Owner</th>
+        <th>Status</th>
+        <th>Usage score</th>
+        <th>Share of usage</th>
+        <th>Avg. rating</th>
+        <th>Moments shares</th>
+        <th>Moments (30d)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="9">No Mini-Programs registered yet.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/mini_programs/review", response_class=HTMLResponse)
+def admin_miniprograms_review(request: Request) -> HTMLResponse:
+    """
+    Lightweight Review‑Center für Mini‑Programs – WeChat‑artig.
+
+    Zeigt alle eingereichten Mini‑Programme (review_status=submitted)
+    inklusive Owner, Status, Nutzung und Rating, plus schnelle
+    Aktionen zum Approven/Rejecten.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(MiniProgramDB).order_by(
+                        MiniProgramDB.review_status.desc(),
+                        MiniProgramDB.created_at.desc(),
+                        MiniProgramDB.id.desc(),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        review_rows: list[MiniProgramDB] = []
+        other_rows: list[MiniProgramDB] = []
+        for prog in rows:
+            r_state = (getattr(prog, "review_status", "draft") or "").strip().lower()
+            if r_state == "submitted":
+                review_rows.append(prog)
+            else:
+                other_rows.append(prog)
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        def _row_html(prog: MiniProgramDB) -> str:
+            app_id = prog.app_id or ""
+            title_en = prog.title_en or ""
+            title_ar = getattr(prog, "title_ar", "") or ""
+            owner_name = getattr(prog, "owner_name", "") or ""
+            owner_contact = getattr(prog, "owner_contact", "") or ""
+            status = (prog.status or "draft").strip()
+            review_status = (getattr(prog, "review_status", "draft") or "").strip()
+            try:
+                usage = int(getattr(prog, "usage_score", 0) or 0)
+            except Exception:
+                usage = 0
+            try:
+                rating_val = float(getattr(prog, "rating", 0.0) or 0.0)
+            except Exception:
+                rating_val = 0.0
+            created = getattr(prog, "created_at", None)
+            created_str = ""
+            try:
+                if isinstance(created, datetime):
+                    created_str = created.isoformat().replace("+00:00", "Z")
+                elif created is not None:
+                    created_str = str(created)
+            except Exception:
+                created_str = ""
+            return (
+                "<tr>"
+                f"<td><code>{esc(app_id)}</code></td>"
+                f"<td>{esc(title_en)}<br/><span class=\"muted\">{esc(title_ar)}</span></td>"
+                f"<td>{esc(owner_name)}<br/><span class=\"muted\">{esc(owner_contact)}</span></td>"
+                f"<td>{esc(status)}</td>"
+                f"<td>{esc(review_status)}</td>"
+                f"<td>{usage}</td>"
+                f"<td>{rating_val:.1f}</td>"
+                f"<td>{esc(created_str)}</td>"
+                f"<td>"
+                f"<a href=\"/mini_programs/{esc(app_id)}\" target=\"_blank\">JSON</a>"
+                "</td>"
+                f"<td>"
+                f"<button onclick=\"mpReviewApprove('{esc(app_id)}')\">Approve</button><br/>"
+                f"<button onclick=\"mpReviewReject('{esc(app_id)}')\">Reject</button><br/>"
+                f"<button onclick=\"mpReviewSuspend('{esc(app_id)}')\">Suspend</button>"
+                "</td>"
+                "</tr>"
+            )
+
+        submitted_html = "".join(_row_html(p) for p in review_rows)
+        other_html = "".join(_row_html(p) for p in other_rows)
+
+        html = f"""
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mini-Programs · Review-Center</title>
+    <style>
+      body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; max-width: 1080px; color: #0f172a; }}
+      h1 {{ margin-bottom: 4px; }}
+      h2 {{ margin-top: 24px; margin-bottom: 8px; }}
+      table {{ border-collapse: collapse; width: 100%; margin-top: 8px; }}
+      th, td {{ border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }}
+      th {{ background: #f9fafb; font-weight: 600; }}
+      .muted {{ color:#6b7280; font-size:12px; }}
+      #flash {{ margin: 4px 0 8px; }}
+      #flash.error {{ color:#b91c1c; }}
+      #flash.success {{ color:#166534; }}
+      button {{ font-size: 12px; padding: 2px 6px; margin: 1px 0; }}
+    </style>
+  </head>
+  <body>
+    <h1>Mini-Programs · Review-Center</h1>
+    <p class="muted">
+      WeChat‑ähnliche Review‑Übersicht: fokussiert auf eingereichte Mini‑Programs
+      (<code>review_status = submitted</code>) mit schnellen Aktionen zum Approven/Rejekten.
+    </p>
+    <p class="muted">
+      <a href="/admin/miniprograms">Mini‑Programs-Konsole</a>
+      · <a href="/admin/mini_programs/analytics">Analytics</a>
+    </p>
+    <div id="flash" class="muted"></div>
+
+    <h2>Eingereichte Mini-Programs (Review-Queue)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>App ID</th>
+          <th>Title</th>
+          <th>Owner</th>
+          <th>Status</th>
+          <th>Review</th>
+          <th>Usage</th>
+          <th>Rating</th>
+          <th>Created</th>
+          <th>Links</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {submitted_html or '<tr><td colspan="10">Keine eingereichten Mini‑Programs.</td></tr>'}
+      </tbody>
+    </table>
+
+    <h2>Weitere Mini-Programs</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>App ID</th>
+          <th>Title</th>
+          <th>Owner</th>
+          <th>Status</th>
+          <th>Review</th>
+          <th>Usage</th>
+          <th>Rating</th>
+          <th>Created</th>
+          <th>Links</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {other_html or '<tr><td colspan="10">Keine weiteren Mini‑Programs.</td></tr>'}
+      </tbody>
+    </table>
+
+    <script>
+      async function mpReviewUpdate(appId, status, reviewStatus) {{
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        flash.className = 'muted';
+        if (!appId) {{
+          flash.textContent = 'App-ID fehlt.';
+          flash.className = 'error';
+          return;
+        }}
+        const payload = {{}};
+        if (status) payload.status = status;
+        if (reviewStatus) payload.review_status = reviewStatus;
+        try {{
+          const r = await fetch('/admin/mini_programs/' + encodeURIComponent(appId), {{
+            method: 'PATCH',
+            headers: {{'content-type':'application/json'}},
+            body: JSON.stringify(payload),
+          }});
+          if (!r.ok) {{
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Aktualisieren: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          }} else {{
+            flash.textContent = 'Review-Status aktualisiert.';
+            flash.className = 'success';
+            window.location.reload();
+          }}
+        }} catch (e) {{
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }}
+      }}
+
+      function mpReviewApprove(appId) {{
+        mpReviewUpdate(appId, 'active', 'approved');
+      }}
+      function mpReviewReject(appId) {{
+        mpReviewUpdate(appId, 'disabled', 'rejected');
+      }}
+      function mpReviewSuspend(appId) {{
+        mpReviewUpdate(appId, 'disabled', 'suspended');
+      }}
+    </script>
+  </body>
+</html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/admin/mini_programs/{app_id}", response_class=JSONResponse)
+def admin_mini_program_update(
+    app_id: str, request: Request, body: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Admin‑Endpoint zum Aktualisieren einzelner Mini‑Program‑Felder.
+
+    Unterstützt u.a. Status (draft/active/disabled), review_status
+    (draft/submitted/approved/rejected/suspended) und scopes.
+    """
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be object")
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    allowed_status = {"draft", "active", "disabled"}
+    allowed_review = {"draft", "submitted", "approved", "rejected", "suspended"}
+    raw_status = body.get("status")
+    raw_review = body.get("review_status")
+    if raw_status is not None:
+        status_val = str(raw_status).strip().lower()
+        if status_val not in allowed_status:
+            raise HTTPException(status_code=400, detail="invalid status")
+    else:
+        status_val = None
+    if raw_review is not None:
+        review_val = str(raw_review).strip().lower()
+        if review_val not in allowed_review:
+            raise HTTPException(status_code=400, detail="invalid review_status")
+    else:
+        review_val = None
+    scopes_val = None
+    if "scopes" in body:
+        raw_scopes = body.get("scopes")
+        if raw_scopes is None:
+            scopes_val = None
+        elif isinstance(raw_scopes, list):
+            scopes_val = [str(s).strip() for s in raw_scopes if str(s).strip()]
+        else:
+            raise HTTPException(status_code=400, detail="scopes must be list of strings or null")
+    try:
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            if status_val is not None:
+                prog.status = status_val
+            if review_val is not None:
+                prog.review_status = review_val
+            if scopes_val is not None:
+                if scopes_val:
+                    try:
+                        prog.scopes_json = _json.dumps(scopes_val)
+                    except Exception:
+                        prog.scopes_json = None
+                else:
+                    prog.scopes_json = None
+            s.add(prog)
+            s.commit()
+            s.refresh(prog)
+            scopes_list: list[str] = []
+            try:
+                raw_scopes = getattr(prog, "scopes_json", None)
+                if raw_scopes:
+                    val = _json.loads(raw_scopes)
+                    if isinstance(val, list):
+                        scopes_list = [
+                            str(s).strip() for s in val if str(s).strip()
+                        ]
+            except Exception:
+                scopes_list = []
+            return {
+                "app_id": prog.app_id,
+                "status": prog.status,
+                "review_status": getattr(prog, "review_status", "draft"),
+                "scopes": scopes_list,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/officials/analytics", response_class=HTMLResponse)
+def admin_officials_analytics(request: Request) -> HTMLResponse:
+    """
+    Lightweight HTML analytics for Official accounts.
+
+    Shows follower counts, notification mode breakdown, feed items
+    and Moments shares per account – WeChat-style merchant overview.
+    """
+    _require_admin_v2(request)
+    try:
+        # Aggregate per-account metrics from Official DB
+        with _officials_session() as s:
+            accounts = (
+                s.execute(
+                    _sa_select(OfficialAccountDB).order_by(OfficialAccountDB.id)
+                )
+                .scalars()
+                .all()
+            )
+            follower_counts: dict[str, int] = {}
+            notif_summary: dict[str, int] = {}
+            notif_muted: dict[str, int] = {}
+            feed_counts: dict[str, int] = {}
+            feed_last_ts: dict[str, str] = {}
+
+            rows = (
+                s.execute(
+                    _sa_select(
+                        OfficialFollowDB.account_id,
+                        _sa_func.count(OfficialFollowDB.id),
+                    ).group_by(OfficialFollowDB.account_id)
+                )
+                .all()
+            )
+            for acc_id, cnt in rows:
+                follower_counts[str(acc_id)] = int(cnt or 0)
+
+            notif_rows = (
+                s.execute(
+                    _sa_select(
+                        OfficialNotificationDB.account_id,
+                        OfficialNotificationDB.mode,
+                        _sa_func.count(OfficialNotificationDB.id),
+                    ).group_by(
+                        OfficialNotificationDB.account_id,
+                        OfficialNotificationDB.mode,
+                    )
+                )
+                .all()
+            )
+            for acc_id, mode, cnt in notif_rows:
+                aid = str(acc_id)
+                m = (mode or "").strip().lower()
+                if m == "summary":
+                    notif_summary[aid] = notif_summary.get(aid, 0) + int(cnt or 0)
+                elif m == "muted":
+                    notif_muted[aid] = notif_muted.get(aid, 0) + int(cnt or 0)
+
+            feed_rows = (
+                s.execute(
+                    _sa_select(
+                        OfficialFeedItemDB.account_id,
+                        _sa_func.count(OfficialFeedItemDB.id),
+                        _sa_func.max(OfficialFeedItemDB.ts),
+                    ).group_by(OfficialFeedItemDB.account_id)
+                )
+                .all()
+            )
+            for acc_id, cnt, ts in feed_rows:
+                aid = str(acc_id)
+                feed_counts[aid] = int(cnt or 0)
+                if ts is not None:
+                    try:
+                        ts_str = ts.isoformat().replace("+00:00", "Z")
+                    except Exception:
+                        ts_str = str(ts)
+                    feed_last_ts[aid] = ts_str
+
+        # Aggregate Moments shares per Official account (origin_official_account_id)
+        moments_shares: dict[str, int] = {}
+        moments_shares_30d: dict[str, int] = {}
+        moments_unique_sharers: dict[str, int] = {}
+        moments_unique_sharers_30d: dict[str, int] = {}
+        moments_redpacket_shares: dict[str, int] = {}
+        moments_redpacket_shares_30d: dict[str, int] = {}
+        try:
+            with _moments_session() as ms:
+                since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+
+                base_stmt = _sa_select(
+                    MomentPostDB.origin_official_account_id,
+                    _sa_func.count(MomentPostDB.id),
+                ).where(MomentPostDB.origin_official_account_id.is_not(None))
+
+                # All Moments shares per official
+                m_rows = ms.execute(
+                    base_stmt.group_by(MomentPostDB.origin_official_account_id)
+                ).all()
+                for acc_id, cnt in m_rows:
+                    if not acc_id:
+                        continue
+                    moments_shares[str(acc_id)] = int(cnt or 0)
+
+                # Last 30 days Moments shares per official
+                recent_rows = ms.execute(
+                    base_stmt.where(MomentPostDB.created_at >= since_30d).group_by(
+                        MomentPostDB.origin_official_account_id
+                    )
+                ).all()
+                for acc_id, cnt in recent_rows:
+                    if not acc_id:
+                        continue
+                    moments_shares_30d[str(acc_id)] = int(cnt or 0)
+
+                # Unique sharers (distinct users who shared this official) – all time
+                uniq_stmt = _sa_select(
+                    MomentPostDB.origin_official_account_id,
+                    _sa_func.count(_sa_func.distinct(MomentPostDB.user_key)),
+                ).where(MomentPostDB.origin_official_account_id.is_not(None))
+                uniq_rows = ms.execute(
+                    uniq_stmt.group_by(MomentPostDB.origin_official_account_id)
+                ).all()
+                for acc_id, cnt in uniq_rows:
+                    if not acc_id:
+                        continue
+                    moments_unique_sharers[str(acc_id)] = int(cnt or 0)
+
+                # Unique sharers in the last 30 days
+                uniq_recent_rows = ms.execute(
+                    uniq_stmt.where(MomentPostDB.created_at >= since_30d).group_by(
+                        MomentPostDB.origin_official_account_id
+                    )
+                ).all()
+                for acc_id, cnt in uniq_recent_rows:
+                    if not acc_id:
+                        continue
+                    moments_unique_sharers_30d[str(acc_id)] = int(cnt or 0)
+
+                # Red-packet related Moments shares per official (same heuristics as Moments analytics)
+                def _add_redpacket_rows(stmt, target: dict[str, int]):
+                    rows = ms.execute(stmt).all()
+                    for acc_id, cnt in rows:
+                        if not acc_id:
+                            continue
+                        key = str(acc_id)
+                        target[key] = target.get(key, 0) + int(cnt or 0)
+
+                rp_stmt = base_stmt.group_by(MomentPostDB.origin_official_account_id)
+                _add_redpacket_rows(
+                    rp_stmt.where(MomentPostDB.text.contains("Red packet")),
+                    moments_redpacket_shares,
+                )
+                _add_redpacket_rows(
+                    rp_stmt.where(
+                        MomentPostDB.text.contains(
+                            "I am sending red packets via Shamell Pay"
+                        )
+                    ),
+                    moments_redpacket_shares,
+                )
+                _add_redpacket_rows(
+                    rp_stmt.where(MomentPostDB.text.contains("حزمة حمراء")),
+                    moments_redpacket_shares,
+                )
+
+                # Red-packet related Moments shares in the last 30 days
+                rp_30_stmt = rp_stmt.where(MomentPostDB.created_at >= since_30d)
+                _add_redpacket_rows(
+                    rp_30_stmt.where(MomentPostDB.text.contains("Red packet")),
+                    moments_redpacket_shares_30d,
+                )
+                _add_redpacket_rows(
+                    rp_30_stmt.where(
+                        MomentPostDB.text.contains(
+                            "I am sending red packets via Shamell Pay"
+                        )
+                    ),
+                    moments_redpacket_shares_30d,
+                )
+                _add_redpacket_rows(
+                    rp_30_stmt.where(MomentPostDB.text.contains("حزمة حمراء")),
+                    moments_redpacket_shares_30d,
+                )
+        except Exception:
+            moments_shares = {}
+            moments_shares_30d = {}
+            moments_unique_sharers = {}
+            moments_unique_sharers_30d = {}
+            moments_redpacket_shares = {}
+            moments_redpacket_shares_30d = {}
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        rows_html: list[str] = []
+        total_followers = 0
+        for acc in accounts:
+            acc_id = acc.id
+            followers = follower_counts.get(acc_id, 0)
+            total_followers += followers
+            feed_count = feed_counts.get(acc_id, 0)
+            last_ts = feed_last_ts.get(acc_id, "")
+            share_count = moments_shares.get(acc_id, 0)
+            share_30 = moments_shares_30d.get(acc_id, 0)
+            # Unique sharers (all time / 30d) for this Official
+            uniq_sharers = moments_unique_sharers.get(acc_id, 0)
+            uniq_sharers_30 = moments_unique_sharers_30d.get(acc_id, 0)
+            rp_share_count = moments_redpacket_shares.get(acc_id, 0)
+            rp_share_30 = moments_redpacket_shares_30d.get(acc_id, 0)
+            summary_cnt = notif_summary.get(acc_id, 0)
+            muted_cnt = notif_muted.get(acc_id, 0)
+            shares_per_1k = 0.0
+            redpacket_share_ratio_30 = 0.0
+            try:
+                if followers > 0 and share_count > 0:
+                    shares_per_1k = (share_count / float(followers)) * 1000.0
+                if share_30 > 0 and rp_share_30 > 0:
+                    redpacket_share_ratio_30 = (rp_share_30 / float(share_30)) * 100.0
+            except Exception:
+                shares_per_1k = 0.0
+                redpacket_share_ratio_30 = 0.0
+            if share_30 > 0:
+                share_30_cell = (
+                    f'<a href="/moments/admin/comments/html?official_account_id={esc(acc_id)}">{share_30}</a>'
+                )
+            else:
+                share_30_cell = str(share_30)
+            comments_link = (
+                f'<a href="/moments/admin/comments/html?official_account_id={esc(acc_id)}">View</a>'
+            )
+            rows_html.append(
+                "<tr>"
+                f"<td><code>{esc(acc_id)}</code></td>"
+                f"<td>{esc(acc.name or '')}</td>"
+                f"<td>{esc(acc.kind or '')}</td>"
+                f"<td>{followers}</td>"
+                f"<td>{feed_count}</td>"
+                f"<td>{esc(last_ts)}</td>"
+                f"<td>{share_count}</td>"
+                f"<td>{rp_share_count}</td>"
+                f"<td>{share_30_cell}</td>"
+                f"<td>{rp_share_30}</td>"
+                f"<td>{uniq_sharers}</td>"
+                f"<td>{uniq_sharers_30}</td>"
+                f"<td>{shares_per_1k:.1f}</td>"
+                f"<td>{redpacket_share_ratio_30:.1f}%</td>"
+                f"<td>{comments_link}</td>"
+                f"<td>{summary_cnt}</td>"
+                f"<td>{muted_cnt}</td>"
+                "</tr>"
+            )
+
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Official Accounts · Analytics</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:1100px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:12px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:4px;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Official Accounts · Analytics</h1>
+  <div class="meta">
+    Followers total: {total_followers} · Accounts: {len(accounts)}.
+    Data based on Official DB and Moments shares (incl. red-packet mentions); event hooks (follow/feed) go to Redis/logs.
+  </div>
+  <div class="meta">
+    Unique sharers = distinct users who shared this account in Moments (all time / last 30 days). Shares / 1k followers = Moments shares per 1,000 followers (engagement intensity, normalised for follower size).
+  </div>
+  <p class="meta">
+    <a href="/admin/officials">Zurück zur Official-Admin-Konsole</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Kind</th>
+        <th>Followers</th>
+        <th>Feed items</th>
+        <th>Last feed TS</th>
+        <th>Moments shares</th>
+        <th>Red-packet shares</th>
+        <th>Moments (30d)</th>
+        <th>Red-packet (30d)</th>
+        <th>Unique sharers</th>
+        <th>Unique sharers (30d)</th>
+        <th>Shares / 1k followers</th>
+        <th>Red-packet share rate (30d)</th>
+        <th>Moments comments (QA)</th>
+        <th>Notif summary</th>
+        <th>Notif muted</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="17">No Official accounts configured.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/channels/analytics", response_class=HTMLResponse)
+def admin_channels_analytics(request: Request) -> HTMLResponse:
+    """
+    Lightweight HTML-Analytics für Channels – WeChat-ähnlicher Überblick.
+
+    Aggregiert pro Official-Account:
+      - Anzahl Clips
+      - Gesamt-Views, Likes, Comments
+      - Einfacher Engagement-Score und "Hot in Moments"-Flag (basierend auf
+        der gleichen Heuristik wie /channels/feed).
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(
+                        OfficialFeedItemDB.id,
+                        OfficialFeedItemDB.account_id,
+                        OfficialFeedItemDB.type,
+                        OfficialAccountDB.name,
+                        OfficialAccountDB.city,
+                        OfficialAccountDB.category,
+                    )
+                    .join(
+                        OfficialAccountDB,
+                        OfficialFeedItemDB.account_id == OfficialAccountDB.id,
+                    )
+                )
+                .all()
+            )
+            if not rows:
+                html_empty = """
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <title>Channels · Analytics</title>
+  <style>
+    body{font-family:sans-serif;margin:20px;max-width:960px;color:#0f172a;}
+  </style>
+</head><body>
+  <h1>Channels · Analytics</h1>
+  <p>No Channels clips found.</p>
+</body></html>
+"""
+                return HTMLResponse(content=html_empty)
+
+            item_ids: list[str] = []
+            acc_ids: set[str] = set()
+            for fid, acc_id, ftype, name, city, category in rows:
+                try:
+                    item_ids.append(str(fid))
+                except Exception:
+                    continue
+                if acc_id is not None:
+                    acc_ids.add(str(acc_id))
+
+            likes_map: dict[str, int] = {}
+            views_map: dict[str, int] = {}
+            comments_map: dict[str, int] = {}
+
+            if item_ids:
+                try:
+                    like_rows = (
+                        s.execute(
+                            _sa_select(
+                                ChannelLikeDB.item_id,
+                                _sa_func.count(ChannelLikeDB.id),
+                            )
+                            .where(ChannelLikeDB.item_id.in_(item_ids))
+                            .group_by(ChannelLikeDB.item_id)
+                        )
+                        .all()
+                    )
+                    for iid, cnt in like_rows:
+                        try:
+                            likes_map[str(iid)] = int(cnt or 0)
+                        except Exception:
+                            continue
+                except Exception:
+                    likes_map = {}
+                try:
+                    view_rows = (
+                        s.execute(
+                            _sa_select(
+                                ChannelViewDB.item_id,
+                                ChannelViewDB.views,
+                            ).where(ChannelViewDB.item_id.in_(item_ids))
+                        )
+                        .all()
+                    )
+                    for iid, views in view_rows:
+                        try:
+                            views_map[str(iid)] = int(views or 0)
+                        except Exception:
+                            continue
+                except Exception:
+                    views_map = {}
+                try:
+                    comment_rows = (
+                        s.execute(
+                            _sa_select(
+                                ChannelCommentDB.item_id,
+                                _sa_func.count(ChannelCommentDB.id),
+                            )
+                            .where(ChannelCommentDB.item_id.in_(item_ids))
+                            .group_by(ChannelCommentDB.item_id)
+                        )
+                        .all()
+                    )
+                    for iid, cnt in comment_rows:
+                        try:
+                            comments_map[str(iid)] = int(cnt or 0)
+                        except Exception:
+                            continue
+                except Exception:
+                    comments_map = {}
+
+            hot_accounts: set[str] = set()
+            try:
+                if acc_ids:
+                    with _moments_session() as ms:
+                        agg_rows = (
+                            ms.execute(
+                                _sa_select(
+                                    MomentPostDB.origin_official_account_id,
+                                    _sa_func.count(MomentPostDB.id),
+                                )
+                                .where(
+                                    MomentPostDB.origin_official_account_id.in_(
+                                        list(acc_ids)
+                                    )
+                                )
+                                .group_by(MomentPostDB.origin_official_account_id)
+                            )
+                            .all()
+                        )
+                        for acc_id, cnt in agg_rows:
+                            try:
+                                if int(cnt or 0) >= 10:
+                                    hot_accounts.add(str(acc_id))
+                            except Exception:
+                                continue
+            except Exception:
+                hot_accounts = set()
+
+            per_acc: dict[str, dict[str, Any]] = {}
+            for fid, acc_id, ftype, name, city, category in rows:
+                acc_key = str(acc_id) if acc_id is not None else ""
+                if not acc_key:
+                    continue
+                acc = per_acc.setdefault(
+                    acc_key,
+                    {
+                        "id": acc_key,
+                        "name": name or "",
+                        "city": city or "",
+                        "category": category or "",
+                        "clips": 0,
+                        "views": 0,
+                        "likes": 0,
+                        "comments": 0,
+                        "campaign_clips": 0,
+                        "hot_in_moments": acc_key in hot_accounts,
+                    },
+                )
+                acc["clips"] += 1
+                item_id = str(fid)
+                acc["views"] += views_map.get(item_id, 0)
+                acc["likes"] += likes_map.get(item_id, 0)
+                acc["comments"] += comments_map.get(item_id, 0)
+                f_type = (ftype or "").strip().lower()
+                if f_type in {"campaign", "promo"}:
+                    acc["campaign_clips"] += 1
+
+        rows_list: list[dict[str, Any]] = list(per_acc.values())
+        for acc in rows_list:
+            try:
+                clips = int(acc.get("clips", 0) or 0)
+                views = int(acc.get("views", 0) or 0)
+                likes = int(acc.get("likes", 0) or 0)
+                comments = int(acc.get("comments", 0) or 0)
+            except Exception:
+                clips = views = likes = comments = 0
+            score = 0.0
+            if clips > 0:
+                try:
+                    score = (views / max(clips, 1)) * 0.1 + (likes * 0.5) + (comments * 1.0)
+                except Exception:
+                    score = 0.0
+            if acc.get("hot_in_moments"):
+                score += 5.0
+            acc["score"] = score
+
+        rows_list.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        rows_html: list[str] = []
+        for acc in rows_list:
+            aid = str(acc.get("id", ""))
+            name = str(acc.get("name", ""))
+            city = str(acc.get("city", ""))
+            category = str(acc.get("category", ""))
+            clips = int(acc.get("clips", 0) or 0)
+            views = int(acc.get("views", 0) or 0)
+            likes = int(acc.get("likes", 0) or 0)
+            comments = int(acc.get("comments", 0) or 0)
+            campaigns = int(acc.get("campaign_clips", 0) or 0)
+            score = float(acc.get("score", 0.0) or 0.0)
+            hot = bool(acc.get("hot_in_moments", False))
+            rows_html.append(
+                "<tr>"
+                f"<td><code>{esc(aid)}</code></td>"
+                f"<td>{esc(name)}</td>"
+                f"<td>{esc(city)}</td>"
+                f"<td>{esc(category)}</td>"
+                f"<td>{clips}</td>"
+                f"<td>{campaigns}</td>"
+                f"<td>{views}</td>"
+                f"<td>{likes}</td>"
+                f"<td>{comments}</td>"
+                f"<td>{score:.1f}</td>"
+                f"<td>{'✅' if hot else ''}</td>"
+                "</tr>"
+            )
+
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Channels · Analytics</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:1080px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:12px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:2px;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Channels · Analytics</h1>
+  <div class="meta">
+    Per-Account-Übersicht der Channels-Performance (Clips, Views, Likes, Comments) mit
+    einfachem Engagement-Score und einem "Hot in Moments"-Flag – angelehnt an WeChat Channels.
+  </div>
+  <p class="meta">
+    <a href="/admin/officials/analytics">Zurück zu Official-Analytics</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Account ID</th>
+        <th>Name</th>
+        <th>City</th>
+        <th>Category</th>
+        <th>Clips</th>
+        <th>Campaigns</th>
+        <th>Views</th>
+        <th>Likes</th>
+        <th>Comments</th>
+        <th>Engagement score</th>
+        <th>Hot in Moments</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="11">No data.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/redpacket_campaigns/analytics", response_class=HTMLResponse)
+def admin_redpacket_campaigns_analytics(request: Request) -> HTMLResponse:
+    """
+    Lightweight HTML analytics for Red‑Packet campaigns.
+
+    Aggregates Moments shares per campaign (based on origin_official_item_id)
+    to provide WeChat‑ähnliche KPIs pro Kampagne.
+    """
+    _require_admin_v2(request)
+    try:
+        with _officials_session() as s:
+            campaigns = (
+                s.execute(
+                    _sa_select(RedPacketCampaignDB).order_by(
+                        RedPacketCampaignDB.created_at.desc()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            accounts_by_id: dict[str, OfficialAccountDB] = {}
+            if campaigns:
+                acc_ids = {c.account_id for c in campaigns}
+                acc_rows = (
+                    s.execute(
+                        _sa_select(OfficialAccountDB).where(
+                            OfficialAccountDB.id.in_(list(acc_ids))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for acc in acc_rows:
+                    accounts_by_id[acc.id] = acc
+
+        # Aggregate Moments metrics per campaign (keyed by origin_official_item_id)
+        moments_total: dict[str, int] = {}
+        moments_30d: dict[str, int] = {}
+        uniq_total: dict[str, int] = {}
+        uniq_30d: dict[str, int] = {}
+        last_ts: dict[str, str] = {}
+        try:
+            with _moments_session() as ms:
+                since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+                base_stmt = _sa_select(
+                    MomentPostDB.origin_official_item_id,
+                    _sa_func.count(MomentPostDB.id),
+                ).where(MomentPostDB.origin_official_item_id.is_not(None))
+                # All-time totals
+                rows = ms.execute(
+                    base_stmt.group_by(MomentPostDB.origin_official_item_id)
+                ).all()
+                for cid, cnt in rows:
+                    if not cid:
+                        continue
+                    moments_total[str(cid)] = int(cnt or 0)
+                # Last 30 days totals
+                rows_30 = ms.execute(
+                    base_stmt.where(MomentPostDB.created_at >= since_30d).group_by(
+                        MomentPostDB.origin_official_item_id
+                    )
+                ).all()
+                for cid, cnt in rows_30:
+                    if not cid:
+                        continue
+                    moments_30d[str(cid)] = int(cnt or 0)
+                # Unique sharers (all time)
+                uniq_stmt = _sa_select(
+                    MomentPostDB.origin_official_item_id,
+                    _sa_func.count(_sa_func.distinct(MomentPostDB.user_key)),
+                ).where(MomentPostDB.origin_official_item_id.is_not(None))
+                u_rows = ms.execute(
+                    uniq_stmt.group_by(MomentPostDB.origin_official_item_id)
+                ).all()
+                for cid, cnt in u_rows:
+                    if not cid:
+                        continue
+                    uniq_total[str(cid)] = int(cnt or 0)
+                # Unique sharers (30d)
+                u_rows_30 = ms.execute(
+                    uniq_stmt.where(MomentPostDB.created_at >= since_30d).group_by(
+                        MomentPostDB.origin_official_item_id
+                    )
+                ).all()
+                for cid, cnt in u_rows_30:
+                    if not cid:
+                        continue
+                    uniq_30d[str(cid)] = int(cnt or 0)
+                # Last post timestamp per campaign
+                ts_rows = ms.execute(
+                    _sa_select(
+                        MomentPostDB.origin_official_item_id,
+                        _sa_func.max(MomentPostDB.created_at),
+                    )
+                    .where(MomentPostDB.origin_official_item_id.is_not(None))
+                    .group_by(MomentPostDB.origin_official_item_id)
+                ).all()
+                for cid, ts in ts_rows:
+                    if not cid or ts is None:
+                        continue
+                    try:
+                        ts_str = ts.isoformat().replace("+00:00", "Z")
+                    except Exception:
+                        ts_str = str(ts)
+                    last_ts[str(cid)] = ts_str
+        except Exception:
+            moments_total = {}
+            moments_30d = {}
+            uniq_total = {}
+            uniq_30d = {}
+            last_ts = {}
+
+        # Optional Payments KPIs per campaign (best-effort via PAYMENTS_BASE)
+        payments_stats: dict[str, dict[str, Any]] = {}
+        try:
+            if PAYMENTS_BASE and campaigns:
+                base = PAYMENTS_BASE.rstrip("/")
+                for camp in campaigns:
+                    cid = camp.id
+                    try:
+                        url = f"{base}/admin/redpacket_campaigns/payments_analytics"
+                        r = httpx.get(
+                            url,
+                            params={"campaign_id": cid},
+                            timeout=5.0,
+                        )
+                        if (
+                            r.status_code == 200
+                            and r.headers.get("content-type", "").startswith("application/json")
+                        ):
+                            data = r.json()
+                            if isinstance(data, dict):
+                                payments_stats[cid] = data
+                    except Exception:
+                        # Soft-fail; payments KPIs are optional
+                        continue
+        except Exception:
+            payments_stats = {}
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        rows_html: list[str] = []
+        for camp in campaigns:
+            cid = camp.id
+            acc = accounts_by_id.get(camp.account_id)
+            cname = camp.title or ""
+            aname = acc.name if acc else camp.account_id
+            kind = acc.kind if acc else ""
+            total = moments_total.get(cid, 0)
+            total_30 = moments_30d.get(cid, 0)
+            utotal = uniq_total.get(cid, 0)
+            u30 = uniq_30d.get(cid, 0)
+            ts_str = last_ts.get(cid, "")
+            status = "active" if getattr(camp, "active", True) else "inactive"
+            ps = payments_stats.get(cid) or {}
+            try:
+                issued = int(ps.get("total_packets_issued", 0) or 0)
+            except Exception:
+                issued = 0
+            try:
+                claimed = int(ps.get("total_packets_claimed", 0) or 0)
+            except Exception:
+                claimed = 0
+            try:
+                amt_total = int(ps.get("total_amount_cents", 0) or 0)
+            except Exception:
+                amt_total = 0
+            try:
+                amt_claimed = int(ps.get("claimed_amount_cents", 0) or 0)
+            except Exception:
+                amt_claimed = 0
+            try:
+                def_amt = int(getattr(camp, "default_amount_cents", 0) or 0)
+            except Exception:
+                def_amt = 0
+            try:
+                def_count = int(getattr(camp, "default_count", 0) or 0)
+            except Exception:
+                def_count = 0
+            rows_html.append(
+                "<tr>"
+                f"<td><a href=\"/admin/redpacket_campaigns/detail?campaign_id={esc(cid)}\"><code>{esc(cid)}</code></a></td>"
+                f"<td>{esc(cname)}</td>"
+                f"<td>{esc(aname or '')}</td>"
+                f"<td>{esc(kind or '')}</td>"
+                f"<td>{status}</td>"
+                f"<td>{total}</td>"
+                f"<td>{total_30}</td>"
+                f"<td>{utotal}</td>"
+                f"<td>{u30}</td>"
+                f"<td><span class=\"meta\">{esc(ts_str)}</span></td>"
+                f"<td>{issued}</td>"
+                f"<td>{claimed}</td>"
+                f"<td>{amt_total}</td>"
+                f"<td>{amt_claimed}</td>"
+                f"<td>{def_amt if def_amt > 0 else ''}</td>"
+                f"<td>{def_count if def_count > 0 else ''}</td>"
+                "</tr>"
+            )
+
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Red‑Packet Campaigns · Analytics</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:1100px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:12px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:2px;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Red‑Packet Campaigns · Analytics</h1>
+  <div class="meta">
+    Based on Moments posts tagged with shamell://official/&lt;account&gt;/&lt;campaign_id&gt;
+    (origin_official_item_id = campaign_id). Best-effort, WeChat‑ähnliche Kampagnen-Sicht.
+  </div>
+  <p class="meta">
+    <a href="/admin/officials">Zurück zur Official-Admin-Konsole</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Campaign ID</th>
+        <th>Title</th>
+        <th>Account</th>
+        <th>Kind</th>
+        <th>Status</th>
+        <th>Moments shares</th>
+        <th>Moments (30d)</th>
+        <th>Unique sharers</th>
+        <th>Unique sharers (30d)</th>
+        <th>Last share TS</th>
+        <th>Packets issued</th>
+        <th>Packets claimed</th>
+        <th>Amount (total cents)</th>
+        <th>Amount (claimed cents)</th>
+        <th>Default amount (cents)</th>
+        <th>Default count</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="16">No Red‑Packet campaigns configured.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/redpacket_campaigns/detail", response_class=HTMLResponse)
+def admin_redpacket_campaign_detail(
+    request: Request, campaign_id: str
+) -> HTMLResponse:
+    """
+    Detailansicht für eine einzelne Red‑Packet‑Kampagne.
+
+    Kombiniert Stammdaten, Moments‑KPI und Payments‑KPI – WeChat‑ähnlich.
+    """
+    _require_admin_v2(request)
+    try:
+        # Load campaign + owning Official account
+        with _officials_session() as s:
+            camp = s.get(RedPacketCampaignDB, campaign_id)
+            if not camp:
+                raise HTTPException(status_code=404, detail="campaign not found")
+            acc = s.get(OfficialAccountDB, camp.account_id)
+
+        # Moments metrics for this campaign (origin_official_item_id == campaign_id)
+        moments_total = 0
+        moments_30d = 0
+        uniq_total = 0
+        uniq_30d = 0
+        last_share_ts = ""
+        posts: list[MomentPostDB] = []
+        likes_map: dict[int, int] = {}
+        comments_map: dict[int, int] = {}
+        try:
+            since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+            with _moments_session() as ms:
+                moments_total = (
+                    ms.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.origin_official_item_id == campaign_id
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                moments_30d = (
+                    ms.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.origin_official_item_id == campaign_id,
+                            MomentPostDB.created_at >= since_30d,
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                uniq_total = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(
+                            MomentPostDB.origin_official_item_id
+                            == campaign_id
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                uniq_30d = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(
+                            MomentPostDB.origin_official_item_id
+                            == campaign_id,
+                            MomentPostDB.created_at >= since_30d,
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                last_row = (
+                    ms.execute(
+                        _sa_select(_sa_func.max(MomentPostDB.created_at)).where(
+                            MomentPostDB.origin_official_item_id == campaign_id
+                        )
+                    )
+                    .scalar()
+                    or None
+                )
+                if last_row is not None:
+                    try:
+                        last_share_ts = (
+                            last_row.isoformat().replace("+00:00", "Z")
+                            if isinstance(last_row, datetime)
+                            else str(last_row)
+                        )
+                    except Exception:
+                        last_share_ts = str(last_row)
+                # Latest posts for QA table
+                posts = (
+                    ms.execute(
+                        _sa_select(MomentPostDB)
+                        .where(MomentPostDB.origin_official_item_id == campaign_id)
+                        .order_by(
+                            MomentPostDB.created_at.desc(), MomentPostDB.id.desc()
+                        )
+                        .limit(100)
+                    )
+                    .scalars()
+                    .all()
+                )
+                post_ids = [p.id for p in posts]
+                if post_ids:
+                    likes_rows = (
+                        ms.execute(
+                            _sa_select(
+                                MomentLikeDB.post_id,
+                                _sa_func.count(MomentLikeDB.id),
+                            ).where(MomentLikeDB.post_id.in_(post_ids))
+                            .group_by(MomentLikeDB.post_id)
+                        )
+                        .all()
+                    )
+                    for pid, cnt in likes_rows:
+                        likes_map[int(pid)] = int(cnt or 0)
+                    comments_rows = (
+                        ms.execute(
+                            _sa_select(
+                                MomentCommentDB.post_id,
+                                _sa_func.count(MomentCommentDB.id),
+                            ).where(MomentCommentDB.post_id.in_(post_ids))
+                            .group_by(MomentCommentDB.post_id)
+                        )
+                        .all()
+                    )
+                    for pid, cnt in comments_rows:
+                        comments_map[int(pid)] = int(cnt or 0)
+        except Exception:
+            moments_total = 0
+            moments_30d = 0
+            uniq_total = 0
+            uniq_30d = 0
+            last_share_ts = ""
+            posts = []
+            likes_map = {}
+            comments_map = {}
+
+        # Optional Payments metrics via PAYMENTS_BASE
+        payments_data: dict[str, Any] = {}
+        try:
+            if PAYMENTS_BASE:
+                base = PAYMENTS_BASE.rstrip("/")
+                url = f"{base}/admin/redpacket_campaigns/payments_analytics"
+                r = httpx.get(
+                    url, params={"campaign_id": campaign_id}, timeout=5.0
+                )
+                if (
+                    r.status_code == 200
+                    and r.headers.get("content-type", "").startswith(
+                        "application/json"
+                    )
+                ):
+                    data = r.json()
+                    if isinstance(data, dict):
+                        payments_data = data
+        except Exception:
+            payments_data = {}
+
+        def esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        def_amt = getattr(camp, "default_amount_cents", None) or 0
+        def_count = getattr(camp, "default_count", None) or 0
+        note = getattr(camp, "note", "") or ""
+        status = "active" if getattr(camp, "active", True) else "inactive"
+        acc_name = acc.name if acc else camp.account_id
+        acc_kind = acc.kind if acc else ""
+
+        total_packets_issued = int(payments_data.get("total_packets_issued", 0) or 0)
+        total_packets_claimed = int(
+            payments_data.get("total_packets_claimed", 0) or 0
+        )
+        total_amount_cents = int(
+            payments_data.get("total_amount_cents", 0) or 0
+        )
+        claimed_amount_cents = int(
+            payments_data.get("claimed_amount_cents", 0) or 0
+        )
+
+        rows_html: list[str] = []
+        for p in posts:
+            pts = p.created_at
+            pts_str = (
+                pts.isoformat().replace("+00:00", "Z")
+                if isinstance(pts, datetime)
+                else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            likes = likes_map.get(p.id, 0)
+            comments = comments_map.get(p.id, 0)
+            text = (p.text or "")[:260]
+            rows_html.append(
+                "<tr>"
+                f"<td>{p.id}</td>"
+                f"<td><pre>{esc(p.user_key or '')}</pre></td>"
+                f"<td><span class=\"meta\">{esc(pts_str)}</span></td>"
+                f"<td>{likes}</td>"
+                f"<td>{comments}</td>"
+                f"<td><pre>{esc(text)}</pre></td>"
+                f"<td><a href=\"/moments/admin/comments/html?post_id={p.id}"
+                + (
+                    f"&official_account_id={esc(camp.account_id)}"
+                    if camp.account_id
+                    else ""
+                )
+                + "\">Comments</a></td>"
+                "</tr>"
+            )
+
+        html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Red‑Packet Campaign · {esc(campaign_id)}</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:1100px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    h2{{margin-top:20px;margin-bottom:6px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:8px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:2px;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Red‑Packet Campaign · <code>{esc(campaign_id)}</code></h1>
+  <p class="meta">
+    <a href="/admin/redpacket_campaigns/analytics">Zurück zur Kampagnen-Übersicht</a>
+    · <a href="/admin/officials">Official-Admin-Konsole</a>
+  </p>
+
+  <h2>Stammdaten</h2>
+  <table>
+    <tbody>
+      <tr><th>Campaign ID</th><td><code>{esc(campaign_id)}</code></td></tr>
+      <tr><th>Title</th><td>{esc(camp.title or "")}</td></tr>
+      <tr><th>Account</th><td>{esc(acc_name or "")} <span class="meta">({esc(camp.account_id)})</span></td></tr>
+      <tr><th>Kind</th><td>{esc(acc_kind or "")}</td></tr>
+      <tr><th>Status</th><td>{status}</td></tr>
+      <tr><th>Default amount (cents)</th><td>{def_amt if def_amt else ''}</td></tr>
+      <tr><th>Default count</th><td>{def_count if def_count else ''}</td></tr>
+      <tr><th>Note</th><td>{esc(note)}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Moments · Social Impact</h2>
+  <table>
+    <tbody>
+      <tr><th>Moments shares (all time)</th><td>{moments_total}</td></tr>
+      <tr><th>Moments shares (30d)</th><td>{moments_30d}</td></tr>
+      <tr><th>Unique sharers (all time)</th><td>{uniq_total}</td></tr>
+      <tr><th>Unique sharers (30d)</th><td>{uniq_30d}</td></tr>
+      <tr><th>Last share TS</th><td><span class="meta">{esc(last_share_ts)}</span></td></tr>
+    </tbody>
+  </table>
+  <p class="meta">
+    QA‑Links:
+    <a href="/moments/admin/html?campaign_id={esc(campaign_id)}&limit=200">Moments Admin (nur diese Kampagne)</a>
+    · <a href="/moments/admin/html?redpacket_only=1">Alle Red‑Packet‑Moments</a>
+  </p>
+
+  <h2>Payments · Red‑Packets</h2>
+  <table>
+    <tbody>
+      <tr><th>Packets issued</th><td>{total_packets_issued}</td></tr>
+      <tr><th>Packets claimed</th><td>{total_packets_claimed}</td></tr>
+      <tr><th>Amount total (cents)</th><td>{total_amount_cents}</td></tr>
+      <tr><th>Amount claimed (cents)</th><td>{claimed_amount_cents}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Moments · Letzte Posts (QA)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>User</th>
+        <th>Created</th>
+        <th>Likes</th>
+        <th>Comments</th>
+        <th>Text (truncated)</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="7">No Moments posts for this campaign yet.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+        return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/official_accounts/{account_id}/campaigns/{campaign_id}/top_moments",
+    response_class=JSONResponse,
+)
+def official_campaign_top_moments(
+    account_id: str, campaign_id: str, limit: int = 5
+) -> dict[str, Any]:
+    """
+    Returns top Moments posts for a single Red‑Packet campaign.
+
+    This powers a WeChat‑style in‑app ranking of the most engaging
+    Red‑Packet Moments per campaign (based on likes, comments and
+    recency) in merchant UIs.
+    """
+    cid = (campaign_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="campaign_id required")
+    try:
+        with _officials_session() as s:
+            camp = s.get(RedPacketCampaignDB, cid)
+            if not camp or camp.account_id != account_id:
+                raise HTTPException(status_code=404, detail="campaign not found")
+        try:
+            limit_val = max(1, min(limit, 20))
+        except Exception:
+            limit_val = 5
+        items: list[RedPacketCampaignTopMomentOut] = []
+        try:
+            with _moments_session() as ms:
+                posts = (
+                    ms.execute(
+                        _sa_select(MomentPostDB)
+                        .where(MomentPostDB.origin_official_item_id == cid)
+                        .order_by(
+                            MomentPostDB.created_at.desc(),
+                            MomentPostDB.id.desc(),
+                        )
+                        .limit(100)
+                    )
+                    .scalars()
+                    .all()
+                )
+                if posts:
+                    post_ids = [p.id for p in posts]
+                    likes_map: dict[int, int] = {}
+                    comments_map: dict[int, int] = {}
+                    try:
+                        likes_rows = (
+                            ms.execute(
+                                _sa_select(
+                                    MomentLikeDB.post_id,
+                                    _sa_func.count(MomentLikeDB.id),
+                                )
+                                .where(MomentLikeDB.post_id.in_(post_ids))
+                                .group_by(MomentLikeDB.post_id)
+                            )
+                            .all()
+                        )
+                        for pid, cnt in likes_rows:
+                            try:
+                                likes_map[int(pid)] = int(cnt or 0)
+                            except Exception:
+                                continue
+                    except Exception:
+                        likes_map = {}
+                    try:
+                        comments_rows = (
+                            ms.execute(
+                                _sa_select(
+                                    MomentCommentDB.post_id,
+                                    _sa_func.count(MomentCommentDB.id),
+                                )
+                                .where(MomentCommentDB.post_id.in_(post_ids))
+                                .group_by(MomentCommentDB.post_id)
+                            )
+                            .all()
+                        )
+                        for pid, cnt in comments_rows:
+                            try:
+                                comments_map[int(pid)] = int(cnt or 0)
+                            except Exception:
+                                continue
+                    except Exception:
+                        comments_map = {}
+                    now = datetime.now(timezone.utc)
+                    scored: list[tuple[float, RedPacketCampaignTopMomentOut]] = []
+                    for p in posts:
+                        try:
+                            pid = int(p.id)
+                        except Exception:
+                            continue
+                        likes = likes_map.get(pid, 0)
+                        comments = comments_map.get(pid, 0)
+                        ts = getattr(p, "created_at", None)
+                        if isinstance(ts, datetime):
+                            ts_str = ts.isoformat().replace("+00:00", "Z")
+                            age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
+                        else:
+                            ts_str = None
+                            age_days = 0.0
+                        # Simple engagement score: likes & comments with
+                        # a mild recency boost (newer posts slightly ahead).
+                        score = float(likes * 2 + comments * 3)
+                        try:
+                            if age_days > 0.0:
+                                score = score + max(0.0, 5.0 - age_days)
+                        except Exception:
+                            pass
+                        text = (getattr(p, "text", "") or "")[:140]
+                        scored.append(
+                            (
+                                score,
+                                RedPacketCampaignTopMomentOut(
+                                    post_id=pid,
+                                    text=text,
+                                    ts=ts_str,
+                                    likes=likes,
+                                    comments=comments,
+                                    score=score,
+                                ),
+                            )
+                        )
+                    if scored:
+                        scored.sort(key=lambda t: t[0], reverse=True)
+                        for _, item in scored[:limit_val]:
+                            items.append(item)
+        except Exception:
+            items = []
+        return {"items": [i.dict() for i in items]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/official_accounts", response_class=JSONResponse)
+async def list_official_accounts(request: Request, kind: str | None = None, followed_only: bool = True):
+    ck = _official_cookie_key(request)
+    try:
+        with _officials_session() as s:
+            stmt = _sa_select(OfficialAccountDB).where(OfficialAccountDB.enabled == True)  # type: ignore[comparison-overlap]
+            if kind:
+                stmt = stmt.where(OfficialAccountDB.kind == kind)
+            accounts = list(s.execute(stmt).scalars().all())
+            # Active Red‑Packet campaigns per Official (for badges in directory / search).
+            campaign_counts: dict[str, int] = {}
+            try:
+                acc_ids_campaign = [acc.id for acc in accounts]
+                if acc_ids_campaign:
+                    camp_rows = (
+                        s.execute(
+                            _sa_select(
+                                RedPacketCampaignDB.account_id,
+                                _sa_func.count(RedPacketCampaignDB.id),
+                            )
+                            .where(
+                                RedPacketCampaignDB.account_id.in_(acc_ids_campaign),
+                                RedPacketCampaignDB.active.is_(True),
+                            )
+                            .group_by(RedPacketCampaignDB.account_id)
+                        )
+                        .all()
+                    )
+                    for acc_id, cnt in camp_rows:
+                        try:
+                            campaign_counts[str(acc_id)] = int(cnt or 0)
+                        except Exception:
+                            continue
+            except Exception:
+                campaign_counts = {}
+            # Best-effort Moments share counts per Official (global, all users).
+            moments_shares: dict[str, int] = {}
+            try:
+                acc_ids = [acc.id for acc in accounts]
+                if acc_ids:
+                    with _moments_session() as ms:
+                        mrows = (
+                            ms.execute(
+                                _sa_select(
+                                    MomentPostDB.origin_official_account_id,
+                                    _sa_func.count(MomentPostDB.id),
+                                )
+                                .where(
+                                    MomentPostDB.origin_official_account_id.in_(
+                                        acc_ids
+                                    )
+                                )
+                                .group_by(MomentPostDB.origin_official_account_id)
+                            )
+                            .all()
+                        )
+                        for acc_id, cnt in mrows:
+                            try:
+                                moments_shares[str(acc_id)] = int(cnt or 0)
+                            except Exception:
+                                continue
+            except Exception:
+                moments_shares = {}
+            notif_modes: dict[str, str] = {}
+            try:
+                notif_rows = (
+                    s.execute(
+                        _sa_select(OfficialNotificationDB).where(
+                            OfficialNotificationDB.user_key == ck
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for row in notif_rows:
+                    if row.mode:
+                        notif_modes[row.account_id] = row.mode
+            except Exception:
+                notif_modes = {}
+            followed_ids = set(
+                s.execute(
+                    _sa_select(OfficialFollowDB.account_id).where(OfficialFollowDB.user_key == ck)
+                ).scalars().all()
+            )
+            if not followed_ids and accounts:
+                for acc in accounts:
+                    s.add(OfficialFollowDB(user_key=ck, account_id=acc.id))
+                s.commit()
+                followed_ids = {acc.id for acc in accounts}
+            items: list[dict[str, Any]] = []
+            for acc in accounts:
+                is_followed = acc.id in followed_ids
+                if followed_only and not is_followed:
+                    continue
+                last_item_dict: dict[str, Any] | None = None
+                try:
+                    fi_stmt = (
+                        _sa_select(OfficialFeedItemDB)
+                        .where(OfficialFeedItemDB.account_id == acc.id)
+                        .order_by(OfficialFeedItemDB.ts.desc(), OfficialFeedItemDB.id.desc())
+                        .limit(1)
+                    )
+                    fi = s.execute(fi_stmt).scalars().first()
+                except Exception:
+                    fi = None
+                if fi is not None:
+                    try:
+                        deeplink = _json.loads(fi.deeplink_json) if fi.deeplink_json else None
+                    except Exception:
+                        deeplink = None
+                    last_item_dict = {
+                        "id": fi.slug or str(fi.id),
+                        "type": fi.type,
+                        "title": fi.title,
+                        "snippet": fi.snippet,
+                        "thumb_url": fi.thumb_url,
+                        "ts": fi.ts.isoformat() if getattr(fi, "ts", None) else None,
+                        "deeplink": deeplink,
+                    }
+                data = {
+                    "id": acc.id,
+                    "kind": acc.kind,
+                    "name": acc.name,
+                    "name_ar": acc.name_ar,
+                    "avatar_url": acc.avatar_url,
+                    "verified": acc.verified,
+                    "mini_app_id": acc.mini_app_id,
+                    "description": acc.description,
+                    "chat_peer_id": getattr(acc, "chat_peer_id", None),
+                    "category": getattr(acc, "category", None),
+                    "city": getattr(acc, "city", None),
+                    "address": getattr(acc, "address", None),
+                    "opening_hours": getattr(acc, "opening_hours", None),
+                    "website_url": getattr(acc, "website_url", None),
+                    "qr_payload": getattr(acc, "qr_payload", None),
+                    "featured": getattr(acc, "featured", False),
+                    "unread_count": 0,
+                    "last_item": last_item_dict,
+                    "followed": is_followed,
+                }
+                # Include global Moments share count for this Official as a
+                # lightweight "hotness" indicator (used in Moments filters).
+                try:
+                    data["moments_total_shares"] = int(
+                        moments_shares.get(acc.id, 0)
+                    )
+                except Exception:
+                    data["moments_total_shares"] = 0
+                try:
+                    data["campaigns_active"] = int(
+                        campaign_counts.get(acc.id, 0)
+                    )
+                except Exception:
+                    data["campaigns_active"] = 0
+                if acc.id in notif_modes:
+                    data["notif_mode"] = notif_modes[acc.id]
+                menu_items = _official_menu_items_for(acc)
+                if menu_items:
+                    data["menu_items"] = menu_items
+                items.append(data)
+        try:
+            emit_event(
+                "officials",
+                "accounts_listed",
+                {
+                    "user_key": ck,
+                    "kind": kind,
+                    "followed_only": followed_only,
+                    "count": len(items),
+                },
+            )
+        except Exception:
+            pass
+        return {"accounts": items}
+    except HTTPException:
+        raise
+    except Exception:
+        followed = _OFFICIAL_FOLLOWS.get(ck) or set(_OFFICIAL_ACCOUNTS.keys())
+        fallback_items: list[dict[str, Any]] = []
+        for acc in _OFFICIAL_ACCOUNTS.values():
+            if kind and acc.kind != kind:
+                continue
+            is_followed = acc.id in followed
+            if followed_only and not is_followed:
+                continue
+            data = acc.dict()
+            data["followed"] = is_followed
+            fallback_items.append(data)
+        try:
+            emit_event(
+                "officials",
+                "accounts_listed",
+                {
+                    "user_key": ck,
+                    "kind": kind,
+                    "followed_only": followed_only,
+                    "count": len(fallback_items),
+                    "mode": "fallback",
+                },
+            )
+        except Exception:
+            pass
+        return {"accounts": fallback_items}
+
+
+@app.post("/official_accounts/self_register", response_class=JSONResponse)
+def official_account_self_register(
+    request: Request, body: OfficialAccountSelfRegisterIn
+) -> dict[str, Any]:
+    """
+    Self‑service registration endpoint for Official accounts.
+
+    A logged‑in merchant can propose a new WeChat‑style Official
+    account. The request is stored separately and can later be
+    reviewed and approved by ops before an OfficialAccountDB row is
+    created.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    account_id = (body.account_id or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id required")
+    # Simple slug validation similar to Mini‑Programs.
+    for ch in account_id:
+        if not (ch.islower() or ch.isdigit() or ch in {"_", "-"}):
+            raise HTTPException(
+                status_code=400,
+                detail="account_id may only contain lowercase letters, digits, '_' or '-'",
+            )
+    kind = (body.kind or "service").strip().lower()
+    if kind not in {"service", "subscription"}:
+        raise HTTPException(status_code=400, detail="kind must be 'service' or 'subscription'")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    owner_name = (body.owner_name or "").strip()
+    if not owner_name:
+        owner_name = f"Merchant {phone}"
+    contact_phone = (body.contact_phone or "").strip()
+    if not contact_phone:
+        contact_phone = phone
+    contact_email = (body.contact_email or "").strip() or None
+    try:
+        with _officials_session() as s:
+            # Prevent registering an ID that already exists as an Official.
+            existing_acc = s.get(OfficialAccountDB, account_id)
+            if existing_acc:
+                raise HTTPException(status_code=409, detail="official account with this id already exists")
+            # Allow the same requester to update their latest request; others must use a different id.
+            existing_req = (
+                s.execute(
+                    _sa_select(OfficialAccountRequestDB)
+                    .where(
+                        OfficialAccountRequestDB.account_id == account_id,
+                        OfficialAccountRequestDB.requester_phone == phone,
+                    )
+                    .order_by(OfficialAccountRequestDB.id.desc())
+                )
+                .scalars()
+                .first()
+            )
+            if existing_req:
+                existing_req.kind = kind
+                existing_req.name = name
+                if body.name_ar is not None:
+                    existing_req.name_ar = body.name_ar
+                if body.description is not None:
+                    existing_req.description = body.description
+                if body.category is not None:
+                    existing_req.category = body.category
+                if body.city is not None:
+                    existing_req.city = body.city
+                if body.address is not None:
+                    existing_req.address = body.address
+                if body.opening_hours is not None:
+                    existing_req.opening_hours = body.opening_hours
+                if body.website_url is not None:
+                    existing_req.website_url = body.website_url
+                if body.mini_app_id is not None:
+                    existing_req.mini_app_id = body.mini_app_id
+                existing_req.owner_name = owner_name
+                existing_req.contact_phone = contact_phone
+                existing_req.contact_email = contact_email
+                row = existing_req
+            else:
+                row = OfficialAccountRequestDB(
+                    account_id=account_id,
+                    kind=kind,
+                    name=name,
+                    name_ar=body.name_ar,
+                    description=body.description,
+                    category=body.category,
+                    city=body.city,
+                    address=body.address,
+                    opening_hours=body.opening_hours,
+                    website_url=body.website_url,
+                    mini_app_id=body.mini_app_id,
+                    owner_name=owner_name,
+                    contact_phone=contact_phone,
+                    contact_email=contact_email,
+                    requester_phone=phone,
+                    status="submitted",
+                )
+                s.add(row)
+            s.commit()
+            s.refresh(row)
+            try:
+                emit_event(
+                    "officials",
+                    "self_register",
+                    {
+                        "account_id": row.account_id,
+                        "request_id": row.id,
+                        "requester_phone": row.requester_phone,
+                        "status": row.status,
+                    },
+                )
+            except Exception:
+                pass
+            out = OfficialAccountRequestOut(
+                id=row.id,
+                account_id=row.account_id,
+                kind=row.kind,
+                name=row.name,
+                name_ar=row.name_ar,
+                description=row.description,
+                category=row.category,
+                city=row.city,
+                address=row.address,
+                opening_hours=row.opening_hours,
+                website_url=row.website_url,
+                mini_app_id=row.mini_app_id,
+                owner_name=row.owner_name,
+                contact_phone=row.contact_phone,
+                contact_email=row.contact_email,
+                requester_phone=row.requester_phone,
+                status=row.status,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            return out.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/official_account_requests", response_class=JSONResponse)
+def me_official_account_requests(request: Request) -> dict[str, Any]:
+    """
+    Lists Official account registration requests for the current user.
+
+    This gives a WeChat‑like overview of pending/approved/rejected
+    Official account applications owned by the caller (based on phone).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(OfficialAccountRequestDB)
+                    .where(OfficialAccountRequestDB.requester_phone == phone)
+                    .order_by(OfficialAccountRequestDB.created_at.desc())
+                )
+                .scalars()
+                .all()
+            )
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                items.append(
+                    OfficialAccountRequestOut(
+                        id=row.id,
+                        account_id=row.account_id,
+                        kind=row.kind,
+                        name=row.name,
+                        name_ar=row.name_ar,
+                        description=row.description,
+                        category=row.category,
+                        city=row.city,
+                        address=row.address,
+                        opening_hours=row.opening_hours,
+                        website_url=row.website_url,
+                        mini_app_id=row.mini_app_id,
+                        owner_name=row.owner_name,
+                        contact_phone=row.contact_phone,
+                        contact_email=row.contact_email,
+                        requester_phone=row.requester_phone,
+                        status=row.status,
+                        created_at=row.created_at,
+                        updated_at=row.updated_at,
+                    ).dict()
+                )
+        return {"requests": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/me/official_template_messages", response_class=JSONResponse)
+def me_official_template_messages(
+    request: Request, unread_only: bool = False, limit: int = 50
+) -> dict[str, Any]:
+    """
+    Returns Official template messages for the current user (WeChat-like one-time service messages).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    limit_val = max(1, min(limit, 200))
+    try:
+        with _officials_session() as s:
+            stmt = _sa_select(OfficialTemplateMessageDB).where(
+                OfficialTemplateMessageDB.user_phone == phone
+            )
+            if unread_only:
+                stmt = stmt.where(OfficialTemplateMessageDB.read_at.is_(None))
+            stmt = stmt.order_by(
+                OfficialTemplateMessageDB.created_at.desc()
+            ).limit(limit_val)
+            rows = s.execute(stmt).scalars().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                try:
+                    deeplink = (
+                        _json.loads(row.deeplink_json)
+                        if row.deeplink_json
+                        else None
+                    )
+                except Exception:
+                    deeplink = None
+                out = OfficialTemplateMessageOut(
+                    id=row.id,
+                    account_id=row.account_id,
+                    title=row.title,
+                    body=row.body,
+                    deeplink_json=deeplink,
+                    created_at=row.created_at,
+                    read_at=row.read_at,
+                )
+                items.append(out.dict())
+        return {"messages": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/me/official_template_messages/{message_id}/read",
+    response_class=JSONResponse,
+)
+def me_official_template_messages_mark_read(
+    message_id: int, request: Request
+) -> dict[str, Any]:
+    """
+    Marks a single Official template message as read for the current user.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    try:
+        with _officials_session() as s:
+            row = s.get(OfficialTemplateMessageDB, message_id)
+            if not row or row.user_phone != phone:
+                raise HTTPException(status_code=404, detail="message not found")
+            if row.read_at is None:
+                row.read_at = datetime.now(timezone.utc)
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                try:
+                    emit_event(
+                        "officials",
+                        "template_message_read",
+                        {
+                            "account_id": row.account_id,
+                            "user_phone": row.user_phone,
+                            "message_id": row.id,
+                        },
+                    )
+                except Exception:
+                    pass
+            try:
+                deeplink = (
+                    _json.loads(row.deeplink_json)
+                    if row.deeplink_json
+                    else None
+                )
+            except Exception:
+                deeplink = None
+            out = OfficialTemplateMessageOut(
+                id=row.id,
+                account_id=row.account_id,
+                title=row.title,
+                body=row.body,
+                deeplink_json=deeplink,
+                created_at=row.created_at,
+                read_at=row.read_at,
+            )
+            return out.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/mini_programs", response_class=JSONResponse)
+def mini_program_create(request: Request, body: MiniProgramAdminIn) -> dict[str, Any]:
+    """
+    Legt einen neuen Mini‑Program‑Eintrag an (admin only).
+
+    Dies bildet die WeChat‑ähnliche Mini‑Program‑Registry ab, getrennt
+    von den konkreten App‑Versionen.
+    """
+    _require_admin_v2(request)
+    app_id = (body.app_id or "").strip()
+    if not app_id:
+        raise HTTPException(status_code=400, detail="app_id required")
+    title_en = (body.title_en or "").strip()
+    if not title_en:
+        raise HTTPException(status_code=400, detail="title_en required")
+    try:
+        with _officials_session() as s:
+            existing = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(MiniProgramDB.app_id == app_id)
+                )
+                .scalars()
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="mini-program already exists")
+            actions_json: str | None = None
+            if body.actions:
+                try:
+                    actions_json = _json.dumps([a.dict() for a in body.actions])
+                except Exception:
+                    actions_json = None
+            scopes_json: str | None = None
+            if body.scopes:
+                try:
+                    scopes = [str(s).strip() for s in body.scopes if str(s).strip()]
+                    if scopes:
+                        scopes_json = _json.dumps(scopes)
+                except Exception:
+                    scopes_json = None
+            row = MiniProgramDB(
+                app_id=app_id,
+                title_en=title_en,
+                title_ar=body.title_ar,
+                description_en=body.description_en,
+                description_ar=body.description_ar,
+                owner_name=body.owner_name,
+                owner_contact=body.owner_contact,
+                actions_json=actions_json,
+                 scopes_json=scopes_json,
+                status="draft",
+                review_status="draft",
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            actions_out: list[dict[str, Any]] = []
+            if body.actions:
+                for a in body.actions:
+                    actions_out.append(
+                        {
+                            "id": a.id,
+                            "label_en": a.label_en,
+                            "label_ar": a.label_ar,
+                            "kind": a.kind,
+                            "mod_id": a.mod_id,
+                            "url": a.url,
+                        }
+                    )
+            scopes_out: list[str] | None = None
+            if scopes_json:
+                try:
+                    val = _json.loads(scopes_json)
+                    if isinstance(val, list):
+                        scopes_out = [str(s) for s in val if str(s).strip()]
+                except Exception:
+                    scopes_out = None
+            return {
+                "app_id": row.app_id,
+                "title_en": row.title_en,
+                "title_ar": row.title_ar,
+                "description_en": row.description_en,
+                "description_ar": row.description_ar,
+                "owner_name": row.owner_name,
+                "owner_contact": row.owner_contact,
+                "status": row.status,
+                "review_status": getattr(row, "review_status", "draft"),
+                "scopes": scopes_out,
+                "actions": actions_out,
+                "created_at": getattr(row, "created_at", None),
+                "updated_at": getattr(row, "updated_at", None),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_programs/self_register", response_class=JSONResponse)
+def mini_program_self_register(
+    request: Request, body: MiniProgramSelfRegisterIn
+) -> dict[str, Any]:
+    """
+    Self‑service registration endpoint for third‑party Mini‑Programs.
+
+    A logged‑in developer can create or update basic metadata for a
+    Mini‑Program. New entries are created with status "draft"; ops can
+    later review and activate them via the admin console.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    app_id = (body.app_id or "").strip()
+    if not app_id:
+        raise HTTPException(status_code=400, detail="app_id required")
+    title_en = (body.title_en or "").strip()
+    if not title_en:
+        raise HTTPException(status_code=400, detail="title_en required")
+    # Very simple app_id sanity-check to avoid surprising IDs.
+    for ch in app_id:
+        if not (ch.islower() or ch.isdigit() or ch in {"_", "-"}):
+            raise HTTPException(
+                status_code=400,
+                detail="app_id may only contain lowercase letters, digits, '_' or '-'",
+            )
+    owner_name = (body.owner_name or "").strip()
+    if not owner_name:
+        owner_name = f"Developer {phone}"
+    owner_contact = (body.owner_contact or "").strip()
+    if not owner_contact:
+        owner_contact = phone
+    try:
+        with _officials_session() as s:
+            existing = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(MiniProgramDB.app_id == app_id)
+                )
+                .scalars()
+                .first()
+            )
+            scopes_json: str | None = None
+            if body.scopes:
+                try:
+                    scopes = [str(s).strip() for s in body.scopes if str(s).strip()]
+                    if scopes:
+                        scopes_json = _json.dumps(scopes)
+                except Exception:
+                    scopes_json = None
+            if existing:
+                # Only allow the original owner (based on owner_contact) to update.
+                try:
+                    existing_contact = (existing.owner_contact or "").strip()
+                except Exception:
+                    existing_contact = ""
+                if existing_contact and existing_contact != phone:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="mini-program already exists and is owned by a different contact",
+                    )
+                existing.title_en = title_en
+                existing.title_ar = body.title_ar or existing.title_ar
+                existing.description_en = (
+                    body.description_en or existing.description_en
+                )
+                existing.description_ar = (
+                    body.description_ar or existing.description_ar
+                )
+                existing.owner_name = owner_name
+                existing.owner_contact = owner_contact
+                if scopes_json is not None:
+                    existing.scopes_json = scopes_json
+                s.add(existing)
+                row = existing
+            else:
+                row = MiniProgramDB(
+                    app_id=app_id,
+                    title_en=title_en,
+                    title_ar=body.title_ar,
+                    description_en=body.description_en,
+                    description_ar=body.description_ar,
+                    owner_name=owner_name,
+                    owner_contact=owner_contact,
+                    scopes_json=scopes_json,
+                    status="draft",
+                    review_status="draft",
+                )
+                s.add(row)
+            s.commit()
+            s.refresh(row)
+            try:
+                emit_event(
+                    "miniprograms",
+                    "self_register",
+                    {
+                        "app_id": row.app_id,
+                        "owner_contact": row.owner_contact,
+                        "status": row.status,
+                    },
+                )
+            except Exception:
+                pass
+            return {
+                "app_id": row.app_id,
+                "title_en": row.title_en,
+                "title_ar": row.title_ar,
+                "description_en": row.description_en,
+                "description_ar": row.description_ar,
+                "owner_name": row.owner_name,
+                "owner_contact": row.owner_contact,
+                "status": row.status,
+                "review_status": getattr(row, "review_status", "draft"),
+                "scopes": (
+                    [
+                        str(s)
+                        for s in (
+                            (_json.loads(row.scopes_json or "[]"))
+                            if getattr(row, "scopes_json", None)
+                            else []
+                        )
+                        if str(s).strip()
+                    ]
+                    if getattr(row, "scopes_json", None)
+                    else []
+                ),
+                "created_at": getattr(row, "created_at", None),
+                "updated_at": getattr(row, "updated_at", None),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/mini_programs/{app_id}/submit_review",
+    response_class=JSONResponse,
+)
+def mini_program_submit_review(request: Request, app_id: str) -> dict[str, Any]:
+    """
+    Developer-facing endpoint to submit a Mini‑Program for review.
+
+    Only the original owner (based on owner_contact/phone) may call this.
+    Sets review_status="submitted" but does not change the status field;
+    ops can then approve the Mini‑Program in the admin Review‑Center.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    try:
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            try:
+                owner_contact = (prog.owner_contact or "").strip()
+            except Exception:
+                owner_contact = ""
+            if owner_contact and owner_contact != phone:
+                raise HTTPException(
+                    status_code=403,
+                    detail="only the original owner can submit this mini-program for review",
+                )
+            current_review = (getattr(prog, "review_status", "draft") or "").strip().lower()
+            if current_review == "approved":
+                # Already approved; nothing to do.
+                return {
+                    "app_id": prog.app_id,
+                    "status": prog.status,
+                    "review_status": current_review,
+                }
+            prog.review_status = "submitted"
+            s.add(prog)
+            s.commit()
+            s.refresh(prog)
+            try:
+                emit_event(
+                    "miniprograms",
+                    "submit_review",
+                    {
+                        "app_id": prog.app_id,
+                        "owner_contact": prog.owner_contact,
+                        "status": prog.status,
+                        "review_status": prog.review_status,
+                    },
+                )
+            except Exception:
+                pass
+            return {
+                "app_id": prog.app_id,
+                "status": prog.status,
+                "review_status": getattr(prog, "review_status", "submitted"),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/mini_programs", response_class=JSONResponse)
+def mini_program_list() -> dict[str, Any]:
+    """
+    Öffentlicher JSON‑Katalog für registrierte Mini‑Programme.
+
+    Dient als Basis für spätere Developer‑Portale und den
+    Mini‑Program‑Runtime, ähnlich zu WeChat.
+    """
+    try:
+        with _officials_session() as s:
+            programs = (
+                s.execute(
+                    _sa_select(MiniProgramDB).order_by(MiniProgramDB.app_id)
+                )
+                .scalars()
+                .all()
+            )
+            app_ids = [p.app_id for p in programs]
+            ratings_map: dict[str, tuple[float, int]] = {}
+            if app_ids:
+                try:
+                    agg_rows = (
+                        s.execute(
+                            _sa_select(
+                                MiniProgramRatingDB.app_id,
+                                _sa_func.avg(MiniProgramRatingDB.rating),
+                                _sa_func.count(MiniProgramRatingDB.id),
+                            ).where(MiniProgramRatingDB.app_id.in_(app_ids))
+                            .group_by(MiniProgramRatingDB.app_id)
+                        )
+                        .all()
+                    )
+                    for app_id, avg_val, cnt in agg_rows:
+                        try:
+                            ratings_map[str(app_id)] = (
+                                float(avg_val or 0.0),
+                                int(cnt or 0),
+                            )
+                        except Exception:
+                            continue
+                except Exception:
+                    ratings_map = {}
+            # Best-effort Moments share counts per Mini-Program based on
+            # shamell://mini_program/<id> deep-links in Moments posts.
+            # So können Directory & Suche später "hot last 30 days"
+            # ähnlich zu WeChat markieren.
+            moments_shares: dict[str, int] = {}
+            moments_shares_30d: dict[str, int] = {}
+            try:
+                if app_ids:
+                    with _moments_session() as ms:
+                        since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+                        for app_id in app_ids:
+                            try:
+                                pattern = f"shamell://mini_program/{app_id}"
+                                base_stmt = _sa_select(
+                                    _sa_func.count(MomentPostDB.id)
+                                ).where(MomentPostDB.text.contains(pattern))
+                                cnt_all = ms.execute(base_stmt).scalar() or 0
+                                cnt_30 = (
+                                    ms.execute(
+                                        base_stmt.where(
+                                            MomentPostDB.created_at >= since_30d
+                                        )
+                                    ).scalar()
+                                    or 0
+                                )
+                                moments_shares[str(app_id)] = int(cnt_all or 0)
+                                moments_shares_30d[str(app_id)] = int(cnt_30 or 0)
+                            except Exception:
+                                continue
+            except Exception:
+                moments_shares = {}
+                moments_shares_30d = {}
+
+            items: list[dict[str, Any]] = []
+            for prog in programs:
+                released_version: str | None = None
+                released_channel: str | None = None
+                usage_score_val = 0
+                try:
+                    usage_score_val = int(
+                        getattr(prog, "usage_score", 0) or 0
+                    )
+                except Exception:
+                    usage_score_val = 0
+                try:
+                    avg_rating, rating_count = ratings_map.get(
+                        prog.app_id,
+                        (
+                            float(getattr(prog, "rating", 0.0) or 0.0),
+                            0,
+                        ),
+                    )
+                except Exception:
+                    avg_rating, rating_count = 0.0, 0
+                try:
+                    rel = (
+                        s.execute(
+                            _sa_select(MiniProgramReleaseDB)
+                            .where(MiniProgramReleaseDB.program_id == prog.id)
+                            .order_by(
+                                MiniProgramReleaseDB.created_at.desc(),
+                                MiniProgramReleaseDB.id.desc(),
+                            )
+                            .limit(1)
+                        )
+                        .scalars()
+                        .first()
+                    )
+                except Exception:
+                    rel = None
+                if rel is not None:
+                    released_channel = rel.channel
+                    try:
+                        ver = s.get(MiniProgramVersionDB, rel.version_id)
+                        if ver is not None:
+                            released_version = ver.version
+                    except Exception:
+                        released_version = None
+                scopes_list: list[str] = []
+                try:
+                    raw_scopes = getattr(prog, "scopes_json", None)
+                    if raw_scopes:
+                        val = _json.loads(raw_scopes)
+                        if isinstance(val, list):
+                            scopes_list = [
+                                str(s).strip() for s in val if str(s).strip()
+                            ]
+                except Exception:
+                    scopes_list = []
+                try:
+                    moments_count = int(
+                        moments_shares.get(prog.app_id, 0)
+                        or getattr(prog, "moments_shares", 0)
+                        or 0
+                    )
+                except Exception:
+                    moments_count = 0
+                try:
+                    moments_30 = int(
+                        moments_shares_30d.get(prog.app_id, 0) or 0
+                    )
+                except Exception:
+                    moments_30 = 0
+                items.append(
+                    {
+                        "app_id": prog.app_id,
+                        "title_en": prog.title_en,
+                        "title_ar": prog.title_ar,
+                        "description_en": getattr(prog, "description_en", None),
+                        "description_ar": getattr(prog, "description_ar", None),
+                        "owner_name": prog.owner_name,
+                        "owner_contact": prog.owner_contact,
+                        "status": prog.status,
+                        "review_status": getattr(prog, "review_status", "draft"),
+                        "scopes": scopes_list,
+                        "usage_score": usage_score_val,
+                        "rating": float(avg_rating),
+                        "rating_count": int(rating_count),
+                        "released_version": released_version,
+                        "released_channel": released_channel,
+                        "moments_shares": moments_count,
+                        "moments_shares_30d": moments_30,
+                    }
+                )
+        return {"programs": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/mini_programs/{app_id}", response_class=JSONResponse)
+def mini_program_detail(app_id: str) -> dict[str, Any]:
+    """
+    Detailansicht eines Mini‑Program‑Eintrags inkl. Versionen.
+    """
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    try:
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            versions = (
+                s.execute(
+                    _sa_select(MiniProgramVersionDB).where(
+                        MiniProgramVersionDB.program_id == prog.id
+                    )
+                    .order_by(
+                        MiniProgramVersionDB.created_at.desc(),
+                        MiniProgramVersionDB.id.desc(),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            avg_rating = 0.0
+            rating_count = 0
+            try:
+                row = (
+                    s.execute(
+                        _sa_select(
+                            _sa_func.avg(MiniProgramRatingDB.rating),
+                            _sa_func.count(MiniProgramRatingDB.id),
+                        ).where(MiniProgramRatingDB.app_id == app_id_clean)
+                    )
+                    .first()
+                )
+                if row:
+                    avg_rating = float(row[0] or 0.0)
+                    rating_count = int(row[1] or 0)
+            except Exception:
+                avg_rating = 0.0
+                rating_count = 0
+            vers_items: list[dict[str, Any]] = []
+            for v in versions:
+                vers_items.append(
+                    {
+                        "id": v.id,
+                        "version": v.version,
+                        "bundle_url": v.bundle_url,
+                        "changelog_en": v.changelog_en,
+                        "changelog_ar": v.changelog_ar,
+                        "created_at": getattr(v, "created_at", None),
+                    }
+                )
+            actions: list[dict[str, Any]] = []
+            raw_actions = getattr(prog, "actions_json", None)
+            if raw_actions:
+                try:
+                    val = _json.loads(raw_actions)
+                    if isinstance(val, list):
+                        for item in val:
+                            if not isinstance(item, dict):
+                                continue
+                            try:
+                                aid = str(item.get("id") or "").strip()
+                                if not aid:
+                                    continue
+                                actions.append(
+                                    {
+                                        "id": aid,
+                                        "label_en": item.get("label_en") or "",
+                                        "label_ar": item.get("label_ar") or "",
+                                        "kind": item.get("kind") or "open_mod",
+                                        "mod_id": item.get("mod_id"),
+                                        "url": item.get("url"),
+                                    }
+                                )
+                            except Exception:
+                                continue
+                except Exception:
+                    actions = []
+            scopes_list: list[str] = []
+            try:
+                raw_scopes = getattr(prog, "scopes_json", None)
+                if raw_scopes:
+                    val = _json.loads(raw_scopes)
+                    if isinstance(val, list):
+                        scopes_list = [
+                            str(s).strip() for s in val if str(s).strip()
+                        ]
+            except Exception:
+                scopes_list = []
+            return {
+                "app_id": prog.app_id,
+                "title_en": prog.title_en,
+                "title_ar": prog.title_ar,
+                "description_en": getattr(prog, "description_en", None),
+                "description_ar": getattr(prog, "description_ar", None),
+                "owner_name": prog.owner_name,
+                "owner_contact": prog.owner_contact,
+                "status": prog.status,
+                "review_status": getattr(prog, "review_status", "draft"),
+                "scopes": scopes_list,
+                "rating": avg_rating,
+                "rating_count": rating_count,
+                "versions": vers_items,
+                "actions": actions,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_programs/{app_id}/versions", response_class=JSONResponse)
+def mini_program_add_version(
+    app_id: str, request: Request, body: MiniProgramVersionIn
+) -> dict[str, Any]:
+    """
+    Registriert eine neue Version für ein Mini‑Programm (admin only).
+    """
+    _require_admin_v2(request)
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    version = (body.version or "").strip()
+    if not version:
+        raise HTTPException(status_code=400, detail="version required")
+    try:
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            existing = (
+                s.execute(
+                    _sa_select(MiniProgramVersionDB).where(
+                        MiniProgramVersionDB.program_id == prog.id,
+                        MiniProgramVersionDB.version == version,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="version already exists")
+            row = MiniProgramVersionDB(
+                program_id=prog.id,
+                version=version,
+                bundle_url=body.bundle_url,
+                changelog_en=body.changelog_en,
+                changelog_ar=body.changelog_ar,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            return {
+                "app_id": prog.app_id,
+                "version": row.version,
+                "bundle_url": row.bundle_url,
+                "changelog_en": row.changelog_en,
+                "changelog_ar": row.changelog_ar,
+                "created_at": getattr(row, "created_at", None),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_programs/{app_id}/versions/self_register", response_class=JSONResponse)
+def mini_program_add_version_self(
+    app_id: str, request: Request, body: MiniProgramSelfVersionIn
+) -> dict[str, Any]:
+    """
+    Developer self‑service endpoint to propose a new Mini‑Program version.
+
+    The version is recorded but not automatically released; ops can
+    later create a Release via the admin API.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    version = (body.version or "").strip()
+    if not version:
+        raise HTTPException(status_code=400, detail="version required")
+    bundle_url = (body.bundle_url or "").strip()
+    if not bundle_url:
+        raise HTTPException(status_code=400, detail="bundle_url required")
+    try:
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            # Only allow owner (based on owner_contact) to add versions.
+            try:
+                existing_contact = (prog.owner_contact or "").strip()
+            except Exception:
+                existing_contact = ""
+            if existing_contact and existing_contact != phone:
+                raise HTTPException(
+                    status_code=403,
+                    detail="mini-program is owned by a different contact",
+                )
+            existing = (
+                s.execute(
+                    _sa_select(MiniProgramVersionDB).where(
+                        MiniProgramVersionDB.program_id == prog.id,
+                        MiniProgramVersionDB.version == version,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="version already exists")
+            row = MiniProgramVersionDB(
+                program_id=prog.id,
+                version=version,
+                bundle_url=bundle_url,
+                changelog_en=body.changelog_en,
+                changelog_ar=body.changelog_ar,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            try:
+                emit_event(
+                    "miniprograms",
+                    "self_version",
+                    {"app_id": prog.app_id, "version": row.version},
+                )
+            except Exception:
+                pass
+            return {
+                "app_id": prog.app_id,
+                "version": row.version,
+                "bundle_url": row.bundle_url,
+                "changelog_en": row.changelog_en,
+                "changelog_ar": row.changelog_ar,
+                "created_at": getattr(row, "created_at", None),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_programs/{app_id}/releases", response_class=JSONResponse)
+def mini_program_release(
+    app_id: str, request: Request, body: MiniProgramReleaseIn
+) -> dict[str, Any]:
+    """
+    Markiert eine Version als freigegeben (admin only).
+
+    Für das MVP hängt der Client nicht direkt an Releases – die Daten
+    dienen in erster Linie als WeChat‑ähnliches Backoffice‑Tracking.
+    """
+    _require_admin_v2(request)
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    version_str = (body.version or "").strip()
+    if not version_str:
+        raise HTTPException(status_code=400, detail="version required")
+    channel = (body.channel or "prod").strip() or "prod"
+    try:
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            ver = (
+                s.execute(
+                    _sa_select(MiniProgramVersionDB).where(
+                        MiniProgramVersionDB.program_id == prog.id,
+                        MiniProgramVersionDB.version == version_str,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not ver:
+                raise HTTPException(status_code=404, detail="version not found")
+            rel = MiniProgramReleaseDB(
+                program_id=prog.id,
+                version_id=ver.id,
+                channel=channel,
+                status="active",
+            )
+            s.add(rel)
+            try:
+                prog.status = "active"
+                s.add(prog)
+            except Exception:
+                pass
+            s.commit()
+            s.refresh(rel)
+            return {
+                "app_id": prog.app_id,
+                "version": ver.version,
+                "channel": rel.channel,
+                "status": rel.status,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_programs/{app_id}/track_open", response_class=JSONResponse)
+async def mini_program_track_open(app_id: str, request: Request) -> dict[str, Any]:
+    """
+    Lightweight Tracking-Endpoint für Mini-Program-Opens (WeChat-like analytics).
+
+    Erhöht usage_score für die gegebene app_id – wird vom Client bei
+    jedem Öffnen eines Mini-Programms best-effort aufgerufen.
+    """
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    try:
+        with _officials_session() as s:
+            row = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not row:
+                # Unknown app_id – silently ignore so Client-Aufrufe nicht brechen.
+                return {"status": "ignored"}
+            try:
+                current = int(getattr(row, "usage_score", 0) or 0)
+            except Exception:
+                current = 0
+            row.usage_score = current + 1
+            s.add(row)
+            s.commit()
+        try:
+            emit_event(
+                "miniprograms",
+                "open",
+                {"app_id": app_id_clean},
+            )
+        except Exception:
+            pass
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/mini_programs/{app_id}/moments_stats", response_class=JSONResponse)
+def mini_program_moments_stats(app_id: str) -> dict[str, Any]:
+    """
+    Moments-Analytics für ein einzelnes Mini‑Program auf App‑Ebene.
+
+    Liefert Gesamt‑Shares, 30‑Tage‑Shares, Unique‑Sharers und eine
+    einfache Tageskurve für die letzten 30 Tage – WeChat‑ähnlich.
+    """
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    try:
+        # Sicherstellen, dass das Mini‑Program existiert – so können wir
+        # 404 für Tippfehler liefern statt leere Stats.
+        with _officials_session() as s:
+            prog = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+
+        pattern = f"shamell://mini_program/{app_id_clean}"
+        total = 0
+        total_30d = 0
+        uniq_total = 0
+        uniq_30d = 0
+        series_30d: list[dict[str, Any]] = []
+        try:
+            since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+            with _moments_session() as ms:
+                base_filter = MomentPostDB.text.contains(pattern)
+                # All-time total shares
+                total = (
+                    ms.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            base_filter
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                # 30d shares
+                total_30d = (
+                    ms.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            base_filter, MomentPostDB.created_at >= since_30d
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                # Unique sharers all-time
+                uniq_total = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(base_filter)
+                    )
+                    .scalar()
+                    or 0
+                )
+                # Unique sharers 30d
+                uniq_30d = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(
+                            base_filter, MomentPostDB.created_at >= since_30d
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                # Daily curve for last 30 days
+                rows = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.date(MomentPostDB.created_at),
+                            _sa_func.count(MomentPostDB.id),
+                        )
+                        .where(base_filter, MomentPostDB.created_at >= since_30d)
+                        .group_by(_sa_func.date(MomentPostDB.created_at))
+                        .order_by(_sa_func.date(MomentPostDB.created_at))
+                    )
+                    .all()
+                )
+                for d, cnt in rows:
+                    try:
+                        if isinstance(d, datetime):
+                            date_str = d.date().isoformat()
+                        else:
+                            date_str = str(d)
+                    except Exception:
+                        date_str = str(d)
+                    series_30d.append(
+                        {
+                            "date": date_str,
+                            "shares": int(cnt or 0),
+                        }
+                    )
+        except Exception:
+            total = 0
+            total_30d = 0
+            uniq_total = 0
+            uniq_30d = 0
+            series_30d = []
+
+        return {
+            "app_id": app_id_clean,
+            "shares_total": int(total or 0),
+            "shares_30d": int(total_30d or 0),
+            "unique_sharers_total": int(uniq_total or 0),
+            "unique_sharers_30d": int(uniq_30d or 0),
+            "series_30d": series_30d,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_programs/{app_id}/rate", response_class=JSONResponse)
+async def mini_program_rate(
+    app_id: str, request: Request, body: MiniProgramRatingIn
+) -> dict[str, Any]:
+    """
+    Simple rating endpoint for Mini‑Programs (1–5 stars per user).
+
+    Spiegelbild zu /mini_apps/{id}/rate, nutzt sa_cookie
+    als user_key und hält MiniProgramDB.rating synchron.
+    """
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    user_key = _official_cookie_key(request)
+    try:
+        val = int(body.rating)
+    except Exception:
+        val = 0
+    if val < 1:
+        val = 1
+    if val > 5:
+        val = 5
+    try:
+        with _officials_session() as s:
+            prog_row = (
+                s.execute(
+                    _sa_select(MiniProgramDB).where(
+                        MiniProgramDB.app_id == app_id_clean
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not prog_row:
+                raise HTTPException(status_code=404, detail="mini-program not found")
+            existing = (
+                s.execute(
+                    _sa_select(MiniProgramRatingDB).where(
+                        MiniProgramRatingDB.app_id == app_id_clean,
+                        MiniProgramRatingDB.user_key == user_key,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing:
+                existing.rating = val
+                s.add(existing)
+            else:
+                rec = MiniProgramRatingDB(
+                    app_id=app_id_clean, user_key=user_key, rating=val
+                )
+                s.add(rec)
+            s.commit()
+            avg_rating = 0.0
+            rating_count = 0
+            try:
+                avg_row = (
+                    s.execute(
+                        _sa_select(
+                            _sa_func.avg(MiniProgramRatingDB.rating),
+                            _sa_func.count(MiniProgramRatingDB.id),
+                        ).where(MiniProgramRatingDB.app_id == app_id_clean)
+                    )
+                    .first()
+                )
+                if avg_row:
+                    avg_rating = float(avg_row[0] or 0.0)
+                    rating_count = int(avg_row[1] or 0)
+            except Exception:
+                avg_rating = 0.0
+                rating_count = 0
+            try:
+                prog_row.rating = avg_rating
+                s.add(prog_row)
+                s.commit()
+            except Exception:
+                s.rollback()
+        try:
+            emit_event(
+                "miniprograms",
+                "rate",
+                {"app_id": app_id_clean, "user_key": user_key, "rating": val},
+            )
+        except Exception:
+            pass
+        return {"status": "ok", "rating": avg_rating, "count": rating_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/mini_apps", response_class=JSONResponse)
+async def list_mini_apps() -> dict[str, Any]:
+    """
+    Öffentlicher JSON-Katalog für Mini-Apps (Mini-Programme).
+
+    Wird vom Flutter-Client genutzt, um dynamische Mini-Apps (inkl. Partner)
+    anzuzeigen – analog zum statischen `kMiniApps`-Registry in der App.
+    """
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(MiniAppDB).where(MiniAppDB.enabled == True)  # type: ignore[comparison-overlap]
+                )
+                .scalars()
+                .all()
+            )
+            app_ids = [row.app_id for row in rows]
+            ratings_map: dict[str, tuple[float, int]] = {}
+            if app_ids:
+                agg_rows = (
+                    s.execute(
+                        _sa_select(
+                            MiniAppRatingDB.app_id,
+                            _sa_func.avg(MiniAppRatingDB.rating),
+                            _sa_func.count(MiniAppRatingDB.id),
+                        )
+                        .where(MiniAppRatingDB.app_id.in_(app_ids))
+                        .group_by(MiniAppRatingDB.app_id)
+                    )
+                    .all()
+                )
+                for app_id, avg_val, cnt_val in agg_rows:
+                    try:
+                        ratings_map[str(app_id)] = (
+                            float(avg_val or 0.0),
+                            int(cnt_val or 0),
+                        )
+                    except Exception:
+                        continue
+            # Best-effort Moments share counts per Mini-App based on
+            # shamell://miniapp/<id> deep-links in Moments posts.
+            moments_shares: dict[str, int] = {}
+            try:
+                if app_ids:
+                    with _moments_session() as ms:
+                        for app_id in app_ids:
+                            try:
+                                pattern = f"shamell://miniapp/{app_id}"
+                                cnt = (
+                                    ms.execute(
+                                        _sa_select(
+                                            _sa_func.count(MomentPostDB.id)
+                                        ).where(
+                                            MomentPostDB.text.contains(
+                                                pattern
+                                            )
+                                        )
+                                    )
+                                    .scalar()
+                                    or 0
+                                )
+                                moments_shares[str(app_id)] = int(cnt or 0)
+                            except Exception:
+                                continue
+            except Exception:
+                moments_shares = {}
+
+            apps: list[dict[str, Any]] = []
+            for row in rows:
+                avg_rating, rating_count = ratings_map.get(
+                    row.app_id, (float(getattr(row, "rating", 0.0) or 0.0), 0)
+                )
+                try:
+                    moments_count = int(
+                        moments_shares.get(row.app_id, 0)
+                        or getattr(row, "moments_shares", 0)
+                        or 0
+                    )
+                except Exception:
+                    moments_count = 0
+                apps.append(
+                    {
+                        "id": row.app_id,
+                        "title_en": row.title_en,
+                        "title_ar": row.title_ar,
+                        "category_en": row.category_en,
+                        "category_ar": row.category_ar,
+                        "description": row.description,
+                        "icon": row.icon,
+                        "official": bool(getattr(row, "official", False)),
+                        "beta": bool(getattr(row, "beta", False)),
+                        "runtime_app_id": getattr(row, "runtime_app_id", None),
+                        "rating": float(avg_rating),
+                        "rating_count": int(rating_count),
+                        "usage_score": int(
+                            getattr(row, "usage_score", 0) or 0
+                        ),
+                        "moments_shares": moments_count,
+                    }
+                )
+        return {"apps": apps}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/mini_apps/developer", response_class=HTMLResponse)
+def mini_apps_developer_landing(request: Request) -> HTMLResponse:
+    """
+    Lightweight Developer-Landing für Mini-Apps (Mini-Programme).
+
+    Beschreibt kurz das Mini-Program-Ökosystem von Shamell und
+    verweist auf die Admin-Konsole für Registrierung & Partner-Setup.
+    """
+    base = request.base_url._url.rstrip("/")  # type: ignore[attr-defined]
+    html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shamell · Mini‑Apps developer</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:880px;color:#0f172a;line-height:1.5;}}
+    h1{{margin-bottom:4px;}}
+    h2{{margin-top:20px;margin-bottom:6px;}}
+    p{{margin:4px 0;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+    .muted{{color:#6b7280;font-size:13px;}}
+    ul{{padding-left:20px;}}
+  </style>
+</head><body>
+  <h1>Mini‑Apps · Developer overview</h1>
+  <p class="muted">
+    Shamell Mini‑Apps sind WeChat‑ähnliche Mini‑Programme, die direkt im
+    Super‑App‑Shell laufen (Discover‑Strip, Mirsaal, Moments).
+  </p>
+
+  <h2>Ökosystem</h2>
+  <ul>
+    <li><strong>Katalog &amp; Suche:</strong> <code>/mini_apps</code> liefert einen öffentlichen JSON‑Katalog.</li>
+    <li><strong>Trending &amp; Analytics:</strong> <code>usage_score</code>, <code>rating</code> und
+      <code>moments_shares</code> steuern die Sortierung im Mini‑Apps‑Tab.</li>
+    <li><strong>Moments‑Integration:</strong> Mini‑Apps lassen sich direkt in Moments teilen
+      (Deep‑Links <code>shamell://miniapp/&lt;id&gt;</code>, Hashtags wie <code>#ShamellMiniApp</code>).</li>
+  </ul>
+
+  <h2>Drittanbieter‑Registrierung</h2>
+  <p>
+    Die eigentliche Anlage und Pflege von Mini‑Apps erfolgt über die
+    Admin‑Konsole (nur für Ops/Partner‑Team zugänglich):
+  </p>
+  <ul>
+    <li><code>{base}/admin/miniapps</code> – JSON &amp; HTML Konsole für Anlage/Bearbeitung.</li>
+    <li><code>{base}/admin/miniapps/analytics</code> – einfache Analytics‑Übersicht.</li>
+  </ul>
+  <p class="muted">
+    In Produktionsumgebungen sollte die Konsole nur über VPN/Backoffice erreichbar sein.
+  </p>
+
+  <h2>Client‑Integration</h2>
+  <p>Ein Mini‑App Eintrag besteht typischerweise aus:</p>
+  <ul>
+    <li><code>app_id</code> (z.B. <code>taxi_rider</code>)</li>
+    <li><code>title_en</code>, <code>title_ar</code></li>
+    <li><code>category_en</code>, <code>category_ar</code></li>
+    <li>optional: <code>icon</code>, <code>official</code>, <code>beta</code></li>
+  </ul>
+  <p>
+    Die Flutter‑Shell mappt <code>app_id</code> auf konkrete Routen (z.B. Taxi, Food,
+    Stays, Wallet) und ruft beim Öffnen best‑effort
+    <code>POST /mini_apps/&lt;id&gt;/track_open</code> auf.
+  </p>
+
+  <p class="muted">
+    Hinweis: Diese Seite ist rein informativ. Schreibende Aktionen (Anlage,
+    Editieren, Deaktivieren) laufen ausschließlich über die Admin‑Konsole.
+  </p>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/mini_programs/developer", response_class=HTMLResponse)
+def mini_programs_developer_landing(request: Request) -> HTMLResponse:
+    """
+    Lightweight Developer-Landing für Mini-Programs.
+
+    Spiegelt die Mini-Apps-Developer-Seite, beschreibt aber
+    explizit das API-basierte Mini-Program-Ökosystem.
+    """
+    base = request.base_url._url.rstrip("/")  # type: ignore[attr-defined]
+    phone = _auth_phone(request)
+    if not phone:
+        return RedirectResponse(url="/login", status_code=303)
+    html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shamell · Mini‑programs developer</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:880px;color:#0f172a;line-height:1.5;}}
+    h1{{margin-bottom:4px;}}
+    h2{{margin-top:20px;margin-bottom:6px;}}
+    p{{margin:4px 0;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+    .muted{{color:#6b7280;font-size:13px;}}
+    ul{{padding-left:20px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:8px;font-size:13px;}}
+    th,td{{border:1px solid #e5e7eb;padding:4px 6px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .pill{{display:inline-block;padding:1px 6px;border-radius:999px;font-size:11px;}}
+    .pill-status-active{{background:#dcfce7;color:#166534;}}
+    .pill-status-draft{{background:#fef3c7;color:#92400e;}}
+    .pill-status-disabled{{background:#fee2e2;color:#991b1b;}}
+    .pill-trending{{background:#eff6ff;color:#1d4ed8;margin-left:4px;}}
+    .small{{font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Mini‑Programs · Developer overview</h1>
+  <p class="muted">
+    Shamell Mini‑Programs sind WeChat‑ähnliche Mini‑Apps, die per Manifest
+    über <code>/mini_programs/&lt;id&gt;</code> beschrieben werden und im Shamell‑Shell
+    laufen (Discover‑Strip, Mini‑Apps‑Kacheln, Deep‑Links).
+  </p>
+
+  <h2>Ökosystem</h2>
+  <ul>
+    <li><strong>Katalog &amp; Suche:</strong> <code>/mini_programs</code> liefert einen öffentlichen JSON‑Katalog mit
+      <code>app_id</code>, Titel, Owner, Status, <code>usage_score</code> und Rating.</li>
+    <li><strong>Trending &amp; Analytics:</strong> <code>usage_score</code> (Track via
+      <code>POST /mini_programs/&lt;id&gt;/track_open</code>) und Rating steuern Sortierung
+      in Suche und Directory; HTML‑Analytics: <code>{base}/admin/mini_programs/analytics</code>.</li>
+    <li><strong>Runtime‑Manifest:</strong> <code>/mini_programs/&lt;id&gt;</code> liefert Titel,
+      Beschreibungen und Actions‑Liste (Buttons) für die Flutter‑Runtime.</li>
+  </ul>
+
+  <h2>Drittanbieter‑Registrierung (Self‑Service)</h2>
+  <p>
+    Als eingeloggter Entwickler (<code>{phone}</code>) kannst du eigene Mini‑Programme
+    registrieren. Neue Einträge starten immer im Status <code>draft</code> und
+    können später vom Shamell‑Team geprüft und aktiviert werden.
+  </p>
+  <h3>Eigene Mini‑Programs</h3>
+  <p class="muted">
+    JSON‑Übersicht deiner Einträge:
+    <code>{base}/mini_programs/developer_json</code>
+  </p>
+  <div id="dev_flash" class="muted"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>App‑ID</th>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Review</th>
+        <th>Scopes</th>
+        <th>Rating</th>
+        <th>Usage</th>
+        <th>Last version</th>
+        <th>Links</th>
+      </tr>
+    </thead>
+    <tbody id="dev_programs_body">
+      <tr><td colspan="9" class="small">Lade deine Mini‑Programs…</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Neues Mini‑Program registrieren</h3>
+  <p>Minimaler JSON‑Call (z.B. via <code>curl</code>):</p>
+  <pre><code>POST {base}/mini_programs/self_register
+Content-Type: application/json
+sa_cookie: &lt;your_sa_session&gt;
+
+{{
+  "app_id": "my_cool_app",
+  "title_en": "My cool Mini‑Program",
+  "title_ar": "تطبيقي المصغر الرائع",
+  "description_en": "Short description of my service",
+  "owner_name": "Your company",
+  "owner_contact": "{phone}"
+}}</code></pre>
+  <p class="muted">
+    Hinweis: <code>owner_contact</code> wird automatisch mit deiner Telefonnummer
+    vorbelegt, wenn du keinen Wert angibst. Nur dieser Kontakt darf das
+    Mini‑Program später per Self‑Service aktualisieren.
+  </p>
+
+  <h3>Versionen vorschlagen</h3>
+  <p>
+    Optional kannst du eine oder mehrere Versionen mit Bundles registrieren.
+    Die Veröffentlichung (Release) erfolgt weiterhin über das Ops‑Team.
+  </p>
+  <pre><code>POST {base}/mini_programs/my_cool_app/versions/self_register
+Content-Type: application/json
+sa_cookie: &lt;your_sa_session&gt;
+
+{{
+  "version": "1.0.0",
+  "bundle_url": "https://example.com/bundles/my_cool_app-1.0.0.zip",
+  "changelog_en": "Initial public version"
+}}</code></pre>
+
+  <p class="muted">
+    Für produktive Freischaltung kann das Ops‑Team später einen Release
+    über <code>/mini_programs/&lt;id&gt;/releases</code> anlegen (Admin‑Konsole /
+    Backoffice‑APIs).
+  </p>
+
+  <h2>Client‑Integration</h2>
+  <p>Ein Mini‑Program‑Eintrag besteht typischerweise aus:</p>
+  <ul>
+    <li><code>app_id</code> (z.B. <code>taxi_demo</code>)</li>
+    <li><code>title_en</code>, <code>title_ar</code></li>
+    <li>optional: <code>description_en</code>, <code>description_ar</code></li>
+    <li>Owner‑Metadaten: <code>owner_name</code>, <code>owner_contact</code></li>
+    <li>optionale <code>actions</code> (Buttons) mit <code>kind=open_mod|open_url|close</code>.</li>
+  </ul>
+  <p>
+    Die Flutter‑Shell lädt das Manifest aus <code>/mini_programs/&lt;id&gt;</code> und rendert
+    Buttons, die entweder interne Module (<code>open_mod</code>) oder externe URLs
+    (<code>open_url</code>) öffnen – ähnlich zu WeChat Mini‑Programs.
+  </p>
+
+  <p class="muted">
+    Hinweis: Diese Seite kombiniert Self‑Service‑Calls für Entwickler mit
+    klassischen Admin‑Konsole‑Flows. In Produktionsumgebungen sollte die
+    Admin‑Konsole weiterhin nur über VPN/Backoffice erreichbar sein.
+  </p>
+  <script>
+    async function loadDeveloperPrograms() {{
+      const tbody = document.getElementById('dev_programs_body');
+      const flash = document.getElementById('dev_flash');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="7" class="small">Lade deine Mini‑Programs…</td></tr>';
+      flash.textContent = '';
+      try {{
+        const r = await fetch('/mini_programs/developer_json');
+        if (!r.ok) {{
+          tbody.innerHTML = '<tr><td colspan="7" class="small">Konnte Mini‑Programs nicht laden (HTTP ' + r.status + ').</td></tr>';
+          return;
+        }}
+        const data = await r.json();
+        const items = Array.isArray(data.programs) ? data.programs : [];
+        if (!items.length) {{
+          tbody.innerHTML = '<tr><td colspan="7" class="small">Noch keine eigenen Mini‑Programs registriert.</td></tr>';
+          return;
+        }}
+        tbody.innerHTML = '';
+        for (const p of items) {{
+          const tr = document.createElement('tr');
+          const appId = (p.app_id || '').toString();
+          const titleEn = (p.title_en || '').toString();
+          const titleAr = (p.title_ar || '').toString();
+          const status = (p.status || '').toString();
+          const reviewStatus = (p.review_status || 'draft').toString();
+          const scopes = Array.isArray(p.scopes) ? p.scopes : [];
+          const rating = typeof p.rating === 'number' ? p.rating : 0;
+          const usage = typeof p.usage_score === 'number' ? p.usage_score : 0;
+          const lastVersion = (p.last_version || '').toString();
+          const lastBundle = (p.last_bundle_url || '').toString();
+          let statusClass = '';
+          if (status === 'active') {{
+            statusClass = 'pill-status-active';
+          }} else if (status === 'draft') {{
+            statusClass = 'pill-status-draft';
+          }} else if (status === 'disabled') {{
+            statusClass = 'pill-status-disabled';
+          }}
+          let trending = false;
+          if (status === 'active') {{
+            if (usage >= 50 || rating >= 4.5) {{
+              trending = true;
+            }}
+          }}
+          // App‑ID
+          const tdId = document.createElement('td');
+          tdId.textContent = appId || '–';
+          tr.appendChild(tdId);
+          // Title
+          const tdTitle = document.createElement('td');
+          tdTitle.textContent = titleEn || titleAr || '–';
+          tr.appendChild(tdTitle);
+          let reviewClass = 'pill-status-draft';
+          const rs = reviewStatus.toLowerCase();
+          if (rs === 'approved') reviewClass = 'pill-status-active';
+          else if (rs === 'rejected' || rs === 'suspended') reviewClass = 'pill-status-disabled';
+          // Status + trending
+          const tdStatus = document.createElement('td');
+          if (status) {{
+            const span = document.createElement('span');
+            span.className = 'pill ' + statusClass;
+            span.textContent = status;
+            tdStatus.appendChild(span);
+          }} else {{
+            tdStatus.textContent = '–';
+          }}
+          if (trending) {{
+            const spanTr = document.createElement('span');
+            spanTr.className = 'pill pill-trending';
+            spanTr.textContent = 'Trending';
+            tdStatus.appendChild(spanTr);
+          }}
+          tr.appendChild(tdStatus);
+          const tdReview = document.createElement('td');
+          const spanRv = document.createElement('span');
+          spanRv.className = 'pill ' + reviewClass;
+          spanRv.textContent = reviewStatus;
+          tdReview.appendChild(spanRv);
+          tr.appendChild(tdReview);
+          // Rating
+          const tdRating = document.createElement('td');
+          if (rating > 0) {{
+            tdRating.textContent = rating.toFixed(1) + ' ★';
+          }} else {{
+            tdRating.textContent = '–';
+          }}
+          tr.appendChild(tdRating);
+          // Usage
+          const tdUsage = document.createElement('td');
+          tdUsage.textContent = usage > 0 ? String(usage) : '–';
+          tr.appendChild(tdUsage);
+          // Scopes
+          const tdScopes = document.createElement('td');
+          if (scopes.length) {{
+            tdScopes.className = 'small';
+            tdScopes.innerHTML = scopes.map(s => '<code>' + String(s) + '</code>').join(' ');
+          }} else {{
+            tdScopes.innerHTML = '<span class="small muted">–</span>';
+          }}
+          tr.appendChild(tdScopes);
+          // Last version
+          const tdVer = document.createElement('td');
+          if (lastVersion) {{
+            tdVer.textContent = lastVersion;
+          }} else {{
+            tdVer.textContent = '–';
+          }}
+          tr.appendChild(tdVer);
+          // Links
+          const tdLinks = document.createElement('td');
+          tdLinks.className = 'small';
+          if (appId) {{
+            const aManifest = document.createElement('a');
+            aManifest.href = '{base}/mini_programs/' + encodeURIComponent(appId);
+            aManifest.textContent = 'Manifest';
+            aManifest.target = '_blank';
+            tdLinks.appendChild(aManifest);
+          }}
+          if (lastBundle) {{
+            const spanSep = document.createTextNode(' · ');
+            tdLinks.appendChild(spanSep);
+            const aBundle = document.createElement('a');
+            aBundle.href = lastBundle;
+            aBundle.textContent = 'Bundle';
+            aBundle.target = '_blank';
+            tdLinks.appendChild(aBundle);
+          }}
+          tr.appendChild(tdLinks);
+          tbody.appendChild(tr);
+        }}
+      }} catch (e) {{
+        tbody.innerHTML = '<tr><td colspan=\"7\" class=\"small\">Fehler beim Laden deiner Mini‑Programs.</td></tr>';
+        flash.textContent = String(e);
+      }}
+    }}
+    document.addEventListener('DOMContentLoaded', loadDeveloperPrograms);
+  </script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/mini_programs/developer_json", response_class=JSONResponse)
+def mini_programs_developer_json(request: Request) -> dict[str, Any]:
+    """
+    JSON‑Übersicht aller Mini‑Programs, die dem eingeloggten Entwickler gehören.
+
+    Ownership wird über MiniProgramDB.owner_contact (Telefonnummer) abgebildet.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    contact = phone.strip()
+    try:
+        with _officials_session() as s:
+            stmt = _sa_select(MiniProgramDB).order_by(MiniProgramDB.app_id)
+            if contact:
+                stmt = stmt.where(MiniProgramDB.owner_contact == contact)
+            rows = s.execute(stmt).scalars().all()
+            if not rows:
+                return {"programs": []}
+            prog_ids = [r.id for r in rows if getattr(r, "id", None) is not None]
+            versions_map: dict[int, list[MiniProgramVersionDB]] = {}
+            if prog_ids:
+                try:
+                    v_rows = (
+                        s.execute(
+                            _sa_select(MiniProgramVersionDB)
+                            .where(MiniProgramVersionDB.program_id.in_(prog_ids))
+                            .order_by(
+                                MiniProgramVersionDB.program_id.asc(),
+                                MiniProgramVersionDB.created_at.desc(),
+                                MiniProgramVersionDB.id.desc(),
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for v in v_rows:
+                        pid = getattr(v, "program_id", None)
+                        if pid is None:
+                            continue
+                        versions_map.setdefault(int(pid), []).append(v)
+                except Exception:
+                    versions_map = {}
+            # Best-effort Moments share counts per Mini-Program based on
+            # shamell://mini_program/<id> deep-links in Moments posts.
+            moments_shares: dict[str, int] = {}
+            moments_shares_30d: dict[str, int] = {}
+            try:
+                app_ids = [r.app_id for r in rows]
+                if app_ids:
+                    with _moments_session() as ms:
+                        since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+                        for app_id in app_ids:
+                            try:
+                                pattern = f"shamell://mini_program/{app_id}"
+                                base_stmt = _sa_select(
+                                    _sa_func.count(MomentPostDB.id)
+                                ).where(MomentPostDB.text.contains(pattern))
+                                cnt_all = ms.execute(base_stmt).scalar() or 0
+                                cnt_30 = (
+                                    ms.execute(
+                                        base_stmt.where(
+                                            MomentPostDB.created_at >= since_30d
+                                        )
+                                    ).scalar()
+                                    or 0
+                                )
+                                moments_shares[str(app_id)] = int(cnt_all or 0)
+                                moments_shares_30d[str(app_id)] = int(cnt_30 or 0)
+                            except Exception:
+                                continue
+            except Exception:
+                moments_shares = {}
+                moments_shares_30d = {}
+
+            items: list[dict[str, Any]] = []
+            for prog in rows:
+                scopes_list: list[str] = []
+                try:
+                    raw_scopes = getattr(prog, "scopes_json", None)
+                    if raw_scopes:
+                        val = _json.loads(raw_scopes)
+                        if isinstance(val, list):
+                            scopes_list = [
+                                str(s).strip() for s in val if str(s).strip()
+                            ]
+                except Exception:
+                    scopes_list = []
+                pid = getattr(prog, "id", None)
+                vers = versions_map.get(int(pid)) if pid is not None else None
+                last_ver: MiniProgramVersionDB | None = vers[0] if vers else None
+                last_version = getattr(last_ver, "version", None) if last_ver else None
+                last_bundle_url = getattr(last_ver, "bundle_url", None) if last_ver else None
+                try:
+                    moments_count = int(
+                        moments_shares.get(prog.app_id, 0)
+                        or getattr(prog, "moments_shares", 0)
+                        or 0
+                    )
+                except Exception:
+                    moments_count = 0
+                try:
+                    moments_30 = int(
+                        moments_shares_30d.get(prog.app_id, 0) or 0
+                    )
+                except Exception:
+                    moments_30 = 0
+                items.append(
+                    {
+                        "app_id": prog.app_id,
+                        "title_en": prog.title_en,
+                        "title_ar": prog.title_ar,
+                        "description_en": getattr(prog, "description_en", None),
+                        "description_ar": getattr(prog, "description_ar", None),
+                        "owner_name": prog.owner_name,
+                        "owner_contact": prog.owner_contact,
+                        "status": prog.status,
+                        "usage_score": int(getattr(prog, "usage_score", 0) or 0),
+                        "rating": float(getattr(prog, "rating", 0.0) or 0.0),
+                        "moments_shares": moments_count,
+                        "moments_shares_30d": moments_30,
+                        "review_status": getattr(prog, "review_status", "draft"),
+                        "scopes": scopes_list,
+                        "last_version": last_version,
+                        "last_bundle_url": last_bundle_url,
+                        "created_at": getattr(prog, "created_at", None),
+                        "updated_at": getattr(prog, "updated_at", None),
+                    }
+                )
+        return {"programs": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_apps/{app_id}/track_open", response_class=JSONResponse)
+async def mini_app_track_open(app_id: str, request: Request) -> dict[str, Any]:
+    """
+    Lightweight Tracking-Endpoint für Mini-App-Opens (WeChat-like analytics).
+
+    Erhöht usage_score für die gegebene app_id – wird vom Client bei
+    jedem Öffnen einer Mini-App (Mini-Program) best-effort aufgerufen.
+    """
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    try:
+        with _officials_session() as s:
+            row = (
+                s.execute(
+                    _sa_select(MiniAppDB).where(MiniAppDB.app_id == app_id_clean)
+                )
+                .scalars()
+                .first()
+            )
+            if not row:
+                # Unknown app_id – silently ignore so Client-Aufrufe nicht brechen.
+                return {"status": "ignored"}
+            try:
+                current = int(getattr(row, "usage_score", 0) or 0)
+            except Exception:
+                current = 0
+            row.usage_score = current + 1
+            s.add(row)
+            s.commit()
+        try:
+            emit_event(
+                "miniapps",
+                "open",
+                {"app_id": app_id_clean},
+            )
+        except Exception:
+            pass
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mini_apps/{app_id}/rate", response_class=JSONResponse)
+async def mini_app_rate(app_id: str, request: Request, body: MiniAppRatingIn) -> dict[str, Any]:
+    """
+    Simple rating endpoint for Mini-Apps (1–5 stars per user).
+
+    Persists a per-user rating (sa_cookie-based) and updates the
+    aggregated rating on the MiniAppDB row, similar to WeChat
+    Mini-Program ratings.
+    """
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    user_key = _official_cookie_key(request)
+    try:
+        val = int(body.rating)
+    except Exception:
+        val = 0
+    if val < 1:
+        val = 1
+    if val > 5:
+        val = 5
+    try:
+        with _officials_session() as s:
+            app_row = (
+                s.execute(
+                    _sa_select(MiniAppDB).where(MiniAppDB.app_id == app_id_clean)
+                )
+                .scalars()
+                .first()
+            )
+            if not app_row or not bool(getattr(app_row, "enabled", True)):
+                raise HTTPException(status_code=404, detail="mini-app not found")
+            existing = (
+                s.execute(
+                    _sa_select(MiniAppRatingDB).where(
+                        MiniAppRatingDB.app_id == app_id_clean,
+                        MiniAppRatingDB.user_key == user_key,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing:
+                existing.rating = val
+                s.add(existing)
+            else:
+                rec = MiniAppRatingDB(app_id=app_id_clean, user_key=user_key, rating=val)
+                s.add(rec)
+            s.commit()
+            avg_rating = 0.0
+            rating_count = 0
+            try:
+                avg_row = (
+                    s.execute(
+                        _sa_select(
+                            _sa_func.avg(MiniAppRatingDB.rating),
+                            _sa_func.count(MiniAppRatingDB.id),
+                        ).where(MiniAppRatingDB.app_id == app_id_clean)
+                    )
+                    .first()
+                )
+                if avg_row:
+                    avg_rating = float(avg_row[0] or 0.0)
+                    rating_count = int(avg_row[1] or 0)
+            except Exception:
+                avg_rating = 0.0
+                rating_count = 0
+            try:
+                app_row.rating = avg_rating
+                s.add(app_row)
+                s.commit()
+            except Exception:
+                s.rollback()
+        try:
+            emit_event(
+                "miniapps",
+                "rate",
+                {"app_id": app_id_clean, "user_key": user_key, "rating": val},
+            )
+        except Exception:
+            pass
+        return {"status": "ok", "rating": avg_rating, "count": rating_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/miniapps/analytics", response_class=HTMLResponse)
+def admin_miniapps_analytics(request: Request) -> HTMLResponse:
+    """
+    Lightweight HTML analytics für Mini-Apps (Mini-Programme).
+
+    Nutzt usage_score und rating als einfache KPIs – ähnlich zu WeChat
+    Mini-Program "popular" / "top" Rankings.
+    """
+    _require_admin_v2(request)
+    try:
+      with _officials_session() as s:
+          rows = (
+              s.execute(
+                  _sa_select(MiniAppDB).order_by(
+                      MiniAppDB.usage_score.desc(), MiniAppDB.rating.desc()
+                  )
+              )
+              .scalars()
+              .all()
+          )
+      total_usage = 0
+      for row in rows:
+          try:
+              total_usage += int(getattr(row, "usage_score", 0) or 0)
+          except Exception:
+              continue
+
+      def esc(s: str) -> str:
+          return (
+              s.replace("&", "&amp;")
+              .replace("<", "&lt;")
+              .replace(">", "&gt;")
+          )
+
+      rows_html: list[str] = []
+      for row in rows:
+          app_id = row.app_id
+          title_en = row.title_en or ""
+          title_ar = row.title_ar or ""
+          cat = " / ".join(
+              [
+                  c
+                  for c in [
+                      getattr(row, "category_en", None) or "",
+                      getattr(row, "category_ar", None) or "",
+                  ]
+                  if c
+              ]
+          )
+          official = bool(getattr(row, "official", False))
+          enabled = bool(getattr(row, "enabled", True))
+          beta = bool(getattr(row, "beta", False))
+          try:
+              rating = float(getattr(row, "rating", 0.0) or 0.0)
+          except Exception:
+              rating = 0.0
+          try:
+              usage = int(getattr(row, "usage_score", 0) or 0)
+          except Exception:
+              usage = 0
+          share = 0.0
+          if total_usage > 0 and usage > 0:
+              try:
+                  share = (usage / float(total_usage)) * 100.0
+              except Exception:
+                  share = 0.0
+          status_bits: list[str] = []
+          if official:
+              status_bits.append("official")
+          if beta:
+              status_bits.append("beta")
+          if not enabled:
+              status_bits.append("disabled")
+          status = ", ".join(status_bits) if status_bits else ""
+          rows_html.append(
+              "<tr>"
+              f"<td><code>{esc(app_id)}</code></td>"
+              f"<td>{esc(title_en)}<br/><span class=\"meta\">{esc(title_ar)}</span></td>"
+              f"<td>{esc(cat)}</td>"
+              f"<td>{esc(status)}</td>"
+              f"<td>{rating:.1f}</td>"
+              f"<td>{usage}</td>"
+              f"<td>{share:.1f}%</td>"
+              "</tr>"
+          )
+
+      html = f"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini-Apps · Analytics</title>
+  <style>
+    body{{font-family:sans-serif;margin:20px;max-width:960px;color:#0f172a;}}
+    h1{{margin-bottom:4px;}}
+    table{{border-collapse:collapse;width:100%;margin-top:12px;}}
+    th,td{{padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top;}}
+    th{{background:#f9fafb;font-weight:600;}}
+    .meta{{color:#6b7280;font-size:12px;margin-top:2px;}}
+    code{{background:#f3f4f6;padding:2px 4px;border-radius:3px;font-size:12px;}}
+  </style>
+</head><body>
+  <h1>Mini-Apps · Analytics</h1>
+  <div class="meta">
+    Basierend auf usage_score (Open-Events via /mini_apps/&lt;id&gt;/track_open) und Rating.<br/>
+    Dient als einfache WeChat‑ähnliche Übersicht der beliebtesten Mini-Programme.
+  </div>
+  <p class="meta">
+    <a href="/admin/miniapps">Zurück zur Mini-Apps-Konsole</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>App ID</th>
+        <th>Title</th>
+        <th>Category</th>
+        <th>Status</th>
+        <th>Rating</th>
+        <th>Usage score</th>
+        <th>Share of usage</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html) if rows_html else '<tr><td colspan="7">No Mini-Apps registered yet.</td></tr>'}
+    </tbody>
+  </table>
+</body></html>
+"""
+      return HTMLResponse(content=html)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/mini_apps", response_class=JSONResponse)
+def admin_mini_apps_list(request: Request) -> dict[str, Any]:
+    """
+    JSON-Admin-Listing für registrierte Mini-Apps (Mini-Programme).
+
+    Dient als Basis für ein Developer-Portal oder einfache Ops-Verwaltung.
+    """
+    _require_admin_v2(request)
+    with _officials_session() as s:
+        rows = (
+            s.execute(
+                _sa_select(MiniAppDB).order_by(MiniAppDB.app_id)
+            )
+            .scalars()
+            .all()
+        )
+        apps: list[dict[str, Any]] = []
+        for row in rows:
+            apps.append(
+                {
+                    "app_id": row.app_id,
+                    "title_en": row.title_en,
+                    "title_ar": row.title_ar,
+                    "category_en": row.category_en,
+                    "category_ar": row.category_ar,
+                    "description": row.description,
+                    "icon": row.icon,
+                    "official": bool(getattr(row, "official", False)),
+                    "enabled": bool(getattr(row, "enabled", True)),
+                    "beta": bool(getattr(row, "beta", False)),
+                    "runtime_app_id": getattr(row, "runtime_app_id", None),
+                    "rating": float(getattr(row, "rating", 0.0) or 0.0),
+                    "usage_score": int(getattr(row, "usage_score", 0) or 0),
+                    "created_at": getattr(row, "created_at", None),
+                    "updated_at": getattr(row, "updated_at", None),
+                }
+            )
+    return {"apps": apps}
+
+
+@app.post("/admin/mini_apps", response_class=JSONResponse)
+def admin_mini_apps_create(request: Request, body: MiniAppAdminIn) -> dict[str, Any]:
+    """
+    Legt eine neue Mini-App an (admin only).
+    """
+    _require_admin_v2(request)
+    data = body
+    app_id = (data.app_id or "").strip()
+    if not app_id:
+        raise HTTPException(status_code=400, detail="app_id required")
+    with _officials_session() as s:
+        existing = (
+            s.execute(
+                _sa_select(MiniAppDB).where(MiniAppDB.app_id == app_id)
+            )
+            .scalars()
+            .first()
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="mini-app already exists")
+        row = MiniAppDB(
+            app_id=app_id,
+            title_en=data.title_en,
+            title_ar=data.title_ar,
+            category_en=data.category_en,
+            category_ar=data.category_ar,
+            description=data.description,
+            icon=data.icon,
+            official=data.official,
+            enabled=data.enabled,
+            beta=data.beta,
+            runtime_app_id=data.runtime_app_id,
+            rating=data.rating,
+            usage_score=data.usage_score or 0,
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "app_id": row.app_id,
+            "title_en": row.title_en,
+            "title_ar": row.title_ar,
+            "category_en": row.category_en,
+            "category_ar": row.category_ar,
+            "description": row.description,
+            "icon": row.icon,
+            "official": bool(row.official),
+            "enabled": bool(row.enabled),
+            "beta": bool(row.beta),
+            "rating": float(row.rating or 0.0),
+            "usage_score": int(row.usage_score or 0),
+        }
+
+
+@app.patch("/admin/mini_apps/{app_id}", response_class=JSONResponse)
+def admin_mini_apps_update(
+    app_id: str, request: Request, body: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Aktualisiert Felder einer Mini-App (admin only).
+    """
+    _require_admin_v2(request)
+    if not isinstance(body, dict):
+        body = {}
+    allowed_fields = {
+        "title_en",
+        "title_ar",
+        "category_en",
+        "category_ar",
+        "description",
+        "icon",
+        "official",
+        "enabled",
+        "beta",
+        "runtime_app_id",
+        "rating",
+        "usage_score",
+    }
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    with _officials_session() as s:
+        row = (
+            s.execute(
+                _sa_select(MiniAppDB).where(MiniAppDB.app_id == app_id_clean)
+            )
+            .scalars()
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="mini-app not found")
+        for k, v in body.items():
+            if k in allowed_fields:
+                setattr(row, k, v)
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return {
+            "app_id": row.app_id,
+            "title_en": row.title_en,
+            "title_ar": row.title_ar,
+            "category_en": row.category_en,
+            "category_ar": row.category_ar,
+            "description": row.description,
+            "icon": row.icon,
+            "official": bool(row.official),
+            "enabled": bool(row.enabled),
+            "beta": bool(row.beta),
+            "rating": float(row.rating or 0.0),
+            "usage_score": int(row.usage_score or 0),
+        }
+
+
+@app.delete("/admin/mini_apps/{app_id}", response_class=JSONResponse)
+def admin_mini_apps_delete(app_id: str, request: Request) -> dict[str, Any]:
+    """
+    Deaktiviert eine Mini-App (soft delete via enabled=False).
+    """
+    _require_admin_v2(request)
+    app_id_clean = (app_id or "").strip()
+    if not app_id_clean:
+        raise HTTPException(status_code=400, detail="app_id required")
+    with _officials_session() as s:
+        row = (
+            s.execute(
+                _sa_select(MiniAppDB).where(MiniAppDB.app_id == app_id_clean)
+            )
+            .scalars()
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="mini-app not found")
+        row.enabled = False
+        s.add(row)
+        s.commit()
+    return {"status": "ok"}
+
+
+@app.get("/official_accounts/{account_id}/feed", response_class=JSONResponse)
+async def official_account_feed(request: Request, account_id: str, limit: int = 20):
+    try:
+        limit_val = max(1, min(limit, 200))
+        user_key = _official_cookie_key(request)
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            stmt = (
+                _sa_select(OfficialFeedItemDB)
+                .where(OfficialFeedItemDB.account_id == account_id)
+                .order_by(OfficialFeedItemDB.ts.desc(), OfficialFeedItemDB.id.desc())
+                .limit(limit_val)
+            )
+            rows = s.execute(stmt).scalars().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                try:
+                    deeplink = _json.loads(row.deeplink_json) if row.deeplink_json else None
+                except Exception:
+                    deeplink = None
+                items.append(
+                    OfficialFeedItemOut(
+                        id=row.slug or str(row.id),
+                        type=row.type,
+                        title=row.title,
+                        snippet=row.snippet,
+                        thumb_url=row.thumb_url,
+                        ts=row.ts.isoformat() if getattr(row, "ts", None) else None,
+                        deeplink=deeplink,
+                    ).dict()
+                )
+        try:
+            emit_event(
+                "officials",
+                "feed_view",
+                {"user_key": user_key, "account_id": account_id, "limit": limit_val, "returned": len(items)},
+            )
+        except Exception:
+            pass
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception:
+        if account_id not in _OFFICIAL_ACCOUNTS:
+            raise HTTPException(status_code=404, detail="unknown official account")
+        acc = _OFFICIAL_ACCOUNTS[account_id]
+        seed = _OFFICIAL_FEED_SEED.get(acc.id, [])
+        base_items: list[OfficialFeedItemOut] = []
+        for item in seed[: max(0, min(limit, len(seed)))]:
+            base_items.append(
+                OfficialFeedItemOut(
+                    id=item.get("id", ""),
+                    type=item.get("type", "promo"),
+                    title=item.get("title"),
+                    snippet=item.get("snippet"),
+                    thumb_url=item.get("thumb_url"),
+                    ts=item.get("ts"),
+                    deeplink=item.get("deeplink"),
+                )
+            )
+        items_out = [i.dict() for i in base_items]
+        try:
+            emit_event(
+                "officials",
+                "feed_view",
+                {"user_key": user_key, "account_id": account_id, "limit": limit, "returned": len(items_out), "mode": "fallback"},
+            )
+        except Exception:
+            pass
+        return {"items": items_out}
+
+
+@app.get("/official_accounts/{account_id}/moments_stats", response_class=JSONResponse)
+def official_account_moments_stats(account_id: str) -> dict[str, Any]:
+    """
+    Aggregate Moments "social impact" stats for a single Official account.
+
+    Returns total Moments shares with origin_official_account_id = account_id,
+    how many of those mention red packets in the last 30 days, plus basic
+    "social impact" KPIs used in merchant UIs.
+    """
+    try:
+        total = 0
+        shares_30 = 0
+        uniq_total = 0
+        uniq_30 = 0
+        rp_30 = 0
+        comments_total = 0
+        comments_30 = 0
+        followers = 0
+        with _moments_session() as s:
+            total = (
+                s.execute(
+                    _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                        MomentPostDB.origin_official_account_id == account_id
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            since = datetime.now(timezone.utc) - timedelta(days=30)
+
+            try:
+                shares_30 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id,
+                            MomentPostDB.created_at >= since,
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+            except Exception:
+                shares_30 = 0
+
+            # Unique sharers (all time)
+            try:
+                uniq_total = (
+                    s.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                uniq_30 = (
+                    s.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id,
+                            MomentPostDB.created_at >= since,
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+            except Exception:
+                uniq_total = 0
+                uniq_30 = 0
+
+            # Red-packet related shares in the last 30 days
+            try:
+                rp1 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id,
+                            MomentPostDB.created_at >= since,
+                            MomentPostDB.text.contains("Red packet"),
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp2 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id,
+                            MomentPostDB.created_at >= since,
+                            MomentPostDB.text.contains(
+                                "I am sending red packets via Shamell Pay"
+                            ),
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp3 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id,
+                            MomentPostDB.created_at >= since,
+                            MomentPostDB.text.contains("حزمة حمراء"),
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                rp_30 = int((rp1 or 0) + (rp2 or 0) + (rp3 or 0))
+            except Exception:
+                rp_30 = 0
+
+            # Comment volume (all time / last 30 days) for posts of this Official
+            try:
+                comments_total = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentCommentDB.id))
+                        .select_from(MomentCommentDB)
+                        .join(
+                            MomentPostDB,
+                            MomentCommentDB.post_id == MomentPostDB.id,
+                        )
+                        .where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                comments_30 = (
+                    s.execute(
+                        _sa_select(_sa_func.count(MomentCommentDB.id))
+                        .select_from(MomentCommentDB)
+                        .join(
+                            MomentPostDB,
+                            MomentCommentDB.post_id == MomentPostDB.id,
+                        )
+                        .where(
+                            MomentPostDB.origin_official_account_id
+                            == account_id,
+                            MomentCommentDB.created_at >= since,
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+            except Exception:
+                comments_total = 0
+                comments_30 = 0
+
+        # Follower count for this Official (for per-1k metric)
+        try:
+            with _officials_session() as osess:
+                followers = (
+                    osess.execute(
+                        _sa_select(_sa_func.count(OfficialFollowDB.id)).where(
+                            OfficialFollowDB.account_id == account_id
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+        except Exception:
+            followers = 0
+
+        shares_per_1k = 0.0
+        try:
+            if followers and total:
+                shares_per_1k = (float(total) / float(followers)) * 1000.0
+        except Exception:
+            shares_per_1k = 0.0
+
+        return {
+            "total_shares": int(total or 0),
+            "shares_30d": int(shares_30 or 0),
+            "redpacket_shares_30d": int(rp_30 or 0),
+            "unique_sharers_total": int(uniq_total or 0),
+            "unique_sharers_30d": int(uniq_30 or 0),
+            "followers": int(followers or 0),
+            "shares_per_1k_followers": shares_per_1k,
+            "comments_total": int(comments_total or 0),
+            "comments_30d": int(comments_30 or 0),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/channels/feed", response_class=JSONResponse)
+def channels_feed(
+    request: Request,
+    limit: int = 50,
+    official_account_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Lightweight "Channels" feed built from Official feed items.
+
+    This is a WeChat‑like short feed that surfaces recent
+    Official promotions and content in a unified view, with
+    simple likes and view counters.
+    """
+    user_key = _official_cookie_key(request)
+    try:
+        limit_val = max(1, min(limit, 100))
+        with _officials_session() as s:
+            stmt = _sa_select(
+                OfficialFeedItemDB,
+                OfficialAccountDB.name,
+                OfficialAccountDB.avatar_url,
+                OfficialAccountDB.city,
+                OfficialAccountDB.category,
+            ).join(
+                OfficialAccountDB,
+                OfficialFeedItemDB.account_id == OfficialAccountDB.id,
+            ).where(
+                OfficialAccountDB.enabled == True  # type: ignore[comparison-overlap]
+            )
+            if official_account_id:
+                stmt = stmt.where(
+                    OfficialFeedItemDB.account_id == official_account_id
+                )
+            stmt = stmt.order_by(
+                OfficialFeedItemDB.ts.desc(), OfficialFeedItemDB.id.desc()
+            ).limit(limit_val)
+            rows = s.execute(stmt).all()
+            item_ids = [str(feed_row.id) for feed_row, _, _, _, _ in rows]
+            likes_map: dict[str, int] = {}
+            liked_by_me: set[str] = set()
+            views_map: dict[str, int] = {}
+            comments_map: dict[str, int] = {}
+            if item_ids:
+                like_rows = (
+                    s.execute(
+                        _sa_select(
+                            ChannelLikeDB.item_id,
+                            _sa_func.count(ChannelLikeDB.id),
+                        )
+                        .where(ChannelLikeDB.item_id.in_(item_ids))
+                        .group_by(ChannelLikeDB.item_id)
+                    )
+                    .all()
+                )
+                for iid, cnt in like_rows:
+                    likes_map[str(iid)] = int(cnt or 0)
+                my_like_rows = (
+                    s.execute(
+                        _sa_select(ChannelLikeDB.item_id).where(
+                            ChannelLikeDB.item_id.in_(item_ids),
+                            ChannelLikeDB.user_key == user_key,
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                liked_by_me.update(str(iid) for iid in my_like_rows)
+                view_rows = (
+                    s.execute(
+                        _sa_select(
+                            ChannelViewDB.item_id,
+                            ChannelViewDB.views,
+                        ).where(ChannelViewDB.item_id.in_(item_ids))
+                    )
+                    .all()
+                )
+                for iid, views in view_rows:
+                    try:
+                        views_map[str(iid)] = int(views or 0)
+                    except Exception:
+                        continue
+                comment_rows = (
+                    s.execute(
+                        _sa_select(
+                            ChannelCommentDB.item_id,
+                            _sa_func.count(ChannelCommentDB.id),
+                        )
+                        .where(ChannelCommentDB.item_id.in_(item_ids))
+                        .group_by(ChannelCommentDB.item_id)
+                    )
+                    .all()
+                )
+                for iid, cnt in comment_rows:
+                    try:
+                        comments_map[str(iid)] = int(cnt or 0)
+                    except Exception:
+                        continue
+        # Compute "hot in Moments" per Official based on total Moments shares,
+        # a dedicated follower graph for Channels based on ChannelFollowDB,
+        # and simple gift/coin stats per clip from ChannelGiftDB.
+        hot_accounts: set[str] = set()
+        channel_followers: dict[str, int] = {}
+        channel_followed_by_me: set[str] = set()
+        gift_totals: dict[str, int] = {}
+        gift_by_me: dict[str, int] = {}
+        try:
+            acc_ids: set[str] = set()
+            for feed_row, _, _, _, _ in rows:
+                acc_id_val = getattr(feed_row, "account_id", None)
+                if acc_id_val:
+                    acc_ids.add(str(acc_id_val))
+            if acc_ids:
+                # Moments-derived "hot" flag.
+                with _moments_session() as ms:
+                    agg_rows = (
+                        ms.execute(
+                            _sa_select(
+                                MomentPostDB.origin_official_account_id,
+                                _sa_func.count(MomentPostDB.id),
+                            )
+                            .where(
+                                MomentPostDB.origin_official_account_id.in_(
+                                    list(acc_ids)
+                                )
+                            )
+                            .group_by(MomentPostDB.origin_official_account_id)
+                        )
+                        .all()
+                    )
+                    for acc_id, cnt in agg_rows:
+                        try:
+                            if int(cnt or 0) >= 10:
+                                hot_accounts.add(str(acc_id))
+                        except Exception:
+                            continue
+                # Follower counts and "followed by me" for these channels.
+                try:
+                    with _officials_session() as osess:
+                        f_rows = (
+                            osess.execute(
+                                _sa_select(
+                                    ChannelFollowDB.account_id,
+                                    _sa_func.count(ChannelFollowDB.id),
+                                )
+                                .where(ChannelFollowDB.account_id.in_(list(acc_ids)))
+                                .group_by(ChannelFollowDB.account_id)
+                            )
+                            .all()
+                        )
+                        for acc_id, cnt in f_rows:
+                            try:
+                                channel_followers[str(acc_id)] = int(cnt or 0)
+                            except Exception:
+                                continue
+                        my_rows = osess.execute(
+                            _sa_select(ChannelFollowDB.account_id).where(
+                                ChannelFollowDB.account_id.in_(list(acc_ids)),
+                                ChannelFollowDB.user_key == user_key,
+                            )
+                        ).scalars().all()
+                        channel_followed_by_me.update(str(aid) for aid in my_rows)
+                    # Gift/coin stats per clip.
+                    try:
+                        g_rows = (
+                            osess.execute(
+                                _sa_select(
+                                    ChannelGiftDB.item_id,
+                                    _sa_func.sum(ChannelGiftDB.coins),
+                                ).group_by(ChannelGiftDB.item_id)
+                            )
+                            .all()
+                        )
+                        for iid, total in g_rows:
+                            try:
+                                gift_totals[str(iid)] = int(total or 0)
+                            except Exception:
+                                continue
+                        my_gift_rows = (
+                            osess.execute(
+                                _sa_select(
+                                    ChannelGiftDB.item_id,
+                                    _sa_func.sum(ChannelGiftDB.coins),
+                                )
+                                .where(ChannelGiftDB.user_key == user_key)
+                                .group_by(ChannelGiftDB.item_id)
+                            )
+                            .all()
+                        )
+                        for iid, total in my_gift_rows:
+                            try:
+                                gift_by_me[str(iid)] = int(total or 0)
+                            except Exception:
+                                continue
+                    except Exception:
+                        gift_totals = {}
+                        gift_by_me = {}
+                except Exception:
+                    channel_followers = {}
+                    channel_followed_by_me = set()
+                    gift_totals = {}
+                    gift_by_me = {}
+        except Exception:
+            hot_accounts = set()
+            channel_followers = {}
+            channel_followed_by_me = set()
+            gift_totals = {}
+            gift_by_me = {}
+
+        # Compute a simple WeChat-like ranking score per clip
+        # based on engagement and how "hot" the originating
+        # Official account is in Moments – similar to the
+        # /search heuristics for Channels.
+        scored_rows: list[
+            tuple[
+                float,
+                Any,
+                Any,
+                Any,
+                Any,
+                Any,
+            ]
+        ] = []
+        for feed_row, acc_name, acc_avatar, acc_city, acc_category in rows:
+            item_id = str(getattr(feed_row, "id", ""))
+            likes = likes_map.get(item_id, 0)
+            views = views_map.get(item_id, 0)
+            comments = comments_map.get(item_id, 0)
+            f_type = (getattr(feed_row, "type", "") or "").strip().lower()
+            acc_id_val = getattr(feed_row, "account_id", None)
+            acc_id_str = str(acc_id_val) if acc_id_val is not None else ""
+            score = 20.0
+            # WeChat-like boost for special content types – live items
+            # should surface very prominently, followed by campaigns.
+            if f_type == "live":
+                score += 15.0
+            elif f_type in {"campaign", "promo"}:
+                score += 10.0
+            if acc_id_str in hot_accounts:
+                score += 5.0
+            try:
+                if views > 0:
+                    score += min(views, 5000) / 200.0
+            except Exception:
+                pass
+            try:
+                if likes > 0:
+                    score += min(likes, 500) * 0.5
+            except Exception:
+                pass
+            try:
+                if comments > 0:
+                    score += min(comments, 100) * 1.0
+            except Exception:
+                pass
+            scored_rows.append(
+                (score, feed_row, acc_name, acc_avatar, acc_city, acc_category)
+            )
+        scored_rows.sort(key=lambda t: t[0], reverse=True)
+
+        items: list[dict[str, Any]] = []
+        for score, feed_row, acc_name, acc_avatar, acc_city, acc_category in scored_rows:
+            ts_val = getattr(feed_row, "ts", None)
+            if isinstance(ts_val, datetime):
+                ts_str = ts_val.isoformat().replace("+00:00", "Z")
+            else:
+                ts_str = None
+            item_id = str(getattr(feed_row, "id", ""))
+            acc_id_val = getattr(feed_row, "account_id", None)
+            acc_id_str = str(acc_id_val) if acc_id_val is not None else ""
+            items.append(
+                ChannelItemOut(
+                    id=item_id,
+                    title=getattr(feed_row, "title", None),
+                    snippet=getattr(feed_row, "snippet", None),
+                    thumb_url=getattr(feed_row, "thumb_url", None),
+                    ts=ts_str,
+                    item_type=getattr(feed_row, "type", None),
+                    official_account_id=acc_id_val,
+                    official_name=str(acc_name or "")
+                    if acc_name is not None
+                    else None,
+                    official_avatar_url=str(acc_avatar or "")
+                    if acc_avatar is not None
+                    else None,
+                    official_city=str(acc_city or "") if acc_city is not None else None,
+                    official_category=str(acc_category or "")
+                    if acc_category is not None
+                    else None,
+                    likes=likes_map.get(item_id, 0),
+                    liked_by_me=item_id in liked_by_me,
+                    views=views_map.get(item_id, 0),
+                    comments=comments_map.get(item_id, 0),
+                    official_is_hot=acc_id_str in hot_accounts,
+                    channel_followers=channel_followers.get(acc_id_str, 0),
+                    channel_followed_by_me=acc_id_str in channel_followed_by_me,
+                    gifts=gift_totals.get(item_id, 0),
+                    gifts_by_me=gift_by_me.get(item_id, 0),
+                    score=score,
+                ).dict()
+            )
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/channels/{item_id}/moments_stats", response_class=JSONResponse)
+def channels_item_moments_stats(item_id: str) -> dict[str, Any]:
+    """
+    Moments-Analytics für einen einzelnen Channels-Clip.
+
+    Nutzt shamell://official/<account>/<item_id>-Deeplinks in
+    Moments-Posts, um WeChat-ähnliche Kennzahlen zu liefern:
+    Gesamt-Shares, 30d-Shares, Unique-Sharer und einfache 30d-Kurve.
+    """
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    try:
+        # Resolve owning Official account and optional slug for this feed item.
+        acc_id: str | None = None
+        slug: str | None = None
+        with _officials_session() as s:
+            row = s.get(OfficialFeedItemDB, clean_id)
+            if row is None:
+                # Some deployments may use slug-based IDs – try slug lookup.
+                feed_row = (
+                    s.execute(
+                        _sa_select(OfficialFeedItemDB).where(
+                            OfficialFeedItemDB.slug == clean_id
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                row = feed_row
+            if row is None:
+                raise HTTPException(status_code=404, detail="channels item not found")
+            try:
+                acc_val = getattr(row, "account_id", None)
+                if acc_val is not None:
+                    acc_id = str(acc_val)
+            except Exception:
+                acc_id = None
+            try:
+                slug_val = getattr(row, "slug", None)
+                if slug_val:
+                    slug = str(slug_val)
+            except Exception:
+                slug = None
+
+        if not acc_id:
+            raise HTTPException(status_code=404, detail="channels item not linked to account")
+
+        # Build possible deeplink patterns as seen in Moments posts.
+        patterns: list[str] = []
+        # Primary pattern used by client when sharing Channels to Moments.
+        patterns.append(f"shamell://official/{acc_id}/{clean_id}")
+        if slug and slug != clean_id:
+            patterns.append(f"shamell://official/{acc_id}/{slug}")
+
+        def _base_filter() -> Any:
+            cond = None
+            for p in patterns:
+                if not p:
+                    continue
+                expr = MomentPostDB.text.contains(p)
+                cond = expr if cond is None else (cond | expr)
+            return cond
+
+        total = 0
+        total_30d = 0
+        uniq_total = 0
+        uniq_30d = 0
+        series_30d: list[dict[str, Any]] = []
+        try:
+            with _moments_session() as ms:
+                since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+                cond = _base_filter()
+                if cond is None:
+                    return {
+                        "item_id": clean_id,
+                        "official_account_id": acc_id,
+                        "shares_total": 0,
+                        "shares_30d": 0,
+                        "unique_sharers_total": 0,
+                        "unique_sharers_30d": 0,
+                        "series_30d": [],
+                    }
+                # All-time total shares.
+                total = (
+                    ms.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(cond)
+                    )
+                    .scalar()
+                    or 0
+                )
+                # 30d shares.
+                total_30d = (
+                    ms.execute(
+                        _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                            cond, MomentPostDB.created_at >= since_30d
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                # Unique sharers all-time.
+                uniq_total = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(cond)
+                    )
+                    .scalar()
+                    or 0
+                )
+                # Unique sharers 30d.
+                uniq_30d = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.count(
+                                _sa_func.distinct(MomentPostDB.user_key)
+                            )
+                        ).where(
+                            cond, MomentPostDB.created_at >= since_30d
+                        )
+                    )
+                    .scalar()
+                    or 0
+                )
+                # Daily curve for last 30 days.
+                rows = (
+                    ms.execute(
+                        _sa_select(
+                            _sa_func.date(MomentPostDB.created_at),
+                            _sa_func.count(MomentPostDB.id),
+                        )
+                        .where(cond, MomentPostDB.created_at >= since_30d)
+                        .group_by(_sa_func.date(MomentPostDB.created_at))
+                        .order_by(_sa_func.date(MomentPostDB.created_at))
+                    )
+                    .all()
+                )
+                for d, cnt in rows:
+                    try:
+                        if isinstance(d, datetime):
+                            date_str = d.date().isoformat()
+                        else:
+                            date_str = str(d)
+                    except Exception:
+                        date_str = str(d)
+                    series_30d.append(
+                        {"date": date_str, "shares": int(cnt or 0)}
+                    )
+        except Exception:
+            total = 0
+            total_30d = 0
+            uniq_total = 0
+            uniq_30d = 0
+            series_30d = []
+
+        return {
+            "item_id": clean_id,
+            "official_account_id": acc_id,
+            "shares_total": int(total or 0),
+            "shares_30d": int(total_30d or 0),
+            "unique_sharers_total": int(uniq_total or 0),
+            "unique_sharers_30d": int(uniq_30d or 0),
+            "series_30d": series_30d,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/stickers/my", response_class=JSONResponse)
+def stickers_my(request: Request) -> dict[str, Any]:
+    """
+    Returns the IDs of sticker packs purchased by the current user.
+
+    This is used by the Sticker‑Store to show which paid packs
+    are already owned (WeChat‑like \"Owned\" state).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        # Anonymous users simply have no server‑side purchases.
+        return {"packs": []}
+    try:
+        with _stickers_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(StickerPurchaseDB.pack_id).where(
+                        StickerPurchaseDB.user_phone == phone
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return {"packs": [str(pid) for pid in rows]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/stickers/purchase", response_class=JSONResponse)
+async def stickers_purchase(request: Request) -> dict[str, Any]:
+    """
+    Purchase a sticker pack using the user's wallet.
+
+    For paid packs the server charges from_wallet_id -> STICKERS_MERCHANT_WALLET_ID
+    via the Payments service (reusing the guarded transfer helper) and records
+    the purchase idempotently per user + pack.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    pack_id = (body.get("pack_id") or "").strip()
+    from_wallet_id = (body.get("from_wallet_id") or "").strip()
+    if not pack_id:
+        raise HTTPException(status_code=400, detail="pack_id required")
+
+    # Resolve pack metadata from catalog.
+    packs = _sticker_packs_config()
+    pack_meta: dict[str, Any] | None = None
+    for p in packs:
+        try:
+            if (p.get("id") or "").strip() == pack_id:
+                pack_meta = p
+                break
+        except Exception:
+            continue
+    if not pack_meta:
+        raise HTTPException(status_code=404, detail="unknown sticker pack")
+
+    price_raw = pack_meta.get("price_cents") or 0
+    try:
+        price_cents = int(price_raw)
+    except Exception:
+        price_cents = 0
+    currency = (pack_meta.get("currency") or DEFAULT_CURRENCY).strip() or DEFAULT_CURRENCY
+
+    try:
+        with _stickers_session() as s:
+            # Idempotent per user/pack: if we already have a record, do not charge again.
+            existing = (
+                s.execute(
+                    _sa_select(StickerPurchaseDB).where(
+                        StickerPurchaseDB.user_phone == phone,
+                        StickerPurchaseDB.pack_id == pack_id,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing:
+                return {
+                    "status": "ok",
+                    "pack_id": pack_id,
+                    "owned": True,
+                    "price_cents": existing.amount_cents,
+                    "currency": existing.currency,
+                }
+
+            if price_cents > 0:
+                if not STICKERS_MERCHANT_WALLET_ID:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="STICKERS_MERCHANT_WALLET_ID not configured",
+                    )
+                if not from_wallet_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="from_wallet_id required for paid packs",
+                    )
+                ref = f"stickers pack {pack_id}"
+                _building_transfer(
+                    request=request,
+                    from_wallet_id=from_wallet_id,
+                    to_wallet_id=STICKERS_MERCHANT_WALLET_ID,
+                    amount_cents=price_cents,
+                    reference=ref,
+                )
+
+            rec = StickerPurchaseDB(
+                user_phone=phone,
+                pack_id=pack_id,
+                amount_cents=price_cents,
+                currency=currency,
+            )
+            s.add(rec)
+            s.commit()
+            return {
+                "status": "ok",
+                "pack_id": pack_id,
+                "owned": True,
+                "price_cents": price_cents,
+                "currency": currency,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/stickers/packs", response_class=JSONResponse)
+def stickers_packs(request: Request) -> dict[str, Any]:
+    """
+    Server‑side sticker pack catalog for the Sticker‑Store.
+
+    Returns a small list of packs with IDs that mirror the
+    built‑in Flutter packs so that the client can render a
+    WeChat‑like online sticker marketplace.
+
+    When the user is authenticated, each pack includes an
+    \"owned\" flag based on StickerPurchaseDB so the client
+    can show a WeChat‑like \"Owned\" state for paid packs.
+    """
+    try:
+        packs = _sticker_packs_config()
+        phone = _auth_phone(request)
+        owned_ids: set[str] = set()
+        if phone:
+            try:
+                with _stickers_session() as s:
+                    rows = (
+                        s.execute(
+                            _sa_select(StickerPurchaseDB.pack_id).where(
+                                StickerPurchaseDB.user_phone == phone
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    owned_ids = {str(pid) for pid in rows}
+            except Exception:
+                owned_ids = set()
+        out_packs: list[dict[str, Any]] = []
+        for p in packs:
+            try:
+                m = dict(p)
+            except Exception:
+                continue
+            pid = (m.get("id") or "").strip()
+            m["owned"] = bool(pid and pid in owned_ids)
+            out_packs.append(m)
+        return {"packs": out_packs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/channels/{item_id}/like", response_class=JSONResponse)
+def channels_like(item_id: str, request: Request) -> dict[str, Any]:
+    """
+    Toggle like for a Channels item (idempotent per user).
+    """
+    user_key = _official_cookie_key(request)
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    try:
+        with _officials_session() as s:
+            existing = (
+                s.execute(
+                    _sa_select(ChannelLikeDB).where(
+                        ChannelLikeDB.item_id == clean_id,
+                        ChannelLikeDB.user_key == user_key,
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            liked = False
+            if existing:
+                s.delete(existing)
+                liked = False
+            else:
+                s.add(
+                    ChannelLikeDB(
+                        item_id=clean_id,
+                        user_key=user_key,
+                    )
+                )
+                liked = True
+            s.commit()
+            likes = (
+                s.execute(
+                    _sa_select(_sa_func.count(ChannelLikeDB.id)).where(
+                        ChannelLikeDB.item_id == clean_id
+                    )
+                )
+                .scalar()
+                or 0
+            )
+        try:
+            emit_event(
+                "channels",
+                "like",
+                {"user_key": user_key, "item_id": clean_id, "liked": liked},
+            )
+        except Exception:
+            pass
+        return {"likes": int(likes or 0), "liked": liked}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/channels/{item_id}/comments", response_class=JSONResponse)
+def channels_comments(item_id: str, request: Request, limit: int = 50) -> dict[str, Any]:
+    """
+    Returns latest comments for a Channels item.
+
+    Lightweight, per-item thread similar to WeChat Channels comments.
+    """
+    _ = _official_cookie_key(request)
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    try:
+        limit_val = max(1, min(limit, 200))
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(ChannelCommentDB)
+                    .where(ChannelCommentDB.item_id == clean_id)
+                    .order_by(
+                        ChannelCommentDB.created_at.asc(),
+                        ChannelCommentDB.id.asc(),
+                    )
+                    .limit(limit_val)
+                )
+                .scalars()
+                .all()
+            )
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                created = getattr(row, "created_at", None)
+                try:
+                    created_str = (
+                        created.isoformat().replace("+00:00", "Z")
+                        if isinstance(created, datetime)
+                        else None
+                    )
+                except Exception:
+                    created_str = str(created) if created is not None else None
+                user_key = getattr(row, "user_key", "") or ""
+                author_kind = "official" if user_key.startswith("official:") else "user"
+                items.append(
+                    {
+                        "id": row.id,
+                        "item_id": row.item_id,
+                        "text": row.text,
+                        "created_at": created_str,
+                        "author_kind": author_kind,
+                    }
+                )
+        return {"items": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ChannelGiftIn(BaseModel):
+    account_id: str
+    coins: int = 1
+    gift_kind: str | None = None
+
+
+@app.post("/channels/{item_id}/gift", response_class=JSONResponse)
+def channels_item_gift(item_id: str, request: Request, body: ChannelGiftIn) -> dict[str, Any]:
+    """
+    Send a lightweight gift / coin to a Channels clip.
+
+    This records engagement in ChannelGiftDB without moving real
+    funds; coin-based payouts can be implemented separately via
+    the payments layer.
+    """
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    account_id = (body.account_id or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id required")
+    coins = int(body.coins or 0)
+    if coins <= 0:
+        raise HTTPException(status_code=400, detail="coins must be > 0")
+    # Soft cap per request to avoid accidental huge numbers.
+    if coins > 1000:
+        coins = 1000
+    user_key = _channels_user_key(request)
+    gift_kind = (body.gift_kind or "coin").strip().lower() or "coin"
+    try:
+        with _officials_session() as s:
+            # Ensure the Channels item exists and belongs to the given account.
+            feed_row = s.get(OfficialFeedItemDB, clean_id)
+            if feed_row is None:
+                # Some deployments may expose slug-based IDs.
+                feed_row = (
+                    s.execute(
+                        _sa_select(OfficialFeedItemDB).where(
+                            OfficialFeedItemDB.slug == clean_id
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+            if feed_row is None:
+                raise HTTPException(
+                    status_code=404, detail="channels item not found"
+                )
+            acc_val = getattr(feed_row, "account_id", None)
+            if not acc_val or str(acc_val) != account_id:
+                raise HTTPException(
+                    status_code=400, detail="account_id does not match clip"
+                )
+            s.add(
+                ChannelGiftDB(
+                    user_key=user_key,
+                    account_id=account_id,
+                    item_id=str(getattr(feed_row, "id", clean_id)),
+                    gift_kind=gift_kind,
+                    coins=coins,
+                )
+            )
+            s.commit()
+        try:
+            emit_event(
+                "channels",
+                "gift",
+                {
+                    "user_key": user_key,
+                    "account_id": account_id,
+                    "item_id": clean_id,
+                    "coins": coins,
+                    "gift_kind": gift_kind,
+                },
+            )
+        except Exception:
+            pass
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/channels/{item_id}/comments", response_class=JSONResponse)
+def channels_add_comment(
+    item_id: str, request: Request, body: ChannelCommentIn
+) -> dict[str, Any]:
+    """
+    Adds a new comment to a Channels item for the current user.
+    """
+    user_key = _official_cookie_key(request)
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    try:
+        with _officials_session() as s:
+            # Best-effort validation that the target feed item exists.
+            try:
+                fid = int(clean_id)
+            except Exception:
+                raise HTTPException(status_code=404, detail="unknown channel item")
+            feed = s.get(OfficialFeedItemDB, fid)
+            if not feed:
+                raise HTTPException(status_code=404, detail="unknown channel item")
+            row = ChannelCommentDB(item_id=clean_id, user_key=user_key, text=text)
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            created = getattr(row, "created_at", None)
+            try:
+                created_str = (
+                    created.isoformat().replace("+00:00", "Z")
+                    if isinstance(created, datetime)
+                    else None
+                )
+            except Exception:
+                created_str = str(created) if created is not None else None
+        try:
+            emit_event(
+                "channels",
+                "comment",
+                {"user_key": user_key, "item_id": clean_id, "comment_id": row.id},
+            )
+        except Exception:
+            pass
+        return {
+            "id": row.id,
+            "item_id": row.item_id,
+            "text": row.text,
+            "created_at": created_str,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/channels/{item_id}/view", response_class=JSONResponse)
+def channels_view(item_id: str, request: Request) -> dict[str, Any]:
+    """
+    Increment view counter for a Channels item.
+    """
+    _ = _official_cookie_key(request)
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    try:
+        with _officials_session() as s:
+            row = (
+                s.execute(
+                    _sa_select(ChannelViewDB).where(
+                        ChannelViewDB.item_id == clean_id
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if row is None:
+                row = ChannelViewDB(item_id=clean_id, views=1)
+                s.add(row)
+            else:
+                try:
+                    current = int(getattr(row, "views", 0) or 0)
+                except Exception:
+                    current = 0
+                row.views = current + 1
+                s.add(row)
+            s.commit()
+            views = int(getattr(row, "views", 0) or 0)
+        try:
+            emit_event(
+                "channels",
+                "view",
+                {"item_id": clean_id, "views": views},
+            )
+        except Exception:
+            pass
+        return {"views": views}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/channels/upload", response_class=JSONResponse)
+def channels_upload(request: Request, body: ChannelUploadIn) -> dict[str, Any]:
+    """
+    Creator-style upload endpoint for Channels clips.
+
+    Authenticated users can attach a short clip to a specific Official
+    account. The item is stored as OfficialFeedItemDB with type "clip"
+    so it appears in Channels feed and the Official's feed.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    acc_id = (body.official_account_id or "").strip()
+    if not acc_id:
+        raise HTTPException(status_code=400, detail="official_account_id required")
+    title = (body.title or "").strip() or None
+    snippet = (body.snippet or "").strip() or None
+    thumb_url = (body.thumb_url or "").strip() or None
+    # Basic live/clip switch – when is_live is true we store the
+    # item as type "live", otherwise as a normal "clip". This keeps
+    # existing clients compatible while enabling WeChat-style live
+    # entries in Channels.
+    row_type = "live" if bool(body.is_live) else "clip"
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, acc_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            slug = _uuid.uuid4().hex
+            now = datetime.now(timezone.utc)
+            deeplink_json = (
+                _json.dumps(body.deeplink) if body.deeplink is not None else None
+            )
+            row = OfficialFeedItemDB(
+                account_id=acc_id,
+                slug=slug,
+                type=row_type,
+                title=title,
+                snippet=snippet,
+                thumb_url=thumb_url,
+                ts=now,
+                deeplink_json=deeplink_json,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            ts_str = (
+                row.ts.isoformat().replace("+00:00", "Z")
+                if isinstance(row.ts, datetime)
+                else None
+            )
+        try:
+            emit_event(
+                "channels",
+                "upload",
+                {
+                    "user_phone": phone,
+                    "account_id": acc_id,
+                    "slug": slug,
+                    "has_thumb": bool(thumb_url),
+                },
+            )
+        except Exception:
+            pass
+        return {
+            "id": row.id,
+            "slug": row.slug,
+            "official_account_id": row.account_id,
+            "type": row.type,
+            "title": row.title,
+            "snippet": row.snippet,
+            "thumb_url": row.thumb_url,
+            "ts": ts_str,
+            "is_live": row.type == "live",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/channels/live/{item_id}/stop", response_class=JSONResponse)
+def channels_live_stop(request: Request, item_id: str) -> dict[str, Any]:
+    """
+    Lightweight "stop live" endpoint for Channels.
+
+    For now this simply flips the underlying OfficialFeedItemDB.type
+    from "live" back to "clip" so that the feed no longer highlights
+    it as a live session, roughly matching WeChat Channels behaviour
+    where ended streams turn into normal VOD entries.
+    """
+
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="auth required")
+    clean_id = (item_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    try:
+        with _officials_session() as s:
+            row = s.get(OfficialFeedItemDB, clean_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="unknown feed item")
+            try:
+                current_type = (row.type or "").strip().lower()
+            except Exception:
+                current_type = ""
+            # If it's not live anymore, we simply return the current state.
+            if current_type != "live":
+                ts_str: str | None
+                ts_val = getattr(row, "ts", None)
+                if isinstance(ts_val, datetime):
+                    ts_str = ts_val.isoformat().replace("+00:00", "Z")
+                else:
+                    ts_str = None
+                return {
+                    "id": row.id,
+                    "slug": row.slug,
+                    "official_account_id": row.account_id,
+                    "type": row.type,
+                    "title": row.title,
+                    "snippet": row.snippet,
+                    "thumb_url": row.thumb_url,
+                    "ts": ts_str,
+                    "is_live": False,
+                    "changed": False,
+                }
+            row.type = "clip"
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            ts_val = getattr(row, "ts", None)
+            if isinstance(ts_val, datetime):
+                ts_str = ts_val.isoformat().replace("+00:00", "Z")
+            else:
+                ts_str = None
+        try:
+            emit_event(
+                "channels",
+                "live_stop",
+                {
+                    "user_phone": phone,
+                    "item_id": clean_id,
+                    "account_id": row.account_id,
+                },
+            )
+        except Exception:
+            pass
+        return {
+            "id": row.id,
+            "slug": row.slug,
+            "official_account_id": row.account_id,
+            "type": row.type,
+            "title": row.title,
+            "snippet": row.snippet,
+            "thumb_url": row.thumb_url,
+            "ts": ts_str,
+            "is_live": False,
+            "changed": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/search", response_class=JSONResponse)
+async def global_search(
+    request: Request,
+    q: str,
+    kind: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """
+    Einfache globale Suche über Mini-Apps, Mini-Programs, Official-Accounts,
+    Moments und Channels – WeChat-ähnlicher Discover-Einstieg.
+    """
+    term = (q or "").strip()
+    if not term:
+        raise HTTPException(status_code=400, detail="q required")
+    kind_clean = (kind or "").strip().lower()
+    limit_val = max(1, min(limit, 50))
+    needle = term.lower()
+    phone = _auth_phone(request)
+    contact = (phone or "").strip()
+
+    results: list[dict[str, Any]] = []
+
+    def _score_from_extra(extra: dict[str, Any] | None) -> float:
+        if not extra:
+            return 0.0
+        val = extra.get("score")
+        if isinstance(val, (int, float)):
+            try:
+                return float(val)
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def _want(target: str) -> bool:
+        if not kind_clean or kind_clean == "all":
+            return True
+        return kind_clean == target
+
+    # Mini-Apps & Mini-Programs & Official / Channels all aus Official-DB.
+    try:
+        with _officials_session() as s:
+            if _want("mini_app"):
+                try:
+                    stmt = (
+                        _sa_select(MiniAppDB)
+                        .where(MiniAppDB.enabled == True)  # type: ignore[comparison-overlap]
+                        .limit(limit_val)
+                    )
+                    if needle:
+                        stmt = stmt.where(
+                            _sa_func.lower(MiniAppDB.title_en).contains(needle)
+                            | _sa_func.lower(MiniAppDB.title_ar).contains(needle)
+                            | _sa_func.lower(MiniAppDB.category_en).contains(needle)
+                            | _sa_func.lower(MiniAppDB.category_ar).contains(needle)
+                            | _sa_func.lower(MiniAppDB.description).contains(needle)
+                        )
+                    for row in s.execute(stmt).scalars().all():
+                        try:
+                            rating_val = float(
+                                getattr(row, "rating", 0.0) or 0.0
+                            )
+                        except Exception:
+                            rating_val = 0.0
+                        try:
+                            usage_val = int(
+                                getattr(row, "usage_score", 0) or 0
+                            )
+                        except Exception:
+                            usage_val = 0
+                        try:
+                            moments_val = int(
+                                getattr(row, "moments_shares", 0) or 0
+                            )
+                        except Exception:
+                            moments_val = 0
+                        badges: list[str] = []
+                        if bool(getattr(row, "official", False)):
+                            badges.append("official")
+                        if bool(getattr(row, "beta", False)):
+                            badges.append("beta")
+                        # Very simple "trending" heuristic – usage + social signal.
+                        if usage_val >= 50 or moments_val >= 5:
+                            badges.append("trending")
+                        if moments_val >= 10:
+                            badges.append("hot_in_moments")
+                        # WeChat-like: usage + social + rating as core score,
+                        # plus a modest type boost so Mini-Apps surface
+                        # vor Moments/Channels in der "All"-Suche.
+                        score = (
+                            float(usage_val)
+                            + float(moments_val * 5)
+                            + (rating_val * 10.0)
+                            + 40.0
+                        )
+                        results.append(
+                            {
+                                "kind": "mini_app",
+                                "id": row.app_id,
+                                "title": row.title_en,
+                                "title_ar": row.title_ar,
+                                "snippet": row.description,
+                                "extra": {
+                                    "category_en": row.category_en,
+                                    "category_ar": row.category_ar,
+                                    "runtime_app_id": getattr(row, "runtime_app_id", None),
+                                    "rating": rating_val,
+                                    "usage_score": usage_val,
+                                    "moments_shares": moments_val,
+                                    "official": bool(
+                                        getattr(row, "official", False)
+                                    ),
+                                    "beta": bool(getattr(row, "beta", False)),
+                                    "score": score,
+                                    "badges": badges,
+                                },
+                            }
+                        )
+                except Exception:
+                    pass
+
+            if _want("mini_program"):
+                try:
+                    stmt = _sa_select(MiniProgramDB).limit(limit_val)
+                    if needle:
+                        stmt = stmt.where(
+                            _sa_func.lower(MiniProgramDB.title_en).contains(needle)
+                            | _sa_func.lower(MiniProgramDB.title_ar).contains(needle)
+                            | _sa_func.lower(MiniProgramDB.description_en).contains(
+                                needle
+                            )
+                            | _sa_func.lower(MiniProgramDB.description_ar).contains(
+                                needle
+                            )
+                        )
+                    rows = s.execute(stmt).scalars().all()
+                    # Best-effort Moments shares pro Mini-Program für die Suche,
+                    # damit "Hot in Moments" / 30‑Tage‑Aktivität WeChat‑ähnlich
+                    # berücksichtigt werden kann.
+                    mp_moments_30d: dict[str, int] = {}
+                    try:
+                        app_ids = [
+                            (getattr(r, "app_id", "") or "").strip()
+                            for r in rows
+                        ]
+                        app_ids = [a for a in app_ids if a]
+                        if app_ids:
+                            with _moments_session() as ms:
+                                since_30d = datetime.now(timezone.utc) - timedelta(
+                                    days=30
+                                )
+                                for app_id in app_ids:
+                                    try:
+                                        pattern = f"shamell://mini_program/{app_id}"
+                                        stmt_m = _sa_select(
+                                            _sa_func.count(MomentPostDB.id)
+                                        ).where(
+                                            MomentPostDB.text.contains(pattern),
+                                            MomentPostDB.created_at >= since_30d,
+                                        )
+                                        cnt = ms.execute(stmt_m).scalar() or 0
+                                        mp_moments_30d[app_id] = int(cnt or 0)
+                                    except Exception:
+                                        continue
+                    except Exception:
+                        mp_moments_30d = {}
+                    for row in rows:
+                        status = (row.status or "draft").strip().lower()
+                        owner_name = (row.owner_name or "").strip()
+                        owner_contact = (
+                            getattr(row, "owner_contact", "") or ""
+                        ).strip()
+                        try:
+                            usage_val = int(
+                                getattr(row, "usage_score", 0) or 0
+                            )
+                        except Exception:
+                            usage_val = 0
+                        try:
+                            rating_val = float(
+                                getattr(row, "rating", 0.0) or 0.0
+                            )
+                        except Exception:
+                            rating_val = 0.0
+                        try:
+                            moments_30 = int(
+                                mp_moments_30d.get(row.app_id or "", 0) or 0
+                            )
+                        except Exception:
+                            moments_30 = 0
+                        # Lightweight category heuristic, ähnlich zu
+                        # MiniProgramsDirectoryPage im Flutter-Client.
+                        category_key: str | None = None
+                        try:
+                            hay = " ".join(
+                                [
+                                    (row.title_en or ""),
+                                    (row.title_ar or ""),
+                                    getattr(row, "description_en", "") or "",
+                                    getattr(row, "description_ar", "") or "",
+                                    row.app_id or "",
+                                ]
+                            ).lower()
+                            if any(k in hay for k in ["taxi", "ride", "transport"]):
+                                category_key = "transport"
+                            elif any(
+                                k in hay for k in ["food", "restaurant", "delivery"]
+                            ):
+                                category_key = "food"
+                            elif any(
+                                k in hay for k in ["stay", "hotel", "travel"]
+                            ):
+                                category_key = "stays"
+                            elif any(
+                                k in hay
+                                for k in ["wallet", "pay ", "payment", "payments"]
+                            ):
+                                category_key = "wallet"
+                        except Exception:
+                            category_key = None
+                        badges: list[str] = []
+                        if status == "active":
+                            badges.append("active")
+                        elif status:
+                            badges.append(status)
+                        if owner_name:
+                            badges.append("owner")
+                        if contact and owner_contact and contact == owner_contact:
+                            badges.append("mine")
+                        if moments_30 >= 5:
+                            badges.append("hot_in_moments")
+                        # WeChat-like: aktive und häufig genutzte Mini-Programme
+                        # werden deutlich vor anderen Content-Arten priorisiert.
+                        # Zusätzlich einfaches "Trending"-Signal und Rating-
+                        # Einbindung für die Suche – analog zur Mini-Apps-
+                        # Heuristik und dem Mini-Programs-Katalog.
+                        if (
+                            usage_val >= 50
+                            or rating_val >= 4.5
+                            or moments_30 >= 5
+                        ):
+                            badges.append("trending")
+                        if status == "active":
+                            score = (
+                                60.0
+                                + float(usage_val)
+                                + (rating_val * 5.0)
+                                + (float(moments_30) * 3.0)
+                            )
+                        else:
+                            score = (
+                                30.0
+                                + float(usage_val * 0.5)
+                                + (rating_val * 2.5)
+                                + (float(moments_30) * 1.5)
+                            )
+                        results.append(
+                            {
+                                "kind": "mini_program",
+                                "id": row.app_id,
+                                "title": row.title_en,
+                                "title_ar": row.title_ar,
+                                "snippet": getattr(row, "description_en", None),
+                                "extra": {
+                                    "status": row.status,
+                                    "owner_name": row.owner_name,
+                                    "usage_score": usage_val,
+                                    "rating": rating_val,
+                                    "moments_shares_30d": moments_30,
+                                    "category": category_key,
+                                    "score": score,
+                                    "badges": badges,
+                                },
+                            }
+                        )
+                except Exception:
+                    pass
+
+            if _want("official"):
+                try:
+                    stmt = (
+                        _sa_select(OfficialAccountDB)
+                        .where(OfficialAccountDB.enabled == True)  # type: ignore[comparison-overlap]
+                    )
+                    if needle:
+                        stmt = stmt.where(
+                            _sa_func.lower(OfficialAccountDB.name).contains(needle)
+                            | _sa_func.lower(OfficialAccountDB.name_ar).contains(
+                                needle
+                            )
+                            | _sa_func.lower(OfficialAccountDB.city).contains(needle)
+                            | _sa_func.lower(OfficialAccountDB.category).contains(
+                                needle
+                            )
+                            | _sa_func.lower(OfficialAccountDB.description).contains(
+                                needle
+                            )
+                        )
+                    rows = s.execute(stmt.limit(limit_val)).scalars().all()
+                    if rows:
+                        acc_ids = [str(getattr(r, "id", "")) for r in rows if getattr(r, "id", None)]
+                        followers: dict[str, int] = {}
+                        campaign_counts: dict[str, int] = {}
+                        if acc_ids:
+                            try:
+                                f_rows = (
+                                    s.execute(
+                                        _sa_select(
+                                            OfficialFollowDB.account_id,
+                                            _sa_func.count(OfficialFollowDB.id),
+                                        ).where(OfficialFollowDB.account_id.in_(acc_ids))
+                                        .group_by(OfficialFollowDB.account_id)
+                                    )
+                                    .all()
+                                )
+                                for acc_id, cnt in f_rows:
+                                    try:
+                                        followers[str(acc_id)] = int(cnt or 0)
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                followers = {}
+                            # Active Red‑Packet campaigns per Official for badges in search.
+                            try:
+                                camp_rows = (
+                                    s.execute(
+                                        _sa_select(
+                                            RedPacketCampaignDB.account_id,
+                                            _sa_func.count(RedPacketCampaignDB.id),
+                                        )
+                                        .where(
+                                            RedPacketCampaignDB.account_id.in_(acc_ids),
+                                            RedPacketCampaignDB.active.is_(True),
+                                        )
+                                        .group_by(RedPacketCampaignDB.account_id)
+                                    )
+                                    .all()
+                                )
+                                for acc_id, cnt in camp_rows:
+                                    try:
+                                        campaign_counts[str(acc_id)] = int(cnt or 0)
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                campaign_counts = {}
+                        # Moments shares in the last 30 days for these officials.
+                        shares_30d: dict[str, int] = {}
+                        if acc_ids:
+                            try:
+                                since_30 = datetime.now(timezone.utc) - timedelta(days=30)
+                            except Exception:
+                                since_30 = None  # type: ignore[assignment]
+                            if since_30 is not None:
+                                try:
+                                    with _moments_session() as ms:
+                                        m_rows = (
+                                            ms.execute(
+                                                _sa_select(
+                                                    MomentPostDB.origin_official_account_id,
+                                                    _sa_func.count(MomentPostDB.id),
+                                                )
+                                                .where(
+                                                    MomentPostDB.origin_official_account_id.in_(acc_ids),
+                                                    MomentPostDB.created_at >= since_30,
+                                                )
+                                                .group_by(MomentPostDB.origin_official_account_id)
+                                            )
+                                            .all()
+                                        )
+                                        for acc_id, cnt in m_rows:
+                                            if not acc_id:
+                                                continue
+                                            try:
+                                                shares_30d[str(acc_id)] = int(cnt or 0)
+                                            except Exception:
+                                                continue
+                                except Exception:
+                                    shares_30d = {}
+                        for row in rows:
+                            acc_id = str(getattr(row, "id", ""))
+                            kind_val = (getattr(row, "kind", "") or "").strip().lower()
+                            badges: list[str] = []
+                            if kind_val == "service":
+                                badges.append("service")
+                            elif kind_val == "subscription":
+                                badges.append("subscription")
+                            featured = bool(getattr(row, "featured", False))
+                            verified = bool(getattr(row, "verified", False))
+                            if featured:
+                                badges.append("featured")
+                            if verified:
+                                badges.append("verified")
+                            followers_cnt = followers.get(acc_id, 0)
+                            campaigns_active = campaign_counts.get(acc_id, 0)
+                            if campaigns_active > 0:
+                                badges.append("campaign")
+                            shares_cnt = shares_30d.get(acc_id, 0)
+                            if shares_cnt >= 3:
+                                badges.append("hot_in_moments")
+                            # Simple WeChat-like prominence: featured/verified,
+                            # follower size (log-ish) and recent Moments shares,
+                            # plus ein klarer Typ-Boost gegenüber Moments/Channels.
+                            score = 80.0
+                            if featured:
+                                score += 20.0
+                            if verified:
+                                score += 5.0
+                            if followers_cnt > 0:
+                                try:
+                                    score += min(followers_cnt, 50000) / 1000.0
+                                except Exception:
+                                    pass
+                            if shares_cnt > 0:
+                                score += shares_cnt * 2.0
+                            results.append(
+                                {
+                                    "kind": "official",
+                                    "id": row.id,
+                                    "title": row.name,
+                                    "title_ar": row.name_ar,
+                                    "snippet": row.description,
+                                    "extra": {
+                                        "city": getattr(row, "city", None),
+                                        "category": getattr(row, "category", None),
+                                        "kind": kind_val or None,
+                                        "followers": followers_cnt,
+                                        "shares_30d": shares_cnt,
+                                        "campaigns_active": campaigns_active,
+                                        "score": score,
+                                        "badges": badges,
+                                    },
+                                }
+                            )
+                except Exception:
+                    pass
+
+            if _want("channel"):
+                try:
+                    c_stmt = (
+                        _sa_select(
+                            OfficialFeedItemDB,
+                            OfficialAccountDB.name,
+                        )
+                        .join(
+                            OfficialAccountDB,
+                            OfficialFeedItemDB.account_id == OfficialAccountDB.id,
+                        )
+                        .order_by(
+                            OfficialFeedItemDB.ts.desc(),
+                            OfficialFeedItemDB.id.desc(),
+                        )
+                        .limit(limit_val)
+                    )
+                    if needle:
+                        c_stmt = c_stmt.where(
+                            _sa_func.lower(OfficialFeedItemDB.title).contains(needle)
+                            | _sa_func.lower(OfficialFeedItemDB.snippet).contains(
+                                needle
+                            )
+                        )
+                    rows = s.execute(c_stmt).all()
+                    # Preload simple engagement metrics for these items to strengthen
+                    # ranking heuristics (likes, views, comments).
+                    item_ids: list[str] = []
+                    for feed_row, _ in rows:
+                        try:
+                            item_ids.append(str(getattr(feed_row, "id", "")))
+                        except Exception:
+                            continue
+                    likes_map: dict[str, int] = {}
+                    views_map: dict[str, int] = {}
+                    comments_map: dict[str, int] = {}
+                    if item_ids:
+                        try:
+                            like_rows = (
+                                s.execute(
+                                    _sa_select(
+                                        ChannelLikeDB.item_id,
+                                        _sa_func.count(ChannelLikeDB.id),
+                                    )
+                                    .where(ChannelLikeDB.item_id.in_(item_ids))
+                                    .group_by(ChannelLikeDB.item_id)
+                                )
+                                .all()
+                            )
+                            for iid, cnt in like_rows:
+                                try:
+                                    likes_map[str(iid)] = int(cnt or 0)
+                                except Exception:
+                                    continue
+                        except Exception:
+                            likes_map = {}
+                        try:
+                            view_rows = (
+                                s.execute(
+                                    _sa_select(
+                                        ChannelViewDB.item_id,
+                                        ChannelViewDB.views,
+                                    ).where(ChannelViewDB.item_id.in_(item_ids))
+                                )
+                                .all()
+                            )
+                            for iid, views in view_rows:
+                                try:
+                                    views_map[str(iid)] = int(views or 0)
+                                except Exception:
+                                    continue
+                        except Exception:
+                            views_map = {}
+                        try:
+                            comment_rows = (
+                                s.execute(
+                                    _sa_select(
+                                        ChannelCommentDB.item_id,
+                                        _sa_func.count(ChannelCommentDB.id),
+                                    )
+                                    .where(ChannelCommentDB.item_id.in_(item_ids))
+                                    .group_by(ChannelCommentDB.item_id)
+                                )
+                                .all()
+                            )
+                            for iid, cnt in comment_rows:
+                                try:
+                                    comments_map[str(iid)] = int(cnt or 0)
+                                except Exception:
+                                    continue
+                        except Exception:
+                            comments_map = {}
+                    hot_accounts: set[str] = set()
+                    try:
+                        acc_ids: set[str] = set()
+                        for feed_row, _ in rows:
+                            acc_id_val = getattr(feed_row, "account_id", None)
+                            if acc_id_val:
+                                acc_ids.add(str(acc_id_val))
+                        if acc_ids:
+                            with _moments_session() as ms:
+                                agg_rows = (
+                                    ms.execute(
+                                        _sa_select(
+                                            MomentPostDB.origin_official_account_id,
+                                            _sa_func.count(MomentPostDB.id),
+                                        )
+                                        .where(
+                                            MomentPostDB.origin_official_account_id.in_(
+                                                list(acc_ids)
+                                            )
+                                        )
+                                        .group_by(
+                                            MomentPostDB.origin_official_account_id
+                                        )
+                                    )
+                                    .all()
+                                )
+                                for acc_id, cnt in agg_rows:
+                                    try:
+                                        if int(cnt or 0) >= 10:
+                                            hot_accounts.add(str(acc_id))
+                                    except Exception:
+                                        continue
+                    except Exception:
+                        hot_accounts = set()
+                    for feed_row, acc_name in rows:
+                        f_type = (getattr(feed_row, "type", "") or "").strip().lower()
+                        badges: list[str] = []
+                        if f_type:
+                            badges.append(f_type)
+                        item_id_str = str(getattr(feed_row, "id", ""))
+                        likes = likes_map.get(item_id_str, 0)
+                        views = views_map.get(item_id_str, 0)
+                        comments = comments_map.get(item_id_str, 0)
+                        if likes >= 10 or views >= 100:
+                            badges.append("popular_clip")
+                        if comments >= 3:
+                            badges.append("discussed")
+                        acc_id_val = getattr(feed_row, "account_id", None)
+                        acc_id_str = str(acc_id_val) if acc_id_val is not None else ""
+                        if acc_id_str in hot_accounts:
+                            badges.append("hot_in_moments")
+                        # WeChat-like: Campaign/Promo-Clips und Clips von
+                        # besonders aktiven Official-Accounts leicht bevorzugen.
+                        # Zusätzlich werden Clips mit hoher Interaktion (Likes/Views/
+                        # Comments) stärker gewichtet, bleiben aber unter
+                        # Official/Mini-Program-Ergebnissen. Live-Items werden
+                        # zusätzlich hervorgehoben.
+                        score = 20.0
+                        if f_type == "live":
+                            score += 15.0
+                            if "live" not in badges:
+                                badges.append("live")
+                        elif f_type in {"campaign", "promo"}:
+                            score += 10.0
+                        if acc_id_str in hot_accounts:
+                            score += 5.0
+                        try:
+                            if views > 0:
+                                score += min(views, 5000) / 200.0
+                        except Exception:
+                            pass
+                        try:
+                            if likes > 0:
+                                score += min(likes, 500) * 0.5
+                        except Exception:
+                            pass
+                        try:
+                            if comments > 0:
+                                score += min(comments, 100) * 1.0
+                        except Exception:
+                            pass
+                        results.append(
+                            {
+                                "kind": "channel",
+                                "id": getattr(feed_row, "slug", None)
+                                or str(getattr(feed_row, "id", "")),
+                                "title": getattr(feed_row, "title", None),
+                                "title_ar": None,
+                                "snippet": getattr(feed_row, "snippet", None),
+                                "extra": {
+                                    "official_account_id": acc_id_val,
+                                    "official_name": acc_name,
+                                    "likes": likes,
+                                    "views": views,
+                                    "comments": comments,
+                                    "score": score,
+                                    "badges": badges,
+                                    "type": f_type or None,
+                                },
+                            }
+                        )
+                except Exception:
+                    pass
+    except HTTPException:
+        raise
+    except Exception:
+        # ignore and fall back to other sources
+        pass
+
+    # Moments search via Moments DB.
+    if _want("moment"):
+        try:
+            with _moments_session() as ms:
+                m_stmt = (
+                    _sa_select(MomentPostDB)
+                    .where(_sa_func.lower(MomentPostDB.text).contains(needle))
+                    .order_by(
+                        MomentPostDB.created_at.desc(),
+                        MomentPostDB.id.desc(),
+                    )
+                    .limit(limit_val)
+                )
+                for row in ms.execute(m_stmt).scalars().all():
+                    text = getattr(row, "text", "") or ""
+                    is_redpacket = False
+                    try:
+                        t_low = text.lower()
+                        if "red packet" in t_low or "red packets" in t_low:
+                            is_redpacket = True
+                        if "i am sending red packets via shamell pay" in t_low:
+                            is_redpacket = True
+                        if "حزمة حمراء" in text or "حزمًا حمراء" in text:
+                            is_redpacket = True
+                    except Exception:
+                        is_redpacket = False
+                    badges: list[str] = []
+                    if is_redpacket:
+                        badges.append("redpacket")
+                    results.append(
+                        {
+                            "kind": "moment",
+                            "id": getattr(row, "id", None),
+                            "title": None,
+                            "title_ar": None,
+                            "snippet": text,
+                            "extra": {
+                                "created_at": getattr(row, "created_at", None),
+                                "author_id": getattr(row, "user_id", None),
+                                "score": 0.0,
+                                "badges": badges,
+                            },
+                        }
+                    )
+        except Exception:
+            pass
+
+    # Sort by score for WeChat-like "trending" behaviour where available.
+    if not kind_clean or kind_clean == "all":
+        results.sort(
+            key=lambda r: _score_from_extra(
+                r.get("extra") if isinstance(r.get("extra"), dict) else None
+            ),
+            reverse=True,
+        )
+    elif kind_clean in {"mini_app", "mini_program", "official"}:
+        results.sort(
+            key=lambda r: _score_from_extra(
+                r.get("extra") if isinstance(r.get("extra"), dict) else None
+            ),
+            reverse=True,
+        )
+
+    if len(results) > limit_val:
+        results = results[:limit_val]
+    return {"results": results}
+
+
+@app.get("/official_accounts/{account_id}/campaigns", response_class=JSONResponse)
+def official_account_campaigns(account_id: str) -> dict[str, Any]:
+    """
+    Public, read-only list of active red-packet campaigns for a single Official.
+
+    Used by the client to prefill campaign-specific red-packet issuing UIs.
+    """
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(RedPacketCampaignDB).where(
+                        RedPacketCampaignDB.account_id == account_id,
+                        RedPacketCampaignDB.active.is_(True),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                created = getattr(row, "created_at", None)
+                created_str = None
+                try:
+                    created_str = (
+                        created.isoformat().replace("+00:00", "Z")
+                        if created
+                        else None
+                    )
+                except Exception:
+                    created_str = str(created) if created is not None else None
+                items.append(
+                    {
+                        "id": row.id,
+                        "account_id": row.account_id,
+                        "title": row.title,
+                        "default_amount_cents": getattr(
+                            row, "default_amount_cents", None
+                        ),
+                        "default_count": getattr(row, "default_count", None),
+                        "active": bool(getattr(row, "active", True)),
+                        "created_at": created_str,
+                        "note": getattr(row, "note", None),
+                    }
+                )
+        return {"campaigns": items}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/official_accounts/{account_id}/campaigns/{campaign_id}/stats",
+    response_class=JSONResponse,
+)
+def official_account_campaign_stats(
+    account_id: str,
+    campaign_id: str,
+) -> dict[str, Any]:
+    """
+    Lightweight JSON KPIs for a single Red‑Packet campaign – WeChat‑style.
+
+    Exposes aggregated Moments shares (all time / 30d, unique sharers) and
+    Red‑Packet payments KPIs (issued/claimed packets and amounts) so that
+    merchant UIs can render a compact in‑app dashboard.
+    """
+    cid = (campaign_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="campaign_id required")
+    try:
+        # Resolve campaign and ensure it belongs to the given Official.
+        with _officials_session() as s:
+            camp = s.get(RedPacketCampaignDB, cid)
+            if not camp or camp.account_id != account_id:
+                raise HTTPException(status_code=404, detail="campaign not found")
+
+        # Moments metrics for this campaign (origin_official_item_id == campaign_id)
+        moments_total = 0
+        moments_30d = 0
+        uniq_total = 0
+        uniq_30d = 0
+        last_share_ts: str | None = None
+        try:
+            since_30d = datetime.now(timezone.utc) - timedelta(days=30)
+            with _moments_session() as ms:
+                moments_total = int(
+                    (
+                        ms.execute(
+                            _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                                MomentPostDB.origin_official_item_id == cid
+                            )
+                        ).scalar()
+                        or 0
+                    )
+                )
+                moments_30d = int(
+                    (
+                        ms.execute(
+                            _sa_select(_sa_func.count(MomentPostDB.id)).where(
+                                MomentPostDB.origin_official_item_id == cid,
+                                MomentPostDB.created_at >= since_30d,
+                            )
+                        ).scalar()
+                        or 0
+                    )
+                )
+                uniq_total = int(
+                    (
+                        ms.execute(
+                            _sa_select(
+                                _sa_func.count(
+                                    _sa_func.distinct(MomentPostDB.user_key)
+                                )
+                            ).where(MomentPostDB.origin_official_item_id == cid)
+                        ).scalar()
+                        or 0
+                    )
+                )
+                uniq_30d = int(
+                    (
+                        ms.execute(
+                            _sa_select(
+                                _sa_func.count(
+                                    _sa_func.distinct(MomentPostDB.user_key)
+                                )
+                            ).where(
+                                MomentPostDB.origin_official_item_id == cid,
+                                MomentPostDB.created_at >= since_30d,
+                            )
+                        ).scalar()
+                        or 0
+                    )
+                )
+                last_row = (
+                    ms.execute(
+                        _sa_select(_sa_func.max(MomentPostDB.created_at)).where(
+                            MomentPostDB.origin_official_item_id == cid
+                        )
+                    ).scalar()
+                    or None
+                )
+                if last_row is not None:
+                    try:
+                        last_share_ts = (
+                            last_row.isoformat().replace("+00:00", "Z")
+                            if isinstance(last_row, datetime)
+                            else str(last_row)
+                        )
+                    except Exception:
+                        last_share_ts = str(last_row)
+        except Exception:
+            moments_total = 0
+            moments_30d = 0
+            uniq_total = 0
+            uniq_30d = 0
+            last_share_ts = None
+
+        # Optional Payments KPIs via internal Payments service or PAYMENTS_BASE.
+        payments_total_packets_issued = 0
+        payments_total_packets_claimed = 0
+        payments_total_amount_cents = 0
+        payments_claimed_amount_cents = 0
+        payments_unique_creators = 0
+        payments_unique_claimants = 0
+        try:
+            data: dict[str, Any] | None = None
+            data_30d: dict[str, Any] | None = None
+            since_30d_pay = datetime.now(timezone.utc) - timedelta(days=30)
+            # Prefer internal Payments integration when available; fall back to HTTP.
+            if _use_pay_internal() and _pay_main is not None:
+                from apps.payments.app.main import (  # type: ignore[import]
+                    redpacket_campaign_payments_analytics,
+                )
+
+                with _pay_internal_session() as ps:  # type: ignore[name-defined]
+                    stats = redpacket_campaign_payments_analytics(
+                        campaign_id=cid,
+                        from_iso=None,
+                        to_iso=None,
+                        s=ps,
+                        admin_ok=True,  # bypass external admin checks for internal call
+                    )
+                    data = stats.dict() if hasattr(stats, "dict") else stats  # type: ignore[assignment]
+                    stats_30 = redpacket_campaign_payments_analytics(
+                        campaign_id=cid,
+                        from_iso=since_30d_pay.isoformat(),
+                        to_iso=None,
+                        s=ps,
+                        admin_ok=True,
+                    )
+                    data_30d = stats_30.dict() if hasattr(stats_30, "dict") else stats_30  # type: ignore[assignment]
+            elif PAYMENTS_BASE:
+                base = PAYMENTS_BASE.rstrip("/")
+                url = f"{base}/admin/redpacket_campaigns/payments_analytics"
+                r = httpx.get(
+                    url,
+                    params={"campaign_id": cid},
+                    timeout=5.0,
+                )
+                if (
+                    r.status_code == 200
+                    and r.headers.get("content-type", "").startswith(
+                        "application/json"
+                    )
+                ):
+                    body = r.json()
+                    if isinstance(body, dict):
+                        data = body
+                try:
+                    r30 = httpx.get(
+                        url,
+                        params={"campaign_id": cid, "from_iso": since_30d_pay.isoformat()},
+                        timeout=5.0,
+                    )
+                    if (
+                        r30.status_code == 200
+                        and r30.headers.get("content-type", "").startswith(
+                            "application/json"
+                        )
+                    ):
+                        body_30 = r30.json()
+                        if isinstance(body_30, dict):
+                            data_30d = body_30
+                except Exception:
+                    data_30d = data_30d
+            if isinstance(data, dict):
+                try:
+                    payments_total_packets_issued = int(
+                        data.get("total_packets_issued", 0) or 0
+                    )
+                except Exception:
+                    payments_total_packets_issued = 0
+                try:
+                    payments_total_packets_claimed = int(
+                        data.get("total_packets_claimed", 0) or 0
+                    )
+                except Exception:
+                    payments_total_packets_claimed = 0
+                try:
+                    payments_total_amount_cents = int(
+                        data.get("total_amount_cents", 0) or 0
+                    )
+                except Exception:
+                    payments_total_amount_cents = 0
+                try:
+                    payments_claimed_amount_cents = int(
+                        data.get("claimed_amount_cents", 0) or 0
+                    )
+                except Exception:
+                    payments_claimed_amount_cents = 0
+                try:
+                    payments_unique_creators = int(
+                        data.get("unique_creators", 0) or 0
+                    )
+                except Exception:
+                    payments_unique_creators = 0
+                try:
+                    payments_unique_claimants = int(
+                        data.get("unique_claimants", 0) or 0
+                    )
+                except Exception:
+                    payments_unique_claimants = 0
+
+            payments_total_packets_issued_30d = 0
+            payments_total_packets_claimed_30d = 0
+            payments_total_amount_cents_30d = 0
+            payments_claimed_amount_cents_30d = 0
+            payments_unique_creators_30d = 0
+            payments_unique_claimants_30d = 0
+            if isinstance(data_30d, dict):
+                try:
+                    payments_total_packets_issued_30d = int(
+                        data_30d.get("total_packets_issued", 0) or 0
+                    )
+                except Exception:
+                    payments_total_packets_issued_30d = 0
+                try:
+                    payments_total_packets_claimed_30d = int(
+                        data_30d.get("total_packets_claimed", 0) or 0
+                    )
+                except Exception:
+                    payments_total_packets_claimed_30d = 0
+                try:
+                    payments_total_amount_cents_30d = int(
+                        data_30d.get("total_amount_cents", 0) or 0
+                    )
+                except Exception:
+                    payments_total_amount_cents_30d = 0
+                try:
+                    payments_claimed_amount_cents_30d = int(
+                        data_30d.get("claimed_amount_cents", 0) or 0
+                    )
+                except Exception:
+                    payments_claimed_amount_cents_30d = 0
+                try:
+                    payments_unique_creators_30d = int(
+                        data_30d.get("unique_creators", 0) or 0
+                    )
+                except Exception:
+                    payments_unique_creators_30d = 0
+                try:
+                    payments_unique_claimants_30d = int(
+                        data_30d.get("unique_claimants", 0) or 0
+                    )
+                except Exception:
+                    payments_unique_claimants_30d = 0
+        except Exception:
+            payments_total_packets_issued = 0
+            payments_total_packets_claimed = 0
+            payments_total_amount_cents = 0
+            payments_claimed_amount_cents = 0
+            payments_unique_creators = 0
+            payments_unique_claimants = 0
+            payments_total_packets_issued_30d = 0
+            payments_total_packets_claimed_30d = 0
+            payments_total_amount_cents_30d = 0
+            payments_claimed_amount_cents_30d = 0
+            payments_unique_creators_30d = 0
+            payments_unique_claimants_30d = 0
+
+        return {
+            "campaign_id": cid,
+            "account_id": account_id,
+            "moments_shares_total": moments_total,
+            "moments_shares_30d": moments_30d,
+            "moments_unique_sharers_total": uniq_total,
+            "moments_unique_sharers_30d": uniq_30d,
+            "moments_last_share_ts": last_share_ts,
+            "payments_total_packets_issued": payments_total_packets_issued,
+            "payments_total_packets_claimed": payments_total_packets_claimed,
+            "payments_total_amount_cents": payments_total_amount_cents,
+            "payments_claimed_amount_cents": payments_claimed_amount_cents,
+            "payments_unique_creators": payments_unique_creators,
+            "payments_unique_claimants": payments_unique_claimants,
+            "payments_total_packets_issued_30d": payments_total_packets_issued_30d,
+            "payments_total_packets_claimed_30d": payments_total_packets_claimed_30d,
+            "payments_total_amount_cents_30d": payments_total_amount_cents_30d,
+            "payments_claimed_amount_cents_30d": payments_claimed_amount_cents_30d,
+            "payments_unique_creators_30d": payments_unique_creators_30d,
+            "payments_unique_claimants_30d": payments_unique_claimants_30d,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/official_accounts/notifications", response_class=JSONResponse)
+def official_notifications(request: Request):
+    """
+    Returns per-account notification modes for the current user.
+    """
+    user_key = _official_cookie_key(request)
+    try:
+        with _officials_session() as s:
+            rows = (
+                s.execute(
+                    _sa_select(OfficialNotificationDB).where(
+                        OfficialNotificationDB.user_key == user_key
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            modes = {row.account_id: row.mode for row in rows if row.mode}
+        return {"modes": modes}
+    except HTTPException:
+        raise
+    except Exception:
+        # Soft-fail: empty map if notifications table is unavailable.
+        return {"modes": {}}
+
+
+@app.post(
+    "/official_accounts/{account_id}/notification_mode",
+    response_class=JSONResponse,
+)
+def official_set_notification_mode(
+    account_id: str,
+    request: Request,
+    body: OfficialNotificationIn,
+):
+    """
+    Sets or clears per-user notification mode for a single official account.
+    Modes: full, summary, muted. Omitting or "full" clears the override.
+    """
+    user_key = _official_cookie_key(request)
+    raw_mode = body.mode
+    if raw_mode is None:
+        norm_mode: str | None = None
+    else:
+        m = raw_mode.strip().lower()
+        if m not in {"full", "summary", "muted"}:
+            raise HTTPException(status_code=400, detail="invalid mode")
+        norm_mode = m
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            stmt = _sa_select(OfficialNotificationDB).where(
+                OfficialNotificationDB.user_key == user_key,
+                OfficialNotificationDB.account_id == account_id,
+            )
+            existing = s.execute(stmt).scalars().first()
+            if norm_mode is None or norm_mode == "full":
+                if existing is not None:
+                    s.delete(existing)
+                    s.commit()
+                result_mode = "full"
+            else:
+                if existing is None:
+                    existing = OfficialNotificationDB(
+                        user_key=user_key,
+                        account_id=account_id,
+                        mode=norm_mode,
+                    )
+                    s.add(existing)
+                else:
+                    existing.mode = norm_mode
+                s.commit()
+                result_mode = norm_mode
+        try:
+            emit_event(
+                "officials",
+                "notif_mode_set",
+                {
+                    "user_key": user_key,
+                    "account_id": account_id,
+                    "mode": result_mode,
+                },
+            )
+        except Exception:
+            pass
+        return {"account_id": account_id, "mode": result_mode}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/official_accounts/{account_id}/auto_replies",
+    response_class=JSONResponse,
+)
+def official_auto_replies(account_id: str, request: Request) -> dict[str, Any]:
+    """
+    Returns enabled auto‑reply rules for a single Official account.
+
+    The main consumer is the Mirsaal chat client, which can use the
+    first "welcome" rule to display a WeChat‑style greeting bubble
+    when a user first opens a conversation with an Official account.
+    """
+
+    try:
+        _ = _official_cookie_key(request)
+    except Exception:
+        # Treat missing cookie the same as anonymous; auto‑replies are
+        # public metadata and do not leak sensitive state.
+        pass
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            stmt = _sa_select(OfficialAutoReplyDB).where(
+                OfficialAutoReplyDB.account_id == account_id,
+                OfficialAutoReplyDB.enabled.is_(True),
+            ).order_by(OfficialAutoReplyDB.id.asc())
+            rows = s.execute(stmt).scalars().all()
+            rules: list[dict[str, Any]] = []
+            for row in rows:
+                rules.append(
+                    {
+                        "id": row.id,
+                        "account_id": row.account_id,
+                        "kind": row.kind,
+                        "keyword": row.keyword,
+                        "text": row.text,
+                        "enabled": bool(row.enabled),
+                    }
+                )
+        return {"rules": rules}
+    except HTTPException:
+        raise
+    except Exception:
+        # Soft‑fail for deployments that have not yet migrated the
+        # auto‑replies table.
+        return {"rules": []}
+
+
+@app.get("/official_accounts/{account_id}/locations", response_class=JSONResponse)
+async def official_account_locations(request: Request, account_id: str, limit: int = 50):
+    try:
+        limit_val = max(1, min(limit, 200))
+        _ = _official_cookie_key(request)
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            stmt = (
+                _sa_select(OfficialLocationDB)
+                .where(OfficialLocationDB.account_id == account_id)
+                .order_by(OfficialLocationDB.id.asc())
+                .limit(limit_val)
+            )
+            rows = s.execute(stmt).scalars().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                items.append(
+                    OfficialLocationOut(
+                        id=row.id,
+                        name=row.name,
+                        city=row.city,
+                        address=row.address,
+                        lat=row.lat,
+                        lon=row.lon,
+                        phone=row.phone,
+                        opening_hours=row.opening_hours,
+                    ).dict()
+                )
+        return {"locations": items}
+    except HTTPException:
+        raise
+    except Exception:
+        # No fallback locations configured; behave like empty list or 404.
+        raise HTTPException(status_code=404, detail="locations not available")
+
+
+@app.post("/official_accounts/{account_id}/follow", response_class=JSONResponse)
+async def follow_official_account(account_id: str, request: Request):
+    ck = _official_cookie_key(request)
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            existing = s.execute(
+                _sa_select(OfficialFollowDB).where(
+                    OfficialFollowDB.user_key == ck,
+                    OfficialFollowDB.account_id == account_id,
+                )
+            ).scalars().first()
+            if not existing:
+                s.add(OfficialFollowDB(user_key=ck, account_id=account_id))
+                s.commit()
+        try:
+            emit_event(
+                "officials",
+                f"follow_{account_id}",
+                {"user_key": ck},
+            )
+        except Exception:
+            pass
+        return {"status": "ok", "followed": True}
+    except HTTPException:
+        raise
+    except Exception:
+        if account_id not in _OFFICIAL_ACCOUNTS:
+            raise HTTPException(status_code=404, detail="unknown official account")
+        s = _OFFICIAL_FOLLOWS.setdefault(ck, set(_OFFICIAL_ACCOUNTS.keys()))
+        s.add(account_id)
+        return {"status": "ok", "followed": True}
+
+
+@app.post("/official_accounts/{account_id}/unfollow", response_class=JSONResponse)
+async def unfollow_official_account(account_id: str, request: Request):
+    ck = _official_cookie_key(request)
+    try:
+        with _officials_session() as s:
+            acc = s.get(OfficialAccountDB, account_id)
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            row = s.execute(
+                _sa_select(OfficialFollowDB).where(
+                    OfficialFollowDB.user_key == ck,
+                    OfficialFollowDB.account_id == account_id,
+                )
+            ).scalars().first()
+            if row:
+                s.delete(row)
+                s.commit()
+        try:
+            emit_event(
+                "officials",
+                f"unfollow_{account_id}",
+                {"user_key": ck},
+            )
+        except Exception:
+            pass
+        return {"status": "ok", "followed": False}
+    except HTTPException:
+        raise
+    except Exception:
+        if account_id not in _OFFICIAL_ACCOUNTS:
+            raise HTTPException(status_code=404, detail="unknown official account")
+        s = _OFFICIAL_FOLLOWS.setdefault(ck, set(_OFFICIAL_ACCOUNTS.keys()))
+        if account_id in s:
+            s.remove(account_id)
+        return {"status": "ok", "followed": False}
+
+
+@app.post("/channels/accounts/{account_id}/follow", response_class=JSONResponse)
+async def channels_follow_account(account_id: str, request: Request):
+    """
+    Follow a Channel for the given Official account.
+
+    This is intentionally separate from OfficialFollowDB so users can
+    follow a service as a channel without affecting their Official
+    subscriptions, similar to WeChat's Channels follower graph.
+    """
+    user_key = _channels_user_key(request)
+    try:
+      with _officials_session() as s:
+          acc = s.get(OfficialAccountDB, account_id)
+          if not acc or not acc.enabled:
+              raise HTTPException(
+                  status_code=404, detail="unknown official account"
+              )
+          existing = s.execute(
+              _sa_select(ChannelFollowDB).where(
+                  ChannelFollowDB.user_key == user_key,
+                  ChannelFollowDB.account_id == account_id,
+              )
+          ).scalars().first()
+          if not existing:
+              s.add(
+                  ChannelFollowDB(
+                      user_key=user_key,
+                      account_id=account_id,
+                  )
+              )
+              s.commit()
+      try:
+          emit_event(
+              "channels",
+              "follow",
+              {"user_key": user_key, "account_id": account_id},
+          )
+      except Exception:
+          pass
+      return {"status": "ok", "followed": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/channels/accounts/{account_id}/unfollow", response_class=JSONResponse)
+async def channels_unfollow_account(account_id: str, request: Request):
+    """
+    Unfollow a Channel for the given Official account.
+    """
+    user_key = _channels_user_key(request)
+    try:
+      with _officials_session() as s:
+          acc = s.get(OfficialAccountDB, account_id)
+          if not acc or not acc.enabled:
+              raise HTTPException(
+                  status_code=404, detail="unknown official account"
+              )
+          row = s.execute(
+              _sa_select(ChannelFollowDB).where(
+                  ChannelFollowDB.user_key == user_key,
+                  ChannelFollowDB.account_id == account_id,
+              )
+          ).scalars().first()
+          if row:
+              s.delete(row)
+              s.commit()
+      try:
+          emit_event(
+              "channels",
+              "unfollow",
+              {"user_key": user_key, "account_id": account_id},
+          )
+      except Exception:
+          pass
+      return {"status": "ok", "followed": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

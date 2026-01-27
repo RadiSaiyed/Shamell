@@ -49,11 +49,15 @@ class ChatContact {
   final String? name;
   final bool verified;
   final DateTime? verifiedAt;
+  final bool starred;
+  final bool pinned;
   final bool disappearing;
   final Duration? disappearAfter;
+  final bool archived;
   final bool hidden;
   final bool blocked;
   final DateTime? blockedAt;
+  final bool muted;
 
   const ChatContact({
     required this.id,
@@ -62,25 +66,46 @@ class ChatContact {
     this.name,
     this.verified = false,
     this.verifiedAt,
+    this.starred = false,
+    this.pinned = false,
     this.disappearing = false,
     this.disappearAfter,
+    this.archived = false,
     this.hidden = false,
     this.blocked = false,
     this.blockedAt,
+    this.muted = false,
   });
 
-  ChatContact copyWith({bool? verified, DateTime? verifiedAt, bool? disappearing, Duration? disappearAfter, bool? hidden, bool? blocked, DateTime? blockedAt}) => ChatContact(
+  ChatContact copyWith({
+    bool? verified,
+    DateTime? verifiedAt,
+    bool? starred,
+    bool? pinned,
+    bool? disappearing,
+    Duration? disappearAfter,
+    bool? archived,
+    bool? hidden,
+    bool? blocked,
+    DateTime? blockedAt,
+    bool? muted,
+  }) =>
+      ChatContact(
         id: id,
         publicKeyB64: publicKeyB64,
         fingerprint: fingerprint,
         name: name,
         verified: verified ?? this.verified,
         verifiedAt: verifiedAt ?? this.verifiedAt,
+        starred: starred ?? this.starred,
+        pinned: pinned ?? this.pinned,
         disappearing: disappearing ?? this.disappearing,
         disappearAfter: disappearAfter ?? this.disappearAfter,
+        archived: archived ?? this.archived,
         hidden: hidden ?? this.hidden,
         blocked: blocked ?? this.blocked,
         blockedAt: blockedAt ?? this.blockedAt,
+        muted: muted ?? this.muted,
       );
 
   Map<String, Object?> toMap() => {
@@ -90,11 +115,15 @@ class ChatContact {
         'name': name,
         'verified': verified,
         'verifiedAt': verifiedAt?.toIso8601String(),
+        'starred': starred,
+        'pinned': pinned,
         'disappearing': disappearing,
         'disappearAfterSeconds': disappearAfter?.inSeconds,
+        'archived': archived,
         'hidden': hidden,
         'blocked': blocked,
         'blockedAt': blockedAt?.toIso8601String(),
+        'muted': muted,
       };
 
   static ChatContact? fromMap(Map<String, Object?>? map) {
@@ -110,13 +139,17 @@ class ChatContact {
       name: map['name'] as String?,
       verified: (map['verified'] as bool?) ?? false,
       verifiedAt: _parseIso(map['verifiedAt'] as String?),
+      starred: (map['starred'] as bool?) ?? false,
+      pinned: (map['pinned'] as bool?) ?? false,
       disappearing: (map['disappearing'] as bool?) ?? false,
       disappearAfter: map['disappearAfterSeconds'] != null
           ? Duration(seconds: (map['disappearAfterSeconds'] as num).toInt())
           : null,
+      archived: (map['archived'] as bool?) ?? false,
       hidden: (map['hidden'] as bool?) ?? false,
       blocked: (map['blocked'] as bool?) ?? false,
       blockedAt: _parseIso(map['blockedAt'] as String?),
+      muted: (map['muted'] as bool?) ?? false,
     );
   }
 }
@@ -211,6 +244,254 @@ class ChatMessage {
       };
 }
 
+class ChatContactPrefs {
+  final String peerId;
+  final bool muted;
+  final bool starred;
+  final bool pinned;
+
+  const ChatContactPrefs({
+    required this.peerId,
+    required this.muted,
+    required this.starred,
+    required this.pinned,
+  });
+
+  factory ChatContactPrefs.fromJson(Map<String, Object?> map) {
+    final peerId = (map['peer_id'] ?? '') as String;
+    return ChatContactPrefs(
+      peerId: peerId,
+      muted: (map['muted'] as bool?) ?? false,
+      starred: (map['starred'] as bool?) ?? false,
+      pinned: (map['pinned'] as bool?) ?? false,
+    );
+  }
+}
+
+class ChatGroupPrefs {
+  final String groupId;
+  final bool muted;
+  final bool pinned;
+
+  const ChatGroupPrefs({
+    required this.groupId,
+    required this.muted,
+    required this.pinned,
+  });
+
+  factory ChatGroupPrefs.fromJson(Map<String, Object?> map) {
+    final groupId = (map['group_id'] ?? '') as String;
+    return ChatGroupPrefs(
+      groupId: groupId,
+      muted: (map['muted'] as bool?) ?? false,
+      pinned: (map['pinned'] as bool?) ?? false,
+    );
+  }
+}
+
+class ChatCallLogEntry {
+  final String id;
+  final String peerId;
+  final DateTime ts;
+  final String direction; // 'out' or 'in'
+  final String kind; // 'video' or 'voice'
+  final bool accepted;
+  final Duration duration;
+
+  const ChatCallLogEntry({
+    required this.id,
+    required this.peerId,
+    required this.ts,
+    required this.direction,
+    required this.kind,
+    required this.accepted,
+    required this.duration,
+  });
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'peerId': peerId,
+        'ts': ts.toUtc().toIso8601String(),
+        'direction': direction,
+        'kind': kind,
+        'accepted': accepted,
+        'durationSeconds': duration.inSeconds,
+      };
+
+  static ChatCallLogEntry fromMap(Map<String, Object?> map) => ChatCallLogEntry(
+        id: (map['id'] ?? '') as String,
+        peerId: (map['peerId'] ?? '') as String,
+        ts: _parseIso(map['ts'] as String?) ?? DateTime.now(),
+        direction: (map['direction'] ?? 'out') as String,
+        kind: (map['kind'] ?? 'video') as String,
+        accepted: (map['accepted'] as bool?) ?? false,
+        duration:
+            Duration(seconds: (map['durationSeconds'] as num?)?.toInt() ?? 0),
+      );
+}
+
+class ChatGroup {
+  final String id;
+  final String name;
+  final String creatorId;
+  final DateTime? createdAt;
+  final int memberCount;
+  final int keyVersion;
+  final String? avatarB64;
+  final String? avatarMime;
+
+  const ChatGroup({
+    required this.id,
+    required this.name,
+    required this.creatorId,
+    this.createdAt,
+    this.memberCount = 0,
+    this.keyVersion = 0,
+    this.avatarB64,
+    this.avatarMime,
+  });
+
+  static ChatGroup fromJson(Map<String, Object?> map) => ChatGroup(
+        id: (map['group_id'] ?? map['id'] ?? '') as String,
+        name: (map['name'] ?? '') as String,
+        creatorId: (map['creator_id'] ?? '') as String,
+        createdAt: _parseIso(map['created_at'] as String?),
+        memberCount: (map['member_count'] as num?)?.toInt() ?? 0,
+        keyVersion: (map['key_version'] as num?)?.toInt() ??
+            int.tryParse((map['key_version'] ?? '').toString()) ??
+            0,
+        avatarB64: map['avatar_b64'] as String?,
+        avatarMime: map['avatar_mime'] as String?,
+      );
+}
+
+class ChatGroupMessage {
+  final String id;
+  final String groupId;
+  final String senderId;
+  final String text;
+  final String? kind;
+  final String? nonceB64;
+  final String? boxB64;
+  final String? attachmentB64;
+  final String? attachmentMime;
+  final int? voiceSecs;
+  final double? lat;
+  final double? lon;
+  final String? contactId;
+  final String? contactName;
+  final DateTime? createdAt;
+  final DateTime? expireAt;
+
+  const ChatGroupMessage({
+    required this.id,
+    required this.groupId,
+    required this.senderId,
+    required this.text,
+    this.kind,
+    this.nonceB64,
+    this.boxB64,
+    this.attachmentB64,
+    this.attachmentMime,
+    this.voiceSecs,
+    this.lat,
+    this.lon,
+    this.contactId,
+    this.contactName,
+    this.createdAt,
+    this.expireAt,
+  });
+
+  static ChatGroupMessage fromJson(Map<String, Object?> map) =>
+      ChatGroupMessage(
+        id: (map['id'] ?? '') as String,
+        groupId: (map['group_id'] ?? '') as String,
+        senderId: (map['sender_id'] ?? '') as String,
+        text: (map['text'] ?? '') as String,
+        kind: () {
+          final raw = (map['kind'] ?? '').toString().trim();
+          return raw.isEmpty ? null : raw;
+        }(),
+        nonceB64: map['nonce_b64'] as String?,
+        boxB64: map['box_b64'] as String?,
+        attachmentB64: map['attachment_b64'] as String?,
+        attachmentMime: map['attachment_mime'] as String?,
+        voiceSecs: _parseInt(map['voice_secs']),
+        lat: _parseDouble(map['lat']),
+        lon: _parseDouble(map['lon']),
+        contactId: () {
+          final raw = (map['contact_id'] ?? map['contactId']);
+          final s = (raw ?? '').toString().trim();
+          return s.isEmpty ? null : s;
+        }(),
+        contactName: () {
+          final raw = (map['contact_name'] ?? map['contactName']);
+          final s = (raw ?? '').toString().trim();
+          return s.isEmpty ? null : s;
+        }(),
+        createdAt: _parseIso(map['created_at'] as String?),
+        expireAt: _parseIso(map['expire_at'] as String?),
+      );
+}
+
+class ChatGroupKeyEvent {
+  final String groupId;
+  final int version;
+  final String actorId;
+  final String? keyFp;
+  final DateTime? createdAt;
+
+  const ChatGroupKeyEvent({
+    required this.groupId,
+    required this.version,
+    required this.actorId,
+    this.keyFp,
+    this.createdAt,
+  });
+
+  static ChatGroupKeyEvent fromJson(Map<String, Object?> map) {
+    final rawVersion = map['version'];
+    final version = rawVersion is num
+        ? rawVersion.toInt()
+        : int.tryParse((rawVersion ?? '').toString()) ?? 0;
+    return ChatGroupKeyEvent(
+      groupId: (map['group_id'] ?? '') as String,
+      version: version,
+      actorId: (map['actor_id'] ?? '') as String,
+      keyFp: map['key_fp'] as String?,
+      createdAt: _parseIso(map['created_at'] as String?),
+    );
+  }
+}
+
+class ChatGroupMember {
+  final String deviceId;
+  final String role;
+  final DateTime? joinedAt;
+
+  const ChatGroupMember({
+    required this.deviceId,
+    required this.role,
+    this.joinedAt,
+  });
+
+  static ChatGroupMember fromJson(Map<String, Object?> map) => ChatGroupMember(
+        deviceId: (map['device_id'] ?? '') as String,
+        role: (map['role'] ?? 'member') as String,
+        joinedAt: _parseIso(map['joined_at'] as String?),
+      );
+}
+
+class ChatGroupInboxUpdate {
+  final String groupId;
+  final List<ChatGroupMessage> messages;
+
+  const ChatGroupInboxUpdate({
+    required this.groupId,
+    required this.messages,
+  });
+}
+
 DateTime? _parseIso(String? v) {
   if (v == null || v.isEmpty) return null;
   try {
@@ -242,4 +523,10 @@ int? _parseInt(Object? v) {
   if (v == null) return null;
   if (v is int) return v;
   return int.tryParse(v.toString());
+}
+
+double? _parseDouble(Object? v) {
+  if (v == null) return null;
+  if (v is num) return v.toDouble();
+  return double.tryParse(v.toString());
 }

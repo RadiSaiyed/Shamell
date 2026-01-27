@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'design_tokens.dart';
+
 enum StatusKind { info, success, warning, error }
 
 class StatusBanner extends StatelessWidget {
@@ -36,7 +38,7 @@ class StatusBanner extends StatelessWidget {
     IconData icon;
     switch (kind) {
       case StatusKind.success:
-        stripe = Colors.green;
+        stripe = Tokens.colorPayments;
         icon = Icons.check_circle_outline;
         break;
       case StatusKind.warning:
@@ -88,4 +90,3 @@ class StatusBanner extends StatelessWidget {
     );
   }
 }
-

@@ -41,6 +41,10 @@
 		</array>
 		<key>NSCameraUsageDescription</key>
 		<string>Camera is used to scan payment QR codes.</string>
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>Photo library access is used to pick images for Moments.</string>
+		<key>NSPhotoLibraryAddUsageDescription</key>
+		<string>Photo library access is used to save Moments images to your gallery.</string>
 		<key>NSLocationWhenInUseUsageDescription</key>
 		<string>Location is used to share your position with riders and dispatch.</string>
 		<key>UIStatusBarHidden</key>

@@ -57,7 +57,8 @@ class RatchetState {
         sendCount: (map['ns'] as num).toInt(),
         recvCount: (map['nr'] as num).toInt(),
         pn: (map['pn'] as num).toInt(),
-        skipped: (map['skipped'] as Map).map((k, v) => MapEntry(k.toString(), v.toString())),
+        skipped: (map['skipped'] as Map)
+            .map((k, v) => MapEntry(k.toString(), v.toString())),
         peerIdentity: map['peer'] as String,
         dhPriv: base64Decode(map['dh_priv'] as String),
         dhPub: base64Decode(map['dh_pub'] as String),

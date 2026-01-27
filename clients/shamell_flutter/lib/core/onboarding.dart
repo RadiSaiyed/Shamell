@@ -19,7 +19,9 @@ class OnboardingPage extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           children: [
             FormSection(
-              title: l.isArabic ? 'الخطوات الأساسية' : '1. Getting started & sign‑in',
+              title: l.isArabic
+                  ? 'الخطوات الأساسية'
+                  : '1. Getting started & sign‑in',
               children: [
                 Text(
                   l.isArabic

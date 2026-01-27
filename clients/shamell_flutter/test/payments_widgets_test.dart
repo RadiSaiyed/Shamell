@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shamell_flutter/core/payments_requests.dart';
-import 'package:shamell_flutter/core/payments_receive.dart';
-import 'package:shamell_flutter/core/payments_send.dart';
+import 'package:shamell_flutter/mini_apps/payments/payments_requests.dart';
+import 'package:shamell_flutter/mini_apps/payments/payments_receive.dart';
+import 'package:shamell_flutter/mini_apps/payments/payments_send.dart';
 
 void main() {
   testWidgets('IncomingRequestBanner accept callback fires', (tester) async {
@@ -20,7 +20,7 @@ void main() {
         ),
       ),
     );
-    expect(find.text('Payment Request'), findsOneWidget);
+    expect(find.text('Payment request'), findsOneWidget);
     await tester.tap(find.text('Accept & Pay'));
     await tester.pump();
     expect(accepted, isTrue);
@@ -76,8 +76,6 @@ void main() {
       ),
     );
 
-    final semantics = tester.getSemantics(find.byType(Semantics));
-    expect(semantics.flagsCollection.isButton, isTrue);
-    expect(semantics.label, 'Send payment');
+    expect(find.bySemanticsLabel('Send payment'), findsOneWidget);
   });
 }

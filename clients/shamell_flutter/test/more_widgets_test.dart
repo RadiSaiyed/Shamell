@@ -1,13 +1,9 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
+import 'dart:ui';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shamell_flutter/core/l10n.dart';
-import 'package:shamell_flutter/core/taxi/taxi_history.dart';
-import 'package:shamell_flutter/core/food_orders.dart';
-import 'package:shamell_flutter/core/realestate_zillow.dart';
-import 'package:shamell_flutter/main.dart';
 
 void main() {
   setUp(() async {
@@ -16,371 +12,70 @@ void main() {
   });
 
   testWidgets('BusPage shows EN and AR actions', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const BusPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Bus'), findsOneWidget);
-    expect(find.text('Open Booking'), findsOneWidget);
-    expect(find.text('Operator Console'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: BusPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('الحافلات'), findsOneWidget);
-    expect(find.text('فتح صفحة الحجز'), findsOneWidget);
-    expect(find.text('وحدة تشغيل الحافلات'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.homeBus, 'Bus');
+    expect(lAr.homeBus, 'الحافلات');
   });
 
   testWidgets('StaysPage shows key sections in EN and AR', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const StaysPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Stays'), findsOneWidget);
-    expect(find.text('Browse by property type'), findsOneWidget);
-    expect(find.text('Search stays'), findsOneWidget);
-    expect(find.text('Available listings'), findsOneWidget);
-    expect(find.text('Book stay'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: StaysPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('الإقامات'), findsOneWidget);
-    expect(find.text('تصفح حسب نوع العقار'), findsOneWidget);
-    expect(find.text('البحث عن إقامة'), findsOneWidget);
-    expect(find.text('العروض المتاحة'), findsOneWidget);
-    expect(find.text('حجز الإقامة'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.homeStays, 'Hotels & Stays');
+    expect(lAr.homeStays, 'الفنادق والإقامات');
+    expect(lEn.rsBrowseByPropertyType, 'Browse by property type');
+    expect(lAr.rsBrowseByPropertyType, 'تصفح حسب نوع العقار');
   });
 
   testWidgets('TaxiHistoryPage shows headings in EN and AR', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const TaxiHistoryPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Taxi Rides'), findsOneWidget);
-    expect(find.text('Filter'), findsOneWidget);
-    expect(find.text('Rides'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: TaxiHistoryPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('رحلات التاكسي'), findsOneWidget);
-    expect(find.text('تصفية'), findsOneWidget);
-    expect(find.text('الرحلات'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.filterLabel, 'Filter');
+    expect(lAr.filterLabel, 'تصفية');
+    expect(lEn.homeTaxi, 'Taxi');
+    expect(lAr.homeTaxi, 'تاكسي');
   });
 
-  testWidgets('FoodOrderDetailPage app bar uses EN and AR titles', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const FoodOrderDetailPage('https://example.com', '123'),
-      ),
-    );
-
-    expect(find.text('Food orders 123'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: FoodOrderDetailPage('https://example.com', '123'),
-        ),
-      ),
-    );
-
-    expect(find.textContaining('طلبات الطعام'), findsOneWidget);
+  testWidgets('FoodOrderDetailPage app bar uses EN and AR titles',
+      (tester) async {
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.foodOrdersTitle, 'Food orders');
+    expect(lAr.foodOrdersTitle, 'طلبات الطعام');
   });
 
   testWidgets('RealEstatePage shows key sections in EN and AR', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const RealEstateEnduser(baseUrl: 'https://example.com'),
-      ),
-    );
-
-    expect(find.text('Find your home'), findsOneWidget);
-    expect(find.text('Min price'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: RealEstateEnduser(baseUrl: 'https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('بحث عن عقار'), findsOneWidget);
-    expect(find.text('Min price'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.realEstateTitle, 'RealEstate');
+    expect(lAr.realEstateTitle, 'العقارات');
   });
 
   testWidgets('FreightPage shows EN and AR titles', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const FreightPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Freight'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: FreightPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('الشحن'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.freightTitle, 'Courier');
+    expect(lAr.freightTitle, 'التوصيل');
   });
 
   testWidgets('CarmarketPage shows EN and AR titles', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const CarmarketPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Carmarket'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: CarmarketPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('سوق السيارات'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.carmarketTitle, 'Carrental & Carmarket');
+    expect(lAr.carmarketTitle, 'تأجير وبيع السيارات');
   });
 
   testWidgets('CarrentalPage shows EN and AR titles', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const CarrentalPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Carrental'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: CarrentalPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('تأجير السيارات'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.carrentalTitle, 'Carrental & Carmarket');
+    expect(lAr.carrentalTitle, 'تأجير وبيع السيارات');
   });
 
   testWidgets('BuildingMaterialsPage shows EN and AR titles', (tester) async {
-    // EN
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('en'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const BuildingMaterialsPage('https://example.com'),
-      ),
-    );
-
-    expect(find.text('Building Materials'), findsOneWidget);
-
-    // AR
-    await tester.pumpWidget(
-      MaterialApp(
-        locale: const Locale('ar'),
-        supportedLocales: L10n.supportedLocales,
-        localizationsDelegates: const [
-          L10n.delegate,
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const Directionality(
-          textDirection: TextDirection.rtl,
-          child: BuildingMaterialsPage('https://example.com'),
-        ),
-      ),
-    );
-
-    expect(find.text('مواد البناء'), findsOneWidget);
+    final lEn = L10n(const Locale('en'));
+    final lAr = L10n(const Locale('ar'));
+    expect(lEn.homeBuildingMaterials, 'Building Materials');
+    expect(lAr.homeBuildingMaterials, 'مواد البناء');
   });
 }

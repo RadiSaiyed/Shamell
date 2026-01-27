@@ -341,6 +341,35 @@ def monolith_startup():
         except Exception:
             continue
 
+    # BFF-side storage (Officials / Friends / Nearby presence, etc.):
+    # ensure that the lightweight social/official tables exist when running
+    # the monolith, even if the BFF app's own startup hooks are not executed.
+    try:
+        from apps.bff.app import main as bff_main  # type: ignore[import]
+        try:
+            # Official accounts + feeds + template messages (WeChat-like service accounts).
+            if hasattr(bff_main, "_officials_startup"):
+                bff_main._officials_startup()  # type: ignore[attr-defined]
+        except Exception:
+            # Best-effort: failures here should not block the monolith; affected
+            # endpoints (e.g. official feed, template messages) will surface errors.
+            pass
+        try:
+            # Friends graph for Moments / chat (phone-based contacts).
+            if hasattr(bff_main, "_friends_startup"):
+                bff_main._friends_startup()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            # People Nearby presence profile/location table.
+            if hasattr(bff_main, "_nearby_startup"):
+                bff_main._nearby_startup()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    except Exception:
+        # BFF module not importable; ignore in monolith startup.
+        pass
+
 # Register startup hook without deprecated decorator
 root_app.router.on_startup.append(monolith_startup)
 # Also run once at import time to ensure schemas exist in test/dev contexts

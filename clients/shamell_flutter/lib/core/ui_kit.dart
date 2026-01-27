@@ -112,6 +112,7 @@ class DomainPageScaffold extends StatelessWidget {
   final String title;
   final Widget child;
   final bool scrollable;
+  final List<Widget>? actions;
 
   const DomainPageScaffold({
     super.key,
@@ -119,36 +120,41 @@ class DomainPageScaffold extends StatelessWidget {
     required this.title,
     required this.child,
     this.scrollable = true,
+    this.actions,
   });
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scaffoldBg = theme.scaffoldBackgroundColor;
     final inner = scrollable
         ? SingleChildScrollView(
             child: child,
           )
         : child;
+
+    final content = SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: inner,
+      ),
+    );
+
+    final body = Stack(
+      children: [
+        Positioned.fill(child: background),
+        Positioned.fill(child: content),
+      ],
+    );
+
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
-        backgroundColor: Colors.transparent,
+        backgroundColor: theme.appBarTheme.backgroundColor ?? scaffoldBg,
+        actions: actions,
       ),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        children: [
-          background,
-          Positioned.fill(
-            child: SafeArea(
-              child: GlassPanel(
-                padding: const EdgeInsets.all(12),
-                radius: 12,
-                child: inner,
-              ),
-            ),
-          ),
-        ],
-      ),
+      backgroundColor: scaffoldBg,
+      body: body,
     );
   }
 }

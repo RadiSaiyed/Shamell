@@ -14,7 +14,8 @@ class GotifyClient {
   static bool get isEnabled =>
       kGotifyBaseUrl.isNotEmpty &&
       kGotifyClientToken.isNotEmpty &&
-      (kPushProvider.toLowerCase() == 'gotify' || kPushProvider.toLowerCase() == 'both');
+      (kPushProvider.toLowerCase() == 'gotify' ||
+          kPushProvider.toLowerCase() == 'both');
 
   static Future<void> start() async {
     if (!isEnabled || _connecting || _channel != null) return;
@@ -83,7 +84,34 @@ class GotifyClient {
         final message = (j['message'] ?? '').toString();
         final priority = j['priority'];
         debugPrint('Gotify message: $title / $message (prio=$priority)');
-        await NotificationService.showSimple(title: title.isEmpty ? 'Notification' : title, body: message);
+        String? deepLink;
+        try {
+          final extras = j['extras'];
+          if (extras is Map && extras['custom'] is Map) {
+            final custom = (extras['custom'] as Map).cast<String, dynamic>();
+            final type = (custom['type'] ?? '').toString();
+            if (type.startsWith('moments_')) {
+              final postId = (custom['post_id'] ?? '').toString();
+              if (postId.isNotEmpty) {
+                final commentId =
+                    (custom['comment_id'] ?? '').toString().trim();
+                final buf = StringBuffer()
+                  ..write('shamell://moments?post_id=$postId&focus=comments');
+                if (commentId.isNotEmpty) {
+                  buf.write('&comment_id=$commentId');
+                }
+                deepLink = buf.toString();
+              } else {
+                deepLink = 'shamell://moments';
+              }
+            }
+          }
+        } catch (_) {}
+        await NotificationService.showSimple(
+          title: title.isEmpty ? 'Notification' : title,
+          body: message,
+          deepLink: deepLink,
+        );
       }
     } catch (e) {
       debugPrint('Gotify message parse error: $e');

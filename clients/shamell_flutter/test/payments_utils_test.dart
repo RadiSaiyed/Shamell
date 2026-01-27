@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shamell_flutter/core/payments_utils.dart';
+import 'package:shamell_flutter/mini_apps/payments/payments_utils.dart';
 
 void main() {
   group('parseCents', () {
@@ -19,20 +19,19 @@ void main() {
     });
   });
 
-  group('buildTransferTarget', (){
-    test('alias', (){
+  group('buildTransferTarget', () {
+    test('alias', () {
       final m = buildTransferTarget('@alice');
       expect(m.containsKey('to_alias'), true);
       expect(m['to_alias'], '@alice');
     });
-    test('resolved phone to wallet id', (){
+    test('resolved phone to wallet id', () {
       final m = buildTransferTarget('+963999', resolvedWalletId: 'w123');
       expect(m['to_wallet_id'], 'w123');
     });
-    test('plain wallet id passthrough', (){
+    test('plain wallet id passthrough', () {
       final m = buildTransferTarget('w555');
       expect(m['to_wallet_id'], 'w555');
     });
   });
 }
-
