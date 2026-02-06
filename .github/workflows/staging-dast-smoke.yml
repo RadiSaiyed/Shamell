@@ -37,7 +37,7 @@ jobs:
           bash .github/scripts/staging_dast_smoke.sh
 
   alert-on-failure:
-    if: needs.staging-dast-smoke.result == 'failure'
+    if: always() && needs.staging-dast-smoke.result == 'failure'
     needs: [staging-dast-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
