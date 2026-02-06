@@ -24,5 +24,7 @@ semgrep --config .semgrep/rules/authz-idor.yml --error .
 ## Trusted Review Bot
 
 - Workflow: `.github/workflows/trusted-review-bot.yml`
-- Purpose: keeps branch protection at `required_approving_review_count=1` by adding `github-actions[bot]` approval for trusted in-repo PRs.
+- Purpose: keeps branch protection at `required_approving_review_count=1` by either:
+  - adding approval via `TRUSTED_REVIEW_BOT_TOKEN` (second account token), or
+  - auto-requesting review from `TRUSTED_REVIEWER_LOGIN`.
 - Toggle: repository variable `TRUSTED_REVIEW_BOT_ENABLED` (`true`/`false`, default `true`).

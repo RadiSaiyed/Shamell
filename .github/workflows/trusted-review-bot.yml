@@ -18,21 +18,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Approve pull request as trusted bot reviewer
+      - name: Auto-approve or request trusted reviewer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRUSTED_REVIEW_BOT_TOKEN: ${{ secrets.TRUSTED_REVIEW_BOT_TOKEN }}
+          TRUSTED_REVIEWER_LOGIN: ${{ vars.TRUSTED_REVIEWER_LOGIN || '' }}
         run: |
           pr_number="${{ github.event.pull_request.number }}"
 
-          approved_count=$(gh api "repos/${{ github.repository }}/pulls/${pr_number}/reviews" \
-            --jq '[.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED")] | length')
+          if [ -n "$TRUSTED_REVIEW_BOT_TOKEN" ]; then
+            GH_TOKEN="$TRUSTED_REVIEW_BOT_TOKEN"
+            export GH_TOKEN
+            bot_login=$(gh api user --jq '.login')
 
-          if [ "$approved_count" -gt 0 ]; then
-            echo "PR #${pr_number} already has github-actions[bot] approval."
+            approved_count=$(gh api "repos/${{ github.repository }}/pulls/${pr_number}/reviews" \
+              --jq '[.[] | select(.user.login == "'"${bot_login}"'" and .state == "APPROVED")] | length')
+
+            if [ "$approved_count" -gt 0 ]; then
+              echo "PR #${pr_number} already has ${bot_login} approval."
+              exit 0
+            fi
+
+            gh api "repos/${{ github.repository }}/pulls/${pr_number}/reviews" \
+              -f event=APPROVE \
+              -f body="Automated trusted reviewer approval by ${bot_login}."
+            echo "Approved PR #${pr_number} as ${bot_login}."
             exit 0
           fi
 
-          gh api "repos/${{ github.repository }}/pulls/${pr_number}/reviews" \
-            -f event=APPROVE \
-            -f body='Automated trusted reviewer approval by github-actions[bot].'
-          echo "Approved PR #${pr_number}."
+          if [ -n "$TRUSTED_REVIEWER_LOGIN" ]; then
+            gh api "repos/${{ github.repository }}/pulls/${pr_number}/requested_reviewers" \
+              -f reviewers[]="$TRUSTED_REVIEWER_LOGIN" >/dev/null
+            echo "Requested review from ${TRUSTED_REVIEWER_LOGIN} on PR #${pr_number}."
+            exit 0
+          fi
+
+          echo "No TRUSTED_REVIEW_BOT_TOKEN or TRUSTED_REVIEWER_LOGIN configured; skipping."
