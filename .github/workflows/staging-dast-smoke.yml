@@ -30,6 +30,8 @@ jobs:
           STAGING_CHAT_BASE_URL: ${{ secrets.STAGING_CHAT_BASE_URL }}
           DAST_MAX_FAILED_CHECKS: ${{ vars.DAST_MAX_FAILED_CHECKS || '0' }}
           DAST_MAX_RESPONSE_MS: ${{ vars.DAST_MAX_RESPONSE_MS || '2500' }}
+          DAST_PAYMENTS_ADMIN_PATH: ${{ vars.DAST_PAYMENTS_ADMIN_PATH || '' }}
+          DAST_PAYMENTS_WEBHOOK_PATH: ${{ vars.DAST_PAYMENTS_WEBHOOK_PATH || '' }}
           DAST_USER_AGENT: "shamell-staging-dast-smoke/1.0"
         run: |
           bash .github/scripts/staging_dast_smoke.sh
