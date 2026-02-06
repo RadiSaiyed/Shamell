@@ -1,0 +1,30 @@
+name: Staging DAST Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-dast-smoke
+  cancel-in-progress: false
+
+jobs:
+  staging-dast-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run safe staging smoke checks
+        env:
+          STAGING_BFF_BASE_URL: ${{ secrets.STAGING_BFF_BASE_URL }}
+          STAGING_PAYMENTS_BASE_URL: ${{ secrets.STAGING_PAYMENTS_BASE_URL }}
+          STAGING_CHAT_BASE_URL: ${{ secrets.STAGING_CHAT_BASE_URL }}
+          DAST_USER_AGENT: "shamell-staging-dast-smoke/1.0"
+        run: |
+          bash .github/scripts/staging_dast_smoke.sh
