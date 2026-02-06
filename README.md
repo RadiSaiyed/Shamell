@@ -28,3 +28,5 @@ semgrep --config .semgrep/rules/authz-idor.yml --error .
   - adding approval via `TRUSTED_REVIEW_BOT_TOKEN` (second account token), or
   - auto-requesting review from `TRUSTED_REVIEWER_LOGIN`.
 - Toggle: repository variable `TRUSTED_REVIEW_BOT_ENABLED` (`true`/`false`, default `true`).
+
+<!-- review-bot-smoke-2 -->
