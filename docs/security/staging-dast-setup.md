@@ -23,6 +23,11 @@ gh secret set STAGING_PAYMENTS_BASE_URL --repo RadiSaiyed/Shamell --body "https:
 gh secret set STAGING_CHAT_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-chat.example.com"
 ```
 
+Single-host/monolith staging is supported too (all three secrets can point to the same API host).
+In that mode, the smoke script automatically uses:
+- payments admin check path: `/payments/admin/debug/tables`
+- payments webhook path: `/payments/webhooks/psp`
+
 ## 2) Alerting Threshold Variables
 
 Set repository variables:
@@ -30,6 +35,8 @@ Set repository variables:
 - `DAST_MAX_FAILED_CHECKS` (default: `0`)
 - `DAST_MAX_RESPONSE_MS` (default: `2500`)
 - `DAST_ALERT_CONSECUTIVE_FAILURES` (default: `2`)
+- `DAST_PAYMENTS_ADMIN_PATH` (optional override path)
+- `DAST_PAYMENTS_WEBHOOK_PATH` (optional override path)
 - `TRUSTED_REVIEW_BOT_ENABLED` (default: `true`)
 - `TRUSTED_REVIEWER_LOGIN` (optional; fallback reviewer username when bot token is not set)
 
