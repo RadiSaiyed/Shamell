@@ -1,28 +1,249 @@
-version: "3.9"
+x-core-build: &core_build
+  context: ../..
+  dockerfile: platform/shamell-app/Dockerfile
 
 services:
-  backend:
-    container_name: shamell-backend
-    build:
-      context: .
-      dockerfile: apps/monolith/Dockerfile
-    image: shamell-monolith
+  bootstrap-perms:
+    image: alpine:3.19
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    read_only: true
+    tmpfs:
+      - /tmp
+    network_mode: none
+    command:
+      - /bin/sh
+      - -ceu
+      - |
+        uid=10001
+        gid=10001
+        for d in /vol/core_db /vol/chat_db /vol/payments_db /vol/chat_media /vol/moments_media; do
+          [ -d "$$d" ] || continue
+          owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
+          if [ "$$owner" = "$$uid:$$gid" ]; then
+            continue
+          fi
+          echo "Fixing ownership: $$d -> $${uid}:$${gid} (was $${owner:-unknown})" >&2
+          chown -R "$${uid}:$${gid}" "$$d"
+        done
+    volumes:
+      - core_db:/vol/core_db
+      - chat_db:/vol/chat_db
+      - payments_db:/vol/payments_db
+      - chat_media:/vol/chat_media
+      - moments_media:/vol/moments_media
+
+  bff:
+    build: *core_build
+    image: shamell-core
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
-      MONOLITH_MODE: "1"
+      BFF_PROFILE: "core"
       ENV: "dev"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      CORE_DB_URL: "sqlite+pysqlite:////data/core.db"
+      CHAT_BASE_URL: "http://chat:8081"
+      PAYMENTS_BASE_URL: "http://payments:8082"
+      CHAT_MEDIA_DIR: "/data/chat_media"
+      CHAT_MEDIA_MAX_BYTES: "52428800"
+      CHAT_MEDIA_TOKEN_SECRET: "${CHAT_MEDIA_TOKEN_SECRET:?set CHAT_MEDIA_TOKEN_SECRET in platform/shamell-app/.env}"
+      MOMENTS_MEDIA_DIR: "/data/moments_media"
+      MOMENTS_MEDIA_MAX_BYTES: "52428800"
+      MOMENTS_MEDIA_TOKEN_SECRET: "${MOMENTS_MEDIA_TOKEN_SECRET:?set MOMENTS_MEDIA_TOKEN_SECRET in platform/shamell-app/.env}"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in platform/shamell-app/.env}"
+      INTERNAL_API_SECRETS: "${INTERNAL_API_SECRETS:-}"
+      BFF_INTERNAL_SECRETS: "${BFF_INTERNAL_SECRETS:-}"
+      LIVEKIT_URL: "${LIVEKIT_URL:-ws://localhost:7880}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in platform/shamell-app/.env}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in platform/shamell-app/.env}"
+      # iOS VoIP pushes (PushKit + CallKit background incoming calls)
+      # Use CALL_APNS_P8_B64 in containers (avoid host file mounts).
+      CALL_APNS_KEY_ID: "${CALL_APNS_KEY_ID:-}"
+      CALL_APNS_TEAM_ID: "${CALL_APNS_TEAM_ID:-}"
+      CALL_APNS_BUNDLE_ID: "${CALL_APNS_BUNDLE_ID:-com.syriasuperapp.superapp}"
+      CALL_APNS_VOIP_TOPIC: "${CALL_APNS_VOIP_TOPIC:-}"
+      CALL_APNS_P8_B64: "${CALL_APNS_P8_B64:-}"
+      CALL_APNS_P8_PATH: "${CALL_APNS_P8_PATH:-}"
+      CALL_APNS_USE_SANDBOX: "${CALL_APNS_USE_SANDBOX:-true}"
+      # Android background call notifications (FCM)
+      CALL_FCM_SERVER_KEY: "${CALL_FCM_SERVER_KEY:-}"
+    volumes:
+      - core_db:/data
+      - chat_media:/data/chat_media
+      - moments_media:/data/moments_media
     ports:
-      - "8080:8080"
-    restart: unless-stopped
-
-  frontend:
-    container_name: shamell-frontend
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-    image: shamell-frontend-monolith
+      - "${DEV_PUBLISH_ADDR:-127.0.0.1}:8080:8080"
+    command: ["uvicorn", "shamell_bff.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
-      - backend
-    ports:
-      - "8081:8080"
+      bootstrap-perms:
+        condition: service_completed_successfully
+      chat:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
     restart: unless-stopped
 
+  chat:
+    build: *core_build
+    image: shamell-core
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+    environment:
+      ENV: "dev"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      DB_URL: "sqlite+pysqlite:////data/chat.db"
+      CHAT_MEDIA_DIR: "/data/chat_media"
+      CHAT_MEDIA_MAX_BYTES: "52428800"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in platform/shamell-app/.env}"
+      INTERNAL_API_SECRETS: "${INTERNAL_API_SECRETS:-}"
+      CHAT_INTERNAL_SECRETS: "${CHAT_INTERNAL_SECRETS:-}"
+      # Optional: harden strict sealed-sender in dev
+      CHAT_REQUIRE_SESSION_ID_FOR_SEALED: "${CHAT_REQUIRE_SESSION_ID_FOR_SEALED:-false}"
+      CHAT_ENFORCE_STRICT_GROUP_SEALED_SENDER: "${CHAT_ENFORCE_STRICT_GROUP_SEALED_SENDER:-false}"
+    volumes:
+      - chat_db:/data
+      - chat_media:/data/chat_media
+    ports:
+      - "127.0.0.1:8081:8081"
+    command: ["uvicorn", "shamell_chat.app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  payments:
+    build: *core_build
+    image: shamell-core
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+    environment:
+      ENV: "dev"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      PAYMENTS_DB_URL: "sqlite+pysqlite:////data/payments.db"
+      AUTO_CREATE_SCHEMA: "true"
+      MERCHANT_CLEARING_PHONE: "${MERCHANT_CLEARING_PHONE:-}"
+      CASH_OUT_OTP_PEPPER: "${CASH_OUT_OTP_PEPPER:?set CASH_OUT_OTP_PEPPER in platform/shamell-app/.env}"
+      CASH_SECRET_PEPPER: "${CASH_SECRET_PEPPER:?set CASH_SECRET_PEPPER in platform/shamell-app/.env}"
+      QR_SIGNING_SECRET: "${QR_SIGNING_SECRET:?set QR_SIGNING_SECRET in platform/shamell-app/.env}"
+      SONIC_SECRET: "${SONIC_SECRET:?set SONIC_SECRET in platform/shamell-app/.env}"
+      TOPUP_SECRET: "${TOPUP_SECRET:?set TOPUP_SECRET in platform/shamell-app/.env}"
+      QR_REQUIRE_SIG: "true"
+      PAYCODE_REQUIRE_SIG: "true"
+      PAYCODE_OFFLINE_GRACE_SECS: "300"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in platform/shamell-app/.env}"
+      INTERNAL_API_SECRETS: "${INTERNAL_API_SECRETS:-}"
+      PAYMENTS_INTERNAL_SECRETS: "${PAYMENTS_INTERNAL_SECRETS:-}"
+    volumes:
+      - payments_db:/data
+    ports:
+      - "127.0.0.1:8082:8082"
+    command: ["uvicorn", "shamell_payments.app.main:app", "--host", "0.0.0.0", "--port", "8082"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8082/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:v1.5.2
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in platform/shamell-app/.env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in platform/shamell-app/.env}${LIVEKIT_KEYS_EXTRA:-}}"
+    volumes:
+      - ./ops/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "${DEV_PUBLISH_ADDR:-127.0.0.1}:7880:7880"
+      - "${DEV_PUBLISH_ADDR:-127.0.0.1}:7881:7881"
+      - "${DEV_PUBLISH_ADDR:-127.0.0.1}:7882:7882/udp"
+    restart: unless-stopped
+
+  settlement_worker:
+    image: shamell-core
+    init: true
+    depends_on:
+      bff:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      SETTLEMENT_BASE_URL: "http://bff:8080"
+      SETTLEMENT_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in platform/shamell-app/.env}"
+      SETTLEMENT_INTERVAL_SECS: "3600"
+      SETTLEMENT_AUTO_APPLY: "true"
+      SETTLEMENT_ALERT_WEBHOOK: ""
+      SETTLEMENT_ALERT_MIN_PENDING_CENTS: "1"
+    command: ["python", "-m", "shamell_payments.app.settlement_worker"]
+    restart: unless-stopped
+
+volumes:
+  core_db:
+  chat_db:
+  payments_db:
+  chat_media:
+  moments_media:
