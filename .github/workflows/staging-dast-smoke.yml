@@ -119,10 +119,14 @@ jobs:
           fi
 
       - name: Optional webhook notification
-        if: steps.threshold.outputs.should_alert == 'true' && secrets.SECURITY_ALERT_WEBHOOK_URL != ''
+        if: steps.threshold.outputs.should_alert == 'true'
         env:
           SECURITY_ALERT_WEBHOOK_URL: ${{ secrets.SECURITY_ALERT_WEBHOOK_URL }}
         run: |
+          if [ -z "${SECURITY_ALERT_WEBHOOK_URL:-}" ]; then
+            echo "SECURITY_ALERT_WEBHOOK_URL not configured; skipping webhook notification."
+            exit 0
+          fi
           payload=$(cat <<'EOF'
           {
             "text": "Shamell security alert: staging DAST smoke failed (run ${{ github.run_id }}, consecutive failures ${{ steps.threshold.outputs.consecutive_failures }})."
