@@ -2,6 +2,10 @@
 
 Security project bootstrap (2026-02-06).
 
+## Security Runbook
+
+- Incident response playbook: `docs/security/incident-runbook.md`
+
 ## Semgrep AuthZ/IDOR Rules
 
 Custom regression rules live in `.semgrep/rules/authz-idor.yml` and target:
