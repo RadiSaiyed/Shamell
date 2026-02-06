@@ -13,6 +13,7 @@ Set these repository secrets (or environment `staging` secrets):
 - `STAGING_PAYMENTS_BASE_URL`
 - `STAGING_CHAT_BASE_URL`
 - `SECURITY_ALERT_WEBHOOK_URL` (optional; Slack/Teams webhook)
+- `TRUSTED_REVIEW_BOT_TOKEN` (optional; token from a dedicated second GitHub reviewer account)
 
 Example:
 
@@ -30,6 +31,7 @@ Set repository variables:
 - `DAST_MAX_RESPONSE_MS` (default: `2500`)
 - `DAST_ALERT_CONSECUTIVE_FAILURES` (default: `2`)
 - `TRUSTED_REVIEW_BOT_ENABLED` (default: `true`)
+- `TRUSTED_REVIEWER_LOGIN` (optional; fallback reviewer username when bot token is not set)
 
 Example:
 
@@ -38,6 +40,7 @@ gh variable set DAST_MAX_FAILED_CHECKS --repo RadiSaiyed/Shamell --body "0"
 gh variable set DAST_MAX_RESPONSE_MS --repo RadiSaiyed/Shamell --body "2500"
 gh variable set DAST_ALERT_CONSECUTIVE_FAILURES --repo RadiSaiyed/Shamell --body "2"
 gh variable set TRUSTED_REVIEW_BOT_ENABLED --repo RadiSaiyed/Shamell --body "true"
+gh variable set TRUSTED_REVIEWER_LOGIN --repo RadiSaiyed/Shamell --body "your-second-reviewer-username"
 ```
 
 ## 3) Failure Handling
@@ -61,4 +64,3 @@ Recommended labels:
    - check output includes `Staging DAST Summary`,
    - failures create/update a labeled incident issue after threshold,
    - webhook notification fires when configured.
-
