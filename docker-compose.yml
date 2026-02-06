@@ -39,6 +39,7 @@ services:
       - chat_media:/vol/chat_media
       - moments_media:/vol/moments_media
 
+  # bff owns the shared build for shamell-core; other app services reuse the same image tag.
   bff:
     build: *core_build
     image: shamell-core
@@ -107,7 +108,6 @@ services:
     restart: unless-stopped
 
   chat:
-    build: *core_build
     image: shamell-core
     init: true
     security_opt:
@@ -149,7 +149,6 @@ services:
     restart: unless-stopped
 
   payments:
-    build: *core_build
     image: shamell-core
     init: true
     security_opt:

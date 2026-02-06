@@ -1,6 +1,8 @@
 .DS_Store
 **/.DS_Store
 .env
+.env.*
+!.env.example
 .venv*
 .venv*/
 venv/
@@ -8,6 +10,11 @@ venv/
 __pycache__/
 **/__pycache__/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.Rhistory
+
+# Workspace root .gitignore mirrors common patterns used here.
 
 # Local run logs
 ops/dev/logs/
@@ -22,6 +29,8 @@ clients/**/android/.gradle/
 
 # Local archives / exports
 shamell-pi.tar.gz
+backups/
+ops/reports/
 
 # IDE/editor
 **/.idea/

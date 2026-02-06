@@ -20,6 +20,8 @@ Useful commands:
 - `./scripts/ops.sh dev down`
 - `./scripts/ops.sh devmono health`
 
+`dev` builds the shared `shamell-core` image once and reuses it across BFF, chat, and payments.
+
 ## Local dev dependencies
 From `platform/shamell-app`:
 ```

@@ -122,14 +122,6 @@ compose() {
   fi
 }
 
-volume_ops_service() {
-  if [[ "$ENV_NAME" == "dev" ]]; then
-    printf "bff"
-    return 0
-  fi
-  printf "monolith"
-}
-
 read_env() {
   local key="$1"
   local line=""
@@ -467,15 +459,21 @@ bootstrap_media_perms() {
     echo "bootstrap-media-perms is only available for dev/devmono/prod/pi env." >&2
     exit 1
   fi
-  local svc
-  svc="$(volume_ops_service)"
+
+  if [[ "$ENV_NAME" == "dev" ]]; then
+    echo "Ensuring dev service volumes have safe ownership ..."
+    compose run --rm --no-deps bootstrap-perms
+    return 0
+  fi
+
+  local svc="monolith"
   local uid gid
   uid="${MONOLITH_UID:-$(read_env MONOLITH_UID)}"
   gid="${MONOLITH_GID:-$(read_env MONOLITH_GID)}"
   uid="${uid:-10001}"
   gid="${gid:-10001}"
   local targets=("/data/chat_media" "/data/moments_media")
-  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "devmono" ]]; then
+  if [[ "$ENV_NAME" == "devmono" ]]; then
     targets=("/data" "/data/chat_media" "/data/moments_media")
   fi
   echo "Ensuring media volumes are owned by ${uid}:${gid} ..."
