@@ -150,6 +150,7 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
   - secret scanning findings
   - admin auth anomalies
   - webhook signature failures and replay detections
+  - staging DAST smoke failures crossing `DAST_ALERT_CONSECUTIVE_FAILURES`
 - Dashboards should include:
   - auth failures by endpoint/role
   - token issuance and revocation rates
@@ -162,4 +163,3 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
 3. Permanent fixes tracked as issues with owners and due dates.
 4. Runbook and detection rules updated from lessons learned.
 5. Stakeholder/compliance notifications completed if required.
-

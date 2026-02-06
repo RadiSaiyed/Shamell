@@ -1,0 +1,38 @@
+name: Trusted Review Bot
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  auto-approve-trusted-pr:
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) &&
+      (vars.TRUSTED_REVIEW_BOT_ENABLED == '' || vars.TRUSTED_REVIEW_BOT_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Approve pull request as trusted bot reviewer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_number="${{ github.event.pull_request.number }}"
+
+          approved_count=$(gh api "repos/${{ github.repository }}/pulls/${pr_number}/reviews" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED")] | length')
+
+          if [ "$approved_count" -gt 0 ]; then
+            echo "PR #${pr_number} already has github-actions[bot] approval."
+            exit 0
+          fi
+
+          gh api "repos/${{ github.repository }}/pulls/${pr_number}/reviews" \
+            -f event=APPROVE \
+            -f body='Automated trusted reviewer approval by github-actions[bot].'
+          echo "Approved PR #${pr_number}."

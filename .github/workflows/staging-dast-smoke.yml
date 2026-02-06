@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 concurrency:
   group: staging-dast-smoke
@@ -16,6 +18,7 @@ jobs:
   staging-dast-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: staging
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -25,6 +28,106 @@ jobs:
           STAGING_BFF_BASE_URL: ${{ secrets.STAGING_BFF_BASE_URL }}
           STAGING_PAYMENTS_BASE_URL: ${{ secrets.STAGING_PAYMENTS_BASE_URL }}
           STAGING_CHAT_BASE_URL: ${{ secrets.STAGING_CHAT_BASE_URL }}
+          DAST_MAX_FAILED_CHECKS: ${{ vars.DAST_MAX_FAILED_CHECKS || '0' }}
+          DAST_MAX_RESPONSE_MS: ${{ vars.DAST_MAX_RESPONSE_MS || '2500' }}
           DAST_USER_AGENT: "shamell-staging-dast-smoke/1.0"
         run: |
           bash .github/scripts/staging_dast_smoke.sh
+
+  alert-on-failure:
+    if: needs.staging-dast-smoke.result == 'failure'
+    needs: [staging-dast-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compute consecutive failure threshold
+        id: threshold
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DAST_ALERT_CONSECUTIVE_FAILURES: ${{ vars.DAST_ALERT_CONSECUTIVE_FAILURES || '2' }}
+        run: |
+          threshold="${DAST_ALERT_CONSECUTIVE_FAILURES}"
+          if ! [[ "$threshold" =~ ^[0-9]+$ ]]; then
+            echo "Invalid DAST_ALERT_CONSECUTIVE_FAILURES=$threshold; using 2"
+            threshold=2
+          fi
+
+          count=1
+          while IFS= read -r conclusion; do
+            if [ "$conclusion" = "failure" ]; then
+              count=$((count + 1))
+            else
+              break
+            fi
+          done < <(
+            gh api "repos/${{ github.repository }}/actions/workflows/staging-dast-smoke.yml/runs?per_page=20" \
+              --jq '.workflow_runs[] | select(.id != '"${{ github.run_id }}"') | select(.event == "schedule" or .event == "workflow_dispatch") | .conclusion'
+          )
+
+          echo "threshold=$threshold" >> "$GITHUB_OUTPUT"
+          echo "consecutive_failures=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -ge "$threshold" ]; then
+            echo "should_alert=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_alert=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update incident issue
+        if: steps.threshold.outputs.should_alert == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          consecutive_failures="${{ steps.threshold.outputs.consecutive_failures }}"
+          title="Security Alert: Staging DAST smoke failing (${consecutive_failures} consecutive runs)"
+          body=$(cat <<'EOF'
+          Staging DAST smoke checks are failing and crossed the configured consecutive-failure threshold.
+
+          - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - Consecutive failures: ${{ steps.threshold.outputs.consecutive_failures }}
+          - Threshold: ${{ steps.threshold.outputs.threshold }}
+          - Triggered by: `${{ github.event_name }}`
+
+          Immediate actions:
+          1. Confirm `STAGING_BFF_BASE_URL`, `STAGING_PAYMENTS_BASE_URL`, `STAGING_CHAT_BASE_URL` secrets are valid.
+          2. Check service health and authz guardrail endpoints.
+          3. If malicious traffic is suspected, follow `docs/security/incident-runbook.md`.
+          EOF
+          )
+
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --label security \
+            --label incident \
+            --label dast \
+            --search "Security Alert: Staging DAST smoke failing in:title" \
+            --json number \
+            --jq '.[0].number')
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$body"
+          else
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "$title" \
+              --label security \
+              --label incident \
+              --label dast \
+              --body "$body"
+          fi
+
+      - name: Optional webhook notification
+        if: steps.threshold.outputs.should_alert == 'true' && secrets.SECURITY_ALERT_WEBHOOK_URL != ''
+        env:
+          SECURITY_ALERT_WEBHOOK_URL: ${{ secrets.SECURITY_ALERT_WEBHOOK_URL }}
+        run: |
+          payload=$(cat <<'EOF'
+          {
+            "text": "Shamell security alert: staging DAST smoke failed (run ${{ github.run_id }}, consecutive failures ${{ steps.threshold.outputs.consecutive_failures }})."
+          }
+          EOF
+          )
+          curl -fsS -X POST \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$SECURITY_ALERT_WEBHOOK_URL"
