@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
 
       - name: Gitleaks
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
@@ -68,13 +70,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - name: Detect Python sources
+        id: detect-python
+        run: |
+          if find . -type f -name '*.py' | grep -q .; then
+            echo "has_python=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_python=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Initialize CodeQL
+        if: steps.detect-python.outputs.has_python == 'true'
         uses: github/codeql-action/init@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
         with:
           languages: python
 
       - name: Perform CodeQL Analysis
+        if: steps.detect-python.outputs.has_python == 'true'
         uses: github/codeql-action/analyze@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
+
+      - name: Skip CodeQL (no python files)
+        if: steps.detect-python.outputs.has_python != 'true'
+        run: echo "No Python sources found; CodeQL Python analysis skipped."
 
   dependency-review:
     if: github.event_name == 'pull_request'
