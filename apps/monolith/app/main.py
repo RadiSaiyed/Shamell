@@ -429,9 +429,6 @@ if os.getenv("ENABLE_STUBS", "false").lower() == "true":
 
 
 # Mount existing services.
-# BFF stays at root (/) so its routes remain unchanged.
-_mount_service_app("/", "apps.bff.app.main")
-
 # Domain services under their existing prefixes (without routers yet).
 try:
     _mount_service_app("/agents", "apps.agents.app.main")
@@ -483,6 +480,11 @@ if urbify_router is not None:
     root_app.include_router(urbify_router, prefix="/urbify")
 if realestate_router is not None:
     root_app.include_router(realestate_router, prefix="/realestate")
+
+# BFF stays at root (/) so its routes remain unchanged.
+# Keep this mount last so explicit monolith include_router() paths above
+# are matched first instead of being shadowed by the catch-all mount.
+_mount_service_app("/", "apps.bff.app.main")
 
 
 app = root_app
