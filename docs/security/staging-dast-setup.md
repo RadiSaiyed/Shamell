@@ -35,8 +35,10 @@ Set repository variables:
 - `DAST_MAX_FAILED_CHECKS` (default: `0`)
 - `DAST_MAX_RESPONSE_MS` (default: `2500`)
 - `DAST_ALERT_CONSECUTIVE_FAILURES` (default: `2`)
+- `DAST_BFF_ADMIN_PATH` (optional override; default: `/admin/metrics`)
 - `DAST_PAYMENTS_ADMIN_PATH` (optional override path)
-- `DAST_PAYMENTS_WEBHOOK_PATH` (optional override path)
+- `DAST_PAYMENTS_SUMMARY_PATH` (optional override path; default: `/admin/fees/summary`)
+- `DAST_PAYMENTS_WEBHOOK_PATH` (optional; only set if staging actually exposes a webhook endpoint)
 - `TRUSTED_REVIEW_BOT_ENABLED` (default: `true`)
 - `TRUSTED_REVIEWER_LOGIN` (optional; fallback reviewer username when bot token is not set)
 

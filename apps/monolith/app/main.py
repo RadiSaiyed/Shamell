@@ -81,59 +81,95 @@ _shared_internal_secret = (
 os.environ.setdefault("INTERNAL_API_SECRET", _shared_internal_secret)
 os.environ.setdefault("PAYMENTS_INTERNAL_SECRET", _shared_internal_secret)
 
-# Import routers for domains that already expose APIRouter instances
-try:
-    from apps.jobs.app.main import router as jobs_router
-    from apps.food.app.main import router as food_router
-    from apps.stays.app.main import router as stays_router
-    from apps.payments.app.main import router as payments_router
-    from apps.taxi.app.main import router as taxi_router
-    from apps.bus.app.main import router as bus_router
-    from apps.commerce.app.main import router as commerce_router
-    from apps.carrental.app.main import router as carrental_router
-    from apps.freight.app.main import router as freight_router
-    from apps.agriculture.app.main import router as agriculture_router
-    from apps.doctors.app.main import router as doctors_router
-    from apps.flights.app.main import router as flights_router
-    from apps.chat.app.main import router as chat_router
-    from apps.carmarket.app.main import router as carmarket_router
-    from apps.livestock.app.main import router as livestock_router
-    from apps.pos.app.main import router as pos_router
-    from apps.equipment.app.main import router as equipment_router
-    from apps.courier.app import main as courier_main  # type: ignore[import]
+# Import routers for domains that already expose APIRouter instances.
+# Each import is isolated so one missing legacy module does not disable
+# all available routers (e.g. payments/chat in the slim current repo).
+jobs_router = None
+food_router = None
+stays_router = None
+payments_router = None
+taxi_router = None
+bus_router = None
+commerce_router = None
+carrental_router = None
+freight_router = None
+agriculture_router = None
+doctors_router = None
+equipment_router = None
+flights_router = None
+chat_router = None
+carmarket_router = None
+livestock_router = None
+realestate_router = None
+pos_router = None
+courier_router = None
+pms_router = None
+urbify_router = None
+
+
+def _import_router(module_path: str):
+    try:
+        module = __import__(module_path, fromlist=["router"])
+    except Exception:
+        return None
+    return getattr(module, "router", None)
+
+
+def _import_module(module_path: str):
+    try:
+        return __import__(module_path, fromlist=["*"])
+    except Exception:
+        return None
+
+
+# Core services present in this repo layout.
+payments_router = _import_router("apps.payments.app.main")
+chat_router = _import_router("apps.chat.app.main")
+
+# Optional legacy services.
+jobs_router = _import_router("apps.jobs.app.main")
+food_router = _import_router("apps.food.app.main")
+stays_router = _import_router("apps.stays.app.main")
+taxi_router = _import_router("apps.taxi.app.main")
+bus_router = _import_router("apps.bus.app.main")
+commerce_router = _import_router("apps.commerce.app.main")
+carrental_router = _import_router("apps.carrental.app.main")
+freight_router = _import_router("apps.freight.app.main")
+agriculture_router = _import_router("apps.agriculture.app.main")
+doctors_router = _import_router("apps.doctors.app.main")
+flights_router = _import_router("apps.flights.app.main")
+carmarket_router = _import_router("apps.carmarket.app.main")
+livestock_router = _import_router("apps.livestock.app.main")
+pos_router = _import_router("apps.pos.app.main")
+equipment_router = _import_router("apps.equipment.app.main")
+pms_router = _import_router("apps.pms.app.main")
+realestate_router = _import_router("apps.realestate.app.main")
+
+courier_main = _import_module("apps.courier.app.main")
+if courier_main is not None:
     courier_router = getattr(courier_main, "router", None)
     if hasattr(courier_main, "on_startup"):
-        courier_main.on_startup()  # type: ignore[call-arg]
-    courier_main.Base.metadata.create_all(courier_main.engine)  # type: ignore[attr-defined]
-    from apps.urbify.app import main as urbify_main  # type: ignore[import]
+        try:
+            courier_main.on_startup()  # type: ignore[call-arg]
+        except Exception:
+            pass
+    try:
+        courier_main.Base.metadata.create_all(courier_main.engine)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+urbify_main = _import_module("apps.urbify.app.main")
+if urbify_main is not None:
     urbify_router = getattr(urbify_main, "router", None)
     if hasattr(urbify_main, "on_startup"):
-        urbify_main.on_startup()  # type: ignore[call-arg]
-    urbify_main.Base.metadata.create_all(urbify_main.engine)  # type: ignore[attr-defined]
-    from apps.pms.app.main import router as pms_router
-    from apps.realestate.app.main import router as realestate_router
-except Exception:
-    jobs_router = None
-    food_router = None
-    stays_router = None
-    payments_router = None
-    taxi_router = None
-    bus_router = None
-    commerce_router = None
-    carrental_router = None
-    freight_router = None
-    agriculture_router = None
-    doctors_router = None
-    equipment_router = None
-    flights_router = None
-    chat_router = None
-    carmarket_router = None
-    livestock_router = None
-    realestate_router = None
-    pos_router = None
-    courier_router = None
-    pms_router = None
-    urbify_router = None
+        try:
+            urbify_main.on_startup()  # type: ignore[call-arg]
+        except Exception:
+            pass
+    try:
+        urbify_main.Base.metadata.create_all(urbify_main.engine)  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _mount_service_app(path_prefix: str, app_import_path: str):

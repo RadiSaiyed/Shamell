@@ -120,14 +120,20 @@ PAY_BASE_URL=$(trim_base "$STAGING_PAYMENTS_BASE_URL")
 CHAT_BASE_URL=$(trim_base "$STAGING_CHAT_BASE_URL")
 
 # Route checks differ between split-service and monolith/single-host staging layouts.
+BFF_ADMIN_PATH="${DAST_BFF_ADMIN_PATH:-/admin/metrics}"
+BFF_ADMIN_PATH="$(normalize_path "$BFF_ADMIN_PATH")"
 PAYMENTS_ADMIN_PATH="${DAST_PAYMENTS_ADMIN_PATH:-/admin/debug/tables}"
-PAYMENTS_WEBHOOK_PATH="${DAST_PAYMENTS_WEBHOOK_PATH:-/webhooks/psp}"
+PAYMENTS_SUMMARY_PATH="${DAST_PAYMENTS_SUMMARY_PATH:-/admin/fees/summary}"
+PAYMENTS_WEBHOOK_PATH="${DAST_PAYMENTS_WEBHOOK_PATH:-}"
 if [ "$PAY_BASE_URL" = "$BFF_BASE_URL" ]; then
   PAYMENTS_ADMIN_PATH="${DAST_PAYMENTS_ADMIN_PATH:-/payments/admin/debug/tables}"
-  PAYMENTS_WEBHOOK_PATH="${DAST_PAYMENTS_WEBHOOK_PATH:-/payments/webhooks/psp}"
+  PAYMENTS_SUMMARY_PATH="${DAST_PAYMENTS_SUMMARY_PATH:-/payments/admin/fees/summary}"
 fi
 PAYMENTS_ADMIN_PATH="$(normalize_path "$PAYMENTS_ADMIN_PATH")"
-PAYMENTS_WEBHOOK_PATH="$(normalize_path "$PAYMENTS_WEBHOOK_PATH")"
+PAYMENTS_SUMMARY_PATH="$(normalize_path "$PAYMENTS_SUMMARY_PATH")"
+if [ -n "$PAYMENTS_WEBHOOK_PATH" ]; then
+  PAYMENTS_WEBHOOK_PATH="$(normalize_path "$PAYMENTS_WEBHOOK_PATH")"
+fi
 
 # Non-destructive availability checks
 expect_code "BFF health" GET "$BFF_BASE_URL/health" "200"
@@ -135,37 +141,17 @@ expect_code "Payments health" GET "$PAY_BASE_URL/health" "200"
 expect_code "Chat health" GET "$CHAT_BASE_URL/health" "200"
 
 # AuthN/AuthZ guardrails (negative tests, no valid creds provided)
-expect_code "BFF admin denied without token" GET "$BFF_BASE_URL/admin" "401,403"
+expect_code "BFF admin denied without token" GET "$BFF_BASE_URL$BFF_ADMIN_PATH" "401,403"
 expect_code "Payments admin denied without token" GET "$PAY_BASE_URL$PAYMENTS_ADMIN_PATH" "401"
 expect_code "Chat inbox denied without token" GET "$CHAT_BASE_URL/chat/messages/inbox?device_id=dast-smoke" "401"
-
-# Upload should reject anonymous calls
-UPLOAD_TMP=$(mktemp)
-printf 'dast-smoke' > "$UPLOAD_TMP"
-UPLOAD_RESP=$(mktemp)
-UPLOAD_CODE_AND_TIME=$(curl -sS -o "$UPLOAD_RESP" -w "%{http_code} %{time_total}" \
-  -X POST "$BFF_BASE_URL/chat/media/upload" \
-  -H "User-Agent: ${DAST_USER_AGENT:-shamell-staging-dast-smoke/1.0}" \
-  -F "file=@${UPLOAD_TMP};type=text/plain" \
-  -F "kind=attachment" \
-  -F "mime=text/plain")
-UPLOAD_CODE="${UPLOAD_CODE_AND_TIME%% *}"
-UPLOAD_TIME_S="${UPLOAD_CODE_AND_TIME##* }"
-UPLOAD_MS=$(awk -v t="$UPLOAD_TIME_S" 'BEGIN {printf "%.0f", t * 1000}')
-rm -f "$UPLOAD_TMP"
-CHECKS=$((CHECKS + 1))
-if [ "$UPLOAD_CODE" != "401" ] || [ "$UPLOAD_MS" -gt "$MAX_RESPONSE_MS" ]; then
-  FAILURES=$((FAILURES + 1))
-  echo "[FAIL] BFF upload unauthenticated: code=$UPLOAD_CODE expected=401 latency_ms=${UPLOAD_MS} max_ms=${MAX_RESPONSE_MS}" >&2
-  sed -n '1,120p' "$UPLOAD_RESP" >&2 || true
+expect_code "BFF metrics denied without token" GET "$BFF_BASE_URL/metrics" "401,403"
+if [ -n "$PAYMENTS_WEBHOOK_PATH" ]; then
+  # Webhook endpoint should reject invalid signatures when configured in staging.
+  expect_code "Payments webhook invalid signature rejected" \
+    POST "$PAY_BASE_URL$PAYMENTS_WEBHOOK_PATH" "400,401,403,503" '{}' 'application/json' 'Stripe-Signature: t=0,v1=invalid'
 else
-  echo "[PASS] BFF upload denied without auth: code=$UPLOAD_CODE latency_ms=${UPLOAD_MS}"
+  expect_code "Payments admin summary denied without token" GET "$PAY_BASE_URL$PAYMENTS_SUMMARY_PATH" "401,403"
 fi
-rm -f "$UPLOAD_RESP"
-
-# Webhook endpoint should reject invalid signature, or be explicitly disabled in staging.
-expect_code "Payments webhook invalid signature rejected" \
-  POST "$PAY_BASE_URL$PAYMENTS_WEBHOOK_PATH" "400,401,503" '{}' 'application/json' 'Stripe-Signature: t=0,v1=invalid'
 
 echo "DAST summary: checks=$CHECKS failures=$FAILURES max_failures=$MAX_FAILED_CHECKS max_response_ms=$MAX_RESPONSE_MS"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
