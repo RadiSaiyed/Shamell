@@ -1,0 +1,26 @@
+# Exclude VCS and local files
+.git/
+.gitignore
+.DS_Store
+**/.DS_Store
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.venv*
+.venv*/
+.env
+
+# Big or unrelated directories
+operators/**
+tools/**
+clients/**/build/**
+clients/**/.dart_tool/**
+clients/**/ios/Pods/**
+clients/**/android/.gradle/**
+libs/**/__pycache__/**
+
+# Editor/IDE
+**/*.iml
+**/.idea/**
+**/.vscode/**
+

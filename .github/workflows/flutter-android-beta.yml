@@ -1,0 +1,44 @@
+name: Flutter Android Beta (Play)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android-beta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        working-directory: clients/shamell_flutter
+        run: flutter pub get
+
+      - name: Build appbundle
+        working-directory: clients/shamell_flutter
+        run: flutter build appbundle --release
+
+      - name: Install fastlane
+        if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        run: sudo gem install fastlane
+
+      - name: Write Play service account JSON
+        if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        working-directory: clients/shamell_flutter/android
+        run: |
+          echo "${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}" > play_service_account.json
+
+      - name: Fastlane beta (Play Internal)
+        if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        working-directory: clients/shamell_flutter/android
+        env:
+          JSON_KEY: play_service_account.json
+        run: |
+          fastlane build
+          fastlane beta

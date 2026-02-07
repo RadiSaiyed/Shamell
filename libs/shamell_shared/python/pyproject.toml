@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shamell-shared"
+version = "0.1.0"
+description = "Shared utilities for Shamell services"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+authors = [{name = "Shamell Team"}]
+dependencies = [
+  "fastapi>=0.110.0",
+]
+
+[project.urls]
+homepage = "https://shamell.app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shamell_shared*"]
+namespaces = false

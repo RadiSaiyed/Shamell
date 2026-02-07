@@ -1,0 +1,6 @@
+app_identifier("com.example.shamell") # TODO: change to your bundle id
+apple_id("apple-id@example.com") # TODO: your Apple ID or configure API key
+
+# For API key usage uncomment:
+# api_key_path("../AuthKey_XXXXXXXXXX.p8")
+# itc_team_id("123456789")

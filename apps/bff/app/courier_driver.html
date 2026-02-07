@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Courier Driver</title>
+  <style>
+    body{margin:0;font-family:Inter,system-ui,-apple-system,sans-serif;background:#0b1220;color:#e2e8f0;}
+    header{padding:16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.08);}
+    .pill{padding:6px 12px;border-radius:999px;background:rgba(34,211,238,0.12);color:#22d3ee;font-weight:700;}
+    .card{background:#111827;border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px;margin:12px;}
+    input,select,textarea{width:100%;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);background:#0b1220;color:#e2e8f0;}
+    button{padding:10px 14px;border:none;border-radius:10px;background:#22d3ee;color:#0b1220;font-weight:700;cursor:pointer;box-shadow:0 10px 30px rgba(34,211,238,0.3);}
+    .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;}
+    .muted{color:#94a3b8;font-size:12px;}
+    ul{list-style:none;padding:0;margin:0;}
+    li{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="pill" id="statusBadge">status: —</div>
+    <div style="flex:1"></div>
+    <div class="muted" id="eta">ETA: —</div>
+  </header>
+  <div class="card">
+    <div class="row">
+      <input id="oid" placeholder="Order ID" />
+      <button onclick="load()">Load</button>
+      <button onclick="nav()">Open Nav</button>
+    </div>
+    <div class="muted" id="window">Window: —</div>
+    <div class="muted" id="addr">Address: —</div>
+    <div class="muted" id="pin">PIN: —</div>
+  </div>
+  <div class="card">
+    <h3>Update status</h3>
+    <div class="row">
+      <select id="status">
+        <option value="pickup">pickup</option>
+        <option value="delivering">delivering</option>
+        <option value="delivered">delivered</option>
+        <option value="failed">failed</option>
+      </select>
+      <input id="pinInput" placeholder="PIN (required for delivered)" />
+      <input id="barcode" placeholder="Scan / barcode" />
+      <input id="proof" placeholder="Proof URL" />
+      <input id="sig" placeholder="Signature (text stub)" />
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="lat" placeholder="Driver lat (optional)" />
+      <input id="lng" placeholder="Driver lng (optional)" />
+    </div>
+    <div style="margin-top:10px"><button onclick="update()">Send update</button></div>
+    <div class="muted" id="out"></div>
+  </div>
+  <div class="card">
+    <h3>Events</h3>
+    <ul id="events"></ul>
+  </div>
+  <script>
+    async function load(){
+      const id=document.getElementById('oid').value.trim();
+      if(!id){ alert('Order ID required'); return; }
+      const r=await fetch('/courier/shipments/'+encodeURIComponent(id));
+      const j=await r.json();
+      render(j);
+    }
+    function render(j){
+      document.getElementById('statusBadge').textContent='status: '+(j.status||'');
+      document.getElementById('eta').textContent='ETA: '+(j.eta_ts||'—');
+      document.getElementById('window').textContent='Window: '+((j.window_start||'')+' → '+(j.window_end||''));
+      document.getElementById('addr').textContent='Address: '+(j.drop_address||j.validated_address||'—');
+      window._lastLat = j.validated_lat || j.driver_lat || null;
+      window._lastLng = j.validated_lng || j.driver_lng || null;
+      document.getElementById('pin').textContent='PIN: '+(j.pin_code||'—');
+      document.getElementById('events').innerHTML='';
+      (j.events||[]).forEach(e=>{
+        const li=document.createElement('li');
+        li.innerHTML=`<div>${e.status} <span class="muted">${e.created_at||''}</span></div><div class="muted">${e.note||''}</div>`;
+        document.getElementById('events').appendChild(li);
+      });
+      window._lastOrderId = j.id;
+    }
+    async function update(){
+      const id=window._lastOrderId || document.getElementById('oid').value.trim();
+      if(!id){ alert('Load order first'); return; }
+      const body={
+        status: document.getElementById('status').value,
+        pin: document.getElementById('pinInput').value || undefined,
+        scanned_barcode: document.getElementById('barcode').value || undefined,
+        proof_url: document.getElementById('proof').value || undefined,
+        signature: document.getElementById('sig').value || undefined
+      };
+      const lat=document.getElementById('lat').value, lng=document.getElementById('lng').value;
+      if(lat && lng){
+        body.driver_lat=parseFloat(lat); body.driver_lng=parseFloat(lng);
+      }
+      const r=await fetch('/courier/shipments/'+encodeURIComponent(id)+'/status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+      document.getElementById('out').textContent=await r.text();
+    }
+    function nav(){
+      const addr = (document.getElementById('addr').textContent||'').replace('Address: ','').trim();
+      const lat = window._lastLat;
+      const lng = window._lastLng;
+      let url;
+      if(lat && lng){
+        url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+      } else if(addr && addr !== '—'){
+        url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}`;
+      }
+      if(url){ window.open(url, '_blank'); }
+    }
+  </script>
+</body>
+</html>

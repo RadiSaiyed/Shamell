@@ -1,0 +1,16 @@
+default_platform(:android)
+
+platform :android do
+  desc "Build Android appbundle via Flutter"
+  lane :build do
+    sh("flutter pub get")
+    sh("flutter build appbundle --release")
+  end
+
+  desc "Upload to Google Play (requires service account JSON)"
+  lane :beta do
+    # Place your service account JSON path in GOOGLE Play JSON_KEY
+    supply(track: 'internal', skip_upload_metadata: true, skip_upload_changelogs: true)
+  end
+end
+

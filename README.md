@@ -1,30 +1,42 @@
-# Shamell
+# Shamell Platform
 
-Security project bootstrap (2026-02-06).
+This repository hosts Shamell backend services, clients, mini-programs, and ops tooling.
 
-## Security Runbook
+## Layout
+- src/ - Python packages (shamell_bff, shamell_chat, shamell_payments, shamell_monolith, shamell_shared)
+- clients/ - Flutter clients
+- mini-programs/ - Mini-program assets and runtime bundles
+- ops/ - Deployment and environment tooling
+- docs/ - Architecture and runbooks
+- configs/ - Example environment configs
 
-- Incident response playbook: `docs/security/incident-runbook.md`
-- Staging DAST setup: `docs/security/staging-dast-setup.md`
+## Runtime modes
+- Microservices (default local dev): `./scripts/ops.sh dev up`
+- Legacy monolith (fallback): `./scripts/ops.sh devmono up`
 
-## Semgrep AuthZ/IDOR Rules
+Useful commands:
+- `./scripts/ops.sh dev health`
+- `./scripts/ops.sh dev ps`
+- `./scripts/ops.sh dev down`
+- `./scripts/ops.sh devmono health`
 
-Custom regression rules live in `.semgrep/rules/authz-idor.yml` and target:
-- wallet-scoped queries without actor/user ownership checks
-- trust of client-provided internal headers
-- unsafe token query construction patterns
+`dev` builds the shared `shamell-core` image once and reuses it across BFF, chat, and payments.
 
-Run locally:
-
-```bash
-python -m pip install semgrep
-semgrep --config .semgrep/rules/authz-idor.yml --error .
+## Local dev dependencies
+From `platform/shamell-app`:
+```
+pip install -r requirements.txt
+pip install -e ../../packages/shamell-shared
+pip install -e .
+```
+Or use the Makefile:
+```
+make venv
+make run
 ```
 
-## Trusted Review Bot
+## Operations helper
+`scripts/ops.sh` supports `dev`, `devmono`, `prod`, and `pi` with shared commands for deploy, health checks, migrations, backups, and reports.
 
-- Workflow: `.github/workflows/trusted-review-bot.yml`
-- Purpose: keeps branch protection at `required_approving_review_count=1` by either:
-  - adding approval via `TRUSTED_REVIEW_BOT_TOKEN` (second account token), or
-  - auto-requesting review from `TRUSTED_REVIEWER_LOGIN`.
-- Toggle: repository variable `TRUSTED_REVIEW_BOT_ENABLED` (`true`/`false`, default `true`).
+## Workspace
+The workspace root `.gitignore` mirrors common platform ignore patterns for shared tooling artifacts.
