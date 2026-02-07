@@ -120,10 +120,10 @@ jobs:
 
       - name: Build web frontend image (if present)
         run: |
-          if [ -f apps/web/Dockerfile ]; then
-            docker build -t shamell-web apps/web
-          elif [ -f NonWeChat/apps/web/Dockerfile ]; then
-            docker build -t shamell-web NonWeChat/apps/web
+          if [ -f apps/web/Dockerfile ] && [ -d clients/shamell_flutter/build/web ] && [ -f apps/web/nginx.conf ]; then
+            docker build -t shamell-web -f apps/web/Dockerfile .
+          elif [ -f NonWeChat/apps/web/Dockerfile ] && [ -d NonWeChat/clients/shamell_flutter/build/web ] && [ -f NonWeChat/apps/web/nginx.conf ]; then
+            docker build -t shamell-web -f NonWeChat/apps/web/Dockerfile NonWeChat
           else
-            echo "No web Dockerfile found; skipping web image build."
+            echo "Web Dockerfile or static build artifacts not present; skipping web image build."
           fi
