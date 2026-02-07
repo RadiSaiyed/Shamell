@@ -76,7 +76,7 @@ jobs:
           file: apps/monolith/Dockerfile
           push: true
           provenance: false
-          platforms: linux/arm64
+          platforms: linux/amd64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -84,55 +84,38 @@ jobs:
   deploy-pi:
     if: github.event_name == 'workflow_dispatch' && inputs.deploy_pi == true
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, hetzner, shamell-deploy]
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync Pi compose bundle
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.PI_HOST }}
-          username: ${{ secrets.PI_USER }}
-          key: ${{ secrets.PI_SSH_KEY }}
-          port: ${{ secrets.PI_PORT || 22 }}
-          source: "ops/pi/docker-compose.yml,ops/pi/livekit/livekit.yaml"
-          target: "~/shamell-pi-deploy"
-          overwrite: true
-
-      - name: Deploy to Raspberry Pi (SSH)
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Deploy on self-hosted Hetzner runner
         env:
           PI_ENV_FILE: ${{ secrets.PI_ENV_FILE }}
-        with:
-          host: ${{ secrets.PI_HOST }}
-          username: ${{ secrets.PI_USER }}
-          key: ${{ secrets.PI_SSH_KEY }}
-          port: ${{ secrets.PI_PORT || 22 }}
-          envs: PI_ENV_FILE
-          script: |
-            set -euo pipefail
-            if [ -z "${PI_ENV_FILE:-}" ]; then
-              echo "Missing required GitHub secret: PI_ENV_FILE" >&2
-              exit 1
+        run: |
+          set -euo pipefail
+          if [ -z "${PI_ENV_FILE:-}" ]; then
+            echo "Missing required GitHub secret: PI_ENV_FILE" >&2
+            exit 1
+          fi
+          COMPOSE_FILE="ops/pi/docker-compose.yml"
+          ENV_FILE="ops/pi/.env"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "Missing compose file: $COMPOSE_FILE" >&2
+            exit 1
+          fi
+          printf '%s\n' "$PI_ENV_FILE" > "$ENV_FILE"
+          chmod 600 "$ENV_FILE"
+
+          docker pull ${{ env.IMAGE_NAME }}:latest
+          docker tag ${{ env.IMAGE_NAME }}:latest shamell-core:pi
+          docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans livekit monolith
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              break
             fi
-            DEPLOY_ROOT="${PI_DEPLOY_ROOT:-$HOME/shamell-pi-deploy}"
-            DEPLOY_DIR="$DEPLOY_ROOT/ops/pi"
-            COMPOSE_FILE="$DEPLOY_DIR/docker-compose.yml"
-            ENV_FILE="$DEPLOY_DIR/.env"
-            if [ ! -f "$COMPOSE_FILE" ]; then
-              echo "Missing compose file: $COMPOSE_FILE" >&2
-              exit 1
-            fi
-            mkdir -p "$DEPLOY_DIR/livekit"
-            printf '%s\n' "$PI_ENV_FILE" > "$ENV_FILE"
-            chmod 600 "$ENV_FILE"
-
-            docker pull ${{ env.IMAGE_NAME }}:latest
-            docker tag ${{ env.IMAGE_NAME }}:latest shamell-core:pi
-
-            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-build livekit monolith
-
-            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T monolith python -c \
-              "import os,urllib.request; host=(os.getenv('ALLOWED_HOSTS','').split(',')[0] or 'localhost').strip(); req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host': host}); urllib.request.urlopen(req, timeout=5).read()"
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health
