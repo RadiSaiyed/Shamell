@@ -9,6 +9,7 @@ jobs:
     timeout-minutes: 45
     env:
       HAS_PLAY_CREDENTIALS: "false"
+      PLAY_PACKAGE_NAME: "com.syriasuperapp.superapp"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,6 +27,16 @@ jobs:
         working-directory: clients/shamell_flutter
         run: flutter build appbundle --release --flavor user
 
+      - name: Resolve built AAB path
+        working-directory: clients/shamell_flutter
+        run: |
+          AAB_REL_PATH="$(find build/app/outputs/bundle -type f -name '*.aab' | head -n 1)"
+          if [ -z "${AAB_REL_PATH}" ]; then
+            echo "::error::No .aab found under build/app/outputs/bundle"
+            exit 1
+          fi
+          echo "AAB_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${AAB_REL_PATH}" >> "$GITHUB_ENV"
+
       - name: Detect Play credentials
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -40,20 +51,19 @@ jobs:
 
       - name: Write Play service account JSON
         if: ${{ env.HAS_PLAY_CREDENTIALS == 'true' }}
-        working-directory: clients/shamell_flutter/android
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
-          printf '%s' "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON}" > play_service_account.json
+          SERVICE_ACCOUNT_PATH="${RUNNER_TEMP}/play_service_account.json"
+          printf '%s' "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON}" > "${SERVICE_ACCOUNT_PATH}"
+          echo "SUPPLY_JSON_KEY=${SERVICE_ACCOUNT_PATH}" >> "$GITHUB_ENV"
 
       - name: Fastlane beta (Play Internal)
         if: ${{ env.HAS_PLAY_CREDENTIALS == 'true' }}
         working-directory: clients/shamell_flutter/android
         env:
-          JSON_KEY: play_service_account.json
-        run: |
-          fastlane build
-          fastlane beta
+          SUPPLY_PACKAGE_NAME: ${{ env.PLAY_PACKAGE_NAME }}
+        run: fastlane beta
 
       - name: Skip note (credentials missing)
         if: ${{ env.HAS_PLAY_CREDENTIALS != 'true' }}

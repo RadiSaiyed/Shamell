@@ -9,7 +9,25 @@ platform :android do
 
   desc "Upload to Google Play (requires service account JSON)"
   lane :beta do
-    # Place your service account JSON path in GOOGLE Play JSON_KEY
-    supply(track: 'internal', skip_upload_metadata: true, skip_upload_changelogs: true)
+    package_name = ENV.fetch("SUPPLY_PACKAGE_NAME", "com.syriasuperapp.superapp")
+    aab_path = ENV.fetch(
+      "AAB_PATH",
+      "../build/app/outputs/bundle/userRelease/app-user-release.aab"
+    )
+    json_key = ENV["SUPPLY_JSON_KEY"] || ENV["JSON_KEY"]
+
+    UI.user_error!("AAB not found at #{aab_path}") unless File.exist?(aab_path)
+    UI.user_error!("Missing SUPPLY_JSON_KEY/JSON_KEY for Play upload") if json_key.to_s.strip.empty?
+
+    supply(
+      package_name: package_name,
+      aab: aab_path,
+      json_key: json_key,
+      track: 'internal',
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
   end
 end
