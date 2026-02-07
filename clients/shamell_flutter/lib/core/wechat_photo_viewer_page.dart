@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -397,7 +397,7 @@ class _WeChatPhotoViewerPageState extends State<WeChatPhotoViewerPage> {
       final bytes = await _bytesFor(_index);
       if (bytes == null || bytes.isEmpty || !mounted) return;
       final name = 'moments_${DateTime.now().millisecondsSinceEpoch}';
-      final result = await ImageGallerySaver.saveImage(
+      final result = await ImageGallerySaverPlus.saveImage(
         bytes,
         quality: 95,
         name: name,
