@@ -118,4 +118,9 @@ jobs:
             fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:8080/health
+          chmod +x .github/scripts/deploy_pi_smoke_guard.sh
+          API_HOST=api.shamell.online \
+            UPSTREAM_BASE=http://127.0.0.1:8080 \
+            EDGE_BASE=https://127.0.0.1 \
+            MAX_RESPONSE_MS=2500 \
+            .github/scripts/deploy_pi_smoke_guard.sh

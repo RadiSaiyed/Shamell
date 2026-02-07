@@ -144,6 +144,40 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
 - CI/staging smoke must include invalid-signature negative test.
 - Alert on signature-failure rate and replay-block count thresholds.
 
+## Scenario D: `502 Bad Gateway` (Reverse-Proxy Upstream Drift)
+
+### Detection Signals
+
+- Cloudflare/edge returns `502` for multiple API paths.
+- `nginx error.log` shows: `connect() failed (111: Connection refused) while connecting to upstream`.
+- App container health is green on `127.0.0.1:8080/health`, but Nginx points to a different upstream (for example `127.0.0.1:8000`).
+
+### Containment
+
+1. Confirm scope quickly:
+   - edge path (`https://api.../health`)
+   - local Nginx path (`curl -k -H "Host: api..." https://127.0.0.1/health`)
+   - direct app path (`http://127.0.0.1:8080/health`)
+2. Keep firewall/WAF unchanged; treat as config drift first, not credential compromise.
+
+### Recovery
+
+1. Re-apply versioned Nginx configs from repo (`ops/hetzner/nginx/sites-available/*`).
+2. Validate and reload:
+   - `nginx -t`
+   - `systemctl reload nginx`
+3. Re-run smoke checks:
+   - `/health` must return `200`
+   - `/payments/admin/debug/tables` must return `401` without token.
+
+### Regression Test
+
+- Keep Nginx vhost config in git (IaC) and deploy through scripted sync.
+- CI deploy guard must assert:
+  - upstream health = `200`
+  - payments admin endpoint without token = `401`
+  - same checks through edge host route.
+
 ## Monitoring & Alerting Baseline
 
 - Alert on:
