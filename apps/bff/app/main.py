@@ -35,7 +35,6 @@ import secrets as _secrets
 import time, uuid as _uuid
 from typing import Any
 from io import BytesIO
-from urllib.parse import urlparse, parse_qs
 try:
     from PIL import Image, ImageDraw, ImageFont
 except Exception:
@@ -287,6 +286,10 @@ _METRICS = []  # in-memory ring buffer
 
 @app.post("/metrics")
 async def metrics_ingest(req: Request):
+    if METRICS_INGEST_SECRET:
+        provided = (req.headers.get("X-Metrics-Secret") or "").strip()
+        if provided != METRICS_INGEST_SECRET:
+            raise HTTPException(status_code=401, detail="metrics auth required")
     try:
         body = await req.json()
     except Exception:
@@ -307,7 +310,8 @@ async def metrics_ingest(req: Request):
     return {"ok": True}
 
 @app.get("/metrics", response_class=JSONResponse)
-def metrics_dump(limit: int = 200):
+def metrics_dump(request: Request, limit: int = 200):
+    _require_admin_v2(request)
     return {"items": _METRICS[-limit:]}
 
 
@@ -818,7 +822,7 @@ OVERPASS_USER_AGENT = _env_or("OVERPASS_USER_AGENT", NOMINATIM_USER_AGENT)
 BFF_TOPUP_SELLERS = set(a.strip() for a in os.getenv("BFF_TOPUP_SELLERS", "").split(",") if a.strip())
 BFF_TOPUP_ALLOW_ALL = (_env_or("BFF_TOPUP_ALLOW_ALL", "false").lower() == "true")
 BFF_ADMINS = set(a.strip() for a in os.getenv("BFF_ADMINS", "").split(",") if a.strip())
-SUPERADMIN_PHONE = os.getenv("SUPERADMIN_PHONE", "+963996428955").strip()
+SUPERADMIN_PHONE = os.getenv("SUPERADMIN_PHONE", "").strip()
 TAXI_CANCEL_FEE_SYP = int(_env_or("TAXI_CANCEL_FEE_SYP", "4000"))
 
 # Guardrails for money + mobility flows (best-effort, per-process).
@@ -844,6 +848,7 @@ AUTH_EXPOSE_CODES = _env_or("AUTH_EXPOSE_CODES", _AUTH_EXPOSE_DEFAULT).lower() =
 
 # Global maintenance mode toggle (read-only / outage banner).
 MAINTENANCE_MODE_ENABLED = _env_or("MAINTENANCE_MODE", "false").lower() == "true"
+METRICS_INGEST_SECRET = _env_or("METRICS_INGEST_SECRET", "").strip()
 
 # ---- Simple session auth (OTP via code; in-memory storage for demo) ----
 AUTH_SESSION_TTL_SECS = int(_env_or("AUTH_SESSION_TTL_SECS", "86400"))
@@ -920,6 +925,22 @@ def _create_session(phone: str) -> str:
     sid = _uuid.uuid4().hex
     _SESSIONS[sid] = (phone, _now()+AUTH_SESSION_TTL_SECS)
     return sid
+
+
+def _normalize_session_token(raw: str | None) -> str | None:
+    token = (raw or "").strip()
+    if not token:
+        return None
+    if "=" in token:
+        for part in token.split(";"):
+            part = part.strip()
+            if part.startswith("sa_session="):
+                token = part.split("=", 1)[1]
+                break
+    token = token.strip()
+    if not re.fullmatch(r"[a-f0-9]{32}", token):
+        return None
+    return token
 
 
 def _auth_client_ip(request: Request) -> str:
@@ -1031,61 +1052,13 @@ def _auth_phone(request: Request) -> str | None:
     try:
         raw = request.headers.get("sa_cookie") or request.headers.get("Sa-Cookie")
         if raw:
-            token = raw.strip()
-            # Accept either a bare session ID or a cookie-style format
-            # like "sa_session=...; path=/; ..."
-            if "=" in token:
-                for part in token.split(";"):
-                    part = part.strip()
-                    if part.startswith("sa_session="):
-                        token = part.split("=", 1)[1]
-                        break
-            sid = token or None
+            sid = _normalize_session_token(raw)
     except Exception:
         sid = None
 
-    # 2) Optional: session from query parameter (for deep-linked web consoles).
+    # 2) Fallback to regular cookie when no explicit header is used.
     if not sid:
-        try:
-            raw_q = request.query_params.get("sa_session") or request.query_params.get("sa_cookie")
-            if raw_q:
-                token = raw_q.strip()
-                if "=" in token:
-                    for part in token.split(";"):
-                        part = part.strip()
-                        if part.startswith("sa_session="):
-                            token = part.split("=", 1)[1]
-                            break
-                sid = token or None
-        except Exception:
-            # Ignore query parsing errors and fall back to other mechanisms.
-            pass
-
-    # 3) Optional: session propagated via Referer query (for HTML consoles making fetch() calls).
-    if not sid:
-        try:
-            ref = request.headers.get("referer") or request.headers.get("Referer")
-            if ref:
-                parsed = urlparse(ref)
-                qs = parse_qs(parsed.query)
-                vals = qs.get("sa_session") or qs.get("sa_cookie") or []
-                if vals:
-                    token = (vals[0] or "").strip()
-                    if token:
-                        if "=" in token:
-                            for part in token.split(";"):
-                                part = part.strip()
-                                if part.startswith("sa_session="):
-                                    token = part.split("=", 1)[1]
-                                    break
-                        sid = token or None
-        except Exception:
-            # Best-effort only; fall back to cookie if anything goes wrong.
-            pass
-
-    # 4) Fallback to regular cookie when no header or URL hint is used.
-    if not sid:
-        sid = request.cookies.get("sa_session")
+        sid = _normalize_session_token(request.cookies.get("sa_session"))
     if not sid: return None
     rec = _SESSIONS.get(sid)
     if not rec: return None
@@ -4099,6 +4072,7 @@ try:
         ReadReq as _ChatReadReq,
         PushTokenReq as _ChatPushTokenReq,
         ContactRuleReq as _ChatRuleReq,
+        ContactPrefsReq as _ChatContactPrefsReq,
         GroupCreateReq as _ChatGroupCreateReq,
         GroupOut as _ChatGroupOut,
         GroupSendReq as _ChatGroupSendReq,
@@ -4119,6 +4093,8 @@ try:
         mark_read as _chat_mark_read,
         register_push_token as _chat_register_push,
         set_block as _chat_set_block,
+        set_prefs as _chat_set_prefs,
+        list_prefs as _chat_list_prefs,
         create_group as _chat_create_group,
         list_groups as _chat_list_groups,
         send_group_message as _chat_send_group_message,
@@ -4163,6 +4139,47 @@ def _chat_internal_session():
     return _ChatSession(_chat_engine)  # type: ignore[call-arg]
 
 
+def _chat_auth_headers_from_request(request: Request) -> Dict[str, str]:
+    did = (
+        request.headers.get("X-Chat-Device-Id")
+        or request.headers.get("x-chat-device-id")
+        or ""
+    ).strip()
+    tok = (
+        request.headers.get("X-Chat-Device-Token")
+        or request.headers.get("x-chat-device-token")
+        or ""
+    ).strip()
+    headers: Dict[str, str] = {}
+    if did:
+        headers["X-Chat-Device-Id"] = did
+    if tok:
+        headers["X-Chat-Device-Token"] = tok
+    return headers
+
+
+def _chat_auth_headers_from_ws(ws: WebSocket) -> Dict[str, str]:
+    did = (
+        ws.headers.get("X-Chat-Device-Id")
+        or ws.headers.get("x-chat-device-id")
+        or ws.query_params.get("chat_device_id")
+        or ws.query_params.get("device_id")
+        or ""
+    ).strip()
+    tok = (
+        ws.headers.get("X-Chat-Device-Token")
+        or ws.headers.get("x-chat-device-token")
+        or ws.query_params.get("chat_device_token")
+        or ""
+    ).strip()
+    headers: Dict[str, str] = {}
+    if did:
+        headers["X-Chat-Device-Id"] = did
+    if tok:
+        headers["X-Chat-Device-Token"] = tok
+    return headers
+
+
 @app.post("/chat/devices/register")
 async def chat_register(req: Request):
     try:
@@ -4181,8 +4198,13 @@ async def chat_register(req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_register(req=creq, s=s)
-        r = httpx.post(_chat_url("/devices/register"), json=body, timeout=10)
+                return _chat_register(request=req, req=creq, s=s)
+        r = httpx.post(
+            _chat_url("/devices/register"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4228,8 +4250,13 @@ async def chat_push_token(device_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_register_push(device_id=device_id, req=preq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/devices/{device_id}/push_token"), json=body, timeout=10)
+                return _chat_register_push(device_id=device_id, request=req, req=preq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/devices/{device_id}/push_token"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4257,8 +4284,69 @@ async def chat_block(device_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_set_block(device_id=device_id, req=breq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/devices/{device_id}/block"), json=body, timeout=10)
+                return _chat_set_block(device_id=device_id, request=req, req=breq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/devices/{device_id}/block"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/chat/devices/{device_id}/prefs")
+async def chat_prefs(device_id: str, req: Request):
+    try:
+        body = await req.json()
+    except Exception:
+        body = None
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            data = body or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                preq = _ChatContactPrefsReq(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            with _chat_internal_session() as s:
+                return _chat_set_prefs(device_id=device_id, request=req, req=preq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/devices/{device_id}/prefs"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
+        return r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/chat/devices/{device_id}/prefs")
+def chat_list_prefs(device_id: str, request: Request):
+    try:
+        if _use_chat_internal():
+            if not _CHAT_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="chat internal not available")
+            with _chat_internal_session() as s:
+                return _chat_list_prefs(device_id=device_id, request=request, s=s)  # type: ignore[arg-type]
+        r = httpx.get(
+            _chat_url(f"/devices/{device_id}/prefs"),
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4286,8 +4374,13 @@ async def chat_group_prefs(device_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_set_group_prefs(device_id=device_id, req=preq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/devices/{device_id}/group_prefs"), json=body, timeout=10)
+                return _chat_set_group_prefs(device_id=device_id, request=req, req=preq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/devices/{device_id}/group_prefs"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4298,14 +4391,18 @@ async def chat_group_prefs(device_id: str, req: Request):
 
 
 @app.get("/chat/devices/{device_id}/group_prefs")
-def chat_list_group_prefs(device_id: str):
+def chat_list_group_prefs(device_id: str, request: Request):
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
-                return _chat_list_group_prefs(device_id=device_id, s=s)  # type: ignore[arg-type]
-        r = httpx.get(_chat_url(f"/devices/{device_id}/group_prefs"), timeout=10)
+                return _chat_list_group_prefs(device_id=device_id, request=request, s=s)  # type: ignore[arg-type]
+        r = httpx.get(
+            _chat_url(f"/devices/{device_id}/group_prefs"),
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4333,7 +4430,7 @@ async def chat_send(req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                msg = _chat_send_message(req=sreq, s=s)
+                msg = _chat_send_message(request=req, req=sreq, s=s)
             try:
                 _update_official_service_session_on_message(
                     getattr(msg, "sender_id", None),
@@ -4356,7 +4453,12 @@ async def chat_send(req: Request):
             except Exception:
                 pass
             return msg
-        r = httpx.post(_chat_url("/messages/send"), json=body, timeout=10)
+        r = httpx.post(
+            _chat_url("/messages/send"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         out = r.json()
         try:
             _update_official_service_session_on_message(
@@ -4386,7 +4488,7 @@ async def chat_send(req: Request):
 
 
 @app.get("/chat/messages/inbox")
-def chat_inbox(device_id: str, since_iso: str = "", limit: int = 50):
+def chat_inbox(device_id: str, request: Request, since_iso: str = "", limit: int = 50):
     params = {"device_id": device_id, "limit": max(1, min(limit, 200))}
     if since_iso:
         params["since_iso"] = since_iso
@@ -4396,8 +4498,13 @@ def chat_inbox(device_id: str, since_iso: str = "", limit: int = 50):
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
                 sin = since_iso or None
-                return _chat_inbox(device_id=device_id, since_iso=sin, limit=limit, s=s)
-        r = httpx.get(_chat_url("/messages/inbox"), params=params, timeout=10)
+                return _chat_inbox(request=request, device_id=device_id, since_iso=sin, limit=limit, s=s)
+        r = httpx.get(
+            _chat_url("/messages/inbox"),
+            params=params,
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4425,8 +4532,13 @@ async def chat_mark_read(mid: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_mark_read(mid=mid, req=rreq, s=s)
-        r = httpx.post(_chat_url(f"/messages/{mid}/read"), json=body, timeout=10)
+                return _chat_mark_read(mid=mid, request=req, req=rreq, s=s)
+        r = httpx.post(
+            _chat_url(f"/messages/{mid}/read"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4454,8 +4566,13 @@ async def chat_group_create(req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_create_group(req=greq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url("/groups/create"), json=body, timeout=10)
+                return _chat_create_group(request=req, req=greq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url("/groups/create"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4466,14 +4583,19 @@ async def chat_group_create(req: Request):
 
 
 @app.get("/chat/groups/list")
-def chat_group_list(device_id: str):
+def chat_group_list(device_id: str, request: Request):
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
-                return _chat_list_groups(device_id=device_id, s=s)
-        r = httpx.get(_chat_url("/groups/list"), params={"device_id": device_id}, timeout=10)
+                return _chat_list_groups(request=request, device_id=device_id, s=s)
+        r = httpx.get(
+            _chat_url("/groups/list"),
+            params={"device_id": device_id},
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4501,8 +4623,13 @@ async def chat_group_update(group_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_update_group(group_id=group_id, req=ureq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/groups/{group_id}/update"), json=body, timeout=10)
+                return _chat_update_group(group_id=group_id, request=req, req=ureq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/groups/{group_id}/update"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4530,8 +4657,13 @@ async def chat_group_send(group_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_send_group_message(group_id=group_id, req=sreq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/groups/{group_id}/messages/send"), json=body, timeout=10)
+                return _chat_send_group_message(group_id=group_id, request=req, req=sreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/groups/{group_id}/messages/send"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4542,7 +4674,7 @@ async def chat_group_send(group_id: str, req: Request):
 
 
 @app.get("/chat/groups/{group_id}/messages/inbox")
-def chat_group_inbox(group_id: str, device_id: str, since_iso: str = "", limit: int = 50):
+def chat_group_inbox(group_id: str, device_id: str, request: Request, since_iso: str = "", limit: int = 50):
     params = {"device_id": device_id, "limit": max(1, min(limit, 200))}
     if since_iso:
         params["since_iso"] = since_iso
@@ -4552,8 +4684,13 @@ def chat_group_inbox(group_id: str, device_id: str, since_iso: str = "", limit: 
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
                 sin = since_iso or None
-                return _chat_group_inbox(group_id=group_id, device_id=device_id, since_iso=sin, limit=limit, s=s)  # type: ignore[arg-type]
-        r = httpx.get(_chat_url(f"/groups/{group_id}/messages/inbox"), params=params, timeout=10)
+                return _chat_group_inbox(group_id=group_id, request=request, device_id=device_id, since_iso=sin, limit=limit, s=s)  # type: ignore[arg-type]
+        r = httpx.get(
+            _chat_url(f"/groups/{group_id}/messages/inbox"),
+            params=params,
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4564,15 +4701,20 @@ def chat_group_inbox(group_id: str, device_id: str, since_iso: str = "", limit: 
 
 
 @app.get("/chat/groups/{group_id}/members")
-def chat_group_members(group_id: str, device_id: str):
+def chat_group_members(group_id: str, device_id: str, request: Request):
     params = {"device_id": device_id}
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
-                return _chat_group_members(group_id=group_id, device_id=device_id, s=s)
-        r = httpx.get(_chat_url(f"/groups/{group_id}/members"), params=params, timeout=10)
+                return _chat_group_members(group_id=group_id, request=request, device_id=device_id, s=s)
+        r = httpx.get(
+            _chat_url(f"/groups/{group_id}/members"),
+            params=params,
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4600,8 +4742,13 @@ async def chat_group_invite(group_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_invite_members(group_id=group_id, req=ireq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/groups/{group_id}/invite"), json=body, timeout=10)
+                return _chat_invite_members(group_id=group_id, request=req, req=ireq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/groups/{group_id}/invite"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4629,8 +4776,13 @@ async def chat_group_leave(group_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_leave_group(group_id=group_id, req=lreq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/groups/{group_id}/leave"), json=body, timeout=10)
+                return _chat_leave_group(group_id=group_id, request=req, req=lreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/groups/{group_id}/leave"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4658,8 +4810,13 @@ async def chat_group_set_role(group_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_set_group_role(group_id=group_id, req=rreq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/groups/{group_id}/set_role"), json=body, timeout=10)
+                return _chat_set_group_role(group_id=group_id, request=req, req=rreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/groups/{group_id}/set_role"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4687,8 +4844,13 @@ async def chat_group_rotate_key(group_id: str, req: Request):
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
             with _chat_internal_session() as s:
-                return _chat_rotate_group_key(group_id=group_id, req=rreq, s=s)  # type: ignore[arg-type]
-        r = httpx.post(_chat_url(f"/groups/{group_id}/keys/rotate"), json=body, timeout=10)
+                return _chat_rotate_group_key(group_id=group_id, request=req, req=rreq, s=s)  # type: ignore[arg-type]
+        r = httpx.post(
+            _chat_url(f"/groups/{group_id}/keys/rotate"),
+            json=body,
+            headers=_chat_auth_headers_from_request(req),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4699,15 +4861,20 @@ async def chat_group_rotate_key(group_id: str, req: Request):
 
 
 @app.get("/chat/groups/{group_id}/keys/events")
-def chat_group_key_events(group_id: str, device_id: str, limit: int = 20):
+def chat_group_key_events(group_id: str, device_id: str, request: Request, limit: int = 20):
     params = {"device_id": device_id, "limit": max(1, min(limit, 200))}
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
-                return _chat_list_key_events(group_id=group_id, device_id=device_id, limit=limit, s=s)  # type: ignore[arg-type]
-        r = httpx.get(_chat_url(f"/groups/{group_id}/keys/events"), params=params, timeout=10)
+                return _chat_list_key_events(group_id=group_id, request=request, device_id=device_id, limit=limit, s=s)  # type: ignore[arg-type]
+        r = httpx.get(
+            _chat_url(f"/groups/{group_id}/keys/events"),
+            params=params,
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4722,7 +4889,8 @@ async def chat_inbox_ws(ws: WebSocket):
     await ws.accept()
     try:
         params = dict(ws.query_params)
-        did = params.get("device_id")
+        chat_headers = _chat_auth_headers_from_ws(ws)
+        did = params.get("device_id") or chat_headers.get("X-Chat-Device-Id")
         since_iso = params.get("since_iso") or ""
         last_iso = since_iso
         while True:
@@ -4732,7 +4900,7 @@ async def chat_inbox_ws(ws: WebSocket):
                         raise RuntimeError("chat internal not available")
                     q_since = last_iso or None
                     with _chat_internal_session() as s:
-                        arr = _chat_inbox(device_id=did, since_iso=q_since, limit=100, s=s)
+                        arr = _chat_inbox(request=ws, device_id=did, since_iso=q_since, limit=100, s=s)
                     if arr:
                         try:
                             last_iso = max([m.created_at or "" for m in arr]) or last_iso  # type: ignore[attr-defined]
@@ -4764,7 +4932,12 @@ async def chat_inbox_ws(ws: WebSocket):
                     qparams = {"device_id": did, "limit": 100}
                     if last_iso:
                         qparams["since_iso"] = last_iso
-                    r = httpx.get(_chat_url("/messages/inbox"), params=qparams, timeout=10)
+                    r = httpx.get(
+                        _chat_url("/messages/inbox"),
+                        params=qparams,
+                        headers=chat_headers,
+                        timeout=10,
+                    )
                     if r.status_code == 200:
                         arr = r.json()
                         if arr:
@@ -4793,7 +4966,8 @@ async def chat_groups_ws(ws: WebSocket):
     await ws.accept()
     try:
         params = dict(ws.query_params)
-        did = params.get("device_id")
+        chat_headers = _chat_auth_headers_from_ws(ws)
+        did = params.get("device_id") or chat_headers.get("X-Chat-Device-Id")
         last_by_gid: Dict[str, str] = {}
         # Optional resume map: since_map={"gid":"iso",...}
         since_map_raw = params.get("since_map") or ""
@@ -4816,11 +4990,12 @@ async def chat_groups_ws(ws: WebSocket):
                     if not _CHAT_INTERNAL_AVAILABLE:
                         raise RuntimeError("chat internal not available")
                     with _chat_internal_session() as s:
-                        groups = _chat_list_groups(device_id=did, s=s)
+                        groups = _chat_list_groups(request=ws, device_id=did, s=s)
                 else:
                     r = httpx.get(
                         _chat_url("/groups/list"),
                         params={"device_id": did},
+                        headers=chat_headers,
                         timeout=10,
                     )
                     if r.status_code == 200:
@@ -4848,6 +5023,7 @@ async def chat_groups_ws(ws: WebSocket):
                             sin = last_iso or None
                             arr = _chat_group_inbox(
                                 group_id=gid,
+                                request=ws,
                                 device_id=did,
                                 since_iso=sin,
                                 limit=100,
@@ -4903,6 +5079,7 @@ async def chat_groups_ws(ws: WebSocket):
                         r = httpx.get(
                             _chat_url(f"/groups/{gid}/messages/inbox"),
                             params=qparams,
+                            headers=chat_headers,
                             timeout=10,
                         )
                         if r.status_code == 200:

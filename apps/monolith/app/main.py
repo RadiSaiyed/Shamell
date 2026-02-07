@@ -2,7 +2,6 @@ import os
 import sys
 import uuid
 from fastapi import FastAPI
-from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,6 +17,7 @@ if LIB_DIR not in sys.path:
 LIB_PY_DIR = os.path.join(LIB_DIR, "shamell_shared", "python")
 if os.path.isdir(LIB_PY_DIR) and LIB_PY_DIR not in sys.path:
     sys.path.append(LIB_PY_DIR)
+from shamell_shared import configure_cors  # type: ignore[import]
 
 # Default all domains to internal mode when running the monolith so BFF
 # calls stay in-process and no external *_BASE_URL is required.
@@ -73,8 +73,13 @@ if os.getenv("MONOLITH_MODE", "0") in ("1", "true", "True"):
     os.environ.setdefault("COMMERCE_DB_URL", "sqlite+pysqlite:////tmp/shamell-commerce.db")
     os.environ.setdefault("PAYMENTS_DB_URL", "sqlite+pysqlite:////tmp/shamell-payments.db")
     os.environ.setdefault("TAXI_DB_URL", "sqlite+pysqlite:////tmp/shamell-taxi.db")
-os.environ.setdefault("INTERNAL_API_SECRET", "monolith-internal")
-os.environ.setdefault("PAYMENTS_INTERNAL_SECRET", "monolith-internal")
+_shared_internal_secret = (
+    os.getenv("INTERNAL_API_SECRET")
+    or os.getenv("PAYMENTS_INTERNAL_SECRET")
+    or uuid.uuid4().hex
+)
+os.environ.setdefault("INTERNAL_API_SECRET", _shared_internal_secret)
+os.environ.setdefault("PAYMENTS_INTERNAL_SECRET", _shared_internal_secret)
 
 # Import routers for domains that already expose APIRouter instances
 try:
@@ -144,14 +149,8 @@ def _mount_service_app(path_prefix: str, app_import_path: str):
 
 root_app = FastAPI(title="Shamell Monolith", version="0.1.0")
 
-# Allow all origins by default; individual services also configure CORS internally.
-root_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Shared CORS configuration (secure defaults, configurable via ALLOWED_ORIGINS).
+configure_cors(root_app, os.getenv("ALLOWED_ORIGINS", ""))
 
 
 @root_app.get("/health")

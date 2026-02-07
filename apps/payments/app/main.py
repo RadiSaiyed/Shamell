@@ -32,6 +32,7 @@ DB_SCHEMA = os.getenv("DB_SCHEMA") if not DB_URL.startswith("sqlite") else None
 AUTO_CREATE = _env_or("AUTO_CREATE_SCHEMA", "true").lower() == "true"
 DEFAULT_CURRENCY = _env_or("DEFAULT_CURRENCY", "SYP")
 DEV_ENABLE_TOPUP = _env_or("DEV_ENABLE_TOPUP", "false").lower() == "true"
+ALLOW_INSECURE_DEV_ADMIN_BYPASS = _env_or("ALLOW_INSECURE_DEV_ADMIN_BYPASS", "false").lower() == "true"
 SONIC_SECRET = os.getenv("SONIC_SECRET", "change-me-sonic")
 SONIC_TTL_SECS = int(_env_or("SONIC_TTL_SECS", "120"))
 TOPUP_SECRET = os.getenv("TOPUP_SECRET", "change-me-topup")
@@ -371,16 +372,21 @@ router = APIRouter()
 def require_admin(request: Request) -> bool:
     token = request.headers.get("X-Admin-Token")
     internal = request.headers.get("X-Internal-Secret")
-    if INTERNAL_API_SECRET and internal and internal == INTERNAL_API_SECRET:
+    if INTERNAL_API_SECRET and internal and _hmac.compare_digest(internal, INTERNAL_API_SECRET):
         return True
-    if ADMIN_TOKEN and token and token == ADMIN_TOKEN:
+    if ADMIN_TOKEN and token and _hmac.compare_digest(token, ADMIN_TOKEN):
         return True
     if ADMIN_TOKEN_SHA256 and token:
         import hashlib
         digest = hashlib.sha256(token.encode()).hexdigest()
-        if digest == ADMIN_TOKEN_SHA256:
+        if _hmac.compare_digest(digest, ADMIN_TOKEN_SHA256):
             return True
-    if _env_or("ENV", "dev") == "dev" and DEV_ENABLE_TOPUP and not (ADMIN_TOKEN or ADMIN_TOKEN_SHA256 or INTERNAL_API_SECRET):
+    if (
+        _env_or("ENV", "dev") == "dev"
+        and DEV_ENABLE_TOPUP
+        and ALLOW_INSECURE_DEV_ADMIN_BYPASS
+        and not (ADMIN_TOKEN or ADMIN_TOKEN_SHA256 or INTERNAL_API_SECRET)
+    ):
         return True
     raise HTTPException(status_code=401, detail="Admin token required")
 
@@ -2120,25 +2126,6 @@ def set_kyc(user_id: str, req: KycReq, s: Session = Depends(get_session), admin_
     u.kyc_level = req.level
     s.commit()
     return {"user_id": u.id, "kyc_level": u.kyc_level}
-
-
-def require_admin(request: Request) -> bool:
-    token = request.headers.get("X-Admin-Token")
-    internal = request.headers.get("X-Internal-Secret")
-    if INTERNAL_API_SECRET and internal and internal == INTERNAL_API_SECRET:
-        return True
-    if ADMIN_TOKEN and token and token == ADMIN_TOKEN:
-        return True
-    if ADMIN_TOKEN_SHA256 and token:
-        import hashlib
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        if digest == ADMIN_TOKEN_SHA256:
-            return True
-    # In dev without any configured admin secrets, allow when DEV_ENABLE_TOPUP true
-    if _env_or("ENV", "dev") == "dev" and DEV_ENABLE_TOPUP and not (ADMIN_TOKEN or ADMIN_TOKEN_SHA256 or INTERNAL_API_SECRET):
-        return True
-    raise HTTPException(status_code=401, detail="Admin token required")
-
 
 # --- Admin utilities ---
 class AdminTxnItem(BaseModel):

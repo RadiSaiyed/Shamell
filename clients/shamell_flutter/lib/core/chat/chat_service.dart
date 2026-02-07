@@ -17,9 +17,9 @@ enum OfficialNotificationMode {
 
 class ChatService {
   ChatService(String baseUrl)
-      : _base = baseUrl.endsWith('/')
-            ? baseUrl.substring(0, baseUrl.length - 1)
-            : baseUrl;
+    : _base = baseUrl.endsWith('/')
+          ? baseUrl.substring(0, baseUrl.length - 1)
+          : baseUrl;
 
   final String _base;
   WebSocketChannel? _ws;
@@ -31,12 +31,19 @@ class ChatService {
       'public_key_b64': me.publicKeyB64,
       'name': me.displayName,
     });
-    final r = await http.post(_uri('/chat/devices/register'),
-        headers: await _headers(json: true), body: body);
+    final r = await http.post(
+      _uri('/chat/devices/register'),
+      headers: await _headers(json: true, chatDeviceId: me.id),
+      body: body,
+    );
     if (r.statusCode >= 400) {
       throw Exception('register failed: ${r.statusCode}');
     }
     final j = jsonDecode(r.body) as Map<String, Object?>;
+    final authToken = (j['auth_token'] ?? '').toString().trim();
+    if (authToken.isNotEmpty) {
+      await ChatLocalStore().saveDeviceAuthToken(me.id, authToken);
+    }
     return ChatContact(
       id: (j['device_id'] ?? '') as String,
       publicKeyB64: (j['public_key_b64'] ?? '') as String,
@@ -47,8 +54,10 @@ class ChatService {
   }
 
   Future<ChatContact> resolveDevice(String id) async {
-    final r = await http.get(_uri('/chat/devices/${Uri.encodeComponent(id)}'),
-        headers: await _headers());
+    final r = await http.get(
+      _uri('/chat/devices/${Uri.encodeComponent(id)}'),
+      headers: await _headers(),
+    );
     if (r.statusCode >= 400) {
       throw Exception('device not found (${r.statusCode})');
     }
@@ -75,8 +84,13 @@ class ChatService {
     int? prevKeyId,
     String? senderDhPubB64,
   }) async {
-    final enc = _encryptMessage(me, peer, plainText,
-        sealed: sealedSender, sessionKey: sessionKey);
+    final enc = _encryptMessage(
+      me,
+      peer,
+      plainText,
+      sealed: sealedSender,
+      sessionKey: sessionKey,
+    );
     final body = jsonEncode({
       'sender_id': me.id,
       'recipient_id': peer.id,
@@ -92,13 +106,17 @@ class ChatService {
       if (expireAfterSeconds != null)
         'expire_after_seconds': expireAfterSeconds,
     });
-    final r = await http.post(_uri('/chat/messages/send'),
-        headers: await _headers(json: true), body: body);
+    final r = await http.post(
+      _uri('/chat/messages/send'),
+      headers: await _headers(json: true, chatDeviceId: me.id),
+      body: body,
+    );
     if (r.statusCode >= 400) {
       throw Exception('send failed: ${r.statusCode}');
     }
-    final parsed =
-        ChatMessage.fromJson(jsonDecode(r.body) as Map<String, Object?>);
+    final parsed = ChatMessage.fromJson(
+      jsonDecode(r.body) as Map<String, Object?>,
+    );
     if (parsed.createdAt != null) return parsed;
     return ChatMessage(
       id: parsed.id,
@@ -116,16 +134,15 @@ class ChatService {
     int limit = 50,
     String? sinceIso,
   }) async {
-    final qp = <String, String>{
-      'device_id': deviceId,
-      'limit': '$limit',
-    };
+    final qp = <String, String>{'device_id': deviceId, 'limit': '$limit'};
     if (sinceIso != null && sinceIso.isNotEmpty) {
       qp['since_iso'] = sinceIso;
     }
     qp.putIfAbsent('sealed_view', () => '1');
-    final r = await http.get(_uri('/chat/messages/inbox', qp),
-        headers: await _headers());
+    final r = await http.get(
+      _uri('/chat/messages/inbox', qp),
+      headers: await _headers(chatDeviceId: deviceId),
+    );
     if (r.statusCode >= 400) {
       throw Exception('inbox failed: ${r.statusCode}');
     }
@@ -135,9 +152,12 @@ class ChatService {
         .toList();
   }
 
-  Future<void> markRead(String id) async {
-    await http.post(_uri('/chat/messages/$id/read'),
-        headers: await _headers(json: true), body: jsonEncode({'read': true}));
+  Future<void> markRead(String id, {String? deviceId}) async {
+    await http.post(
+      _uri('/chat/messages/$id/read'),
+      headers: await _headers(json: true, chatDeviceId: deviceId),
+      body: jsonEncode({'read': true}),
+    );
   }
 
   Future<void> setBlock({
@@ -148,7 +168,7 @@ class ChatService {
   }) async {
     await http.post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/block'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode({
         'peer_id': peerId,
         'blocked': blocked,
@@ -163,7 +183,11 @@ class ChatService {
     required bool hidden,
   }) async {
     await setBlock(
-        deviceId: deviceId, peerId: peerId, blocked: false, hidden: hidden);
+      deviceId: deviceId,
+      peerId: peerId,
+      blocked: false,
+      hidden: hidden,
+    );
   }
 
   Future<void> setPrefs({
@@ -173,25 +197,21 @@ class ChatService {
     bool? starred,
     bool? pinned,
   }) async {
-    final body = <String, Object?>{
-      'peer_id': peerId,
-    };
+    final body = <String, Object?>{'peer_id': peerId};
     if (muted != null) body['muted'] = muted;
     if (starred != null) body['starred'] = starred;
     if (pinned != null) body['pinned'] = pinned;
     await http.post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/prefs'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode(body),
     );
   }
 
-  Future<List<ChatContactPrefs>> fetchPrefs({
-    required String deviceId,
-  }) async {
+  Future<List<ChatContactPrefs>> fetchPrefs({required String deviceId}) async {
     final r = await http.get(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/prefs'),
-      headers: await _headers(),
+      headers: await _headers(chatDeviceId: deviceId),
     );
     if (r.statusCode >= 400) {
       throw Exception('prefs failed: ${r.statusCode}');
@@ -216,14 +236,12 @@ class ChatService {
     bool? muted,
     bool? pinned,
   }) async {
-    final body = <String, Object?>{
-      'group_id': groupId,
-    };
+    final body = <String, Object?>{'group_id': groupId};
     if (muted != null) body['muted'] = muted;
     if (pinned != null) body['pinned'] = pinned;
     await http.post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/group_prefs'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode(body),
     );
   }
@@ -233,7 +251,7 @@ class ChatService {
   }) async {
     final r = await http.get(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/group_prefs'),
-      headers: await _headers(),
+      headers: await _headers(chatDeviceId: deviceId),
     );
     if (r.statusCode >= 400) {
       throw Exception('group prefs failed: ${r.statusCode}');
@@ -260,7 +278,7 @@ class ChatService {
     try {
       await http.post(
         _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/push_token'),
-        headers: await _headers(json: true),
+        headers: await _headers(json: true, chatDeviceId: deviceId),
         body: jsonEncode({
           'token': token,
           'platform': platform ?? 'flutter',
@@ -272,75 +290,150 @@ class ChatService {
     }
   }
 
-  Stream<List<ChatMessage>> streamInbox({
-    required String deviceId,
-  }) {
+  Stream<List<ChatMessage>> streamInbox({required String deviceId}) {
     _ws?.sink.close();
-    final u = Uri.parse(_base);
-    final wsUri = Uri(
-      scheme: u.scheme == 'https' ? 'wss' : 'ws',
-      host: u.host,
-      port: u.hasPort ? u.port : null,
-      path: '/ws/chat/inbox',
-      queryParameters: {'device_id': deviceId, 'sealed_view': '1'},
-    );
-    _ws = WebSocketChannel.connect(wsUri);
-    return _ws!.stream.map((payload) {
+    final out = StreamController<List<ChatMessage>>();
+    Future<void>(() async {
       try {
-        final j = jsonDecode(payload);
-        if (j is Map && j['type'] == 'inbox' && j['messages'] is List) {
-          final msgs = (j['messages'] as List)
-              .map((m) => ChatMessage.fromJson(m as Map<String, Object?>))
-              .toList();
-          return msgs;
+        final u = Uri.parse(_base);
+        final wsUri = Uri(
+          scheme: u.scheme == 'https' ? 'wss' : 'ws',
+          host: u.host,
+          port: u.hasPort ? u.port : null,
+          path: '/ws/chat/inbox',
+          queryParameters: {'device_id': deviceId, 'sealed_view': '1'},
+        );
+        final auth = await _chatAuthContext(chatDeviceId: deviceId);
+        final headers = <String, String>{};
+        if (auth.deviceId != null && auth.deviceId!.isNotEmpty) {
+          headers['X-Chat-Device-Id'] = auth.deviceId!;
         }
-      } catch (_) {}
-      return <ChatMessage>[];
+        if (auth.token != null && auth.token!.isNotEmpty) {
+          headers['X-Chat-Device-Token'] = auth.token!;
+        }
+        final channel = _connectWebSocket(
+          wsUri,
+          headers: headers,
+          fallbackUri: _chatWsUriWithFallback(wsUri, auth.deviceId, auth.token),
+        );
+        _ws = channel;
+        late final StreamSubscription sub;
+        sub = channel.stream.listen(
+          (payload) {
+            try {
+              final j = jsonDecode(payload);
+              if (j is Map && j['type'] == 'inbox' && j['messages'] is List) {
+                final msgs = (j['messages'] as List)
+                    .map((m) => ChatMessage.fromJson(m as Map<String, Object?>))
+                    .toList();
+                out.add(msgs);
+                return;
+              }
+            } catch (_) {}
+            out.add(<ChatMessage>[]);
+          },
+          onError: out.addError,
+          onDone: () async {
+            await out.close();
+          },
+          cancelOnError: false,
+        );
+        out.onCancel = () async {
+          await sub.cancel();
+          channel.sink.close();
+          if (identical(_ws, channel)) {
+            _ws = null;
+          }
+        };
+      } catch (e, st) {
+        out.addError(e, st);
+        await out.close();
+      }
     });
+    return out.stream;
   }
 
-  Stream<ChatGroupInboxUpdate> streamGroupInbox({
-    required String deviceId,
-  }) {
+  Stream<ChatGroupInboxUpdate> streamGroupInbox({required String deviceId}) {
     _wsGroups?.sink.close();
-    final u = Uri.parse(_base);
-    final wsUri = Uri(
-      scheme: u.scheme == 'https' ? 'wss' : 'ws',
-      host: u.host,
-      port: u.hasPort ? u.port : null,
-      path: '/ws/chat/groups',
-      queryParameters: {'device_id': deviceId},
-    );
-    _wsGroups = WebSocketChannel.connect(wsUri);
+    final out = StreamController<ChatGroupInboxUpdate>();
     final store = ChatLocalStore();
-    return _wsGroups!.stream.asyncMap((payload) async {
+    Future<void>(() async {
       try {
-        final j = jsonDecode(payload);
-        if (j is Map &&
-            j['type'] == 'group_inbox' &&
-            j['group_id'] is String &&
-            j['messages'] is List) {
-          final gid = (j['group_id'] as String).trim();
-          var msgs = (j['messages'] as List)
-              .whereType<Map>()
-              .map((m) => ChatGroupMessage.fromJson(m.cast<String, Object?>()))
-              .toList();
-          try {
-            final keyB64 = await store.loadGroupKey(gid);
-            if (keyB64 != null && keyB64.isNotEmpty) {
-              final key = base64Decode(keyB64);
-              if (key.length == 32) {
-                msgs =
-                    msgs.map((m) => _maybeDecryptGroupMessage(m, key)).toList();
-              }
-            }
-          } catch (_) {}
-          return ChatGroupInboxUpdate(groupId: gid, messages: msgs);
+        final u = Uri.parse(_base);
+        final wsUri = Uri(
+          scheme: u.scheme == 'https' ? 'wss' : 'ws',
+          host: u.host,
+          port: u.hasPort ? u.port : null,
+          path: '/ws/chat/groups',
+          queryParameters: {'device_id': deviceId},
+        );
+        final auth = await _chatAuthContext(chatDeviceId: deviceId);
+        final headers = <String, String>{};
+        if (auth.deviceId != null && auth.deviceId!.isNotEmpty) {
+          headers['X-Chat-Device-Id'] = auth.deviceId!;
         }
-      } catch (_) {}
-      return const ChatGroupInboxUpdate(
-          groupId: '', messages: <ChatGroupMessage>[]);
-    }).where((u) => u.groupId.isNotEmpty && u.messages.isNotEmpty);
+        if (auth.token != null && auth.token!.isNotEmpty) {
+          headers['X-Chat-Device-Token'] = auth.token!;
+        }
+        final channel = _connectWebSocket(
+          wsUri,
+          headers: headers,
+          fallbackUri: _chatWsUriWithFallback(wsUri, auth.deviceId, auth.token),
+        );
+        _wsGroups = channel;
+        late final StreamSubscription sub;
+        sub = channel.stream.listen(
+          (payload) async {
+            try {
+              final j = jsonDecode(payload);
+              if (j is Map &&
+                  j['type'] == 'group_inbox' &&
+                  j['group_id'] is String &&
+                  j['messages'] is List) {
+                final gid = (j['group_id'] as String).trim();
+                var msgs = (j['messages'] as List)
+                    .whereType<Map>()
+                    .map(
+                      (m) =>
+                          ChatGroupMessage.fromJson(m.cast<String, Object?>()),
+                    )
+                    .toList();
+                try {
+                  final keyB64 = await store.loadGroupKey(gid);
+                  if (keyB64 != null && keyB64.isNotEmpty) {
+                    final key = base64Decode(keyB64);
+                    if (key.length == 32) {
+                      msgs = msgs
+                          .map((m) => _maybeDecryptGroupMessage(m, key))
+                          .toList();
+                    }
+                  }
+                } catch (_) {}
+                if (gid.isNotEmpty && msgs.isNotEmpty) {
+                  out.add(ChatGroupInboxUpdate(groupId: gid, messages: msgs));
+                }
+              }
+            } catch (_) {}
+          },
+          onError: out.addError,
+          onDone: () async {
+            await out.close();
+          },
+          cancelOnError: false,
+        );
+        out.onCancel = () async {
+          await sub.cancel();
+          channel.sink.close();
+          if (identical(_wsGroups, channel)) {
+            _wsGroups = null;
+          }
+        };
+      } catch (e, st) {
+        out.addError(e, st);
+        await out.close();
+      }
+    });
+    return out.stream;
   }
 
   Future<ChatGroup> createGroup({
@@ -357,7 +450,7 @@ class ChatService {
     });
     final r = await http.post(
       _uri('/chat/groups/create'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: deviceId),
       body: body,
     );
     if (r.statusCode >= 400) {
@@ -366,12 +459,10 @@ class ChatService {
     return ChatGroup.fromJson(jsonDecode(r.body) as Map<String, Object?>);
   }
 
-  Future<List<ChatGroup>> listGroups({
-    required String deviceId,
-  }) async {
+  Future<List<ChatGroup>> listGroups({required String deviceId}) async {
     final r = await http.get(
       _uri('/chat/groups/list', {'device_id': deviceId}),
-      headers: await _headers(),
+      headers: await _headers(chatDeviceId: deviceId),
     );
     if (r.statusCode >= 400) {
       throw Exception('groups list failed: ${r.statusCode}');
@@ -398,7 +489,7 @@ class ChatService {
     });
     final r = await http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/update'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
     );
     if (r.statusCode >= 400) {
@@ -449,7 +540,8 @@ class ChatService {
         if (keyBytes.length == 32) {
           final rnd = Random.secure();
           final nonce = Uint8List.fromList(
-              List<int>.generate(24, (_) => rnd.nextInt(256)));
+            List<int>.generate(24, (_) => rnd.nextInt(256)),
+          );
           final box = x25519.SecretBox(Uint8List.fromList(keyBytes)).encrypt(
             Uint8List.fromList(utf8.encode(jsonEncode(payload))),
             nonce: nonce,
@@ -476,14 +568,15 @@ class ChatService {
     final body = jsonEncode(bodyMap);
     final r = await http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/messages/send'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: senderId),
       body: body,
     );
     if (r.statusCode >= 400) {
       throw Exception('group send failed: ${r.statusCode}');
     }
     return ChatGroupMessage.fromJson(
-        jsonDecode(r.body) as Map<String, Object?>);
+      jsonDecode(r.body) as Map<String, Object?>,
+    );
   }
 
   Future<List<ChatGroupMessage>> fetchGroupInbox({
@@ -492,16 +585,13 @@ class ChatService {
     int limit = 50,
     String? sinceIso,
   }) async {
-    final qp = <String, String>{
-      'device_id': deviceId,
-      'limit': '$limit',
-    };
+    final qp = <String, String>{'device_id': deviceId, 'limit': '$limit'};
     if (sinceIso != null && sinceIso.isNotEmpty) {
       qp['since_iso'] = sinceIso;
     }
     final r = await http.get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/messages/inbox', qp),
-      headers: await _headers(),
+      headers: await _headers(chatDeviceId: deviceId),
     );
     if (r.statusCode >= 400) {
       throw Exception('group inbox failed: ${r.statusCode}');
@@ -531,7 +621,7 @@ class ChatService {
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/members', {
         'device_id': deviceId,
       }),
-      headers: await _headers(),
+      headers: await _headers(chatDeviceId: deviceId),
     );
     if (r.statusCode >= 400) {
       throw Exception('group members failed: ${r.statusCode}');
@@ -548,13 +638,10 @@ class ChatService {
     required String inviterId,
     required List<String> memberIds,
   }) async {
-    final body = jsonEncode({
-      'inviter_id': inviterId,
-      'member_ids': memberIds,
-    });
+    final body = jsonEncode({'inviter_id': inviterId, 'member_ids': memberIds});
     final r = await http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/invite'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: inviterId),
       body: body,
     );
     if (r.statusCode >= 400) {
@@ -570,7 +657,7 @@ class ChatService {
     final body = jsonEncode({'device_id': deviceId});
     final r = await http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/leave'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: deviceId),
       body: body,
     );
     if (r.statusCode >= 400) {
@@ -591,7 +678,7 @@ class ChatService {
     });
     final r = await http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/set_role'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
     );
     if (r.statusCode >= 400) {
@@ -610,7 +697,7 @@ class ChatService {
     };
     final r = await http.get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/keys/events', qp),
-      headers: await _headers(),
+      headers: await _headers(chatDeviceId: deviceId),
     );
     if (r.statusCode >= 400) {
       throw Exception('group key events failed: ${r.statusCode}');
@@ -636,7 +723,7 @@ class ChatService {
     });
     final r = await http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/keys/rotate'),
-      headers: await _headers(json: true),
+      headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
     );
     if (r.statusCode >= 400) {
@@ -661,7 +748,9 @@ class ChatService {
 
   // Helpers
   ChatGroupMessage _maybeDecryptGroupMessage(
-      ChatGroupMessage m, Uint8List key) {
+    ChatGroupMessage m,
+    Uint8List key,
+  ) {
     if (m.kind != 'sealed' ||
         m.nonceB64 == null ||
         m.boxB64 == null ||
@@ -672,10 +761,9 @@ class ChatService {
     try {
       final nonce = base64Decode(m.nonceB64!);
       final boxBytes = base64Decode(m.boxB64!);
-      final plain = x25519.SecretBox(key).decrypt(
-        x25519.ByteList(boxBytes),
-        nonce: nonce,
-      );
+      final plain = x25519.SecretBox(
+        key,
+      ).decrypt(x25519.ByteList(boxBytes), nonce: nonce);
       final raw = utf8.decode(plain);
       final j = jsonDecode(raw);
       if (j is Map) {
@@ -728,31 +816,99 @@ class ChatService {
   }
 
   (String, String) _encryptMessage(
-      ChatIdentity me, ChatContact peer, String plain,
-      {bool sealed = false, Uint8List? sessionKey}) {
+    ChatIdentity me,
+    ChatContact peer,
+    String plain, {
+    bool sealed = false,
+    Uint8List? sessionKey,
+  }) {
     final rnd = Random.secure();
-    final nonce =
-        Uint8List.fromList(List<int>.generate(24, (_) => rnd.nextInt(256)));
+    final nonce = Uint8List.fromList(
+      List<int>.generate(24, (_) => rnd.nextInt(256)),
+    );
     if (sealed && sessionKey != null) {
       final box = x25519.SecretBox(sessionKey);
-      final cipher =
-          box.encrypt(Uint8List.fromList(utf8.encode(plain)), nonce: nonce);
+      final cipher = box.encrypt(
+        Uint8List.fromList(utf8.encode(plain)),
+        nonce: nonce,
+      );
       return (
         base64Encode(cipher.nonce.asTypedList),
-        base64Encode(cipher.cipherText.asTypedList)
+        base64Encode(cipher.cipherText.asTypedList),
       );
     }
     final sk = x25519.PrivateKey(base64Decode(me.privateKeyB64));
     final pkPeer = x25519.PublicKey(base64Decode(peer.publicKeyB64));
-    final box = x25519.Box(myPrivateKey: sk, theirPublicKey: pkPeer)
-        .encrypt(Uint8List.fromList(utf8.encode(plain)), nonce: nonce);
+    final box = x25519.Box(
+      myPrivateKey: sk,
+      theirPublicKey: pkPeer,
+    ).encrypt(Uint8List.fromList(utf8.encode(plain)), nonce: nonce);
     return (
       base64Encode(box.nonce.asTypedList),
-      base64Encode(box.cipherText.asTypedList)
+      base64Encode(box.cipherText.asTypedList),
     );
   }
 
-  Future<Map<String, String>> _headers({bool json = false}) async {
+  Future<({String? deviceId, String? token})> _chatAuthContext({
+    String? chatDeviceId,
+    String? chatDeviceToken,
+  }) async {
+    String? did = chatDeviceId?.trim();
+    if (did == null || did.isEmpty) {
+      final id = await ChatLocalStore().loadIdentity();
+      final candidate = id?.id.trim() ?? '';
+      if (candidate.isNotEmpty) {
+        did = candidate;
+      }
+    }
+    String? tok = chatDeviceToken?.trim();
+    if ((tok == null || tok.isEmpty) && did != null && did.isNotEmpty) {
+      tok = (await ChatLocalStore().loadDeviceAuthToken(did))?.trim();
+    }
+    if (did != null && did.isEmpty) did = null;
+    if (tok != null && tok.isEmpty) tok = null;
+    return (deviceId: did, token: tok);
+  }
+
+  Uri _chatWsUriWithFallback(Uri wsUri, String? deviceId, String? token) {
+    final qp = <String, String>{...wsUri.queryParameters};
+    final did = (deviceId ?? '').trim();
+    final tok = (token ?? '').trim();
+    if (did.isNotEmpty) {
+      qp['chat_device_id'] = did;
+    }
+    if (tok.isNotEmpty) {
+      qp['chat_device_token'] = tok;
+    }
+    return wsUri.replace(queryParameters: qp);
+  }
+
+  WebSocketChannel _connectWebSocket(
+    Uri wsUri, {
+    required Map<String, String> headers,
+    Uri? fallbackUri,
+  }) {
+    if (headers.isNotEmpty) {
+      try {
+        final dynamic connector = WebSocketChannel.connect;
+        final dynamic ch = Function.apply(
+          connector,
+          <Object?>[wsUri],
+          <Symbol, Object?>{#headers: headers},
+        );
+        if (ch is WebSocketChannel) {
+          return ch;
+        }
+      } catch (_) {}
+    }
+    return WebSocketChannel.connect(fallbackUri ?? wsUri);
+  }
+
+  Future<Map<String, String>> _headers({
+    bool json = false,
+    String? chatDeviceId,
+    String? chatDeviceToken,
+  }) async {
     final h = <String, String>{};
     if (json) h['content-type'] = 'application/json';
     final sp = await SharedPreferences.getInstance();
@@ -760,13 +916,24 @@ class ChatService {
     if (cookie != null && cookie.isNotEmpty) {
       h['sa_cookie'] = cookie;
     }
+    final auth = await _chatAuthContext(
+      chatDeviceId: chatDeviceId,
+      chatDeviceToken: chatDeviceToken,
+    );
+    if (auth.deviceId != null && auth.deviceId!.isNotEmpty) {
+      h['X-Chat-Device-Id'] = auth.deviceId!;
+    }
+    if (auth.token != null && auth.token!.isNotEmpty) {
+      h['X-Chat-Device-Token'] = auth.token!;
+    }
     return h;
   }
 
   Uri _uri(String path, [Map<String, String>? qp]) {
     final base = _base;
-    final prefix =
-        base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+    final prefix = base.endsWith('/')
+        ? base.substring(0, base.length - 1)
+        : base;
     final full = '$prefix$path';
     return Uri.parse(full).replace(queryParameters: qp);
   }
@@ -784,6 +951,7 @@ class ChatLocalStore {
   static const _voicePlayedPrefix = 'chat.voice.played.';
   static const _groupVoicePlayedPrefix = 'chat.grp.voice.played.';
   static const _draftsKey = 'chat.drafts.v1';
+  static const _deviceTokenPrefix = 'chat.device.token.';
   static const int _voicePlayedMax = 200;
 
   Future<ChatIdentity?> loadIdentity() async {
@@ -800,6 +968,31 @@ class ChatLocalStore {
   Future<void> saveIdentity(ChatIdentity id) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(_idKey, jsonEncode(id.toMap()));
+  }
+
+  Future<void> saveDeviceAuthToken(String deviceId, String token) async {
+    final did = deviceId.trim();
+    final tok = token.trim();
+    if (did.isEmpty || tok.isEmpty) return;
+    final sec = _sec();
+    await sec.write(key: '$_deviceTokenPrefix$did', value: tok);
+  }
+
+  Future<String?> loadDeviceAuthToken(String deviceId) async {
+    final did = deviceId.trim();
+    if (did.isEmpty) return null;
+    final sec = _sec();
+    final value = await sec.read(key: '$_deviceTokenPrefix$did');
+    final token = (value ?? '').trim();
+    if (token.isEmpty) return null;
+    return token;
+  }
+
+  Future<void> deleteDeviceAuthToken(String deviceId) async {
+    final did = deviceId.trim();
+    if (did.isEmpty) return;
+    final sec = _sec();
+    await sec.delete(key: '$_deviceTokenPrefix$did');
   }
 
   Future<ChatContact?> loadPeer() async {
@@ -841,7 +1034,9 @@ class ChatLocalStore {
   Future<void> saveContacts(List<ChatContact> contacts) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(
-        _contactsKey, jsonEncode(contacts.map((c) => c.toMap()).toList()));
+      _contactsKey,
+      jsonEncode(contacts.map((c) => c.toMap()).toList()),
+    );
   }
 
   Future<Map<String, String>> loadDrafts() async {
@@ -888,7 +1083,9 @@ class ChatLocalStore {
   Future<void> saveMessages(String peerId, List<ChatMessage> msgs) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(
-        'chat.msgs.$peerId', jsonEncode(msgs.map((m) => m.toMap()).toList()));
+      'chat.msgs.$peerId',
+      jsonEncode(msgs.map((m) => m.toMap()).toList()),
+    );
   }
 
   Future<void> deleteMessages(String peerId) async {
@@ -936,7 +1133,8 @@ class ChatLocalStore {
   Future<Set<String>> loadGroupVoicePlayed(String groupId) async {
     if (groupId.isEmpty) return <String>{};
     final sp = await SharedPreferences.getInstance();
-    final list = sp.getStringList('$_groupVoicePlayedPrefix$groupId') ??
+    final list =
+        sp.getStringList('$_groupVoicePlayedPrefix$groupId') ??
         const <String>[];
     return list.where((id) => id.trim().isNotEmpty).toSet();
   }
@@ -957,26 +1155,30 @@ class ChatLocalStore {
   }
 
   Future<void> saveGroupMessages(
-      String groupId, List<ChatGroupMessage> msgs) async {
+    String groupId,
+    List<ChatGroupMessage> msgs,
+  ) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(
       'chat.grp.msgs.$groupId',
       jsonEncode(
         msgs
-            .map((m) => {
-                  'id': m.id,
-                  'group_id': m.groupId,
-                  'sender_id': m.senderId,
-                  'text': m.text,
-                  'kind': m.kind,
-                  'nonce_b64': m.nonceB64,
-                  'box_b64': m.boxB64,
-                  'attachment_b64': m.attachmentB64,
-                  'attachment_mime': m.attachmentMime,
-                  'voice_secs': m.voiceSecs,
-                  'created_at': m.createdAt?.toUtc().toIso8601String(),
-                  'expire_at': m.expireAt?.toUtc().toIso8601String(),
-                })
+            .map(
+              (m) => {
+                'id': m.id,
+                'group_id': m.groupId,
+                'sender_id': m.senderId,
+                'text': m.text,
+                'kind': m.kind,
+                'nonce_b64': m.nonceB64,
+                'box_b64': m.boxB64,
+                'attachment_b64': m.attachmentB64,
+                'attachment_mime': m.attachmentMime,
+                'voice_secs': m.voiceSecs,
+                'created_at': m.createdAt?.toUtc().toIso8601String(),
+                'expire_at': m.expireAt?.toUtc().toIso8601String(),
+              },
+            )
             .toList(),
       ),
     );
@@ -1149,7 +1351,9 @@ class ChatLocalStore {
   }
 
   Future<void> setOfficialNotifMode(
-      String peerId, OfficialNotificationMode? mode) async {
+    String peerId,
+    OfficialNotificationMode? mode,
+  ) async {
     if (peerId.isEmpty) return;
     final map = await _loadOfficialNotifRaw();
     if (mode == null) {
@@ -1237,15 +1441,17 @@ class ChatLocalStore {
   }
 
   Future<
-      ({
-        bool enabled,
-        bool preview,
-        bool sound,
-        bool vibrate,
-        bool dnd,
-        int dndStart,
-        int dndEnd,
-      })> loadNotifyConfig() async {
+    ({
+      bool enabled,
+      bool preview,
+      bool sound,
+      bool vibrate,
+      bool dnd,
+      int dndStart,
+      int dndEnd,
+    })
+  >
+  loadNotifyConfig() async {
     final sp = await SharedPreferences.getInstance();
     return (
       enabled: sp.getBool(_notifyEnabledKey) ?? true,
@@ -1308,8 +1514,12 @@ class ChatLocalStore {
     final raw = await sec.read(key: _chainMap);
     if (raw == null || raw.isEmpty) return {};
     final decoded = (jsonDecode(raw) as Map<String, Object?>);
-    return decoded.map((k, v) => MapEntry(k,
-        (v as Map<String, Object?>).map((k2, v2) => MapEntry(k2, v2 ?? ''))));
+    return decoded.map(
+      (k, v) => MapEntry(
+        k,
+        (v as Map<String, Object?>).map((k2, v2) => MapEntry(k2, v2 ?? '')),
+      ),
+    );
   }
 
   Future<void> saveChain(String peerId, Map<String, Object> state) async {
@@ -1351,18 +1561,15 @@ class ChatLocalStore {
   static const _groupKeyPrefix = 'chat.grp.key.';
 
   FlutterSecureStorage _sec() => const FlutterSecureStorage(
-        aOptions: AndroidOptions(
-          encryptedSharedPreferences: true,
-          resetOnError: true,
-          // prefer hardware-backed when available
-          sharedPreferencesName: 'chat_secure_store',
-        ),
-        iOptions: IOSOptions(
-          accessibility: KeychainAccessibility.first_unlock,
-        ),
-        mOptions:
-            MacOsOptions(accessibility: KeychainAccessibility.first_unlock),
-      );
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: true,
+      // prefer hardware-backed when available
+      sharedPreferencesName: 'chat_secure_store',
+    ),
+    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+    mOptions: MacOsOptions(accessibility: KeychainAccessibility.first_unlock),
+  );
 }
 
 class ChatCallStore {
