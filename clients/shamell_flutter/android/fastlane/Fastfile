@@ -4,7 +4,7 @@ platform :android do
   desc "Build Android appbundle via Flutter"
   lane :build do
     sh("flutter pub get")
-    sh("flutter build appbundle --release")
+    sh("flutter build appbundle --release --flavor user")
   end
 
   desc "Upload to Google Play (requires service account JSON)"
@@ -13,4 +13,3 @@ platform :android do
     supply(track: 'internal', skip_upload_metadata: true, skip_upload_changelogs: true)
   end
 end
-
