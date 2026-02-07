@@ -23,7 +23,7 @@ subprojects {
     // Ensure all Android modules (including plugin modules like :app_links)
     // have BuildConfig generation enabled, which is required when they
     // declare custom BuildConfig fields.
-    afterEvaluate {
+    fun enableBuildConfigIfAndroidModule() {
         val androidExt = extensions.findByName("android")
         if (androidExt is BaseExtension) {
             androidExt.buildFeatures.apply {
@@ -32,6 +32,9 @@ subprojects {
             }
         }
     }
+
+    plugins.withId("com.android.application") { enableBuildConfigIfAndroidModule() }
+    plugins.withId("com.android.library") { enableBuildConfigIfAndroidModule() }
 }
 
 tasks.register<Delete>("clean") {
