@@ -8,3 +8,10 @@ description = "Ignore deterministic CocoaPods lockfile checksums"
 paths = [
   '''clients/shamell_flutter/ios/Podfile\.lock''',
 ]
+
+[[allowlists]]
+description = "Ignore CocoaPods SPEC CHECKSUM entry for local_auth_darwin"
+regexTarget = "line"
+regexes = [
+  '''local_auth_darwin:\s*[a-f0-9]{40}''',
+]
