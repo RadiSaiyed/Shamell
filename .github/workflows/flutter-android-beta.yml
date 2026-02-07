@@ -7,6 +7,8 @@ jobs:
   android-beta:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      HAS_PLAY_CREDENTIALS: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,21 +26,35 @@ jobs:
         working-directory: clients/shamell_flutter
         run: flutter build appbundle --release
 
+      - name: Detect Play credentials
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "HAS_PLAY_CREDENTIALS=true" >> "$GITHUB_ENV"
+          fi
+
       - name: Install fastlane
-        if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        if: ${{ env.HAS_PLAY_CREDENTIALS == 'true' }}
         run: sudo gem install fastlane
 
       - name: Write Play service account JSON
-        if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        if: ${{ env.HAS_PLAY_CREDENTIALS == 'true' }}
         working-directory: clients/shamell_flutter/android
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
-          echo "${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}" > play_service_account.json
+          printf '%s' "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON}" > play_service_account.json
 
       - name: Fastlane beta (Play Internal)
-        if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        if: ${{ env.HAS_PLAY_CREDENTIALS == 'true' }}
         working-directory: clients/shamell_flutter/android
         env:
           JSON_KEY: play_service_account.json
         run: |
           fastlane build
           fastlane beta
+
+      - name: Skip note (credentials missing)
+        if: ${{ env.HAS_PLAY_CREDENTIALS != 'true' }}
+        run: echo "Skipping Play upload: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not configured."
