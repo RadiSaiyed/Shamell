@@ -1,4 +1,6 @@
 import com.android.build.gradle.BaseExtension
+import org.gradle.api.tasks.compile.JavaCompile
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 allprojects {
     repositories {
@@ -53,13 +55,27 @@ subprojects {
         setter.invoke(androidExt, "dev.shamell.$sanitized")
     }
 
+    // Some third-party Flutter plugins are inconsistent (e.g. Java 1.8 vs Kotlin 17).
+    // Force a uniform bytecode target across subprojects to keep AGP/Kotlin tasks compatible.
+    fun alignJvmTargets() {
+        tasks.withType<JavaCompile>().configureEach {
+            sourceCompatibility = JavaVersion.VERSION_11.toString()
+            targetCompatibility = JavaVersion.VERSION_11.toString()
+        }
+        tasks.withType<KotlinCompile>().configureEach {
+            kotlinOptions.jvmTarget = JavaVersion.VERSION_11.toString()
+        }
+    }
+
     plugins.withId("com.android.application") {
         enableBuildConfigIfAndroidModule()
         ensureNamespaceIfMissing()
+        alignJvmTargets()
     }
     plugins.withId("com.android.library") {
         enableBuildConfigIfAndroidModule()
         ensureNamespaceIfMissing()
+        alignJvmTargets()
     }
 }
 
