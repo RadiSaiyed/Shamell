@@ -57,4 +57,5 @@ jobs:
 
       - name: Skip note (credentials missing)
         if: ${{ env.HAS_PLAY_CREDENTIALS != 'true' }}
-        run: echo "Skipping Play upload: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not configured."
+        run: |
+          echo "Skipping Play upload: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not configured."

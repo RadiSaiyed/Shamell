@@ -57,4 +57,5 @@ jobs:
 
       - name: Skip note (credentials missing)
         if: ${{ env.HAS_APPSTORE_CREDENTIALS != 'true' }}
-        run: echo "Skipping TestFlight upload: APP_STORE_CONNECT_API_KEY_JSON is not configured."
+        run: |
+          echo "Skipping TestFlight upload: APP_STORE_CONNECT_API_KEY_JSON is not configured."
