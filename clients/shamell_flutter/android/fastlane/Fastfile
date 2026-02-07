@@ -9,7 +9,7 @@ platform :android do
 
   desc "Upload to Google Play (requires service account JSON)"
   lane :beta do
-    package_name = ENV.fetch("SUPPLY_PACKAGE_NAME", "com.syriasuperapp.superapp")
+    package_name = ENV.fetch("SUPPLY_PACKAGE_NAME", "online.shamell.app")
     aab_path = ENV.fetch(
       "AAB_PATH",
       "../build/app/outputs/bundle/userRelease/app-user-release.aab"

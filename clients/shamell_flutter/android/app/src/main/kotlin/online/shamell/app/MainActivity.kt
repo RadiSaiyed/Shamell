@@ -1,6 +1,5 @@
-package com.syriasuperapp.superapp
+package online.shamell.app
 
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity: FlutterActivity()
-

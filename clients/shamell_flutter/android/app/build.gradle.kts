@@ -9,7 +9,7 @@ plugins {
 val tomtomApiKey: String by project
 
 android {
-    namespace = "com.syriasuperapp.superapp"
+    namespace = "online.shamell.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -28,17 +28,17 @@ android {
     productFlavors {
         create("user") {
             dimension = "app"
-            applicationId = "com.syriasuperapp.superapp"
+            applicationId = "online.shamell.app"
             resValue("string", "app_name", "Shamell")
         }
         create("operator") {
             dimension = "app"
-            applicationId = "com.syriasuperapp.superapp.operator"
+            applicationId = "online.shamell.app.operator"
             resValue("string", "app_name", "Shamell Operator")
         }
         create("admin") {
             dimension = "app"
-            applicationId = "com.syriasuperapp.superapp.admin"
+            applicationId = "online.shamell.app.admin"
             resValue("string", "app_name", "Shamell Admin")
         }
     }
