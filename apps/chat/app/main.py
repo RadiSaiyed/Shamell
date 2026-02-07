@@ -5,7 +5,10 @@ from typing import Optional, List
 import os, time, json, threading, logging
 import base64
 import hashlib
+import hmac
 import httpx
+import secrets
+import re
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
 from sqlalchemy import create_engine, String, Integer, DateTime, Boolean, ForeignKey, func, select, or_, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
@@ -34,6 +37,10 @@ FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY", "")
 FCM_ENDPOINT = "https://fcm.googleapis.com/fcm/send"
 PURGE_INTERVAL_SECONDS = int(os.getenv("CHAT_PURGE_INTERVAL_SECONDS", "600"))
 logger = logging.getLogger("chat")
+_ENV_LOWER = _env_or("ENV", "dev").lower()
+_CHAT_AUTH_DEFAULT = "true" if _ENV_LOWER in ("prod", "production", "staging") else "false"
+CHAT_ENFORCE_DEVICE_AUTH = _env_or("CHAT_ENFORCE_DEVICE_AUTH", _CHAT_AUTH_DEFAULT).lower() == "true"
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,24}$")
 
 
 class Base(DeclarativeBase):
@@ -48,6 +55,14 @@ class Device(Base):
     key_version: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     name: Mapped[Optional[str]] = mapped_column(String(120), default=None)
     created_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DeviceAuth(Base):
+    __tablename__ = "device_auth"
+    __table_args__ = ({"schema": DB_SCHEMA} if DB_SCHEMA else {})
+    device_id: Mapped[str] = mapped_column(String(24), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    rotated_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Message(Base):
@@ -265,6 +280,10 @@ class DeviceOut(BaseModel):
     key_version: int = 0
 
 
+class DeviceRegisterOut(DeviceOut):
+    auth_token: Optional[str] = None
+
+
 def _fp_for_key(public_key_b64: str) -> str:
     try:
         raw = base64.b64decode(public_key_b64)
@@ -274,14 +293,68 @@ def _fp_for_key(public_key_b64: str) -> str:
         return ""
 
 
-@router.post("/devices/register", response_model=DeviceOut)
-def register(req: RegisterReq, s: Session = Depends(get_session)):
+def _hash_device_token(token: str) -> str:
+    return hashlib.sha256((token or "").encode()).hexdigest()
+
+
+def _issue_device_token(s: Session, device_id: str) -> str:
+    token = secrets.token_hex(32)
+    digest = _hash_device_token(token)
+    row = s.get(DeviceAuth, device_id)
+    if not row:
+        row = DeviceAuth(device_id=device_id, token_hash=digest)
+    else:
+        row.token_hash = digest
+        row.rotated_at = datetime.now(timezone.utc)
+    s.add(row)
+    return token
+
+
+def _require_device_actor(request: Request, s: Session) -> Optional[str]:
+    if not CHAT_ENFORCE_DEVICE_AUTH:
+        return None
+    actor = (request.headers.get("X-Chat-Device-Id") or request.headers.get("x-chat-device-id") or "").strip()
+    token = (request.headers.get("X-Chat-Device-Token") or request.headers.get("x-chat-device-token") or "").strip()
+    if not actor or not token:
+        raise HTTPException(status_code=401, detail="chat device auth required")
+    if not _DEVICE_ID_RE.fullmatch(actor):
+        raise HTTPException(status_code=401, detail="invalid chat device id")
+    row = s.get(DeviceAuth, actor)
+    if not row:
+        raise HTTPException(status_code=401, detail="unknown chat device auth")
+    if not hmac.compare_digest(_hash_device_token(token), row.token_hash):
+        raise HTTPException(status_code=401, detail="invalid chat device token")
+    return actor
+
+
+def _enforce_device_actor(request: Request, s: Session, device_id: str) -> Optional[str]:
+    actor = _require_device_actor(request, s)
+    if actor is not None and actor != device_id:
+        raise HTTPException(status_code=403, detail="device auth mismatch")
+    return actor
+
+
+@router.post("/devices/register", response_model=DeviceRegisterOut)
+def register(request: Request, req: RegisterReq, s: Session = Depends(get_session)):
     did = req.device_id.strip()
+    issued_token: Optional[str] = None
     if s.get(Device, did):
         # Update public key / name if changed
         d = s.get(Device, did)
         old_key = (d.public_key or "").strip()
         new_key = req.public_key_b64.strip()
+        auth_row = s.get(DeviceAuth, did)
+        if auth_row is not None:
+            _enforce_device_actor(request, s, did)
+        else:
+            # One-time bootstrap for legacy devices: only if public key matches
+            # current key exactly, then issue initial device token.
+            if new_key != old_key:
+                raise HTTPException(
+                    status_code=401,
+                    detail="device auth bootstrap requires unchanged public key",
+                )
+            issued_token = _issue_device_token(s, did)
         if new_key and old_key and new_key != old_key:
             cur_ver = int(getattr(d, "key_version", 0) or 0)
             next_ver = cur_ver + 1
@@ -312,15 +385,23 @@ def register(req: RegisterReq, s: Session = Depends(get_session)):
         d.public_key = new_key or d.public_key
         d.name = req.name
         s.add(d); s.commit(); s.refresh(d)
-        return DeviceOut(
+        return DeviceRegisterOut(
             device_id=d.id,
             public_key_b64=d.public_key,
             name=d.name,
             key_version=int(getattr(d, "key_version", 0) or 0),
+            auth_token=issued_token,
         )
     d = Device(id=did, public_key=req.public_key_b64, name=req.name, key_version=0)
+    issued_token = _issue_device_token(s, did)
     s.add(d); s.commit(); s.refresh(d)
-    return DeviceOut(device_id=d.id, public_key_b64=d.public_key, name=d.name, key_version=0)
+    return DeviceRegisterOut(
+        device_id=d.id,
+        public_key_b64=d.public_key,
+        name=d.name,
+        key_version=0,
+        auth_token=issued_token,
+    )
 
 
 @router.get("/devices/{device_id}", response_model=DeviceOut)
@@ -483,7 +564,8 @@ class GroupKeyEventOut(BaseModel):
 
 
 @router.post("/messages/send", response_model=MsgOut)
-def send_message(req: SendReq, s: Session = Depends(get_session)):
+def send_message(request: Request, req: SendReq, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, req.sender_id)
     if not s.get(Device, req.sender_id) or not s.get(Device, req.recipient_id):
         raise HTTPException(status_code=404, detail="unknown device")
     if _is_blocked(s, device_id=req.recipient_id, peer_id=req.sender_id):
@@ -508,8 +590,9 @@ def send_message(req: SendReq, s: Session = Depends(get_session)):
 
 
 @router.post("/groups/create", response_model=GroupOut)
-def create_group(req: GroupCreateReq, s: Session = Depends(get_session)):
+def create_group(request: Request, req: GroupCreateReq, s: Session = Depends(get_session)):
     owner_id = req.device_id.strip()
+    _enforce_device_actor(request, s, owner_id)
     if not s.get(Device, owner_id):
         raise HTTPException(status_code=404, detail="unknown device")
     gid = (req.group_id or f"grp_{uuid.uuid4().hex[:10]}").strip()
@@ -575,8 +658,9 @@ def create_group(req: GroupCreateReq, s: Session = Depends(get_session)):
 
 
 @router.get("/groups/list", response_model=List[GroupOut])
-def list_groups(device_id: str, s: Session = Depends(get_session)):
+def list_groups(request: Request, device_id: str, s: Session = Depends(get_session)):
     did = device_id.strip()
+    _enforce_device_actor(request, s, did)
     if not s.get(Device, did):
         raise HTTPException(status_code=404, detail="unknown device")
     gids = [r[0] for r in s.query(GroupMember.group_id).filter(GroupMember.device_id == did).all()]
@@ -602,8 +686,9 @@ def list_groups(device_id: str, s: Session = Depends(get_session)):
 
 
 @router.post("/groups/{group_id}/update", response_model=GroupOut)
-def update_group(group_id: str, req: GroupUpdateReq, s: Session = Depends(get_session)):
+def update_group(group_id: str, request: Request, req: GroupUpdateReq, s: Session = Depends(get_session)):
     actor = req.actor_id.strip()
+    _enforce_device_actor(request, s, actor)
     if not s.get(Device, actor):
         raise HTTPException(status_code=404, detail="unknown device")
     g = s.get(Group, group_id)
@@ -692,8 +777,9 @@ def update_group(group_id: str, req: GroupUpdateReq, s: Session = Depends(get_se
 
 
 @router.post("/groups/{group_id}/messages/send", response_model=GroupMsgOut)
-def send_group_message(group_id: str, req: GroupSendReq, s: Session = Depends(get_session)):
+def send_group_message(group_id: str, request: Request, req: GroupSendReq, s: Session = Depends(get_session)):
     sender_id = req.sender_id.strip()
+    _enforce_device_actor(request, s, sender_id)
     if not s.get(Device, sender_id):
         raise HTTPException(status_code=404, detail="unknown device")
     g = s.get(Group, group_id)
@@ -769,8 +855,9 @@ def send_group_message(group_id: str, req: GroupSendReq, s: Session = Depends(ge
 
 
 @router.get("/groups/{group_id}/messages/inbox", response_model=List[GroupMsgOut])
-def group_inbox(group_id: str, device_id: str, since_iso: Optional[str] = None, limit: int = 50, s: Session = Depends(get_session)):
+def group_inbox(group_id: str, request: Request, device_id: str, since_iso: Optional[str] = None, limit: int = 50, s: Session = Depends(get_session)):
     did = device_id.strip()
+    _enforce_device_actor(request, s, did)
     if not s.get(Device, did):
         raise HTTPException(status_code=404, detail="unknown device")
     g = s.get(Group, group_id)
@@ -812,8 +899,9 @@ def group_inbox(group_id: str, device_id: str, since_iso: Optional[str] = None, 
 
 
 @router.get("/groups/{group_id}/members", response_model=List[GroupMemberOut])
-def group_members(group_id: str, device_id: str, s: Session = Depends(get_session)):
+def group_members(group_id: str, request: Request, device_id: str, s: Session = Depends(get_session)):
     did = device_id.strip()
+    _enforce_device_actor(request, s, did)
     if not s.get(Device, did):
         raise HTTPException(status_code=404, detail="unknown device")
     if not s.get(Group, group_id):
@@ -837,8 +925,9 @@ def group_members(group_id: str, device_id: str, s: Session = Depends(get_sessio
 
 
 @router.post("/groups/{group_id}/invite", response_model=GroupOut)
-def invite_members(group_id: str, req: GroupInviteReq, s: Session = Depends(get_session)):
+def invite_members(group_id: str, request: Request, req: GroupInviteReq, s: Session = Depends(get_session)):
     inviter_id = req.inviter_id.strip()
+    _enforce_device_actor(request, s, inviter_id)
     if not s.get(Device, inviter_id):
         raise HTTPException(status_code=404, detail="unknown device")
     g = s.get(Group, group_id)
@@ -895,8 +984,9 @@ def invite_members(group_id: str, req: GroupInviteReq, s: Session = Depends(get_
 
 
 @router.post("/groups/{group_id}/leave")
-def leave_group(group_id: str, req: GroupLeaveReq, s: Session = Depends(get_session)):
+def leave_group(group_id: str, request: Request, req: GroupLeaveReq, s: Session = Depends(get_session)):
     did = req.device_id.strip()
+    _enforce_device_actor(request, s, did)
     if not s.get(Device, did):
         raise HTTPException(status_code=404, detail="unknown device")
     g = s.get(Group, group_id)
@@ -947,9 +1037,10 @@ def leave_group(group_id: str, req: GroupLeaveReq, s: Session = Depends(get_sess
 
 
 @router.post("/groups/{group_id}/set_role")
-def set_group_role(group_id: str, req: GroupRoleReq, s: Session = Depends(get_session)):
+def set_group_role(group_id: str, request: Request, req: GroupRoleReq, s: Session = Depends(get_session)):
     actor = req.actor_id.strip()
     target = req.target_id.strip()
+    _enforce_device_actor(request, s, actor)
     role = req.role.strip().lower()
     if role not in ("admin", "member"):
         raise HTTPException(status_code=400, detail="invalid role")
@@ -990,8 +1081,9 @@ def set_group_role(group_id: str, req: GroupRoleReq, s: Session = Depends(get_se
 
 
 @router.post("/groups/{group_id}/keys/rotate", response_model=GroupKeyEventOut)
-def rotate_group_key(group_id: str, req: GroupKeyRotateReq, s: Session = Depends(get_session)):
+def rotate_group_key(group_id: str, request: Request, req: GroupKeyRotateReq, s: Session = Depends(get_session)):
     actor = req.actor_id.strip()
+    _enforce_device_actor(request, s, actor)
     if not s.get(Device, actor):
         raise HTTPException(status_code=404, detail="unknown device")
     g = s.get(Group, group_id)
@@ -1056,8 +1148,9 @@ def rotate_group_key(group_id: str, req: GroupKeyRotateReq, s: Session = Depends
 
 
 @router.get("/groups/{group_id}/keys/events", response_model=List[GroupKeyEventOut])
-def list_key_events(group_id: str, device_id: str, limit: int = 20, s: Session = Depends(get_session)):
+def list_key_events(group_id: str, request: Request, device_id: str, limit: int = 20, s: Session = Depends(get_session)):
     did = device_id.strip()
+    _enforce_device_actor(request, s, did)
     if not s.get(Device, did):
         raise HTTPException(status_code=404, detail="unknown device")
     if not s.get(Group, group_id):
@@ -1086,7 +1179,8 @@ def list_key_events(group_id: str, device_id: str, limit: int = 20, s: Session =
 
 
 @router.get("/messages/inbox", response_model=List[MsgOut])
-def inbox(device_id: str, since_iso: Optional[str] = None, limit: int = 50, sealed_view: bool = True, s: Session = Depends(get_session)):
+def inbox(request: Request, device_id: str, since_iso: Optional[str] = None, limit: int = 50, sealed_view: bool = True, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     _purge_expired(s)
@@ -1139,7 +1233,8 @@ def inbox(device_id: str, since_iso: Optional[str] = None, limit: int = 50, seal
 
 
 @router.get("/messages/stream")
-def stream(device_id: str, sealed_view: bool = True, s: Session = Depends(get_session)):
+def stream(request: Request, device_id: str, sealed_view: bool = True, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     # Basic SSE that polls every second for new messages
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
@@ -1189,13 +1284,20 @@ def stream(device_id: str, sealed_view: bool = True, s: Session = Depends(get_se
 
 class ReadReq(BaseModel):
     read: bool = True
+    device_id: Optional[str] = None
 
 
 @router.post("/messages/{mid}/read")
-def mark_read(mid: str, req: ReadReq, s: Session = Depends(get_session)):
+def mark_read(mid: str, request: Request, req: ReadReq, s: Session = Depends(get_session)):
     m = s.get(Message, mid)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
+    actor = _require_device_actor(request, s)
+    claimed = (req.device_id or "").strip() or None
+    if actor and actor != m.recipient_id:
+        raise HTTPException(status_code=403, detail="not recipient")
+    if claimed and claimed != m.recipient_id:
+        raise HTTPException(status_code=403, detail="not recipient")
     m.read_at = datetime.now(timezone.utc)
     s.add(m); s.commit(); s.refresh(m)
     return {"ok": True, "id": m.id, "read_at": m.read_at.isoformat() if m.read_at else None}
@@ -1208,7 +1310,8 @@ class PushTokenReq(BaseModel):
 
 
 @router.post("/devices/{device_id}/push_token")
-def register_push_token(device_id: str, req: PushTokenReq, s: Session = Depends(get_session)):
+def register_push_token(device_id: str, request: Request, req: PushTokenReq, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     # Dedup by token to avoid bloat
@@ -1220,7 +1323,8 @@ def register_push_token(device_id: str, req: PushTokenReq, s: Session = Depends(
 
 
 @router.post("/devices/{device_id}/block")
-def set_block(device_id: str, req: ContactRuleReq, s: Session = Depends(get_session)):
+def set_block(device_id: str, request: Request, req: ContactRuleReq, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     if device_id == req.peer_id:
@@ -1236,7 +1340,8 @@ def set_block(device_id: str, req: ContactRuleReq, s: Session = Depends(get_sess
 
 
 @router.post("/devices/{device_id}/prefs")
-def set_prefs(device_id: str, req: ContactPrefsReq, s: Session = Depends(get_session)):
+def set_prefs(device_id: str, request: Request, req: ContactPrefsReq, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     if device_id == req.peer_id:
@@ -1261,7 +1366,8 @@ def set_prefs(device_id: str, req: ContactPrefsReq, s: Session = Depends(get_ses
 
 
 @router.get("/devices/{device_id}/prefs")
-def list_prefs(device_id: str, s: Session = Depends(get_session)):
+def list_prefs(device_id: str, request: Request, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     rows = s.query(ContactRule).filter(ContactRule.device_id == device_id).all()
@@ -1281,7 +1387,8 @@ def list_prefs(device_id: str, s: Session = Depends(get_session)):
 
 
 @router.post("/devices/{device_id}/group_prefs")
-def set_group_prefs(device_id: str, req: GroupPrefsReq, s: Session = Depends(get_session)):
+def set_group_prefs(device_id: str, request: Request, req: GroupPrefsReq, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     gid = req.group_id.strip()
@@ -1312,7 +1419,8 @@ def set_group_prefs(device_id: str, req: GroupPrefsReq, s: Session = Depends(get
 
 
 @router.get("/devices/{device_id}/group_prefs", response_model=List[GroupPrefsOut])
-def list_group_prefs(device_id: str, s: Session = Depends(get_session)):
+def list_group_prefs(device_id: str, request: Request, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     rows = s.query(GroupPrefs).filter(GroupPrefs.device_id == device_id).all()
@@ -1329,7 +1437,8 @@ def list_group_prefs(device_id: str, s: Session = Depends(get_session)):
 
 
 @router.get("/devices/{device_id}/hidden")
-def list_hidden(device_id: str, s: Session = Depends(get_session)):
+def list_hidden(device_id: str, request: Request, s: Session = Depends(get_session)):
+    _enforce_device_actor(request, s, device_id)
     if not s.get(Device, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     rows = s.query(ContactRule.peer_id).filter(ContactRule.device_id == device_id, ContactRule.hidden == True).all()

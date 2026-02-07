@@ -20,6 +20,9 @@ __pycache__/
 ops/dev/logs/
 ops/dev/pids/
 ops/gcp/logs/
+NonWeChat/ops/secrets/*.env
+NonWeChat/ops/secrets/*.secret*
+NonWeChat/ops/secrets/*token*
 
 # Flutter/Android build artifacts
 clients/**/build/

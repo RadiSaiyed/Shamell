@@ -18,8 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Gitleaks (non-blocking)
-        continue-on-error: true
+      - name: Gitleaks
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,21 +43,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install bandit pip-audit
 
-      - name: Bandit (non-blocking)
+      - name: Bandit
         run: |
           if find . -type f -name '*.py' | grep -q .; then
-            python -m bandit -q -r . -x './.git,./.venv,./venv,./node_modules' || true
+            python -m bandit -q -r apps libs/shamell_shared/python/shamell_shared scripts -lll -x './.git,./.venv,./venv,./node_modules,./NonWeChat'
           else
             echo "No Python sources found; skipping bandit."
           fi
 
-      - name: pip-audit (non-blocking)
+      - name: pip-audit
         run: |
           REQ_FILES=$(find . -type f \( -name 'requirements.txt' -o -name 'requirements-*.txt' \))
           if [ -n "$REQ_FILES" ]; then
             for f in $REQ_FILES; do
               echo "Auditing $f"
-              python -m pip_audit -r "$f" --progress-spinner off || true
+              python -m pip_audit -r "$f" --progress-spinner off
             done
           else
             echo "No requirements files found; skipping pip-audit."
@@ -129,7 +128,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install semgrep
 
-      - name: Run custom AuthZ/IDOR rules (non-blocking)
+      - name: Run custom AuthZ/IDOR rules
         run: |
           semgrep \
             --config .semgrep/rules/authz-idor.yml \
@@ -137,7 +136,7 @@ jobs:
             --exclude .git \
             --exclude .github \
             --exclude .semgrep \
-            . || true
+            apps/bff apps/chat apps/monolith
 
   flutter:
     runs-on: ubuntu-latest
