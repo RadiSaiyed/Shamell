@@ -17,8 +17,18 @@ pluginManagement {
         gradlePluginPortal()
         // Required for Flutter engine/artifacts
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
+        // JitPack hosts some Flutter Android transitive deps (e.g. com.github.*)
+        maven(url = uri("https://jitpack.io")) {
+            content {
+                includeGroupByRegex("com\\.github(\\..*)?")
+            }
+        }
         // TomTom Android SDK
-        maven(url = uri("https://repositories.tomtom.com/artifactory/maven"))
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
     }
 }
 
@@ -32,8 +42,18 @@ dependencyResolutionManagement {
         gradlePluginPortal()
         // Required for Flutter engine/artifacts
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
+        // JitPack hosts some Flutter Android transitive deps (e.g. com.github.*)
+        maven(url = uri("https://jitpack.io")) {
+            content {
+                includeGroupByRegex("com\\.github(\\..*)?")
+            }
+        }
         // TomTom Android SDK
-        maven(url = uri("https://repositories.tomtom.com/artifactory/maven"))
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
     }
 }
 
