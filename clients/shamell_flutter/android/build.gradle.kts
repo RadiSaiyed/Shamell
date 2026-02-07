@@ -55,30 +55,30 @@ subprojects {
         setter.invoke(androidExt, "dev.shamell.$sanitized")
     }
 
-    // Some third-party Flutter plugins are inconsistent (e.g. Java 1.8 vs Kotlin 17).
-    // Force a uniform bytecode target across subprojects to keep AGP/Kotlin tasks compatible.
-    fun alignJvmTargetsNow() {
-        val androidExt = extensions.findByName("android")
-        if (androidExt is BaseExtension) {
-            androidExt.compileOptions.sourceCompatibility = JavaVersion.VERSION_17
-            androidExt.compileOptions.targetCompatibility = JavaVersion.VERSION_17
-        }
-
-        tasks.withType<JavaCompile>().configureEach {
-            sourceCompatibility = JavaVersion.VERSION_17.toString()
-            targetCompatibility = JavaVersion.VERSION_17.toString()
-        }
+    // Some third-party Flutter plugins set mismatched Java/Kotlin JVM targets
+    // (for example Java 1.8 with Kotlin 17). Match Kotlin to the module's
+    // Java compile target to avoid Gradle target-validation failures.
+    fun alignKotlinJvmTargetToJavaNow() {
         tasks.withType<KotlinCompile>().configureEach {
-            kotlinOptions.jvmTarget = JavaVersion.VERSION_17.toString()
+            val javaTaskName = name.replace("Kotlin", "JavaWithJavac")
+            val moduleJavaTask = tasks.findByName(javaTaskName) as? JavaCompile
+            val fallbackJavaTask = tasks.withType<JavaCompile>().firstOrNull()
+            val javaTarget = (
+                moduleJavaTask?.targetCompatibility
+                    ?: fallbackJavaTask?.targetCompatibility
+                )?.trim()
+            if (!javaTarget.isNullOrEmpty()) {
+                kotlinOptions.jvmTarget = javaTarget
+            }
         }
     }
 
-    fun alignJvmTargetsWhenReady() {
+    fun alignKotlinJvmTargetWhenReady() {
         if (state.executed) {
-            alignJvmTargetsNow()
+            alignKotlinJvmTargetToJavaNow()
         } else {
             afterEvaluate {
-                alignJvmTargetsNow()
+                alignKotlinJvmTargetToJavaNow()
             }
         }
     }
@@ -86,12 +86,12 @@ subprojects {
     plugins.withId("com.android.application") {
         enableBuildConfigIfAndroidModule()
         ensureNamespaceIfMissing()
-        alignJvmTargetsWhenReady()
+        alignKotlinJvmTargetWhenReady()
     }
     plugins.withId("com.android.library") {
         enableBuildConfigIfAndroidModule()
         ensureNamespaceIfMissing()
-        alignJvmTargetsWhenReady()
+        alignKotlinJvmTargetWhenReady()
     }
 }
 
