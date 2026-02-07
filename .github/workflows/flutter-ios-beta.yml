@@ -1,0 +1,44 @@
+name: Flutter iOS Beta (TestFlight)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ios-beta:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        working-directory: clients/shamell_flutter
+        run: flutter pub get
+
+      - name: iOS build (no codesign)
+        working-directory: clients/shamell_flutter
+        run: flutter build ios --release --no-codesign
+
+      - name: Install fastlane
+        if: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON != '' }}
+        run: sudo gem install fastlane
+
+      - name: Write App Store Connect API key
+        if: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON != '' }}
+        working-directory: clients/shamell_flutter/ios
+        run: |
+          echo "${{ secrets.APP_STORE_CONNECT_API_KEY_JSON }}" > appstore_api_key.json
+
+      - name: Fastlane beta (TestFlight)
+        if: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON != '' }}
+        working-directory: clients/shamell_flutter/ios
+        env:
+          APP_STORE_CONNECT_API_KEY_PATH: appstore_api_key.json
+        run: |
+          fastlane build
+          fastlane beta

@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "202621626273",
+    "project_id": "syriasuperapp",
+    "storage_bucket": "syriasuperapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:202621626273:android:50b0814f15f41049fb0de0",
+        "android_client_info": {
+          "package_name": "com.syriasuper.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "202621626273-vrarjdlqu0o3mkpsv0vbshsd8lmghdtn.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCObc84k0Wk918PR9_kCYle6P8ilhQk5rE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "202621626273-vrarjdlqu0o3mkpsv0vbshsd8lmghdtn.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

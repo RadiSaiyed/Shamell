@@ -1,0 +1,54 @@
+services:
+  monolith:
+    image: shamell-core:pi
+    init: true
+    environment:
+      ENV: "${ENV:-prod}"
+      MONOLITH_MODE: "${MONOLITH_MODE:-1}"
+      MONOLITH_ONLY: "${MONOLITH_ONLY:-1}"
+      MONOLITH_DB_URL: "${MONOLITH_DB_URL:-sqlite+pysqlite:////data/monolith.db}"
+      PAYMENTS_DB_URL: "${PAYMENTS_DB_URL:-sqlite+pysqlite:////data/payments.db}"
+      DB_URL: "${DB_URL:-sqlite+pysqlite:////data/core.db}"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:-monolith-internal}"
+      PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:-monolith-internal}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:-}"
+      LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+    volumes:
+      - monolith_data:/data
+    ports:
+      - "${MONOLITH_PUBLISH_ADDR:-127.0.0.1}:8080:8080"
+    command: ["uvicorn", "apps.monolith.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    depends_on:
+      - livekit
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  livekit:
+    image: livekit/livekit-server:v1.5.2
+    init: true
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret}${LIVEKIT_KEYS_EXTRA:-}}"
+    volumes:
+      - ./livekit:/etc/livekit:ro
+    ports:
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:7880:7880"
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:7881:7881"
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:7882:7882/udp"
+    restart: unless-stopped
+
+volumes:
+  monolith_data:

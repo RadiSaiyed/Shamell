@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: shamell-shared
+Version: 0.1.0
+Summary: Shared utilities for Shamell services
+Author: Shamell Team
+License: Proprietary
+Project-URL: homepage, https://shamell.app
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.110.0
+
+Shared utilities for Syria SuperApp services.
+
+Modules:
+- request_id: Request ID middleware and helpers
+- cors: CORS configuration helper
+- health: Standard /health endpoint helper
+- logging: JSON logging formatter and setup
+

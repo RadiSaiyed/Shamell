@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+shamell_shared/__init__.py
+shamell_shared/cors.py
+shamell_shared/health.py
+shamell_shared/lifecycle.py
+shamell_shared/logging.py
+shamell_shared/request_id.py
+shamell_shared.egg-info/PKG-INFO
+shamell_shared.egg-info/SOURCES.txt
+shamell_shared.egg-info/dependency_links.txt
+shamell_shared.egg-info/requires.txt
+shamell_shared.egg-info/top_level.txt
