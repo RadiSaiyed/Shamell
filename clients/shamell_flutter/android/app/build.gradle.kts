@@ -45,7 +45,7 @@ android {
 
     defaultConfig {
         // Base config; per-flavor applicationId is set in productFlavors above.
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 26)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
