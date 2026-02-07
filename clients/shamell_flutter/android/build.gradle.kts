@@ -33,8 +33,34 @@ subprojects {
         }
     }
 
-    plugins.withId("com.android.application") { enableBuildConfigIfAndroidModule() }
-    plugins.withId("com.android.library") { enableBuildConfigIfAndroidModule() }
+    // AGP 8 requires namespace for every Android module. Some third-party
+    // Flutter plugins still omit it; add a deterministic fallback.
+    fun ensureNamespaceIfMissing() {
+        val androidExt = extensions.findByName("android") ?: return
+        val getter = androidExt.javaClass.methods.firstOrNull {
+            it.name == "getNamespace" && it.parameterCount == 0
+        } ?: return
+        val setter = androidExt.javaClass.methods.firstOrNull {
+            it.name == "setNamespace" && it.parameterCount == 1
+        } ?: return
+
+        val current = getter.invoke(androidExt) as? String
+        if (!current.isNullOrBlank()) return
+
+        val sanitized = project.name
+            .replace(Regex("[^A-Za-z0-9_]"), "_")
+            .lowercase()
+        setter.invoke(androidExt, "dev.shamell.$sanitized")
+    }
+
+    plugins.withId("com.android.application") {
+        enableBuildConfigIfAndroidModule()
+        ensureNamespaceIfMissing()
+    }
+    plugins.withId("com.android.library") {
+        enableBuildConfigIfAndroidModule()
+        ensureNamespaceIfMissing()
+    }
 }
 
 tasks.register<Delete>("clean") {
