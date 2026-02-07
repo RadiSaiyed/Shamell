@@ -24,7 +24,7 @@ jobs:
 
       - name: Build appbundle
         working-directory: clients/shamell_flutter
-        run: flutter build appbundle --release
+        run: flutter build appbundle --release --flavor user
 
       - name: Detect Play credentials
         env:
