@@ -20351,7 +20351,7 @@ def _moments_pseudonym_for_user_key(user_key: str) -> str | None:
     try:
         import hashlib
 
-        h = hashlib.sha1(uk.encode("utf-8")).hexdigest()[:6]
+        h = hashlib.sha256(uk.encode("utf-8")).hexdigest()[:6]
         return f"User {h}"
     except Exception:
         return None
@@ -22042,7 +22042,7 @@ def moments_comments(post_id: int, request: Request, limit: int = 100):
                         else:
                             import hashlib
 
-                            h = hashlib.sha1(uk.encode("utf-8")).hexdigest()[:6]
+                            h = hashlib.sha256(uk.encode("utf-8")).hexdigest()[:6]
                             author = f"User {h}"
                             label_map[uk] = author
                 except Exception:
@@ -22110,7 +22110,7 @@ def moments_add_comment(post_id: int, request: Request, body: MomentCommentIn):
                 if uk:
                     import hashlib
 
-                    h = hashlib.sha1(uk.encode("utf-8")).hexdigest()[:6]
+                    h = hashlib.sha256(uk.encode("utf-8")).hexdigest()[:6]
                     author = f"User {h}"
             except Exception:
                 author = None

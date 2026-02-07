@@ -2864,7 +2864,7 @@ def sonic_issue(req: SonicIssueReq, s: Session = Depends(get_session), admin_ok:
     s.add(LedgerEntry(id=str(uuid.uuid4()), wallet_id=None, amount_cents=+amt, txn_id=None, description="sonic_reserve_external"))
     s.commit()
     # Short code for human confirmation
-    code = ("SP-" + _hashlib.sha1(th.encode()).hexdigest()[-6:]).upper()
+    code = ("SP-" + _hashlib.sha256(th.encode()).hexdigest()[-6:]).upper()
     return SonicIssueResp(token=token, code=code, expires_at=datetime.fromtimestamp(exp, tz=timezone.utc).isoformat(), amount_cents=amt, currency=(req.currency or from_w.currency))
 
 
