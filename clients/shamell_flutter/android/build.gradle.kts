@@ -59,11 +59,11 @@ subprojects {
     // Force a uniform bytecode target across subprojects to keep AGP/Kotlin tasks compatible.
     fun alignJvmTargets() {
         tasks.withType<JavaCompile>().configureEach {
-            sourceCompatibility = JavaVersion.VERSION_11.toString()
-            targetCompatibility = JavaVersion.VERSION_11.toString()
+            sourceCompatibility = JavaVersion.VERSION_17.toString()
+            targetCompatibility = JavaVersion.VERSION_17.toString()
         }
         tasks.withType<KotlinCompile>().configureEach {
-            kotlinOptions.jvmTarget = JavaVersion.VERSION_11.toString()
+            kotlinOptions.jvmTarget = JavaVersion.VERSION_17.toString()
         }
     }
 
