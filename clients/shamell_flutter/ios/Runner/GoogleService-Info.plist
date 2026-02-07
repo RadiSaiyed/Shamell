@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
 	<key>CLIENT_ID</key>
-	<string>202621626273-2ldvp383udp7bcqq5j7l0d0dh4tmd01d.apps.googleusercontent.com</string>
+	<string>000000000000-placeholder.apps.googleusercontent.com</string>
 	<key>REVERSED_CLIENT_ID</key>
-	<string>com.googleusercontent.apps.202621626273-2ldvp383udp7bcqq5j7l0d0dh4tmd01d</string>
+	<string>com.googleusercontent.apps.000000000000-placeholder</string>
 	<key>API_KEY</key>
-	<string>AIzaSyD6w57peirGR89_I0cpDHT7wRMLNeUZFTc</string>
+	<string>REPLACE_WITH_FIREBASE_API_KEY</string>
 	<key>GCM_SENDER_ID</key>
-	<string>202621626273</string>
+	<string>000000000000</string>
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.syriasuper.app</string>
+	<string>online.shamell.app</string>
 	<key>PROJECT_ID</key>
-	<string>syriasuperapp</string>
+	<string>online-shamell-app</string>
 	<key>STORAGE_BUCKET</key>
-	<string>syriasuperapp.firebasestorage.app</string>
+	<string>online-shamell-app.firebasestorage.app</string>
 	<key>IS_ADS_ENABLED</key>
 	<false></false>
 	<key>IS_ANALYTICS_ENABLED</key>
@@ -29,6 +29,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:202621626273:ios:4ce8fe942e5aa708fb0de0</string>
+	<string>1:000000000000:ios:0000000000000000000000</string>
 </dict>
 </plist>

@@ -15,14 +15,15 @@ class DefaultFirebaseOptions {
     );
   }
 
-  // Web options: configured for project "syriasuperapp" (provided by you)
+  // Web options placeholder for Shamell.
+  // Replace with real values via `flutterfire configure` before production use.
   static final FirebaseOptions web = const FirebaseOptions(
-    apiKey: 'AIzaSyBv1agGjRsWTTkRijdtRm36LPITqxpJkhQ',
-    appId: '1:202621626273:web:c9e3a8d3f2958335fb0de0',
-    messagingSenderId: '202621626273',
-    projectId: 'syriasuperapp',
-    authDomain: 'syriasuperapp.firebaseapp.com',
-    storageBucket: 'syriasuperapp.firebasestorage.app',
-    measurementId: 'G-931JEKJ26W',
+    apiKey: 'REPLACE_WITH_FIREBASE_API_KEY',
+    appId: '1:000000000000:web:0000000000000000000000',
+    messagingSenderId: '000000000000',
+    projectId: 'online-shamell-app',
+    authDomain: 'online-shamell-app.firebaseapp.com',
+    storageBucket: 'online-shamell-app.firebasestorage.app',
+    measurementId: 'G-REPLACE_ME',
   );
 }

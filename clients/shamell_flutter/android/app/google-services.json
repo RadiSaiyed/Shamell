@@ -1,33 +1,33 @@
 {
   "project_info": {
-    "project_number": "202621626273",
-    "project_id": "syriasuperapp",
-    "storage_bucket": "syriasuperapp.firebasestorage.app"
+    "project_number": "000000000000",
+    "project_id": "online-shamell-app",
+    "storage_bucket": "online-shamell-app.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:202621626273:android:50b0814f15f41049fb0de0",
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
         "android_client_info": {
-          "package_name": "com.syriasuper.app"
+          "package_name": "online.shamell.app"
         }
       },
       "oauth_client": [
         {
-          "client_id": "202621626273-vrarjdlqu0o3mkpsv0vbshsd8lmghdtn.apps.googleusercontent.com",
+          "client_id": "000000000000-placeholder.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyCObc84k0Wk918PR9_kCYle6P8ilhQk5rE"
+          "current_key": "REPLACE_WITH_FIREBASE_API_KEY"
         }
       ],
       "services": {
         "appinvite_service": {
           "other_platform_oauth_client": [
             {
-              "client_id": "202621626273-vrarjdlqu0o3mkpsv0vbshsd8lmghdtn.apps.googleusercontent.com",
+              "client_id": "000000000000-placeholder.apps.googleusercontent.com",
               "client_type": 3
             }
           ]

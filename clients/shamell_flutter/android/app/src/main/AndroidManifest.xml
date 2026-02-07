@@ -23,13 +23,13 @@
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="syriasuperapp" android:host="app" />
+        <data android:scheme="shamell" android:host="app" />
       </intent-filter>
       <intent-filter android:autoVerify="true">
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="https" android:host="api.syriasuperapp.com" android:pathPrefix="/app" />
+        <data android:scheme="https" android:host="online.shamell.app" android:pathPrefix="/app" />
       </intent-filter>
     </activity>
   </application>
