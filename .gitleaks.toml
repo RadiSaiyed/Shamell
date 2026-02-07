@@ -1,0 +1,10 @@
+title = "Shamell gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore deterministic CocoaPods lockfile checksums"
+paths = [
+  '''clients/shamell_flutter/ios/Podfile\.lock''',
+]
