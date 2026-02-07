@@ -16,13 +16,13 @@ Lanes (from `clients/shamell_flutter/ios`):
 ## Android (Play Console)
 Requirements:
 - Service account JSON with access to your Play Console app
-- App package configured as `com.syriasuperapp.superapp` (user flavor)
+- App package configured as `online.shamell.app` (user flavor)
 
 Lanes (from `clients/shamell_flutter/android`):
 - `bundle exec fastlane build` → `flutter build appbundle --release --flavor user`
-- `bundle exec fastlane beta` → `supply` upload to Internal track for `com.syriasuperapp.superapp`
+- `bundle exec fastlane beta` → `supply` upload to Internal track for `online.shamell.app`
 
-Set Play JSON in GitHub Actions secret:
+If/when Play access is available, set the JSON secret in GitHub Actions:
 - `gh secret set GOOGLE_PLAY_SERVICE_ACCOUNT_JSON --repo RadiSaiyed/Shamell < /absolute/path/to/play-service-account.json`
 
 ## CI (optional)
