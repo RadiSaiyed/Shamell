@@ -116,7 +116,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build monolith backend image
-        run: docker build -t shamell-monolith apps/monolith
+        run: docker build -t shamell-monolith -f apps/monolith/Dockerfile .
 
       - name: Build web frontend image (if present)
         run: |
