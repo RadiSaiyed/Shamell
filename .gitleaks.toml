@@ -3,14 +3,14 @@ title = "Shamell gitleaks config"
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Ignore deterministic CocoaPods lockfile checksums"
+[allowlist]
+description = "Ignore deterministic CocoaPods lockfile checksum false positive"
+commits = [
+  "c2f3e5f09b8e0c908bcac994d24668ccfddc87d3",
+]
 paths = [
   '''clients/shamell_flutter/ios/Podfile\.lock''',
 ]
-
-[[allowlists]]
-description = "Ignore CocoaPods SPEC CHECKSUM entry for local_auth_darwin"
 regexTarget = "line"
 regexes = [
   '''local_auth_darwin:\s*[a-f0-9]{40}''',
