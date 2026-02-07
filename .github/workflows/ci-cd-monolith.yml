@@ -132,14 +132,7 @@ jobs:
             docker pull ${{ env.IMAGE_NAME }}:latest
             docker tag ${{ env.IMAGE_NAME }}:latest shamell-core:pi
 
-            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-build db livekit
-
-            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm --no-deps monolith \
-              alembic -c /app/src/shamell_bff/alembic.ini upgrade head
-            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm --no-deps monolith \
-              alembic -c /app/src/shamell_payments/alembic.ini upgrade head
-
-            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-build monolith settlement_worker
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-build livekit monolith
 
             docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T monolith python -c \
               "import os,urllib.request; host=(os.getenv('ALLOWED_HOSTS','').split(',')[0] or 'localhost').strip(); req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host': host}); urllib.request.urlopen(req, timeout=5).read()"
