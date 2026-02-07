@@ -57,7 +57,13 @@ subprojects {
 
     // Some third-party Flutter plugins are inconsistent (e.g. Java 1.8 vs Kotlin 17).
     // Force a uniform bytecode target across subprojects to keep AGP/Kotlin tasks compatible.
-    fun alignJvmTargets() {
+    fun alignJvmTargetsNow() {
+        val androidExt = extensions.findByName("android")
+        if (androidExt is BaseExtension) {
+            androidExt.compileOptions.sourceCompatibility = JavaVersion.VERSION_17
+            androidExt.compileOptions.targetCompatibility = JavaVersion.VERSION_17
+        }
+
         tasks.withType<JavaCompile>().configureEach {
             sourceCompatibility = JavaVersion.VERSION_17.toString()
             targetCompatibility = JavaVersion.VERSION_17.toString()
@@ -67,15 +73,25 @@ subprojects {
         }
     }
 
+    fun alignJvmTargetsWhenReady() {
+        if (state.executed) {
+            alignJvmTargetsNow()
+        } else {
+            afterEvaluate {
+                alignJvmTargetsNow()
+            }
+        }
+    }
+
     plugins.withId("com.android.application") {
         enableBuildConfigIfAndroidModule()
         ensureNamespaceIfMissing()
-        alignJvmTargets()
+        alignJvmTargetsWhenReady()
     }
     plugins.withId("com.android.library") {
         enableBuildConfigIfAndroidModule()
         ensureNamespaceIfMissing()
-        alignJvmTargets()
+        alignJvmTargetsWhenReady()
     }
 }
 
