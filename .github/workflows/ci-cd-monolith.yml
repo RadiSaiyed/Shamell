@@ -22,6 +22,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Guard internal port exposure (8081/8082)
+        run: python3 scripts/check_internal_port_exposure.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -30,14 +33,23 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r apps/monolith/requirements.txt
-          pip install ./libs/shamell_shared/python
-          pip install pytest
+          pip install -e ".[dev]"
+          if [ -d packages/shamell-shared ]; then
+            pip install -e packages/shamell-shared
+          elif [ -d ../../packages/shamell-shared ]; then
+            pip install -e ../../packages/shamell-shared
+          elif [ -d libs/shamell_shared/python ]; then
+            pip install -e libs/shamell_shared/python
+          else
+            echo "shamell-shared package not found in expected paths" >&2
+            exit 1
+          fi
 
       - name: Run pytest (monolith + BFF)
         env:
           ENV: test
           MONOLITH_MODE: "1"
+          MONOLITH_ONLY: "1"
         run: pytest -q
 
   build-and-push:
@@ -67,8 +79,8 @@ jobs:
       - name: Build and push monolith image (linux/arm64)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: apps/monolith/Dockerfile
+          context: ../..
+          file: Dockerfile
           push: true
           provenance: false
           platforms: linux/arm64
@@ -82,20 +94,59 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Deploy to Raspberry Pi (SSH)
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync Pi compose bundle
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.PI_HOST }}
           username: ${{ secrets.PI_USER }}
           key: ${{ secrets.PI_SSH_KEY }}
           port: ${{ secrets.PI_PORT || 22 }}
+          source: "ops/pi/docker-compose.yml,ops/pi/livekit/livekit.yaml"
+          target: "~/shamell-pi-deploy"
+          overwrite: true
+
+      - name: Deploy to Raspberry Pi (SSH)
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          PI_ENV_FILE: ${{ secrets.PI_ENV_FILE }}
+        with:
+          host: ${{ secrets.PI_HOST }}
+          username: ${{ secrets.PI_USER }}
+          key: ${{ secrets.PI_SSH_KEY }}
+          port: ${{ secrets.PI_PORT || 22 }}
+          envs: PI_ENV_FILE
           script: |
+            set -euo pipefail
+            if [ -z "${PI_ENV_FILE:-}" ]; then
+              echo "Missing required GitHub secret: PI_ENV_FILE" >&2
+              exit 1
+            fi
+            DEPLOY_ROOT="${PI_DEPLOY_ROOT:-$HOME/shamell-pi-deploy}"
+            DEPLOY_DIR="$DEPLOY_ROOT/ops/pi"
+            COMPOSE_FILE="$DEPLOY_DIR/docker-compose.yml"
+            ENV_FILE="$DEPLOY_DIR/.env"
+            if [ ! -f "$COMPOSE_FILE" ]; then
+              echo "Missing compose file: $COMPOSE_FILE" >&2
+              exit 1
+            fi
+            mkdir -p "$DEPLOY_DIR/livekit"
+            printf '%s\n' "$PI_ENV_FILE" > "$ENV_FILE"
+            chmod 600 "$ENV_FILE"
+
             docker pull ${{ env.IMAGE_NAME }}:latest
-            docker rm -f shamell 2>/dev/null || true
-            docker run -d --name shamell --restart unless-stopped \
-              -p 8080:8080 \
-              -e ENV=dev -e MONOLITH_MODE=1 -e MONOLITH_ONLY=1 \
-              -e PAY_INTERNAL_MODE=on -e PAYMENTS_INTERNAL_MODE=on \
-              -e ALLOWED_ORIGINS="*" \
-              -v shamell-data:/tmp \
-              ${{ env.IMAGE_NAME }}:latest
+            docker tag ${{ env.IMAGE_NAME }}:latest shamell-core:pi
+
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-build db livekit
+
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm --no-deps monolith \
+              alembic -c /app/src/shamell_bff/alembic.ini upgrade head
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm --no-deps monolith \
+              alembic -c /app/src/shamell_payments/alembic.ini upgrade head
+
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-build monolith settlement_worker
+
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T monolith python -c \
+              "import os,urllib.request; host=(os.getenv('ALLOWED_HOSTS','').split(',')[0] or 'localhost').strip(); req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host': host}); urllib.request.urlopen(req, timeout=5).read()"
