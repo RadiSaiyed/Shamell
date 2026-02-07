@@ -1,0 +1,239 @@
+services:
+  bootstrap-perms:
+    image: alpine:3.19
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    read_only: true
+    tmpfs:
+      - /tmp
+    network_mode: none
+    entrypoint: ["/bin/sh", "-ceu"]
+    command: |
+      uid=${MONOLITH_UID:-10001}; gid=${MONOLITH_GID:-10001};
+      for d in /vol/chat_media /vol/moments_media; do
+        [ -d "$$d" ] || continue
+        owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
+        if [ "$$owner" = "$$uid:$$gid" ]; then
+          continue
+        fi
+        echo "Fixing ownership: $$d -> $${uid}:$${gid} (was $${owner:-unknown})" >&2
+        chown -R "$${uid}:$${gid}" "$$d"
+      done
+    volumes:
+      - chat_media:/vol/chat_media
+      - moments_media:/vol/moments_media
+
+  monolith:
+    build:
+      context: ../../../..
+      dockerfile: platform/shamell-app/Dockerfile
+    image: shamell-core:pi
+    init: true
+    user: "${MONOLITH_UID:-10001}:${MONOLITH_GID:-10001}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "prod"
+      BFF_PROFILE: "full"
+      MONOLITH_ONLY: "1"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      MONOLITH_DB_URL: "postgresql+psycopg2://${POSTGRES_USER:?set POSTGRES_USER in platform/shamell-app/ops/pi/.env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in platform/shamell-app/ops/pi/.env}@db:5432/${POSTGRES_DB:?set POSTGRES_DB in platform/shamell-app/ops/pi/.env}"
+      PAYMENTS_DB_URL: "postgresql+psycopg2://${POSTGRES_USER:?set POSTGRES_USER in platform/shamell-app/ops/pi/.env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in platform/shamell-app/ops/pi/.env}@db:5432/${POSTGRES_DB:?set POSTGRES_DB in platform/shamell-app/ops/pi/.env}"
+      DB_URL: "postgresql+psycopg2://${POSTGRES_USER:?set POSTGRES_USER in platform/shamell-app/ops/pi/.env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in platform/shamell-app/ops/pi/.env}@db:5432/${POSTGRES_DB:?set POSTGRES_DB in platform/shamell-app/ops/pi/.env}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:?set ALLOWED_ORIGINS in platform/shamell-app/ops/pi/.env}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:?set ALLOWED_HOSTS in platform/shamell-app/ops/pi/.env}"
+      # Defense-in-depth: app-level allowlists for admin/docs (ssh port-forward recommended).
+      API_ADMIN_ALLOWED_CIDRS: "${API_ADMIN_ALLOWED_CIDRS:-127.0.0.1/32}"
+      API_DOCS_ALLOWED_CIDRS: "${API_DOCS_ALLOWED_CIDRS:-127.0.0.1/32}"
+      # Only set TRUSTED_PROXY_CIDRS when you run behind a real reverse proxy.
+      # For direct-LAN exposure, leaving it empty prevents client spoofing of X-Forwarded-* headers.
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in platform/shamell-app/ops/pi/.env}"
+      INTERNAL_API_SECRETS: "${INTERNAL_API_SECRETS:-}"
+      BFF_INTERNAL_SECRETS: "${BFF_INTERNAL_SECRETS:-}"
+      CHAT_INTERNAL_SECRETS: "${CHAT_INTERNAL_SECRETS:-}"
+      PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in platform/shamell-app/ops/pi/.env}"
+      PAYMENTS_INTERNAL_SECRETS: "${PAYMENTS_INTERNAL_SECRETS:-}"
+      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:?set ADMIN_TOKEN_SHA256 in platform/shamell-app/ops/pi/.env}"
+      BFF_ADMINS: "${BFF_ADMINS}"
+      SUPERADMIN_PHONE: "${SUPERADMIN_PHONE}"
+      AUTH_EXPOSE_CODES: "${AUTH_EXPOSE_CODES:-false}"
+      QR_SIGNING_SECRET: "${QR_SIGNING_SECRET:?set QR_SIGNING_SECRET in platform/shamell-app/ops/pi/.env}"
+      SONIC_SECRET: "${SONIC_SECRET:?set SONIC_SECRET in platform/shamell-app/ops/pi/.env}"
+      TOPUP_SECRET: "${TOPUP_SECRET:?set TOPUP_SECRET in platform/shamell-app/ops/pi/.env}"
+      CASH_OUT_OTP_PEPPER: "${CASH_OUT_OTP_PEPPER:?set CASH_OUT_OTP_PEPPER in platform/shamell-app/ops/pi/.env}"
+      CASH_SECRET_PEPPER: "${CASH_SECRET_PEPPER:?set CASH_SECRET_PEPPER in platform/shamell-app/ops/pi/.env}"
+      FEE_WALLET_PHONE: "${FEE_WALLET_PHONE:?set FEE_WALLET_PHONE in platform/shamell-app/ops/pi/.env}"
+      MERCHANT_CLEARING_PHONE: "${MERCHANT_CLEARING_PHONE:?set MERCHANT_CLEARING_PHONE in platform/shamell-app/ops/pi/.env}"
+      QR_REQUIRE_SIG: "true"
+      PAYCODE_REQUIRE_SIG: "true"
+      PAYCODE_OFFLINE_GRACE_SECS: "${PAYCODE_OFFLINE_GRACE_SECS:-300}"
+      # Chat (strict sealed sender)
+      CHAT_REQUIRE_SESSION_ID_FOR_SEALED: "${CHAT_REQUIRE_SESSION_ID_FOR_SEALED:-true}"
+      CHAT_ENFORCE_STRICT_GROUP_SEALED_SENDER: "${CHAT_ENFORCE_STRICT_GROUP_SEALED_SENDER:-true}"
+      CHAT_MEDIA_DIR: "/data/chat_media"
+      CHAT_MEDIA_TOKEN_SECRET: "${CHAT_MEDIA_TOKEN_SECRET:?set CHAT_MEDIA_TOKEN_SECRET in platform/shamell-app/ops/pi/.env}"
+      MOMENTS_MEDIA_DIR: "/data/moments_media"
+      MOMENTS_MEDIA_TOKEN_SECRET: "${MOMENTS_MEDIA_TOKEN_SECRET:?set MOMENTS_MEDIA_TOKEN_SECRET in platform/shamell-app/ops/pi/.env}"
+      LIVEKIT_URL: "${LIVEKIT_URL:?set LIVEKIT_URL in platform/shamell-app/ops/pi/.env}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in platform/shamell-app/ops/pi/.env}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in platform/shamell-app/ops/pi/.env}"
+      ENABLE_HSTS: "false"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      METRICS_REQUIRE_ADMIN: "${METRICS_REQUIRE_ADMIN:-true}"
+      METRICS_BEARER_TOKEN_SHA256: "${METRICS_BEARER_TOKEN_SHA256:-}"
+      ALERT_WEBHOOK_URL: "${ALERT_WEBHOOK_URL:-}"
+      ALERT_WEBHOOK_TOKEN: "${ALERT_WEBHOOK_TOKEN:-}"
+      ALERT_WEBHOOK_HEADERS_JSON: "${ALERT_WEBHOOK_HEADERS_JSON:-}"
+      ALERT_INTERVAL_SECS: "${ALERT_INTERVAL_SECS:-60}"
+      ALERT_COOLDOWN_SECS: "${ALERT_COOLDOWN_SECS:-300}"
+      ALERT_MIN_REQUESTS: "${ALERT_MIN_REQUESTS:-20}"
+      ALERT_ERROR_RATE_THRESHOLD: "${ALERT_ERROR_RATE_THRESHOLD:-0.05}"
+      ALERT_ERROR_COUNT_THRESHOLD: "${ALERT_ERROR_COUNT_THRESHOLD:-5}"
+      ALERT_CALL_PENDING_INVITES_THRESHOLD: "${ALERT_CALL_PENDING_INVITES_THRESHOLD:-50}"
+      RUN_ALEMBIC_ON_STARTUP: "${RUN_ALEMBIC_ON_STARTUP:-false}"
+      AUTO_CREATE_SCHEMA: "${AUTO_CREATE_SCHEMA:-false}"
+    volumes:
+      - chat_media:/data/chat_media
+      - moments_media:/data/moments_media
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    ports:
+      # Default to localhost so the API isn't LAN-exposed by accident.
+      # Set `MONOLITH_PUBLISH_ADDR=0.0.0.0` for intentional direct-LAN exposure.
+      - "${MONOLITH_PUBLISH_ADDR:-127.0.0.1}:8080:8080"
+    command:
+      - uvicorn
+      - shamell_monolith.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --workers
+      - "${APP_WORKERS:-1}"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request; host=(os.getenv('ALLOWED_HOSTS','').split(',')[0] or 'localhost').strip(); req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host': host}); urllib.request.urlopen(req, timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  settlement_worker:
+    image: shamell-core:pi
+    init: true
+    depends_on:
+      - monolith
+    user: "${MONOLITH_UID:-10001}:${MONOLITH_GID:-10001}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      SETTLEMENT_BASE_URL: "http://monolith:8080"
+      SETTLEMENT_INTERNAL_SECRET: "${INTERNAL_API_SECRET}"
+      SETTLEMENT_INTERVAL_SECS: "${SETTLEMENT_INTERVAL_SECS:-3600}"
+      SETTLEMENT_AUTO_APPLY: "${SETTLEMENT_AUTO_APPLY:-true}"
+      SETTLEMENT_ALERT_WEBHOOK: "${SETTLEMENT_ALERT_WEBHOOK:-}"
+      SETTLEMENT_ALERT_MIN_PENDING_CENTS: "${SETTLEMENT_ALERT_MIN_PENDING_CENTS:-1}"
+    command: ["python", "-m", "shamell_payments.app.settlement_worker"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  db:
+    image: postgres:16-alpine
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER in platform/shamell-app/ops/pi/.env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in platform/shamell-app/ops/pi/.env}"
+      POSTGRES_DB: "${POSTGRES_DB:?set POSTGRES_DB in platform/shamell-app/ops/pi/.env}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:v1.5.2
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in platform/shamell-app/ops/pi/.env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in platform/shamell-app/ops/pi/.env}${LIVEKIT_KEYS_EXTRA:-}}"
+    volumes:
+      - ./livekit:/etc/livekit:ro
+    ports:
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:7880:7880"
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:7881:7881"
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:7882:7882/udp"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+
+volumes:
+  postgres_data:
+  chat_media:
+  moments_media:

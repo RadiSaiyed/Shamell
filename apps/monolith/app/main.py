@@ -398,7 +398,11 @@ if os.getenv("ENABLE_STUBS", "false").lower() == "true":
 _mount_service_app("/", "apps.bff.app.main")
 
 # Domain services under their existing prefixes (without routers yet).
-_mount_service_app("/agents", "apps.agents.app.main")
+try:
+    _mount_service_app("/agents", "apps.agents.app.main")
+except Exception:
+    # Optional module in this branch layout.
+    pass
 
 # Attach routers for domains that already export routers.
 if jobs_router is not None:
