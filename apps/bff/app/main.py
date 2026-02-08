@@ -922,6 +922,16 @@ CHAT_SEND_MAX_PER_IP = int(_env_or("CHAT_SEND_MAX_PER_IP", "300"))
 _CHAT_RATE_DEVICE: dict[str, list[int]] = {}
 _CHAT_RATE_IP: dict[str, list[int]] = {}
 
+# Chat WebSocket guardrails (BFF layer, best-effort per-process).
+CHAT_WS_CONNECT_WINDOW_SECS = int(_env_or("CHAT_WS_CONNECT_WINDOW_SECS", "60"))
+CHAT_WS_CONNECT_MAX_PER_IP = int(_env_or("CHAT_WS_CONNECT_MAX_PER_IP", "60"))
+CHAT_WS_MAX_ACTIVE_PER_IP = int(_env_or("CHAT_WS_MAX_ACTIVE_PER_IP", "20"))
+CHAT_WS_MAX_ACTIVE_PER_DEVICE = int(_env_or("CHAT_WS_MAX_ACTIVE_PER_DEVICE", "3"))
+_CHAT_WS_CONNECT_RATE_IP: dict[str, list[int]] = {}
+_CHAT_WS_ACTIVE_IP: dict[str, int] = {}
+_CHAT_WS_ACTIVE_DEVICE: dict[str, int] = {}
+_CHAT_WS_LOCK = asyncio.Lock()
+
 # Global security headers toggle
 SECURITY_HEADERS_ENABLED = _env_or("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
 
@@ -1107,6 +1117,124 @@ def _auth_client_ip(request: Request) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _ws_client_ip(ws: WebSocket) -> str:
+    """
+    Best-effort resolution of the client IP for WebSockets.
+    Mirrors _auth_client_ip() but reads from WebSocket headers.
+    """
+    try:
+        real_ip = _normalize_ip(ws.headers.get("x-real-ip") or ws.headers.get("X-Real-IP"))
+        if real_ip:
+            return real_ip
+    except Exception:
+        pass
+    try:
+        fwd = ws.headers.get("x-forwarded-for") or ws.headers.get("X-Forwarded-For")
+        if fwd:
+            # Nginx appends the direct client as the right-most element.
+            for hop in reversed([p.strip() for p in fwd.split(",") if p.strip()]):
+                ip = _normalize_ip(hop)
+                if ip:
+                    return ip
+    except Exception:
+        pass
+    try:
+        if ws.client and ws.client.host:
+            ip = _normalize_ip(ws.client.host)
+            if ip:
+                return ip
+            return ws.client.host
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _audit_from_ws(ws: WebSocket, action: str, **extra: Any) -> None:
+    try:
+        ip = _ws_client_ip(ws)
+    except Exception:
+        ip = "unknown"
+    _audit(action, ip=ip, **extra)
+
+
+async def _chat_ws_guard_enter(ws: WebSocket, *, device_id: str) -> tuple[str, str] | None:
+    """
+    Enforce basic abuse guardrails for chat WebSockets:
+    - require device_id (not login, but prevents useless open connections)
+    - rate-limit connection attempts per IP
+    - cap concurrent connections per IP and per device_id
+    Returns (ip, device_id) when admitted, else None.
+    """
+    dev = (device_id or "").strip()
+    if not dev:
+        try:
+            await ws.close(code=4400)
+        except Exception:
+            pass
+        return None
+
+    ip = _ws_client_ip(ws)
+    if CHAT_WS_CONNECT_MAX_PER_IP > 0 and ip and ip != "unknown":
+        hits_ip = _rate_limit_bucket(
+            _CHAT_WS_CONNECT_RATE_IP,
+            f"chat_ws_connect:{ip}",
+            window_secs=CHAT_WS_CONNECT_WINDOW_SECS,
+            max_hits=CHAT_WS_CONNECT_MAX_PER_IP,
+        )
+        if hits_ip > CHAT_WS_CONNECT_MAX_PER_IP:
+            _audit_from_ws(ws, "chat_ws_connect_rate_limit_ip", device_id=dev, max=CHAT_WS_CONNECT_MAX_PER_IP, hits=hits_ip)
+            try:
+                await ws.close(code=1013)
+            except Exception:
+                pass
+            return None
+
+    async with _CHAT_WS_LOCK:
+        if CHAT_WS_MAX_ACTIVE_PER_DEVICE > 0:
+            cur_dev = int(_CHAT_WS_ACTIVE_DEVICE.get(dev, 0) or 0)
+            if cur_dev + 1 > CHAT_WS_MAX_ACTIVE_PER_DEVICE:
+                _audit_from_ws(ws, "chat_ws_active_limit_device", device_id=dev, max=CHAT_WS_MAX_ACTIVE_PER_DEVICE, hits=cur_dev + 1)
+                try:
+                    await ws.close(code=1013)
+                except Exception:
+                    pass
+                return None
+        if CHAT_WS_MAX_ACTIVE_PER_IP > 0 and ip and ip != "unknown":
+            cur_ip = int(_CHAT_WS_ACTIVE_IP.get(ip, 0) or 0)
+            if cur_ip + 1 > CHAT_WS_MAX_ACTIVE_PER_IP:
+                _audit_from_ws(ws, "chat_ws_active_limit_ip", device_id=dev, max=CHAT_WS_MAX_ACTIVE_PER_IP, hits=cur_ip + 1)
+                try:
+                    await ws.close(code=1013)
+                except Exception:
+                    pass
+                return None
+
+        # Admit: increment counters.
+        if CHAT_WS_MAX_ACTIVE_PER_DEVICE > 0:
+            _CHAT_WS_ACTIVE_DEVICE[dev] = int(_CHAT_WS_ACTIVE_DEVICE.get(dev, 0) or 0) + 1
+        if CHAT_WS_MAX_ACTIVE_PER_IP > 0 and ip and ip != "unknown":
+            _CHAT_WS_ACTIVE_IP[ip] = int(_CHAT_WS_ACTIVE_IP.get(ip, 0) or 0) + 1
+
+    return (ip, dev)
+
+
+async def _chat_ws_guard_exit(ip: str, device_id: str) -> None:
+    dev = (device_id or "").strip()
+    async with _CHAT_WS_LOCK:
+        if dev and CHAT_WS_MAX_ACTIVE_PER_DEVICE > 0:
+            cur = int(_CHAT_WS_ACTIVE_DEVICE.get(dev, 0) or 0) - 1
+            if cur <= 0:
+                _CHAT_WS_ACTIVE_DEVICE.pop(dev, None)
+            else:
+                _CHAT_WS_ACTIVE_DEVICE[dev] = cur
+        if ip and ip != "unknown" and CHAT_WS_MAX_ACTIVE_PER_IP > 0:
+            cur = int(_CHAT_WS_ACTIVE_IP.get(ip, 0) or 0) - 1
+            if cur <= 0:
+                _CHAT_WS_ACTIVE_IP.pop(ip, None)
+            else:
+                _CHAT_WS_ACTIVE_IP[ip] = cur
 
 
 def _check_payment_guardrails(from_wallet_id: str | None, amount_cents: int | None, device_id: str | None) -> None:
@@ -5316,65 +5444,72 @@ async def chat_inbox_ws(ws: WebSocket):
         params = dict(ws.query_params)
         chat_headers = _chat_auth_headers_from_ws(ws)
         did = params.get("device_id") or chat_headers.get("X-Chat-Device-Id")
+        guard = await _chat_ws_guard_enter(ws, device_id=str(did or ""))
+        if guard is None:
+            return
+        g_ip, g_dev = guard
         since_iso = params.get("since_iso") or ""
         last_iso = since_iso
-        while True:
-            try:
-                if _use_chat_internal():
-                    if not _CHAT_INTERNAL_AVAILABLE:
-                        raise RuntimeError("chat internal not available")
-                    q_since = last_iso or None
-                    with _chat_internal_session() as s:
-                        arr = _chat_inbox(request=ws, device_id=did, since_iso=q_since, limit=100, s=s)
-                    if arr:
-                        try:
-                            last_iso = max([m.created_at or "" for m in arr]) or last_iso  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
-                        payload = [
-                            {
-                                "id": getattr(m, "id", None),
-                                "sender_id": getattr(m, "sender_id", None),
-                                "recipient_id": getattr(m, "recipient_id", None),
-                                "nonce_b64": getattr(m, "nonce_b64", None),
-                                "box_b64": getattr(m, "box_b64", None),
-                                "sender_pubkey_b64": getattr(m, "sender_pubkey_b64", getattr(m, "sender_pubkey", None)),
-                                "sender_dh_pub_b64": getattr(m, "sender_dh_pub_b64", getattr(m, "sender_dh_pub", None)),
-                                "created_at": getattr(m, "created_at", None),
-                                "delivered_at": getattr(m, "delivered_at", None),
-                                "read_at": getattr(m, "read_at", None),
-                                "expire_at": getattr(m, "expire_at", None),
-                                "sealed_sender": getattr(m, "sealed_sender", False),
-                                "sender_hint": getattr(m, "sender_hint", None),
-                                "sender_fingerprint": getattr(m, "sender_fingerprint", getattr(m, "sender_hint", None)),
-                                "key_id": getattr(m, "key_id", None),
-                                "prev_key_id": getattr(m, "prev_key_id", None),
-                            }
-                            for m in arr
-                        ]
-                        await ws.send_json({"type": "inbox", "messages": payload})
-                else:
-                    qparams = {"device_id": did, "limit": 100}
-                    if last_iso:
-                        qparams["since_iso"] = last_iso
-                    r = httpx.get(
-                        _chat_url("/messages/inbox"),
-                        params=qparams,
-                        headers=chat_headers,
-                        timeout=10,
-                    )
-                    if r.status_code == 200:
-                        arr = r.json()
+        try:
+            while True:
+                try:
+                    if _use_chat_internal():
+                        if not _CHAT_INTERNAL_AVAILABLE:
+                            raise RuntimeError("chat internal not available")
+                        q_since = last_iso or None
+                        with _chat_internal_session() as s:
+                            arr = _chat_inbox(request=ws, device_id=did, since_iso=q_since, limit=100, s=s)
                         if arr:
                             try:
-                                last_iso = max([m.get("created_at") or "" for m in arr]) or last_iso
+                                last_iso = max([m.created_at or "" for m in arr]) or last_iso  # type: ignore[attr-defined]
                             except Exception:
                                 pass
-                            await ws.send_json({"type": "inbox", "messages": arr})
-                await asyncio.sleep(2)
-            except Exception as e:
-                await ws.send_json({"type": "error", "error": str(e)})
-                await asyncio.sleep(2)
+                            payload = [
+                                {
+                                    "id": getattr(m, "id", None),
+                                    "sender_id": getattr(m, "sender_id", None),
+                                    "recipient_id": getattr(m, "recipient_id", None),
+                                    "nonce_b64": getattr(m, "nonce_b64", None),
+                                    "box_b64": getattr(m, "box_b64", None),
+                                    "sender_pubkey_b64": getattr(m, "sender_pubkey_b64", getattr(m, "sender_pubkey", None)),
+                                    "sender_dh_pub_b64": getattr(m, "sender_dh_pub_b64", getattr(m, "sender_dh_pub", None)),
+                                    "created_at": getattr(m, "created_at", None),
+                                    "delivered_at": getattr(m, "delivered_at", None),
+                                    "read_at": getattr(m, "read_at", None),
+                                    "expire_at": getattr(m, "expire_at", None),
+                                    "sealed_sender": getattr(m, "sealed_sender", False),
+                                    "sender_hint": getattr(m, "sender_hint", None),
+                                    "sender_fingerprint": getattr(m, "sender_fingerprint", getattr(m, "sender_hint", None)),
+                                    "key_id": getattr(m, "key_id", None),
+                                    "prev_key_id": getattr(m, "prev_key_id", None),
+                                }
+                                for m in arr
+                            ]
+                            await ws.send_json({"type": "inbox", "messages": payload})
+                    else:
+                        qparams = {"device_id": did, "limit": 100}
+                        if last_iso:
+                            qparams["since_iso"] = last_iso
+                        r = httpx.get(
+                            _chat_url("/messages/inbox"),
+                            params=qparams,
+                            headers=chat_headers,
+                            timeout=10,
+                        )
+                        if r.status_code == 200:
+                            arr = r.json()
+                            if arr:
+                                try:
+                                    last_iso = max([m.get("created_at") or "" for m in arr]) or last_iso
+                                except Exception:
+                                    pass
+                                await ws.send_json({"type": "inbox", "messages": arr})
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "error": str(e)})
+                    await asyncio.sleep(2)
+        finally:
+            await _chat_ws_guard_exit(g_ip, g_dev)
     except WebSocketDisconnect:
         return
 
@@ -5393,6 +5528,10 @@ async def chat_groups_ws(ws: WebSocket):
         params = dict(ws.query_params)
         chat_headers = _chat_auth_headers_from_ws(ws)
         did = params.get("device_id") or chat_headers.get("X-Chat-Device-Id")
+        guard = await _chat_ws_guard_enter(ws, device_id=str(did or ""))
+        if guard is None:
+            return
+        g_ip, g_dev = guard
         last_by_gid: Dict[str, str] = {}
         # Optional resume map: since_map={"gid":"iso",...}
         since_map_raw = params.get("since_map") or ""
@@ -5408,130 +5547,133 @@ async def chat_groups_ws(ws: WebSocket):
             except Exception:
                 last_by_gid = {}
 
-        while True:
-            try:
-                groups: List[Any] = []
-                if _use_chat_internal():
-                    if not _CHAT_INTERNAL_AVAILABLE:
-                        raise RuntimeError("chat internal not available")
-                    with _chat_internal_session() as s:
-                        groups = _chat_list_groups(request=ws, device_id=did, s=s)
-                else:
-                    r = httpx.get(
-                        _chat_url("/groups/list"),
-                        params={"device_id": did},
-                        headers=chat_headers,
-                        timeout=10,
-                    )
-                    if r.status_code == 200:
-                        groups = r.json() or []
-
-                for g in groups:
-                    gid: str = ""
-                    try:
-                        gid = (
-                            getattr(g, "group_id", None)
-                            or getattr(g, "id", None)
-                            or ""
-                        )
-                    except Exception:
-                        gid = ""
-                    if not gid and isinstance(g, dict):
-                        gid = (g.get("group_id") or g.get("id") or "").strip()
-                    if not gid:
-                        continue
-
-                    last_iso = last_by_gid.get(gid, "")
-                    arr: List[Any] = []
+        try:
+            while True:
+                try:
+                    groups: List[Any] = []
                     if _use_chat_internal():
+                        if not _CHAT_INTERNAL_AVAILABLE:
+                            raise RuntimeError("chat internal not available")
                         with _chat_internal_session() as s:
-                            sin = last_iso or None
-                            arr = _chat_group_inbox(
-                                group_id=gid,
-                                request=ws,
-                                device_id=did,
-                                since_iso=sin,
-                                limit=100,
-                                s=s,
-                            )
-                        if arr:
-                            try:
-                                last_iso = (
-                                    max(
-                                        [
-                                            getattr(m, "created_at", "") or ""
-                                            for m in arr
-                                        ]
-                                    )
-                                    or last_iso
-                                )
-                            except Exception:
-                                pass
-                            last_by_gid[gid] = last_iso
-                            payload = [
-                                {
-                                    "id": getattr(m, "id", None),
-                                    "group_id": getattr(
-                                        m, "group_id", getattr(m, "groupId", None)
-                                    ),
-                                    "sender_id": getattr(m, "sender_id", None),
-                                    "text": getattr(m, "text", ""),
-                                    "kind": getattr(m, "kind", None),
-                                    "nonce_b64": getattr(m, "nonce_b64", None),
-                                    "box_b64": getattr(m, "box_b64", None),
-                                    "attachment_b64": getattr(m, "attachment_b64", None),
-                                    "attachment_mime": getattr(m, "attachment_mime", None),
-                                    "voice_secs": getattr(m, "voice_secs", None),
-                                    "created_at": getattr(m, "created_at", None),
-                                    "expire_at": getattr(m, "expire_at", None),
-                                }
-                                for m in arr
-                            ]
-                            await ws.send_json(
-                                {
-                                    "type": "group_inbox",
-                                    "group_id": gid,
-                                    "messages": payload,
-                                }
-                            )
+                            groups = _chat_list_groups(request=ws, device_id=did, s=s)
                     else:
-                        qparams: Dict[str, Any] = {
-                            "device_id": did,
-                            "limit": 100,
-                        }
-                        if last_iso:
-                            qparams["since_iso"] = last_iso
                         r = httpx.get(
-                            _chat_url(f"/groups/{gid}/messages/inbox"),
-                            params=qparams,
+                            _chat_url("/groups/list"),
+                            params={"device_id": did},
                             headers=chat_headers,
                             timeout=10,
                         )
                         if r.status_code == 200:
-                            arr = r.json() or []
+                            groups = r.json() or []
+
+                    for g in groups:
+                        gid: str = ""
+                        try:
+                            gid = (
+                                getattr(g, "group_id", None)
+                                or getattr(g, "id", None)
+                                or ""
+                            )
+                        except Exception:
+                            gid = ""
+                        if not gid and isinstance(g, dict):
+                            gid = (g.get("group_id") or g.get("id") or "").strip()
+                        if not gid:
+                            continue
+
+                        last_iso = last_by_gid.get(gid, "")
+                        arr: List[Any] = []
+                        if _use_chat_internal():
+                            with _chat_internal_session() as s:
+                                sin = last_iso or None
+                                arr = _chat_group_inbox(
+                                    group_id=gid,
+                                    request=ws,
+                                    device_id=did,
+                                    since_iso=sin,
+                                    limit=100,
+                                    s=s,
+                                )
                             if arr:
                                 try:
                                     last_iso = (
                                         max(
-                                            [m.get("created_at") or "" for m in arr]
+                                            [
+                                                getattr(m, "created_at", "") or ""
+                                                for m in arr
+                                            ]
                                         )
                                         or last_iso
                                     )
                                 except Exception:
                                     pass
                                 last_by_gid[gid] = last_iso
+                                payload = [
+                                    {
+                                        "id": getattr(m, "id", None),
+                                        "group_id": getattr(
+                                            m, "group_id", getattr(m, "groupId", None)
+                                        ),
+                                        "sender_id": getattr(m, "sender_id", None),
+                                        "text": getattr(m, "text", ""),
+                                        "kind": getattr(m, "kind", None),
+                                        "nonce_b64": getattr(m, "nonce_b64", None),
+                                        "box_b64": getattr(m, "box_b64", None),
+                                        "attachment_b64": getattr(m, "attachment_b64", None),
+                                        "attachment_mime": getattr(m, "attachment_mime", None),
+                                        "voice_secs": getattr(m, "voice_secs", None),
+                                        "created_at": getattr(m, "created_at", None),
+                                        "expire_at": getattr(m, "expire_at", None),
+                                    }
+                                    for m in arr
+                                ]
                                 await ws.send_json(
                                     {
                                         "type": "group_inbox",
                                         "group_id": gid,
-                                        "messages": arr,
+                                        "messages": payload,
                                     }
                                 )
+                        else:
+                            qparams: Dict[str, Any] = {
+                                "device_id": did,
+                                "limit": 100,
+                            }
+                            if last_iso:
+                                qparams["since_iso"] = last_iso
+                            r = httpx.get(
+                                _chat_url(f"/groups/{gid}/messages/inbox"),
+                                params=qparams,
+                                headers=chat_headers,
+                                timeout=10,
+                            )
+                            if r.status_code == 200:
+                                arr = r.json() or []
+                                if arr:
+                                    try:
+                                        last_iso = (
+                                            max(
+                                                [m.get("created_at") or "" for m in arr]
+                                            )
+                                            or last_iso
+                                        )
+                                    except Exception:
+                                        pass
+                                    last_by_gid[gid] = last_iso
+                                    await ws.send_json(
+                                        {
+                                            "type": "group_inbox",
+                                            "group_id": gid,
+                                            "messages": arr,
+                                        }
+                                    )
 
-                await asyncio.sleep(2)
-            except Exception as e:
-                await ws.send_json({"type": "error", "error": str(e)})
-                await asyncio.sleep(2)
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "error": str(e)})
+                    await asyncio.sleep(2)
+        finally:
+            await _chat_ws_guard_exit(g_ip, g_dev)
     except WebSocketDisconnect:
         return
 
