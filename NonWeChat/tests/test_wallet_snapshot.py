@@ -6,7 +6,7 @@ import apps.bff.app.main as bff
 def test_wallet_snapshot_structure_for_unknown_wallet(client, user_auth, monkeypatch):
     # Stub Payments dependency (internal/external) for this test
     # so we can validate the aggregation logic in isolation.
-    def fake_get_wallet(wallet_id: str) -> Dict[str, Any]:
+    def fake_get_wallet(wallet_id: str, request=None) -> Dict[str, Any]:
         return {"id": wallet_id, "balance_cents": 123, "currency": "SYP"}
 
     def fake_payments_txns(
@@ -16,6 +16,7 @@ def test_wallet_snapshot_structure_for_unknown_wallet(client, user_auth, monkeyp
         kind: str = "",
         from_iso: str = "",
         to_iso: str = "",
+        request=None,
     ):
         return [
             {

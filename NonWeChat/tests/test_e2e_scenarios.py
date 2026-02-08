@@ -93,8 +93,11 @@ def test_e2e_login_first_payment_and_history(client, monkeypatch):
     assert resp_tx.status_code == 200
 
     # Historien-Check via Snapshot: Salden + Txns
-    snap_a = client.get(f"/wallets/{wa}/snapshot").json()
-    snap_b = client.get(f"/wallets/{wb}/snapshot").json()
+    # TestClient runs over http://testserver, so secure cookies are not sent.
+    # Use the test-only phone header for auth.
+    snap_a = client.get(f"/wallets/{wa}/snapshot", headers={"X-Test-Phone": phone_a}).json()
+    # Wallet B belongs to a different user; simulate that user in test mode.
+    snap_b = client.get(f"/wallets/{wb}/snapshot", headers={"X-Test-Phone": phone_b}).json()
 
     bal_a = snap_a["wallet"]["balance_cents"]
     bal_b = snap_b["wallet"]["balance_cents"]

@@ -176,8 +176,8 @@ def test_payments_basic_transfer_flow_via_bff(client, monkeypatch):
     assert resp_tx.status_code == 200
 
     # Verify balances via generic wallet snapshot (uses _pay_get_wallet + _pay_list_txns)
-    snap_a = client.get(f"/wallets/{wa}/snapshot").json()
-    snap_b = client.get(f"/wallets/{wb}/snapshot").json()
+    snap_a = client.get(f"/wallets/{wa}/snapshot", headers={"X-Test-Phone": phone_a}).json()
+    snap_b = client.get(f"/wallets/{wb}/snapshot", headers={"X-Test-Phone": phone_b}).json()
     bal_a = snap_a["wallet"]["balance_cents"]
     bal_b = snap_b["wallet"]["balance_cents"]
 
