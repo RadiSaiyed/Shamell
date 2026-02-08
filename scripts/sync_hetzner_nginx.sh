@@ -3,7 +3,8 @@ set -euo pipefail
 
 HOST_ALIAS="${1:-shamell}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC_DIR="${REPO_ROOT}/ops/hetzner/nginx/sites-available"
+SITES_DIR="${REPO_ROOT}/ops/hetzner/nginx/sites-available"
+SNIPPETS_DIR="${REPO_ROOT}/ops/hetzner/nginx/snippets"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -15,8 +16,8 @@ require_cmd() {
 require_cmd ssh
 require_cmd scp
 
-if [[ ! -d "$SRC_DIR" ]]; then
-  echo "Missing source dir: $SRC_DIR" >&2
+if [[ ! -d "$SITES_DIR" ]]; then
+  echo "Missing source dir: $SITES_DIR" >&2
   exit 1
 fi
 
@@ -24,11 +25,23 @@ tmp_remote="/tmp/shamell-nginx-sync-$$"
 
 echo "Copying Nginx configs to ${HOST_ALIAS}:${tmp_remote}"
 ssh "$HOST_ALIAS" "mkdir -p '$tmp_remote'"
-scp "$SRC_DIR"/* "${HOST_ALIAS}:${tmp_remote}/"
+scp "$SITES_DIR"/* "${HOST_ALIAS}:${tmp_remote}/"
+
+if [[ -d "$SNIPPETS_DIR" ]]; then
+  echo "Copying Nginx snippets to ${HOST_ALIAS}:${tmp_remote}/snippets"
+  ssh "$HOST_ALIAS" "mkdir -p '$tmp_remote/snippets'"
+  scp "$SNIPPETS_DIR"/* "${HOST_ALIAS}:${tmp_remote}/snippets/"
+fi
 
 echo "Installing configs on ${HOST_ALIAS}"
 ssh -tt "$HOST_ALIAS" "
   set -euo pipefail
+  sudo install -d -m 0755 /etc/nginx/snippets
+
+  if [[ -f '$tmp_remote/snippets/shamell_cloudflare_realip.conf' ]]; then
+    sudo install -m 0644 '$tmp_remote/snippets/shamell_cloudflare_realip.conf' /etc/nginx/snippets/shamell_cloudflare_realip.conf
+  fi
+
   sudo install -m 0644 '$tmp_remote/api.shamell.online' /etc/nginx/sites-available/api.shamell.online
   sudo install -m 0644 '$tmp_remote/media.shamell.online' /etc/nginx/sites-available/media.shamell.online
   sudo install -m 0644 '$tmp_remote/online.shamell.online' /etc/nginx/sites-available/online.shamell.online
