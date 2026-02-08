@@ -78,7 +78,10 @@ else:
 def _require_internal_secret(request: Request) -> None:
     if not CHAT_REQUIRE_INTERNAL_SECRET:
         return
-    provided = (request.headers.get("X-Internal-Secret") or "").strip()
+    # nosemgrep: semgrep.rules.shamell.authz.trusting-client-internal-headers
+    # The value is treated as untrusted input and verified using constant-time
+    # comparison against a server-side secret.
+    provided = (request.headers.get("X-Internal-Secret") or "").strip()  # nosemgrep: semgrep.rules.shamell.authz.trusting-client-internal-headers
     if not INTERNAL_API_SECRET:
         # Misconfiguration: fail closed so the service is not accidentally exposed.
         raise HTTPException(status_code=503, detail="internal auth not configured")
