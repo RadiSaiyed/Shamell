@@ -4,6 +4,8 @@ server {
     root /var/www/shamell;
     index index.html;
 
+    include /etc/nginx/snippets/shamell_cloudflare_realip.conf;
+
     # Canonical API redirect:
     # online.shamell.online/api/* --> api.shamell.online/*
     location = /api {

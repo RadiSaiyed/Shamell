@@ -2359,7 +2359,7 @@ async def auth_verify(req: Request):
         elif PAYMENTS_BASE:
             url = PAYMENTS_BASE.rstrip('/') + '/users'
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(url, json={"phone": phone})
+                r = await client.post(url, json={"phone": phone}, headers=_payments_headers())
             if r.headers.get("content-type","" ).startswith("application/json"):
                 j = r.json()
                 wallet_id = (j.get("wallet_id") or j.get("id")) if isinstance(j, dict) else None  # type: ignore[assignment]
@@ -2421,7 +2421,7 @@ async def me_wallet(request: Request):
                 raise HTTPException(status_code=500, detail="PAYMENTS_BASE_URL not configured")
             url = PAYMENTS_BASE.rstrip('/') + '/users'
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(url, json={"phone": phone})
+                r = await client.post(url, json={"phone": phone}, headers=_payments_headers())
             if r.headers.get("content-type","" ).startswith("application/json"):
                 j = r.json()
             else:
@@ -4200,7 +4200,7 @@ def get_wallet(wallet_id: str, request: Request):
         if not PAYMENTS_BASE:
             raise HTTPException(status_code=500, detail="PAYMENTS_BASE_URL not configured")
         url = PAYMENTS_BASE.rstrip("/") + f"/wallets/{wallet_id}"
-        r = httpx.get(url, timeout=5.0)
+        r = httpx.get(url, headers=_payments_headers(), timeout=5.0)
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text, "status_code": r.status_code}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4311,7 +4311,7 @@ def payments_txns(
             if not PAYMENTS_BASE:
                 raise HTTPException(status_code=500, detail="PAYMENTS_BASE_URL not configured")
             url = PAYMENTS_BASE.rstrip("/") + f"/txns?wallet_id={wallet_id}&limit={max(1,min(limit*5,500))}"
-            r = httpx.get(url, timeout=10.0)
+            r = httpx.get(url, headers=_payments_headers(), timeout=10.0)
             arr = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
         # server-side filtering (best-effort)
         def in_range(ts: str) -> bool:
@@ -11011,7 +11011,7 @@ async def taxi_request_ride(req: Request):
         try:
             url = PAYMENTS_BASE.rstrip('/') + '/users'
             async with httpx.AsyncClient(timeout=10) as client:
-                rr = await client.post(url, json={"phone": rider_phone})
+                rr = await client.post(url, json={"phone": rider_phone}, headers=_payments_headers())
                 if rr.headers.get('content-type','').startswith('application/json'):
                     j = rr.json()
                     wid = j.get('wallet_id') or j.get('id')
@@ -19444,10 +19444,10 @@ function renderDoctors(list){
     div.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
         <div>
-          <div style="font-weight:700">\${d.name}</div>
-          <div class="muted">\${d.speciality||'—'} · \${d.city||'—'} · \${d.timezone}</div>
+          <div style="font-weight:700">\\${d.name}</div>
+          <div class="muted">\\${d.speciality||'—'} · \\${d.city||'—'} · \\${d.timezone}</div>
         </div>
-        <button style="width:auto;padding:8px 12px;" onclick='selectDoctor(\${d.id}, "\${d.name.replace(/"/g,'')}" )'>Select</button>
+        <button style="width:auto;padding:8px 12px;" onclick='selectDoctor(\\${d.id}, "\\${d.name.replace(/\"/g,'')}" )'>Select</button>
       </div>`;
     el.appendChild(div);
   });
@@ -23588,9 +23588,7 @@ async def me_contacts_sync(req: Request) -> dict[str, Any]:
                     r = httpx.post(
                         url,
                         json={"phones": chunk},
-                        headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}
-                        if PAYMENTS_INTERNAL_SECRET
-                        else None,
+                        headers=_payments_headers(),
                         timeout=6.0,
                     )
                     if r.status_code >= 200 and r.status_code < 300:
@@ -31306,6 +31304,7 @@ def admin_redpacket_campaigns_analytics(request: Request) -> HTMLResponse:
                         url = f"{base}/admin/redpacket_campaigns/payments_analytics"
                         r = httpx.get(
                             url,
+                            headers=_payments_headers(),
                             params={"campaign_id": cid},
                             timeout=5.0,
                         )
@@ -31598,7 +31597,7 @@ def admin_redpacket_campaign_detail(
                 base = PAYMENTS_BASE.rstrip("/")
                 url = f"{base}/admin/redpacket_campaigns/payments_analytics"
                 r = httpx.get(
-                    url, params={"campaign_id": campaign_id}, timeout=5.0
+                    url, headers=_payments_headers(), params={"campaign_id": campaign_id}, timeout=5.0
                 )
                 if (
                     r.status_code == 200
@@ -36859,6 +36858,7 @@ def official_account_campaign_stats(
                 url = f"{base}/admin/redpacket_campaigns/payments_analytics"
                 r = httpx.get(
                     url,
+                    headers=_payments_headers(),
                     params={"campaign_id": cid},
                     timeout=5.0,
                 )
@@ -36874,6 +36874,7 @@ def official_account_campaign_stats(
                 try:
                     r30 = httpx.get(
                         url,
+                        headers=_payments_headers(),
                         params={"campaign_id": cid, "from_iso": since_30d_pay.isoformat()},
                         timeout=5.0,
                     )
