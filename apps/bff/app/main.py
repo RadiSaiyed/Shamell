@@ -31,12 +31,15 @@ import logging
 import os
 import asyncio, json as _json, re
 import ipaddress
+import hmac as _hmac
+import html as _html
 import math
 from pathlib import Path
 import secrets as _secrets
 import time, uuid as _uuid
 from typing import Any
 from io import BytesIO
+import urllib.parse as _urlparse
 try:
     from PIL import Image, ImageDraw, ImageFont
 except Exception:
@@ -319,17 +322,32 @@ async def metrics_ingest(req: Request):
         raise HTTPException(status_code=403, detail="metrics ingest disabled")
     if METRICS_INGEST_SECRET:
         provided = (req.headers.get("X-Metrics-Secret") or "").strip()
-        if provided != METRICS_INGEST_SECRET:
+        if not _hmac.compare_digest(provided, METRICS_INGEST_SECRET):
             raise HTTPException(status_code=401, detail="metrics auth required")
+
+    # Lightweight size guardrails (best-effort; also enforce at the edge when possible).
     try:
-        body = await req.json()
+        cl = req.headers.get("content-length")
+        if cl and int(cl) > METRICS_INGEST_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="metrics payload too large")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid content-length")
+
+    raw = await req.body()
+    if raw and len(raw) > METRICS_INGEST_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="metrics payload too large")
+
+    try:
+        body = _json.loads(raw) if raw else {}
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
     try:
-        dev = req.headers.get("X-Device-ID") or ""
+        dev = (req.headers.get("X-Device-ID") or "")[:128]
     except Exception:
         dev = ""
-    item = {"ts": int(time.time()*1000), "device": dev, **body}
+    item = {"ts": int(time.time() * 1000), "device": dev, "data": body}
     _METRICS.append(item)
     if len(_METRICS) > 2000:
         del _METRICS[:len(_METRICS)-2000]
@@ -786,6 +804,7 @@ async def ws_wallet_events(websocket: WebSocket, wallet_id: str):
         "on",
     ):
         # This endpoint is intentionally dev/test-only by default.
+        await websocket.accept()
         await websocket.close(code=1008)
         return
     await websocket.accept()
@@ -942,6 +961,24 @@ AUTH_EXPOSE_CODES = _env_or("AUTH_EXPOSE_CODES", _AUTH_EXPOSE_DEFAULT).lower() =
 # Global maintenance mode toggle (read-only / outage banner).
 MAINTENANCE_MODE_ENABLED = _env_or("MAINTENANCE_MODE", "false").lower() == "true"
 METRICS_INGEST_SECRET = _env_or("METRICS_INGEST_SECRET", "").strip()
+try:
+    METRICS_INGEST_MAX_BYTES = int(_env_or("METRICS_INGEST_MAX_BYTES", "32768"))
+except Exception:
+    METRICS_INGEST_MAX_BYTES = 32768
+# Keep bounds sane even if env is misconfigured.
+METRICS_INGEST_MAX_BYTES = max(1024, min(METRICS_INGEST_MAX_BYTES, 1024 * 1024))
+
+try:
+    QR_MAX_DATA_LEN = int(_env_or("QR_MAX_DATA_LEN", "1024"))
+except Exception:
+    QR_MAX_DATA_LEN = 1024
+QR_MAX_DATA_LEN = max(64, min(QR_MAX_DATA_LEN, 16384))
+
+try:
+    TOPUP_PRINT_MAX_ITEMS = int(_env_or("TOPUP_PRINT_MAX_ITEMS", "1200"))
+except Exception:
+    TOPUP_PRINT_MAX_ITEMS = 1200
+TOPUP_PRINT_MAX_ITEMS = max(1, min(TOPUP_PRINT_MAX_ITEMS, 10000))
 SECURITY_ALERT_WEBHOOK_URL = _env_or("SECURITY_ALERT_WEBHOOK_URL", "").strip()
 SECURITY_ALERT_WINDOW_SECS = int(_env_or("SECURITY_ALERT_WINDOW_SECS", "300"))
 SECURITY_ALERT_COOLDOWN_SECS = int(_env_or("SECURITY_ALERT_COOLDOWN_SECS", "600"))
@@ -1561,17 +1598,30 @@ def _require_seller(request: Request) -> str:
     phone = _auth_phone(request)
     if not phone:
         raise HTTPException(status_code=401, detail="unauthorized")
-    # First try dynamic roles via Payments
-    if PAYMENTS_BASE and PAYMENTS_INTERNAL_SECRET:
+    # Production/staging must be explicit: default-deny when seller roles are
+    # not configured, otherwise any authenticated user could access money flows.
+    if _ENV_LOWER in ("prod", "staging"):
+        if BFF_TOPUP_ALLOW_ALL:
+            return phone
         try:
-            url = _payments_url("/admin/roles/check")
-            r = httpx.get(url, params={"phone": phone, "role": "seller"}, headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}, timeout=6)
-            if r.json().get("has", False):
-                return phone
+            roles = _get_effective_roles(phone)
         except Exception:
-            pass
-    # Fallback to local env allowlist
-    if BFF_TOPUP_ALLOW_ALL or not BFF_TOPUP_SELLERS or phone in BFF_TOPUP_SELLERS:
+            roles = []
+        if "seller" in roles:
+            return phone
+        raise HTTPException(status_code=403, detail="seller role required")
+
+    # Dev/test fallback: allow via Payments roles or local env allowlist.
+    # Keep permissive behaviour in dev/test to avoid blocking local iteration.
+    if BFF_TOPUP_ALLOW_ALL:
+        return phone
+    try:
+        roles = _get_effective_roles(phone)
+        if "seller" in roles:
+            return phone
+    except Exception:
+        pass
+    if not BFF_TOPUP_SELLERS or phone in BFF_TOPUP_SELLERS:
         return phone
     raise HTTPException(status_code=403, detail="seller not allowed")
 
@@ -12684,6 +12734,8 @@ def _bus_trip_route_id(trip_id: str) -> str | None:
 def qr_png(data: str, box_size: int = 6, border: int = 2):
     if not data:
         raise HTTPException(status_code=400, detail="missing data")
+    if len(data) > QR_MAX_DATA_LEN:
+        raise HTTPException(status_code=413, detail="data too large")
     if _qr is None:
         raise HTTPException(status_code=500, detail="QR library not available")
     try:
@@ -12763,12 +12815,20 @@ async def topup_batch_create(req: Request):
 
 @app.get("/topup/batches")
 def topup_batches(request: Request, seller_id: str = "", limit: int = 50):
-    # Default to current seller unless allow_all or explicit seller_id provided
-    if not seller_id:
-        try:
-            seller_id = _require_seller(request)
-        except HTTPException:
-            seller_id = ""
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_admin = _is_admin(phone)
+    if not is_admin:
+        _require_seller(request)
+    # Default to current seller; only admins may list other sellers.
+    seller_id = (seller_id or "").strip()
+    if seller_id:
+        if not is_admin and seller_id != phone:
+            raise HTTPException(status_code=403, detail="seller_id does not belong to caller")
+    else:
+        if not is_admin:
+            seller_id = phone
     try:
         params = {}
         if seller_id:
@@ -12779,6 +12839,8 @@ def topup_batches(request: Request, seller_id: str = "", limit: int = 50):
                 raise HTTPException(status_code=500, detail="payments internal not available")
             with _pay_internal_session() as s:
                 return _pay_topup_batches(seller_id=seller_id or None, limit=max(1, min(limit, 2000)), s=s, admin_ok=True)
+        if not PAYMENTS_INTERNAL_SECRET:
+            raise HTTPException(status_code=403, detail="Server not configured for topup admin")
         r = httpx.get(
             _payments_url("/topup/batches"),
             params=params,
@@ -12788,28 +12850,73 @@ def topup_batches(request: Request, seller_id: str = "", limit: int = 50):
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/topup/batches/{batch_id}")
 def topup_batch_detail(request: Request, batch_id: str):
-    # Ensure seller is authenticated; payments returns full list, BFF only exposes via auth
-    _require_seller(request)
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_admin = _is_admin(phone)
+    if not is_admin:
+        _require_seller(request)
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="payments internal not available")
             with _pay_internal_session() as s:
-                return _pay_topup_batch_detail(batch_id=batch_id, s=s, admin_ok=True)
-        r = httpx.get(
-            _payments_url(f"/topup/batches/{batch_id}"),
-            headers=_payments_headers(),
-            timeout=15,
-        )
-        return r.json()
+                rows = _pay_topup_batch_detail(batch_id=batch_id, s=s, admin_ok=True)
+                arr = []
+                for it in rows:
+                    try:
+                        arr.append(it.dict())  # type: ignore[call-arg]
+                    except Exception:
+                        arr.append({
+                            "code": getattr(it, "code", ""),
+                            "amount_cents": getattr(it, "amount_cents", 0),
+                            "currency": getattr(it, "currency", ""),
+                            "status": getattr(it, "status", ""),
+                            "created_at": getattr(it, "created_at", None),
+                            "redeemed_at": getattr(it, "redeemed_at", None),
+                            "expires_at": getattr(it, "expires_at", None),
+                            "sig": getattr(it, "sig", ""),
+                            "payload": getattr(it, "payload", ""),
+                            "seller_id": getattr(it, "seller_id", None),
+                            "note": getattr(it, "note", None),
+                        })
+        else:
+            if not PAYMENTS_INTERNAL_SECRET:
+                raise HTTPException(status_code=403, detail="Server not configured for topup admin")
+            r = httpx.get(
+                _payments_url(f"/topup/batches/{batch_id}"),
+                headers=_payments_headers(),
+                timeout=15,
+            )
+            arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
+        if not isinstance(arr, list):
+            arr = []
+        # Ownership check: sellers may only see their own batch items.
+        if not is_admin and arr:
+            seller_ids = set()
+            for v in arr:
+                if not isinstance(v, dict):
+                    continue
+                sid = str((v.get("seller_id") or "")).strip()
+                if sid:
+                    seller_ids.add(sid)
+            if not seller_ids:
+                raise HTTPException(status_code=403, detail="batch owner unknown")
+            if seller_ids != {phone}:
+                raise HTTPException(status_code=403, detail="batch does not belong to caller")
+        return arr
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -12881,13 +12988,19 @@ async def topup_redeem(req: Request):
 
 
 @app.get("/topup/print/{batch_id}", response_class=HTMLResponse)
-def topup_print(batch_id: str):
+def topup_print(request: Request, batch_id: str):
     """
     Printable QR sheet for a topup batch.
 
     In monolith/internal mode this uses the Payments domain directly;
     otherwise it falls back to the external PAYMENTS_BASE_URL.
     """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_admin = _is_admin(phone)
+    if not is_admin:
+        _require_seller(request)
     # Fetch vouchers and render printable QR grid
     try:
         if _use_pay_internal():
@@ -12905,8 +13018,11 @@ def topup_print(batch_id: str):
                             "code": getattr(it, "code", ""),
                             "amount_cents": getattr(it, "amount_cents", 0),
                             "payload": getattr(it, "payload", ""),
+                            "seller_id": getattr(it, "seller_id", None),
                         })
         else:
+            if not PAYMENTS_INTERNAL_SECRET:
+                raise HTTPException(status_code=403, detail="Server not configured for topup admin")
             r = httpx.get(
                 _payments_url(f"/topup/batches/{batch_id}"),
                 headers=_payments_headers(),
@@ -12917,17 +13033,46 @@ def topup_print(batch_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"fetch batch failed: {e}")
+    if not isinstance(arr, list):
+        arr = []
+    if len(arr) > TOPUP_PRINT_MAX_ITEMS:
+        raise HTTPException(status_code=413, detail="batch too large to print")
+    # Ownership check: sellers may only print their own batch.
+    if not is_admin and arr:
+        seller_ids = set()
+        for v in arr:
+            if not isinstance(v, dict):
+                continue
+            sid = str((v.get("seller_id") or "")).strip()
+            if sid:
+                seller_ids.add(sid)
+        if not seller_ids:
+            raise HTTPException(status_code=403, detail="batch owner unknown")
+        if seller_ids != {phone}:
+            raise HTTPException(status_code=403, detail="batch does not belong to caller")
+    _audit_from_request(request, "topup_print_batch", batch_id=batch_id)
     title = f"Topup Batch {batch_id}"
     rows = []
     for v in arr:
-        payload = v.get('payload','')
-        code = v.get('code','')
-        amt = int(v.get('amount_cents',0))
-        rows.append(f"<div class=\"card\"><img src=\"/qr.png?data={_json.dumps(payload)[1:-1]}\" /><div class=\"meta\"><b>{code}</b><br/><small>{amt} SYP</small></div></div>")
+        if not isinstance(v, dict):
+            continue
+        payload = str(v.get("payload", "") or "")
+        code = str(v.get("code", "") or "")
+        try:
+            amt = int(v.get("amount_cents", 0) or 0)
+        except Exception:
+            amt = 0
+        img_q = _urlparse.quote_plus(payload)
+        rows.append(
+            "<div class=\"card\">"
+            f"<img src=\"/qr.png?data={img_q}\" />"
+            f"<div class=\"meta\"><b>{_html.escape(code)}</b><br/><small>{amt} SYP</small></div>"
+            "</div>"
+        )
     html = f"""
 <!doctype html>
 <html><head><meta charset=utf-8 /><meta name=viewport content='width=device-width, initial-scale=1' />
-<title>{title}</title>
+<title>{_html.escape(title)}</title>
 <style>
   body{{font-family:sans-serif;margin:16px}}
   .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}}
@@ -12946,7 +13091,7 @@ def topup_print(batch_id: str):
 <body>
 <div class=\"wrap\">
   <div class=\"toolbar no-print\"><button onclick=\"window.print()\">Print</button></div>
-  <h1>{title}</h1>
+  <h1>{_html.escape(title)}</h1>
   <div class=\"sub\">Printable QR vouchers</div>
   <div class=\"grid\">{''.join(rows)}</div>
 </div>
@@ -14044,19 +14189,64 @@ async def me_dsr_delete(request: Request):
 
 
 @app.get("/topup/print_pdf/{batch_id}")
-def topup_print_pdf(batch_id: str):
-    if _pdfcanvas is None or _qr is None:
-        raise HTTPException(status_code=500, detail="PDF/QR library not available")
+def topup_print_pdf(request: Request, batch_id: str):
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_admin = _is_admin(phone)
+    if not is_admin:
+        _require_seller(request)
     # Fetch vouchers
     try:
-        r = httpx.get(
-            _payments_url(f"/topup/batches/{batch_id}"),
-            headers=_payments_headers(),
-            timeout=15,
-        )
-        arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            with _pay_internal_session() as s:  # type: ignore[name-defined]
+                rows = _pay_topup_batch_detail(batch_id=batch_id, s=s, admin_ok=True)  # type: ignore[name-defined]
+                arr = []
+                for it in rows:
+                    try:
+                        arr.append(it.dict())  # type: ignore[call-arg]
+                    except Exception:
+                        arr.append({
+                            "code": getattr(it, "code", ""),
+                            "amount_cents": getattr(it, "amount_cents", 0),
+                            "payload": getattr(it, "payload", ""),
+                            "seller_id": getattr(it, "seller_id", None),
+                        })
+        else:
+            if not PAYMENTS_INTERNAL_SECRET:
+                raise HTTPException(status_code=403, detail="Server not configured for topup admin")
+            r = httpx.get(
+                _payments_url(f"/topup/batches/{batch_id}"),
+                headers=_payments_headers(),
+                timeout=15,
+            )
+            arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"fetch batch failed: {e}")
+    if not isinstance(arr, list):
+        arr = []
+    if len(arr) > TOPUP_PRINT_MAX_ITEMS:
+        raise HTTPException(status_code=413, detail="batch too large to print")
+    # Ownership check: sellers may only print their own batch.
+    if not is_admin and arr:
+        seller_ids = set()
+        for v in arr:
+            if not isinstance(v, dict):
+                continue
+            sid = str((v.get("seller_id") or "")).strip()
+            if sid:
+                seller_ids.add(sid)
+        if not seller_ids:
+            raise HTTPException(status_code=403, detail="batch owner unknown")
+        if seller_ids != {phone}:
+            raise HTTPException(status_code=403, detail="batch does not belong to caller")
+    _audit_from_request(request, "topup_print_batch_pdf", batch_id=batch_id)
+    if _pdfcanvas is None or _qr is None:
+        raise HTTPException(status_code=500, detail="PDF/QR library not available")
     # Prepare PDF
     buf = BytesIO()
     c = _pdfcanvas.Canvas(buf, pagesize=A4)
@@ -14068,9 +14258,14 @@ def topup_print_pdf(batch_id: str):
     y_margin = 18
     i = 0
     for v in arr:
-        payload = v.get('payload','')
-        code = v.get('code','')
-        amt = int(v.get('amount_cents',0))
+        if not isinstance(v, dict):
+            continue
+        payload = str(v.get("payload", "") or "")
+        code = str(v.get("code", "") or "")
+        try:
+            amt = int(v.get("amount_cents", 0) or 0)
+        except Exception:
+            amt = 0
         # Make QR image
         try:
             q = _qr.QRCode(error_correction=_qr.constants.ERROR_CORRECT_M, box_size=6, border=2)
