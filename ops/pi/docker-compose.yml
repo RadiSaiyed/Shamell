@@ -2,8 +2,18 @@ services:
   monolith:
     image: shamell-core:pi
     init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
       ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
       MONOLITH_MODE: "${MONOLITH_MODE:-1}"
       MONOLITH_ONLY: "${MONOLITH_ONLY:-1}"
       MONOLITH_DB_URL: "${MONOLITH_DB_URL:-sqlite+pysqlite:////data/monolith.db}"
@@ -64,6 +74,13 @@ services:
   livekit:
     image: livekit/livekit-server:v1.5.2
     init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     command: ["--config", "/etc/livekit/livekit.yaml"]
     environment:
       LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret}${LIVEKIT_KEYS_EXTRA:-}}"
