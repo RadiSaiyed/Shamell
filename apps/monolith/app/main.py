@@ -191,6 +191,20 @@ _ENABLE_DOCS = _ENV_LOWER in ("dev", "test") or os.getenv("ENABLE_API_DOCS_IN_PR
     "yes",
     "on",
 )
+# Domain routers can be exposed for local dev/debug, but in prod/staging we
+# prefer the BFF as the only public surface (reduces accidental auth bypass).
+_EXPOSE_PAYMENTS_ROUTER = _ENV_LOWER in ("dev", "test") or os.getenv("EXPOSE_PAYMENTS_ROUTER", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_EXPOSE_CHAT_ROUTER = _ENV_LOWER in ("dev", "test") or os.getenv("EXPOSE_CHAT_ROUTER", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 root_app = FastAPI(
     title="Shamell Monolith",
     version="0.1.0",
@@ -467,7 +481,7 @@ if food_router is not None:
     root_app.include_router(food_router, prefix="/food")
 if stays_router is not None:
     root_app.include_router(stays_router, prefix="/stays")
-if payments_router is not None:
+if payments_router is not None and _EXPOSE_PAYMENTS_ROUTER:
     root_app.include_router(payments_router, prefix="/payments")
 if taxi_router is not None:
     root_app.include_router(taxi_router, prefix="/taxi")
@@ -488,7 +502,7 @@ if doctors_router is not None:
     root_app.include_router(doctors_router, prefix="/doctors")
 if flights_router is not None:
     root_app.include_router(flights_router, prefix="/flights")
-if chat_router is not None:
+if chat_router is not None and _EXPOSE_CHAT_ROUTER:
     root_app.include_router(chat_router, prefix="/chat")
 if carmarket_router is not None:
     root_app.include_router(carmarket_router, prefix="/carmarket")

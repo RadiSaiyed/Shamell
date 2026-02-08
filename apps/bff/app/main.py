@@ -313,6 +313,10 @@ _METRICS = []  # in-memory ring buffer
 
 @app.post("/metrics")
 async def metrics_ingest(req: Request):
+    if _ENV_LOWER not in ("dev", "test") and not METRICS_INGEST_SECRET:
+        # Avoid unauthenticated log/memory spam in prod/staging when the secret
+        # is not configured.
+        raise HTTPException(status_code=403, detail="metrics ingest disabled")
     if METRICS_INGEST_SECRET:
         provided = (req.headers.get("X-Metrics-Secret") or "").strip()
         if provided != METRICS_INGEST_SECRET:
@@ -775,6 +779,15 @@ def admin_info(request: Request):
 @app.websocket("/ws/payments/wallets/{wallet_id}")
 async def ws_wallet_events(websocket: WebSocket, wallet_id: str):
     # Simple polling-based wallet credit stream over WS
+    if _ENV_LOWER not in ("dev", "test") and os.getenv("ENABLE_WALLET_WS_IN_PROD", "").lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        # This endpoint is intentionally dev/test-only by default.
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     last_key = None
     try:
@@ -2509,7 +2522,7 @@ async def me_dashboard(request: Request, tx_limit: int = 10):
     tx_error: str | None = None
     if wallet_id:
         try:
-            txns = payments_txns(wallet_id=str(wallet_id), limit=tx_limit)
+            txns = payments_txns(wallet_id=str(wallet_id), limit=tx_limit, request=request)
         except HTTPException:
             raise
         except Exception as e:
@@ -4134,7 +4147,21 @@ setInterval(loadHealth, 30000);
 
 
 @app.get("/wallets/{wallet_id}")
-def get_wallet(wallet_id: str):
+def get_wallet(wallet_id: str, request: Request):
+    # Wallet lookups contain sensitive financial data. Require auth and enforce
+    # wallet ownership (or admin) to prevent IDOR.
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    wallet_id = (wallet_id or "").strip()
+    caller_wallet_id = _resolve_wallet_id_for_phone(phone)
+    if caller_wallet_id:
+        if wallet_id != caller_wallet_id and not _is_admin(phone):
+            raise HTTPException(status_code=403, detail="wallet does not belong to caller")
+    else:
+        # If we cannot resolve the caller wallet we still allow admins to proceed.
+        if not _is_admin(phone):
+            raise HTTPException(status_code=403, detail="wallet not found for caller")
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
@@ -4160,6 +4187,7 @@ def get_wallet(wallet_id: str):
 @app.get("/wallets/{wallet_id}/snapshot")
 def wallet_snapshot(
     wallet_id: str,
+    request: Request,
     limit: int = 25,
     dir: str = "",
     kind: str = "",
@@ -4177,7 +4205,7 @@ def wallet_snapshot(
     wallet_error: str | None = None
     wallet_status: int | None = None
     try:
-        wallet = get_wallet(wallet_id)
+        wallet = get_wallet(wallet_id, request=request)
     except HTTPException as e:
         wallet_error = str(e.detail)
         wallet_status = e.status_code
@@ -4194,6 +4222,7 @@ def wallet_snapshot(
             kind=kind,
             from_iso=from_iso,
             to_iso=to_iso,
+            request=request,
         )
     except HTTPException:
         raise
@@ -4218,7 +4247,28 @@ from datetime import datetime, timezone, timedelta
 
 
 @app.get("/payments/txns")
-def payments_txns(wallet_id: str, limit: int = 20, dir: str = "", kind: str = "", from_iso: str = "", to_iso: str = ""):
+def payments_txns(
+    wallet_id: str,
+    request: Request,
+    limit: int = 20,
+    dir: str = "",
+    kind: str = "",
+    from_iso: str = "",
+    to_iso: str = "",
+):
+    # Transaction lists are sensitive; require auth and enforce wallet ownership (or admin).
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    wallet_id = (wallet_id or "").strip()
+    caller_wallet_id = _resolve_wallet_id_for_phone(phone)
+    if caller_wallet_id:
+        if wallet_id != caller_wallet_id and not _is_admin(phone):
+            raise HTTPException(status_code=403, detail="wallet does not belong to caller")
+    else:
+        # If we cannot resolve the caller wallet we still allow admins to proceed.
+        if not _is_admin(phone):
+            raise HTTPException(status_code=403, detail="wallet not found for caller")
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:

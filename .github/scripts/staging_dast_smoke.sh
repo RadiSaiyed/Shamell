@@ -125,9 +125,15 @@ BFF_ADMIN_PATH="$(normalize_path "$BFF_ADMIN_PATH")"
 PAYMENTS_ADMIN_PATH="${DAST_PAYMENTS_ADMIN_PATH:-/admin/debug/tables}"
 PAYMENTS_SUMMARY_PATH="${DAST_PAYMENTS_SUMMARY_PATH:-/admin/fees/summary}"
 PAYMENTS_WEBHOOK_PATH="${DAST_PAYMENTS_WEBHOOK_PATH:-}"
+PAYMENTS_ADMIN_EXPECT="401"
+PAYMENTS_SUMMARY_EXPECT="401,403"
 if [ "$PAY_BASE_URL" = "$BFF_BASE_URL" ]; then
   PAYMENTS_ADMIN_PATH="${DAST_PAYMENTS_ADMIN_PATH:-/payments/admin/debug/tables}"
   PAYMENTS_SUMMARY_PATH="${DAST_PAYMENTS_SUMMARY_PATH:-/payments/admin/fees/summary}"
+  # In single-host monolith layouts we may intentionally not expose the raw
+  # Payments service router. In that case 404 is also acceptable.
+  PAYMENTS_ADMIN_EXPECT="401,404"
+  PAYMENTS_SUMMARY_EXPECT="401,403,404"
 fi
 PAYMENTS_ADMIN_PATH="$(normalize_path "$PAYMENTS_ADMIN_PATH")"
 PAYMENTS_SUMMARY_PATH="$(normalize_path "$PAYMENTS_SUMMARY_PATH")"
@@ -142,7 +148,7 @@ expect_code "Chat health" GET "$CHAT_BASE_URL/health" "200"
 
 # AuthN/AuthZ guardrails (negative tests, no valid creds provided)
 expect_code "BFF admin denied without token" GET "$BFF_BASE_URL$BFF_ADMIN_PATH" "401,403"
-expect_code "Payments admin denied without token" GET "$PAY_BASE_URL$PAYMENTS_ADMIN_PATH" "401"
+expect_code "Payments admin denied without token" GET "$PAY_BASE_URL$PAYMENTS_ADMIN_PATH" "$PAYMENTS_ADMIN_EXPECT"
 expect_code "Chat inbox denied without token" GET "$CHAT_BASE_URL/chat/messages/inbox?device_id=dast-smoke" "401"
 expect_code "BFF metrics denied without token" GET "$BFF_BASE_URL/metrics" "401,403"
 if [ -n "$PAYMENTS_WEBHOOK_PATH" ]; then
@@ -150,7 +156,7 @@ if [ -n "$PAYMENTS_WEBHOOK_PATH" ]; then
   expect_code "Payments webhook invalid signature rejected" \
     POST "$PAY_BASE_URL$PAYMENTS_WEBHOOK_PATH" "400,401,403,503" '{}' 'application/json' 'Stripe-Signature: t=0,v1=invalid'
 else
-  expect_code "Payments admin summary denied without token" GET "$PAY_BASE_URL$PAYMENTS_SUMMARY_PATH" "401,403"
+  expect_code "Payments admin summary denied without token" GET "$PAY_BASE_URL$PAYMENTS_SUMMARY_PATH" "$PAYMENTS_SUMMARY_EXPECT"
 fi
 
 echo "DAST summary: checks=$CHECKS failures=$FAILURES max_failures=$MAX_FAILED_CHECKS max_response_ms=$MAX_RESPONSE_MS"
