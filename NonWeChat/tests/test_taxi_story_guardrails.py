@@ -84,7 +84,14 @@ def test_taxi_story_payout_guardrail_not_hit_for_single_complete(client, monkeyp
 
     monkeypatch.setattr(httpx, "post", fake_post)
 
-    resp = client.post(f"/taxi/rides/{ride_id}/complete", params={"driver_id": driver_id})
+    admin_phone = "+491700000099"
+    monkeypatch.setenv("BFF_ADMINS", admin_phone)
+    bff.BFF_ADMINS.add(admin_phone)
+    resp = client.post(
+        f"/taxi/rides/{ride_id}/complete",
+        params={"driver_id": driver_id},
+        headers={"X-Test-Phone": admin_phone},
+    )
     assert resp.status_code == 200
 
     # Guardrail should not fire for a single completion; we expect two transfers.
@@ -148,11 +155,11 @@ def test_taxi_story_cancel_guardrail_blocks_after_limit(client, monkeypatch):
     monkeypatch.setattr(httpx, "post", fake_post)
 
     # First cancel: should trigger one transfer.
-    r1 = client.post(f"/taxi/rides/{ride_ids[0]}/cancel")
+    r1 = client.post(f"/taxi/rides/{ride_ids[0]}/cancel", headers={"X-Test-Phone": "+491700000555"})
     assert r1.status_code == 200
 
     # Second cancel: guardrail should block additional transfers.
-    r2 = client.post(f"/taxi/rides/{ride_ids[1]}/cancel")
+    r2 = client.post(f"/taxi/rides/{ride_ids[1]}/cancel", headers={"X-Test-Phone": "+491700000555"})
     assert r2.status_code == 200
 
     # Exactly one transfer for both cancels combined.
@@ -219,11 +226,22 @@ def test_taxi_story_payout_guardrail_blocks_after_limit(client, monkeypatch):
     monkeypatch.setattr(httpx, "post", fake_post)
 
     # First completion: should trigger two settlement transfers.
-    r1 = client.post(f"/taxi/rides/{ride_ids[0]}/complete", params={"driver_id": driver_id})
+    admin_phone = "+491700000099"
+    monkeypatch.setenv("BFF_ADMINS", admin_phone)
+    bff.BFF_ADMINS.add(admin_phone)
+    r1 = client.post(
+        f"/taxi/rides/{ride_ids[0]}/complete",
+        params={"driver_id": driver_id},
+        headers={"X-Test-Phone": admin_phone},
+    )
     assert r1.status_code == 200
 
     # Second completion: guardrail should block additional settlement legs.
-    r2 = client.post(f"/taxi/rides/{ride_ids[1]}/complete", params={"driver_id": driver_id})
+    r2 = client.post(
+        f"/taxi/rides/{ride_ids[1]}/complete",
+        params={"driver_id": driver_id},
+        headers={"X-Test-Phone": admin_phone},
+    )
     assert r2.status_code == 200
 
     # Overall: still exactly two transfers (from first completion only).

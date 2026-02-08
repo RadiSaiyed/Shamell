@@ -106,7 +106,14 @@ def test_taxi_complete_triggers_two_settlement_transfers_via_bff(client, monkeyp
 
   ride_id = "ride_123"
   driver_id = "drv_1"
-  resp = client.post(f"/taxi/rides/{ride_id}/complete", params={"driver_id": driver_id})
+  admin_phone = "+491700000099"
+  monkeypatch.setenv("BFF_ADMINS", admin_phone)
+  bff.BFF_ADMINS.add(admin_phone)
+  resp = client.post(
+      f"/taxi/rides/{ride_id}/complete",
+      params={"driver_id": driver_id},
+      headers={"X-Test-Phone": admin_phone},
+  )
   assert resp.status_code == 200
 
   # Two transfers: rider->escrow and escrow->driver.

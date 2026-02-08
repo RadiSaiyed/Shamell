@@ -31,6 +31,7 @@ import logging
 import os
 import asyncio, json as _json, re
 import ipaddress
+import socket
 import hmac as _hmac
 import html as _html
 import math
@@ -59,6 +60,18 @@ except Exception:
 def _env_or(key: str, default: str) -> str:
     v = os.getenv(key)
     return v if v is not None else default
+
+def _parse_ip_networks(raw: str) -> list[ipaddress._BaseNetwork]:  # type: ignore[name-defined]
+    out: list[ipaddress._BaseNetwork] = []  # type: ignore[name-defined]
+    for chunk in (raw or "").split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        try:
+            out.append(ipaddress.ip_network(item, strict=False))
+        except Exception:
+            continue
+    return out
 
 from .events import emit_event
 
@@ -261,13 +274,20 @@ async def _security_headers_mw(request: Request, call_next):
     if SECURITY_HEADERS_ENABLED:
         try:
             headers = response.headers
+            path = request.url.path
             headers.setdefault("X-Content-Type-Options", "nosniff")
             headers.setdefault("X-Frame-Options", "DENY")
             headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+            headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+            if HSTS_ENABLED:
+                headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
             headers.setdefault(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; frame-ancestors 'none'",
             )
+            # Prevent caching of sensitive API responses by browsers or intermediaries.
+            if path.startswith(("/payments", "/me/", "/taxi", "/bus", "/auth", "/admin")):
+                headers.setdefault("Cache-Control", "no-store")
         except Exception:
             # Security headers must never break normal flows
             pass
@@ -876,6 +896,21 @@ NOMINATIM_USER_AGENT = _env_or("NOMINATIM_USER_AGENT", "shamell-taxi/1.0 (contac
 OSRM_BASE = _env_or("OSRM_BASE_URL", "")
 OVERPASS_BASE = _env_or("OVERPASS_BASE_URL", "https://overpass-api.de/api/interpreter")
 
+# Push endpoint SSRF guardrails (best-effort).
+PUSH_ALLOWED_HOSTS = {
+    h.strip().lower()
+    for h in (os.getenv("PUSH_ALLOWED_HOSTS") or "").split(",")
+    if h.strip()
+}
+PUSH_ALLOW_HTTP = _env_or("PUSH_ALLOW_HTTP", "false").lower() == "true"
+PUSH_ALLOW_PRIVATE_IPS = _env_or("PUSH_ALLOW_PRIVATE_IPS", "false").lower() == "true"
+PUSH_VALIDATE_DNS = _env_or("PUSH_VALIDATE_DNS", "true").lower() == "true"
+try:
+    PUSH_MAX_ENDPOINT_LEN = int(_env_or("PUSH_MAX_ENDPOINT_LEN", "2048"))
+except Exception:
+    PUSH_MAX_ENDPOINT_LEN = 2048
+PUSH_MAX_ENDPOINT_LEN = max(256, min(PUSH_MAX_ENDPOINT_LEN, 8192))
+
 
 def _payments_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     """
@@ -941,6 +976,54 @@ CHAT_SEND_MAX_PER_IP = int(_env_or("CHAT_SEND_MAX_PER_IP", "300"))
 _CHAT_RATE_DEVICE: dict[str, list[int]] = {}
 _CHAT_RATE_IP: dict[str, list[int]] = {}
 
+# Maps/Geocoding/Routing abuse guardrails (BFF layer, best-effort in-memory).
+MAPS_RATE_WINDOW_SECS = int(_env_or("MAPS_RATE_WINDOW_SECS", "60"))
+MAPS_GEOCODE_MAX_PER_IP_AUTH = int(_env_or("MAPS_GEOCODE_MAX_PER_IP_AUTH", "120"))
+MAPS_GEOCODE_MAX_PER_IP_ANON = int(_env_or("MAPS_GEOCODE_MAX_PER_IP_ANON", "30"))
+MAPS_GEOCODE_BATCH_MAX_PER_IP_AUTH = int(_env_or("MAPS_GEOCODE_BATCH_MAX_PER_IP_AUTH", "20"))
+MAPS_GEOCODE_BATCH_MAX_PER_IP_ANON = int(_env_or("MAPS_GEOCODE_BATCH_MAX_PER_IP_ANON", "5"))
+MAPS_POI_MAX_PER_IP_AUTH = int(_env_or("MAPS_POI_MAX_PER_IP_AUTH", "120"))
+MAPS_POI_MAX_PER_IP_ANON = int(_env_or("MAPS_POI_MAX_PER_IP_ANON", "30"))
+MAPS_REVERSE_MAX_PER_IP_AUTH = int(_env_or("MAPS_REVERSE_MAX_PER_IP_AUTH", "180"))
+MAPS_REVERSE_MAX_PER_IP_ANON = int(_env_or("MAPS_REVERSE_MAX_PER_IP_ANON", "60"))
+MAPS_ROUTE_MAX_PER_IP_AUTH = int(_env_or("MAPS_ROUTE_MAX_PER_IP_AUTH", "60"))
+MAPS_ROUTE_MAX_PER_IP_ANON = int(_env_or("MAPS_ROUTE_MAX_PER_IP_ANON", "20"))
+MAPS_TAXI_STANDS_MAX_PER_IP_AUTH = int(_env_or("MAPS_TAXI_STANDS_MAX_PER_IP_AUTH", "60"))
+MAPS_TAXI_STANDS_MAX_PER_IP_ANON = int(_env_or("MAPS_TAXI_STANDS_MAX_PER_IP_ANON", "15"))
+try:
+    MAPS_MAX_QUERY_LEN = int(_env_or("MAPS_MAX_QUERY_LEN", "256"))
+except Exception:
+    MAPS_MAX_QUERY_LEN = 256
+MAPS_MAX_QUERY_LEN = max(32, min(MAPS_MAX_QUERY_LEN, 2048))
+try:
+    MAPS_MAX_BATCH_QUERIES = int(_env_or("MAPS_MAX_BATCH_QUERIES", "50"))
+except Exception:
+    MAPS_MAX_BATCH_QUERIES = 50
+MAPS_MAX_BATCH_QUERIES = max(1, min(MAPS_MAX_BATCH_QUERIES, 500))
+try:
+    MAPS_CACHE_MAX_ITEMS = int(_env_or("MAPS_CACHE_MAX_ITEMS", "2000"))
+except Exception:
+    MAPS_CACHE_MAX_ITEMS = 2000
+MAPS_CACHE_MAX_ITEMS = max(50, min(MAPS_CACHE_MAX_ITEMS, 20000))
+try:
+    MAPS_CACHE_TTL_SECS = int(_env_or("MAPS_CACHE_TTL_SECS", "600"))
+except Exception:
+    MAPS_CACHE_TTL_SECS = 600
+MAPS_CACHE_TTL_SECS = max(30, min(MAPS_CACHE_TTL_SECS, 3600))
+_MAPS_RATE_IP: dict[str, list[int]] = {}
+
+# Fleet helper endpoints are CPU-bound; keep inputs bounded.
+try:
+    FLEET_MAX_STOPS = int(_env_or("FLEET_MAX_STOPS", "200"))
+except Exception:
+    FLEET_MAX_STOPS = 200
+FLEET_MAX_STOPS = max(10, min(FLEET_MAX_STOPS, 2000))
+try:
+    FLEET_MAX_DEPOTS = int(_env_or("FLEET_MAX_DEPOTS", "50"))
+except Exception:
+    FLEET_MAX_DEPOTS = 50
+FLEET_MAX_DEPOTS = max(1, min(FLEET_MAX_DEPOTS, 500))
+
 # Chat WebSocket guardrails (BFF layer, best-effort per-process).
 CHAT_WS_CONNECT_WINDOW_SECS = int(_env_or("CHAT_WS_CONNECT_WINDOW_SECS", "60"))
 CHAT_WS_CONNECT_MAX_PER_IP = int(_env_or("CHAT_WS_CONNECT_MAX_PER_IP", "60"))
@@ -953,6 +1036,14 @@ _CHAT_WS_LOCK = asyncio.Lock()
 
 # Global security headers toggle
 SECURITY_HEADERS_ENABLED = _env_or("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
+HSTS_ENABLED = _env_or("HSTS_ENABLED", "true" if _ENV_LOWER in ("prod", "staging") else "false").lower() == "true"
+
+# Proxy header trust (client IP resolution for rate limiting + audits).
+# Best practice is to only trust proxy-provided headers when the immediate peer
+# is a trusted proxy (explicit CIDR allowlist) or a private hop (cluster ingress).
+TRUST_PROXY_HEADERS_MODE = _env_or("TRUST_PROXY_HEADERS", "auto").strip().lower()  # off|on|auto
+TRUST_PRIVATE_PROXY_HOPS = _env_or("TRUST_PRIVATE_PROXY_HOPS", "true").lower() == "true"
+TRUSTED_PROXY_CIDRS = _parse_ip_networks(_env_or("TRUSTED_PROXY_CIDRS", ""))
 
 _AUTH_EXPOSE_DEFAULT = "true" if _ENV_LOWER in ("dev", "test") else "false"
 # Whether auth codes should be returned in responses (for dev/test only).
@@ -1122,6 +1213,86 @@ def _normalize_ip(raw: str | None) -> str | None:
     except Exception:
         return None
 
+def _should_trust_proxy_headers(peer: ipaddress._BaseAddress | None) -> bool:  # type: ignore[name-defined]
+    mode = (TRUST_PROXY_HEADERS_MODE or "auto").strip().lower()
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    # auto: trust only when the immediate peer is trusted.
+    if peer is None:
+        return False
+    try:
+        if TRUSTED_PROXY_CIDRS:
+            for net in TRUSTED_PROXY_CIDRS:
+                try:
+                    if peer in net:
+                        return True
+                except Exception:
+                    continue
+        if TRUST_PRIVATE_PROXY_HOPS and getattr(peer, "is_private", False):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _is_public_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return not (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
+    except Exception:
+        return False
+
+
+def _proxy_client_ip_from_headers(headers: Any) -> str | None:
+    """
+    Extract best-effort client IP from common proxy headers.
+    Caller must ensure these headers are trusted.
+    """
+    try:
+        # CDN-specific headers first (more reliable than XFF chains).
+        for k in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+            v = None
+            try:
+                v = headers.get(k) or headers.get(k.upper()) or headers.get(k.title())
+            except Exception:
+                v = None
+            ip = _normalize_ip(v)
+            if ip:
+                return ip
+    except Exception:
+        pass
+    try:
+        fwd = None
+        try:
+            fwd = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For")
+        except Exception:
+            fwd = None
+        if fwd:
+            hops = [p.strip() for p in str(fwd).split(",") if p.strip()]
+            # Prefer the first public IP from the left (original client).
+            first_valid: str | None = None
+            for hop in hops:
+                ip = _normalize_ip(hop)
+                if not ip:
+                    continue
+                if first_valid is None:
+                    first_valid = ip
+                if _is_public_ip(ip):
+                    return ip
+            return first_valid
+    except Exception:
+        pass
+    return None
+
 
 def _auth_client_ip(request: Request) -> str:
     """
@@ -1129,30 +1300,27 @@ def _auth_client_ip(request: Request) -> str:
     Prefer trusted proxy headers and avoid trusting attacker-controlled
     left-most X-Forwarded-For entries.
     """
-    try:
-        real_ip = _normalize_ip(request.headers.get("x-real-ip") or request.headers.get("X-Real-IP"))
-        if real_ip:
-            return real_ip
-    except Exception:
-        pass
-    try:
-        fwd = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
-        if fwd:
-            # Nginx appends the direct client as the right-most element.
-            for hop in reversed([p.strip() for p in fwd.split(",") if p.strip()]):
-                ip = _normalize_ip(hop)
-                if ip:
-                    return ip
-    except Exception:
-        pass
+    peer_ip: str | None = None
+    peer_obj: ipaddress._BaseAddress | None = None  # type: ignore[name-defined]
     try:
         if request.client and request.client.host:
-            ip = _normalize_ip(request.client.host)
-            if ip:
-                return ip
-            return request.client.host
+            peer_ip = str(request.client.host)
+            peer_ip_norm = _normalize_ip(peer_ip)
+            if peer_ip_norm:
+                peer_obj = ipaddress.ip_address(peer_ip_norm)
+                peer_ip = peer_ip_norm
     except Exception:
         pass
+
+    # Only trust proxy headers when the immediate peer is trusted.
+    if _should_trust_proxy_headers(peer_obj):
+        ip = _proxy_client_ip_from_headers(request.headers)
+        if ip:
+            return ip
+
+    # Fallback: direct peer (may be reverse proxy IP).
+    if peer_ip:
+        return peer_ip
     return "unknown"
 
 
@@ -1161,30 +1329,23 @@ def _ws_client_ip(ws: WebSocket) -> str:
     Best-effort resolution of the client IP for WebSockets.
     Mirrors _auth_client_ip() but reads from WebSocket headers.
     """
-    try:
-        real_ip = _normalize_ip(ws.headers.get("x-real-ip") or ws.headers.get("X-Real-IP"))
-        if real_ip:
-            return real_ip
-    except Exception:
-        pass
-    try:
-        fwd = ws.headers.get("x-forwarded-for") or ws.headers.get("X-Forwarded-For")
-        if fwd:
-            # Nginx appends the direct client as the right-most element.
-            for hop in reversed([p.strip() for p in fwd.split(",") if p.strip()]):
-                ip = _normalize_ip(hop)
-                if ip:
-                    return ip
-    except Exception:
-        pass
+    peer_ip: str | None = None
+    peer_obj: ipaddress._BaseAddress | None = None  # type: ignore[name-defined]
     try:
         if ws.client and ws.client.host:
-            ip = _normalize_ip(ws.client.host)
-            if ip:
-                return ip
-            return ws.client.host
+            peer_ip = str(ws.client.host)
+            peer_ip_norm = _normalize_ip(peer_ip)
+            if peer_ip_norm:
+                peer_obj = ipaddress.ip_address(peer_ip_norm)
+                peer_ip = peer_ip_norm
     except Exception:
         pass
+    if _should_trust_proxy_headers(peer_obj):
+        ip = _proxy_client_ip_from_headers(ws.headers)
+        if ip:
+            return ip
+    if peer_ip:
+        return peer_ip
     return "unknown"
 
 
@@ -1338,7 +1499,7 @@ def _rate_limit_auth(request: Request, phone: str) -> None:
             raise HTTPException(status_code=429, detail="rate limited: too many codes for this phone")
     # Limit pro IP
     ip = _auth_client_ip(request)
-    if ip:
+    if ip and ip != "unknown":
         lst_ip = _AUTH_RATE_IP.get(ip) or []
         lst_ip = [ts for ts in lst_ip if ts >= now - AUTH_RATE_WINDOW_SECS]
         lst_ip.append(now)
@@ -1459,6 +1620,81 @@ def _rate_limit_chat_edge(
             raise HTTPException(status_code=429, detail="rate limited: too many requests")
 
 
+def _rate_limit_maps_edge(
+    request: Request,
+    *,
+    scope: str,
+    ip_max_auth: int,
+    ip_max_anon: int,
+) -> None:
+    """
+    Best-effort in-memory rate limiting for maps/geocoding/routing endpoints.
+    These endpoints can become a cost/abuse sink (paid API keys, heavy upstreams),
+    so we enforce tighter limits for unauthenticated callers.
+    """
+    try:
+        scope_key = (scope or "").strip().lower() or "default"
+        ip = _auth_client_ip(request)
+        if not ip or ip == "unknown":
+            return
+        # Authenticated callers get higher quota.
+        phone = _auth_phone(request)
+        max_hits = int(ip_max_auth if phone else ip_max_anon)
+        max_hits = max(0, max_hits)
+        if max_hits <= 0:
+            return
+        hits = _rate_limit_bucket(
+            _MAPS_RATE_IP,
+            f"{scope_key}:{ip}",
+            window_secs=MAPS_RATE_WINDOW_SECS,
+            max_hits=max_hits,
+        )
+        if hits > max_hits:
+            _audit_from_request(
+                request,
+                "maps_rate_limit_ip",
+                scope=scope_key,
+                ip=ip,
+                max=max_hits,
+                hits=hits,
+            )
+            raise HTTPException(status_code=429, detail="rate limited")
+    except HTTPException:
+        raise
+    except Exception:
+        # Rate limiting must never break normal flows
+        return
+
+
+def _prune_ttl_cache(cache: dict[Any, tuple[float, Any]], *, max_items: int, ttl_secs: int) -> None:
+    """
+    Keep small in-memory TTL caches bounded to prevent memory DoS.
+    Values must be stored as (ts, payload).
+    """
+    try:
+        if max_items <= 0:
+            cache.clear()
+            return
+        now = time.time()
+        ttl = max(1, int(ttl_secs))
+        # Drop expired entries first.
+        for k, (ts, _v) in list(cache.items()):
+            try:
+                if now - float(ts) > ttl:
+                    cache.pop(k, None)
+            except Exception:
+                # If an entry is malformed, drop it.
+                cache.pop(k, None)
+        # If still oversized, drop oldest entries.
+        if len(cache) > max_items:
+            items = sorted(cache.items(), key=lambda kv: float(kv[1][0]))
+            drop = len(cache) - max_items
+            for i in range(min(drop, len(items))):
+                cache.pop(items[i][0], None)
+    except Exception:
+        return
+
+
 def _auth_phone(request: Request) -> str | None:
     # Test-only shortcut: allow injecting a phone number via header
     # when ENV=test so API tests do not need to orchestrate cookie login.
@@ -1491,6 +1727,59 @@ def _auth_phone(request: Request) -> str | None:
     if exp < _now():
         try: del _SESSIONS[sid]
         except Exception: pass
+        return None
+    return phone
+
+
+def _auth_phone_ws(ws: WebSocket) -> str | None:
+    """
+    Best-effort session auth for WebSockets.
+
+    Mirrors _auth_phone() behaviour for cookie-based sessions so WS endpoints
+    do not become an unauthenticated bypass.
+    """
+    _cleanup_auth_state()
+    try:
+        if os.getenv("ENV") == "test":
+            h_phone = ws.headers.get("X-Test-Phone") or ws.headers.get("x-test-phone")
+            if h_phone:
+                return h_phone
+    except Exception:
+        pass
+
+    sid = None
+    try:
+        raw = ws.headers.get("sa_cookie") or ws.headers.get("Sa-Cookie")
+        if raw:
+            sid = _normalize_session_token(raw)
+    except Exception:
+        sid = None
+
+    if not sid:
+        try:
+            sid = _normalize_session_token(ws.cookies.get("sa_session"))
+        except Exception:
+            sid = None
+
+    if not sid:
+        # Optional (discouraged) query-param fallback for non-browser clients.
+        try:
+            q = ws.query_params.get("sa_session") or ws.query_params.get("session") or ""
+            sid = _normalize_session_token(q)
+        except Exception:
+            sid = None
+
+    if not sid:
+        return None
+    rec = _SESSIONS.get(sid)
+    if not rec:
+        return None
+    phone, exp = rec
+    if exp < _now():
+        try:
+            del _SESSIONS[sid]
+        except Exception:
+            pass
         return None
     return phone
 
@@ -1762,6 +2051,99 @@ def _require_admin_v2(request: Request) -> str:
         return phone
     raise HTTPException(status_code=403, detail="admin not allowed")
 
+def _is_disallowed_ip_for_callbacks(ip: ipaddress._BaseAddress) -> bool:  # type: ignore[name-defined]
+    # Block obviously unsafe destinations. Private IPs are blocked unless explicitly allowed.
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        return True
+    if ip.is_private and not PUSH_ALLOW_PRIVATE_IPS:
+        return True
+    return False
+
+
+async def _validate_push_endpoint(endpoint: str) -> str:
+    """
+    Validate a user-provided callback/push URL to reduce SSRF risk.
+    Returns a normalized URL (without fragment).
+    """
+    ep = (endpoint or "").strip()
+    if not ep:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    if len(ep) > PUSH_MAX_ENDPOINT_LEN:
+        raise HTTPException(status_code=400, detail="endpoint too long")
+    try:
+        parsed = _urlparse.urlparse(ep)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid endpoint")
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("https", "http"):
+        raise HTTPException(status_code=400, detail="endpoint must be http(s)")
+    if scheme == "http" and not PUSH_ALLOW_HTTP:
+        raise HTTPException(status_code=403, detail="http push endpoints disabled")
+
+    # Must have hostname.
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise HTTPException(status_code=400, detail="endpoint host required")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="endpoint userinfo not allowed")
+
+    # Block obvious local hostnames.
+    if host in ("localhost",) or host.endswith(".localhost") or host.endswith(".local"):
+        raise HTTPException(status_code=403, detail="endpoint host not allowed")
+
+    # Optional allowlist: when configured, enforce exact hostname matches.
+    if PUSH_ALLOWED_HOSTS and host not in PUSH_ALLOWED_HOSTS:
+        raise HTTPException(status_code=403, detail="endpoint host not allowed")
+
+    # Block private/loopback etc. for IP literals.
+    try:
+        ip = ipaddress.ip_address(host)
+        if _is_disallowed_ip_for_callbacks(ip):
+            raise HTTPException(status_code=403, detail="endpoint host not allowed")
+    except ValueError:
+        # Hostname: best-effort DNS resolution to detect private targets.
+        if PUSH_VALIDATE_DNS:
+            port: int
+            try:
+                port = int(parsed.port or (443 if scheme == "https" else 80))
+            except Exception:
+                port = 443 if scheme == "https" else 80
+
+            def _resolve() -> list[str]:
+                out: list[str] = []
+                for _fam, _type, _proto, _canon, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+                    try:
+                        ip_str = sockaddr[0]
+                        if ip_str:
+                            out.append(ip_str)
+                    except Exception:
+                        continue
+                return out
+
+            try:
+                ips = await asyncio.to_thread(_resolve)
+            except Exception:
+                ips = []
+            if not ips:
+                raise HTTPException(status_code=403, detail="endpoint host not resolvable")
+            for ip_str in ips:
+                try:
+                    ip = ipaddress.ip_address(ip_str)
+                    if _is_disallowed_ip_for_callbacks(ip):
+                        raise HTTPException(status_code=403, detail="endpoint host not allowed")
+                except HTTPException:
+                    raise
+                except Exception:
+                    continue
+
+    # Drop fragment (never relevant for callbacks) and return a normalized URL.
+    try:
+        cleaned = parsed._replace(fragment="").geturl()
+    except Exception:
+        cleaned = ep
+    return cleaned
+
 
 @app.post("/push/register")
 async def push_register(req: Request):
@@ -1783,33 +2165,103 @@ async def push_register(req: Request):
     etype = (body.get("type") or "gotify").strip().lower()
     if not device_id or not endpoint:
         raise HTTPException(status_code=400, detail="device_id and endpoint required")
+    if len(device_id) > 128:
+        raise HTTPException(status_code=400, detail="device_id too long")
+    # Prevent SSRF by validating the callback endpoint (only used for UnifiedPush).
+    if etype == "unifiedpush":
+        endpoint = await _validate_push_endpoint(endpoint)
     entries = [e for e in _PUSH_ENDPOINTS.get(phone, []) if e.get("device_id") != device_id]
     entries.append({"device_id": device_id, "endpoint": endpoint, "type": etype})
     _PUSH_ENDPOINTS[phone] = entries
     return {"ok": True, "phone": phone, "device_id": device_id, "type": etype}
 
+def _validate_lat(lat: float) -> float:
+    try:
+        v = float(lat)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid latitude")
+    if v < -90.0 or v > 90.0:
+        raise HTTPException(status_code=400, detail="invalid latitude")
+    return v
+
+
+def _validate_lon(lon: float) -> float:
+    try:
+        v = float(lon)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid longitude")
+    if v < -180.0 or v > 180.0:
+        raise HTTPException(status_code=400, detail="invalid longitude")
+    return v
+
+
+def _normalize_maps_query(q: str) -> str:
+    qq = str(q or "").strip()
+    if not qq:
+        raise HTTPException(status_code=400, detail="q required")
+    if len(qq) > MAPS_MAX_QUERY_LEN:
+        raise HTTPException(status_code=400, detail="q too long")
+    return qq
+
+
+_ORS_PROFILE_MAP = {
+    "car": "driving-car",
+    "driving": "driving-car",
+    "driving-car": "driving-car",
+    "truck": "driving-hgv",
+    "hgv": "driving-hgv",
+    "lorry": "driving-hgv",
+    "driving-hgv": "driving-hgv",
+    "bicycle": "cycling-regular",
+    "bike": "cycling-regular",
+    "cycling": "cycling-regular",
+    "cycling-regular": "cycling-regular",
+    "foot": "foot-walking",
+    "walk": "foot-walking",
+    "walking": "foot-walking",
+    "pedestrian": "foot-walking",
+    "foot-walking": "foot-walking",
+}
+
 
 @app.get("/osm/route")
-def osm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float, profile: str = "driving-car"):
+def osm_route(
+    request: Request,
+    start_lat: float,
+    start_lon: float,
+    end_lat: float,
+    end_lon: float,
+    profile: str = "driving-car",
+):
     """
     Lightweight proxy for OpenRouteService/GraphHopper style routing.
 
     Returns a simplified polyline and distance/duration so the client can draw
     the route on MapLibre/Google maps without talking to ORS directly.
     """
+    _rate_limit_maps_edge(
+        request,
+        scope="maps_route",
+        ip_max_auth=MAPS_ROUTE_MAX_PER_IP_AUTH,
+        ip_max_anon=MAPS_ROUTE_MAX_PER_IP_ANON,
+    )
+    start_lat = _validate_lat(start_lat)
+    start_lon = _validate_lon(start_lon)
+    end_lat = _validate_lat(end_lat)
+    end_lon = _validate_lon(end_lon)
     if not ORS_BASE and not OSRM_BASE and not TOMTOM_API_KEY:
         raise HTTPException(status_code=400, detail="no routing backend configured")
     try:
         points: list[list[float]] = []
         distance_m = 0.0
         duration_s = 0.0
+        p = (profile or "").strip().lower()
         # Prefer TomTom Routing API when a key is configured.
         if TOMTOM_API_KEY:
             base = TOMTOM_BASE.rstrip("/")
             # TomTom Routing API expects "lat,lon:lat,lon" order in the path.
             path = f"/routing/1/calculateRoute/{float(start_lat)},{float(start_lon)}:{float(end_lat)},{float(end_lon)}/json"
             # Map generic profile to TomTom travelMode
-            p = (profile or "").lower()
             if p in ("truck", "hgv", "lorry"):
                 travel_mode = "truck"
             elif p in ("bicycle", "bike", "cycling"):
@@ -1885,11 +2337,15 @@ def osm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
                         "routes": norm_routes,
                     }
         elif ORS_BASE:
+            # Prevent path-injection: only allow a small profile allowlist.
+            ors_profile = _ORS_PROFILE_MAP.get(p)
+            if not ors_profile:
+                raise HTTPException(status_code=400, detail="invalid profile")
             coords = [
                 [float(start_lon), float(start_lat)],
                 [float(end_lon), float(end_lat)],
             ]
-            url = ORS_BASE.rstrip("/") + f"/v2/directions/{profile}"
+            url = ORS_BASE.rstrip("/") + f"/v2/directions/{ors_profile}"
             headers = {"accept": "application/json", "content-type": "application/json"}
             if ORS_API_KEY:
                 headers["Authorization"] = ORS_API_KEY
@@ -1976,8 +2432,7 @@ def osm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@app.get("/osm/geocode")
-def osm_geocode(q: str):
+def _osm_geocode_core(q: str):
     """
     Simple geocoding proxy backed by Nominatim or TomTom Search API.
     """
@@ -2011,6 +2466,7 @@ def osm_geocode(q: str):
                     out.append({"lat": lat, "lon": lon, "display_name": addr})
                 except Exception:
                     continue
+            _prune_ttl_cache(_OSM_GEOCODE_CACHE, max_items=MAPS_CACHE_MAX_ITEMS, ttl_secs=MAPS_CACHE_TTL_SECS)
             _OSM_GEOCODE_CACHE[q] = (now, out)
             return out
         except HTTPException:
@@ -2042,6 +2498,7 @@ def osm_geocode(q: str):
                 })
             except Exception:
                 continue
+        _prune_ttl_cache(_OSM_GEOCODE_CACHE, max_items=MAPS_CACHE_MAX_ITEMS, ttl_secs=MAPS_CACHE_TTL_SECS)
         _OSM_GEOCODE_CACHE[q] = (now, out)
         return out
     except HTTPException:
@@ -2050,8 +2507,21 @@ def osm_geocode(q: str):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.get("/osm/geocode")
+def osm_geocode(request: Request, q: str):
+    _rate_limit_maps_edge(
+        request,
+        scope="maps_geocode",
+        ip_max_auth=MAPS_GEOCODE_MAX_PER_IP_AUTH,
+        ip_max_anon=MAPS_GEOCODE_MAX_PER_IP_ANON,
+    )
+    qq = _normalize_maps_query(q)
+    return _osm_geocode_core(qq)
+
+
 @app.get("/osm/poi_search")
 def osm_poi_search(
+    request: Request,
     q: str,
     lat: float | None = None,
     lon: float | None = None,
@@ -2064,7 +2534,18 @@ def osm_poi_search(
     Antwortformat:
       - lat, lon, name, category, address
     """
+    _rate_limit_maps_edge(
+        request,
+        scope="maps_poi",
+        ip_max_auth=MAPS_POI_MAX_PER_IP_AUTH,
+        ip_max_anon=MAPS_POI_MAX_PER_IP_ANON,
+    )
+    q = _normalize_maps_query(q)
     limit = max(1, min(limit, 50))
+    if lat is not None:
+        lat = _validate_lat(lat)
+    if lon is not None:
+        lon = _validate_lon(lon)
     # TomTom Search API
     if TOMTOM_API_KEY:
         base = TOMTOM_BASE.rstrip("/")
@@ -2198,6 +2679,15 @@ async def osm_geocode_batch(request: Request):
         ]
       }
     """
+    # Batch geocoding can amplify abuse; require an authenticated caller.
+    if not _auth_phone(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    _rate_limit_maps_edge(
+        request,
+        scope="maps_geocode_batch",
+        ip_max_auth=MAPS_GEOCODE_BATCH_MAX_PER_IP_AUTH,
+        ip_max_anon=MAPS_GEOCODE_BATCH_MAX_PER_IP_ANON,
+    )
     try:
         body = await request.json()
     except Exception:
@@ -2207,6 +2697,8 @@ async def osm_geocode_batch(request: Request):
     queries = body.get("queries") or []
     if not isinstance(queries, list):
         raise HTTPException(status_code=400, detail="queries must be a list")
+    if len(queries) > MAPS_MAX_BATCH_QUERIES:
+        raise HTTPException(status_code=413, detail="too many queries")
     max_per_query = int(body.get("max_per_query") or 1)
     max_per_query = max(1, min(max_per_query, 10))
 
@@ -2217,8 +2709,8 @@ async def osm_geocode_batch(request: Request):
             out.append({"query": q, "hits": []})
             continue
         try:
-            # Reuse osm_geocode logic via internal call
-            hits = osm_geocode(q)
+            qq = _normalize_maps_query(q)
+            hits = _osm_geocode_core(qq)
             if isinstance(hits, list):
                 hits = hits[:max_per_query]
             else:
@@ -2244,6 +2736,8 @@ async def fleet_optimize_stops(request: Request):
     Uses a greedy nearest-neighbour heuristic based on Haversine distance.
     Returns an ordered stop list and approximate total distance.
     """
+    if not _auth_phone(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
     try:
         body = await request.json()
     except Exception:
@@ -2254,9 +2748,11 @@ async def fleet_optimize_stops(request: Request):
     stops = body.get("stops") or []
     if not isinstance(origin, dict) or not isinstance(stops, list):
         raise HTTPException(status_code=400, detail="origin and stops required")
+    if len(stops) > FLEET_MAX_STOPS:
+        raise HTTPException(status_code=413, detail="too many stops")
     try:
-        o_lat = float(origin.get("lat"))
-        o_lon = float(origin.get("lon"))
+        o_lat = _validate_lat(origin.get("lat"))
+        o_lon = _validate_lon(origin.get("lon"))
     except Exception:
         raise HTTPException(status_code=400, detail="invalid origin")
     # Normalise stops
@@ -2266,8 +2762,10 @@ async def fleet_optimize_stops(request: Request):
             if not isinstance(s, dict):
                 continue
             sid = str(s.get("id") or "")
-            lat = float(s.get("lat"))
-            lon = float(s.get("lon"))
+            if not sid or len(sid) > 64:
+                continue
+            lat = _validate_lat(s.get("lat"))
+            lon = _validate_lon(s.get("lon"))
             if not sid:
                 continue
             rem.append({"id": sid, "lat": lat, "lon": lon})
@@ -2321,6 +2819,8 @@ async def fleet_assign_deliveries(request: Request):
     Each stop is assigned to the nearest depot by Haversine distance.
     The result can be used per-depot with /fleet/optimize_stops to plan daily tours.
     """
+    if not _auth_phone(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
     try:
         body = await request.json()
     except Exception:
@@ -2331,16 +2831,20 @@ async def fleet_assign_deliveries(request: Request):
     stops = body.get("stops") or []
     if not isinstance(depots, list) or not isinstance(stops, list):
         raise HTTPException(status_code=400, detail="depots and stops must be lists")
+    if len(depots) > FLEET_MAX_DEPOTS:
+        raise HTTPException(status_code=413, detail="too many depots")
+    if len(stops) > FLEET_MAX_STOPS:
+        raise HTTPException(status_code=413, detail="too many stops")
     norm_depots: list[dict[str, Any]] = []
     for d in depots:
         try:
             if not isinstance(d, dict):
                 continue
             did = str(d.get("id") or "")
-            lat = float(d.get("lat"))
-            lon = float(d.get("lon"))
-            if not did:
+            if not did or len(did) > 64:
                 continue
+            lat = _validate_lat(d.get("lat"))
+            lon = _validate_lon(d.get("lon"))
             norm_depots.append({"id": did, "lat": lat, "lon": lon})
         except Exception:
             continue
@@ -2352,10 +2856,10 @@ async def fleet_assign_deliveries(request: Request):
             if not isinstance(s, dict):
                 continue
             sid = str(s.get("id") or "")
-            lat = float(s.get("lat"))
-            lon = float(s.get("lon"))
-            if not sid:
+            if not sid or len(sid) > 64:
                 continue
+            lat = _validate_lat(s.get("lat"))
+            lon = _validate_lon(s.get("lon"))
             norm_stops.append({"id": sid, "lat": lat, "lon": lon})
         except Exception:
             continue
@@ -2391,10 +2895,18 @@ async def fleet_assign_deliveries(request: Request):
     }
 
 @app.get("/osm/reverse")
-def osm_reverse(lat: float, lon: float):
+def osm_reverse(request: Request, lat: float, lon: float):
     """
     Reverse geocoding proxy backed by Nominatim or TomTom.
     """
+    _rate_limit_maps_edge(
+        request,
+        scope="maps_reverse",
+        ip_max_auth=MAPS_REVERSE_MAX_PER_IP_AUTH,
+        ip_max_anon=MAPS_REVERSE_MAX_PER_IP_ANON,
+    )
+    lat = _validate_lat(lat)
+    lon = _validate_lon(lon)
     now = time.time()
     key = (round(lat, 5), round(lon, 5))
     cached = _OSM_REVERSE_CACHE.get(key)
@@ -2413,6 +2925,7 @@ def osm_reverse(lat: float, lon: float):
             addresses = j.get("addresses") or []
             if not addresses:
                 res = {"lat": lat, "lon": lon, "display_name": ""}
+                _prune_ttl_cache(_OSM_REVERSE_CACHE, max_items=MAPS_CACHE_MAX_ITEMS, ttl_secs=MAPS_CACHE_TTL_SECS)
                 _OSM_REVERSE_CACHE[key] = (now, res)
                 return res
             addr0 = addresses[0]
@@ -2431,6 +2944,7 @@ def osm_reverse(lat: float, lon: float):
             if isinstance(address, dict):
                 display_name = (address.get("freeformAddress") or "") or ""
             res = {"lat": out_lat, "lon": out_lon, "display_name": display_name}
+            _prune_ttl_cache(_OSM_REVERSE_CACHE, max_items=MAPS_CACHE_MAX_ITEMS, ttl_secs=MAPS_CACHE_TTL_SECS)
             _OSM_REVERSE_CACHE[key] = (now, res)
             return res
         except HTTPException:
@@ -2460,6 +2974,7 @@ def osm_reverse(lat: float, lon: float):
             out_lon = lon
         display_name = (j.get("display_name") or "")
         res = {"lat": out_lat, "lon": out_lon, "display_name": display_name}
+        _prune_ttl_cache(_OSM_REVERSE_CACHE, max_items=MAPS_CACHE_MAX_ITEMS, ttl_secs=MAPS_CACHE_TTL_SECS)
         _OSM_REVERSE_CACHE[key] = (now, res)
         return res
     except HTTPException:
@@ -2469,12 +2984,22 @@ def osm_reverse(lat: float, lon: float):
 
 
 @app.get("/osm/taxi_stands")
-def osm_taxi_stands(south: float, west: float, north: float, east: float, response: Response):
+def osm_taxi_stands(request: Request, south: float, west: float, north: float, east: float, response: Response):
     """
     Find taxi stands (amenity=taxi) within a bounding box via Overpass.
 
     bbox = (south, west, north, east)
     """
+    _rate_limit_maps_edge(
+        request,
+        scope="maps_taxi_stands",
+        ip_max_auth=MAPS_TAXI_STANDS_MAX_PER_IP_AUTH,
+        ip_max_anon=MAPS_TAXI_STANDS_MAX_PER_IP_ANON,
+    )
+    south = _validate_lat(south)
+    north = _validate_lat(north)
+    west = _validate_lon(west)
+    east = _validate_lon(east)
     if north <= south or east <= west:
         raise HTTPException(status_code=400, detail="invalid bbox")
     # simple guard: don't allow excessively large boxes
@@ -2524,6 +3049,7 @@ def osm_taxi_stands(south: float, west: float, north: float, east: float, respon
                 })
             except Exception:
                 continue
+        _prune_ttl_cache(_OSM_TAXI_CACHE, max_items=MAPS_CACHE_MAX_ITEMS, ttl_secs=MAPS_CACHE_TTL_SECS)
         _OSM_TAXI_CACHE[key] = (now, out)
         try:
             if response is not None:
@@ -4507,26 +5033,28 @@ from datetime import datetime, timezone, timedelta
 @app.get("/payments/txns")
 def payments_txns(
     wallet_id: str,
-    request: Request,
+    request: Request = None,  # type: ignore[assignment]
     limit: int = 20,
     dir: str = "",
     kind: str = "",
     from_iso: str = "",
     to_iso: str = "",
 ):
-    # Transaction lists are sensitive; require auth and enforce wallet ownership (or admin).
-    phone = _auth_phone(request)
-    if not phone:
-        raise HTTPException(status_code=401, detail="unauthorized")
     wallet_id = (wallet_id or "").strip()
-    caller_wallet_id = _resolve_wallet_id_for_phone(phone)
-    if caller_wallet_id:
-        if wallet_id != caller_wallet_id and not _is_admin(phone):
-            raise HTTPException(status_code=403, detail="wallet does not belong to caller")
-    else:
-        # If we cannot resolve the caller wallet we still allow admins to proceed.
-        if not _is_admin(phone):
-            raise HTTPException(status_code=403, detail="wallet not found for caller")
+    # Transaction lists are sensitive; require auth and enforce wallet ownership (or admin),
+    # but allow internal callers (unit tests / in-process aggregation) to call without a Request.
+    if request is not None:
+        phone = _auth_phone(request)
+        if not phone:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        caller_wallet_id = _resolve_wallet_id_for_phone(phone)
+        if caller_wallet_id:
+            if wallet_id != caller_wallet_id and not _is_admin(phone):
+                raise HTTPException(status_code=403, detail="wallet does not belong to caller")
+        else:
+            # If we cannot resolve the caller wallet we still allow admins to proceed.
+            if not _is_admin(phone):
+                raise HTTPException(status_code=403, detail="wallet not found for caller")
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
@@ -10633,6 +11161,25 @@ def _taxi_internal_session():
         raise RuntimeError("Taxi internal service not available")
     return _TaxiSession(_taxi_engine)  # type: ignore[call-arg]
 
+def _fn_accepts_kw(fn: Any, name: str) -> bool:
+    """
+    Best-effort signature check used to avoid passing unsupported kwargs when
+    calling domain endpoints in-process (e.g. some Taxi endpoints don't accept
+    `request`).
+    """
+    try:
+        import inspect
+
+        sig = inspect.signature(fn)
+        if name in sig.parameters:
+            return True
+        for p in sig.parameters.values():
+            if p.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+    except Exception:
+        return False
+    return False
+
 
 def _call_taxi(fn, *, need_session: bool, request_body: Any | None = None,
                inject_internal: bool = False, **kwargs):
@@ -10647,12 +11194,12 @@ def _call_taxi(fn, *, need_session: bool, request_body: Any | None = None,
     try:
         if need_session:
             with _taxi_internal_session() as s:
-                if req_obj is not None:
+                if req_obj is not None and _fn_accepts_kw(fn, "request"):
                     kwargs.setdefault("request", req_obj)
                 kwargs.setdefault("s", s)
                 return fn(**kwargs)
         else:
-            if req_obj is not None:
+            if req_obj is not None and _fn_accepts_kw(fn, "request"):
                 kwargs.setdefault("request", req_obj)
             return fn(**kwargs)
     except HTTPException:
@@ -10674,18 +11221,191 @@ async def _call_taxi_async(fn, *, need_session: bool, request_body: Any | None =
     try:
         if need_session:
             with _taxi_internal_session() as s:
-                if req_obj is not None:
+                if req_obj is not None and _fn_accepts_kw(fn, "request"):
                     kwargs.setdefault("request", req_obj)
                 kwargs.setdefault("s", s)
                 return await fn(**kwargs)
         else:
-            if req_obj is not None:
+            if req_obj is not None and _fn_accepts_kw(fn, "request"):
                 kwargs.setdefault("request", req_obj)
             return await fn(**kwargs)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+def _taxi_obj_to_dict(obj: Any) -> dict[str, Any]:
+    """
+    Best-effort conversion for Taxi service objects (internal mode) into a dict.
+    Only used for authorization decisions; do not rely on it for persistence.
+    """
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    # Pydantic v2
+    try:
+        md = getattr(obj, "model_dump", None)
+        if callable(md):
+            d = md()
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    # Pydantic v1
+    try:
+        dct = getattr(obj, "dict", None)
+        if callable(dct):
+            d = dct()
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    # Minimal attribute snapshot (avoid dumping full __dict__ for ORM objects)
+    out: dict[str, Any] = {}
+    for key in (
+        "id",
+        "phone",
+        "wallet_id",
+        "rider_phone",
+        "rider_wallet_id",
+        "driver_id",
+        "driver_wallet_id",
+        "status",
+    ):
+        try:
+            v = getattr(obj, key, None)
+            if v is not None:
+                out[key] = v
+        except Exception:
+            continue
+    return out
+
+
+def _taxi_fetch_driver(driver_id: str) -> Any | None:
+    driver_id = (driver_id or "").strip()
+    if not driver_id:
+        return None
+    if _use_taxi_internal():
+        try:
+            return _call_taxi(_taxi_get_driver, need_session=True, driver_id=driver_id)
+        except HTTPException as e:
+            if e.status_code == 404:
+                return None
+            raise
+    if not TAXI_BASE:
+        return None
+    try:
+        r = httpx.get(_taxi_url(f"/drivers/{driver_id}"), headers=_taxi_headers(), timeout=10)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception:
+        return None
+
+
+def _taxi_driver_phone(driver_id: str) -> str | None:
+    obj = _taxi_fetch_driver(driver_id)
+    if obj is None:
+        return None
+    d = _taxi_obj_to_dict(obj)
+    try:
+        phone = (d.get("phone") or "").strip()
+    except Exception:
+        phone = ""
+    return phone or None
+
+
+def _taxi_fetch_ride(ride_id: str) -> Any | None:
+    ride_id = (ride_id or "").strip()
+    if not ride_id:
+        return None
+    if _use_taxi_internal():
+        try:
+            return _call_taxi(_taxi_get_ride, need_session=True, ride_id=ride_id)
+        except HTTPException as e:
+            if e.status_code == 404:
+                return None
+            raise
+    if not TAXI_BASE:
+        return None
+    try:
+        r = httpx.get(_taxi_url(f"/rides/{ride_id}"), headers=_taxi_headers(), timeout=10)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception:
+        return None
+
+
+def _taxi_require_driver_self_or_operator(request: Request, driver_id: str) -> tuple[str, bool]:
+    """
+    Require a logged-in caller and ensure they are either a taxi operator/admin
+    or the owner of the given driver_id (by phone).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        if _is_operator(phone, "taxi"):
+            return phone, True
+    except Exception:
+        # Fall through to strict self-check
+        pass
+    dphone = _taxi_driver_phone(driver_id)
+    if not dphone:
+        raise HTTPException(status_code=404, detail="driver not found")
+    if dphone != phone:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return phone, False
+
+
+def _taxi_require_ride_access(request: Request, ride_id: str) -> tuple[str, dict[str, Any], bool]:
+    """
+    Require a logged-in caller and ensure they are either a taxi operator/admin
+    or a participant of the ride (rider or assigned driver).
+    Returns (caller_phone, ride_dict, is_operator).
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_ops = False
+    try:
+        is_ops = _is_operator(phone, "taxi")
+    except Exception:
+        is_ops = False
+    obj = _taxi_fetch_ride(ride_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="ride not found")
+    ride = _taxi_obj_to_dict(obj)
+    if is_ops:
+        return phone, ride, True
+    try:
+        rider_phone = (ride.get("rider_phone") or "").strip()
+    except Exception:
+        rider_phone = ""
+    if rider_phone and rider_phone == phone:
+        return phone, ride, False
+    try:
+        driver_id = (ride.get("driver_id") or "").strip()
+    except Exception:
+        driver_id = ""
+    if driver_id:
+        dphone = _taxi_driver_phone(driver_id)
+        if dphone and dphone == phone:
+            return phone, ride, False
+    raise HTTPException(status_code=403, detail="forbidden")
 
 
 # --- Payments internal service (monolith mode) ---
@@ -10824,6 +11544,11 @@ async def _send_driver_push(phone: str, title: str, body: str, data: dict | None
                     if not url:
                         continue
                     try:
+                        # Re-validate on send to reduce DNS rebinding risk.
+                        url = await _validate_push_endpoint(url)
+                    except Exception:
+                        continue
+                    try:
                         await client.post(url, json=data or {})
                     except Exception:
                         continue
@@ -10881,75 +11606,9 @@ async def _maybe_send_driver_push_for_ride(ride: dict) -> None:
     except Exception:
         return
 
-@app.post("/taxi/drivers")
-async def taxi_driver_register(req: Request):
-    try:
-        body = await req.json()
-    except Exception:
-        body = None
-
-    # Extract phone early so we can create a payments user/wallet idempotently.
-    phone = ""
-    try:
-        if isinstance(body, dict):
-            phone = (body.get("phone") or "").strip()
-    except Exception:
-        phone = ""
-
-    # First: register driver in Taxi service.
-    try:
-        if _use_taxi_internal():
-            try:
-                data = body or {}
-                if not isinstance(data, dict):
-                    data = {}
-                req_model = _TaxiDriverRegisterReq(**data)
-                driver = _call_taxi(_taxi_register_driver, need_session=True, req=req_model)
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=str(e))
-        else:
-            r = httpx.post(_taxi_url("/drivers"), json=body, headers=_taxi_headers(), timeout=10)
-            try:
-                driver = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-            except Exception:
-                driver = {}
-            if r.status_code >= 400:
-                # Surface taxi error to caller; do not attempt wallet creation.
-                raise HTTPException(status_code=r.status_code, detail=r.text)
-    except HTTPException:
-        raise
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-    # Second: ensure Payments user + wallet for this driver's phone (best-effort, idempotent).
-    try:
-        if phone:
-            payload = {"phone": phone}
-            if _use_pay_internal():
-                if _PAY_INTERNAL_AVAILABLE:
-                    req_model = _PayCreateUserReq(**payload)
-                    with _pay_internal_session() as s:
-                        _pay_create_user(req_model, s=s)
-            elif PAYMENTS_BASE:
-                httpx.post(
-                    _payments_url("/users"),
-                    json=payload,
-                    headers=_payments_headers(),
-                    timeout=8,
-                )
-    except Exception:
-        # Wallet creation is best-effort; driver registration must still succeed.
-        pass
-
-    return driver
-
-
 @app.post("/taxi/drivers/{driver_id}/online")
-def taxi_driver_online(driver_id: str):
+def taxi_driver_online(driver_id: str, request: Request):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     if _use_taxi_internal():
         try:
             return _call_taxi(_taxi_driver_online, need_session=True, inject_internal=True, driver_id=driver_id)
@@ -10959,7 +11618,8 @@ def taxi_driver_online(driver_id: str):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/drivers/{driver_id}/online"), headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -10967,7 +11627,8 @@ def taxi_driver_online(driver_id: str):
 
 
 @app.post("/taxi/drivers/{driver_id}/offline")
-def taxi_driver_offline(driver_id: str):
+def taxi_driver_offline(driver_id: str, request: Request):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     if _use_taxi_internal():
         try:
             return _call_taxi(_taxi_driver_offline, need_session=True, inject_internal=True, driver_id=driver_id)
@@ -10977,7 +11638,8 @@ def taxi_driver_offline(driver_id: str):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/drivers/{driver_id}/offline"), headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -10986,6 +11648,7 @@ def taxi_driver_offline(driver_id: str):
 
 @app.post("/taxi/drivers/{driver_id}/location")
 async def taxi_driver_location(driver_id: str, req: Request):
+    _taxi_require_driver_self_or_operator(req, driver_id)
     try:
         body = await req.json()
     except Exception:
@@ -11010,7 +11673,8 @@ async def taxi_driver_location(driver_id: str, req: Request):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/drivers/{driver_id}/location"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11019,10 +11683,22 @@ async def taxi_driver_location(driver_id: str, req: Request):
 
 @app.post("/taxi/drivers/{driver_id}/wallet")
 async def taxi_driver_set_wallet(driver_id: str, req: Request):
+    caller_phone, is_ops = _taxi_require_driver_self_or_operator(req, driver_id)
     try:
         body = await req.json()
     except Exception:
         body = None
+    if not isinstance(body, dict):
+        body = {}
+    wallet_id = (body.get("wallet_id") or "").strip()
+    if not wallet_id:
+        raise HTTPException(status_code=400, detail="wallet_id required")
+    if not is_ops:
+        caller_wallet = _resolve_wallet_id_for_phone(caller_phone)
+        if not caller_wallet:
+            raise HTTPException(status_code=403, detail="wallet not found for caller")
+        if wallet_id != caller_wallet:
+            raise HTTPException(status_code=403, detail="wallet does not belong to caller")
     if _use_taxi_internal():
         try:
             data = body or {}
@@ -11043,7 +11719,8 @@ async def taxi_driver_set_wallet(driver_id: str, req: Request):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/drivers/{driver_id}/wallet"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11053,6 +11730,7 @@ async def taxi_driver_set_wallet(driver_id: str, req: Request):
 @app.post("/taxi/drivers/{driver_id}/push_token")
 async def taxi_driver_push_token(driver_id: str, req: Request):
     try:
+        _taxi_require_driver_self_or_operator(req, driver_id)
         try:
             body = await req.json()
         except Exception:
@@ -11069,7 +11747,8 @@ async def taxi_driver_push_token(driver_id: str, req: Request):
                 driver_id=driver_id,
             )
         r = httpx.post(_taxi_url(f"/drivers/{driver_id}/push_token"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11077,7 +11756,8 @@ async def taxi_driver_push_token(driver_id: str, req: Request):
 
 
 @app.get("/taxi/drivers/{driver_id}")
-def taxi_get_driver(driver_id: str):
+def taxi_get_driver(driver_id: str, request: Request):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     if _use_taxi_internal():
         try:
             return _call_taxi(_taxi_get_driver, need_session=True, driver_id=driver_id)
@@ -11087,7 +11767,8 @@ def taxi_get_driver(driver_id: str):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.get(_taxi_url(f"/drivers/{driver_id}"), headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11095,7 +11776,8 @@ def taxi_get_driver(driver_id: str):
 
 
 @app.get("/taxi/drivers/{driver_id}/rides")
-def taxi_driver_rides(driver_id: str, status: str = "", limit: int = 10):
+def taxi_driver_rides(driver_id: str, request: Request, status: str = "", limit: int = 10):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     params = {"status": status, "limit": max(1, min(limit, 50))}
     if _use_taxi_internal():
         try:
@@ -11112,7 +11794,8 @@ def taxi_driver_rides(driver_id: str, status: str = "", limit: int = 10):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.get(_taxi_url(f"/drivers/{driver_id}/rides"), params=params, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else []
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11120,12 +11803,14 @@ def taxi_driver_rides(driver_id: str, status: str = "", limit: int = 10):
 
 
 @app.get("/fleet/nearest_driver")
-def fleet_nearest_driver(lat: float, lon: float, status: str = "online", limit: int = 200):
+def fleet_nearest_driver(request: Request, lat: float, lon: float, status: str = "online", limit: int = 200):
     """
     Returns the nearest taxi driver to a given location (approximate, by distance).
 
     Uses Taxi drivers list (status filter) and a simple Haversine distance.
     """
+    # Returns driver phone numbers -> operator-only.
+    _require_operator(request, "taxi")
     # Load candidate drivers
     params = {"status": status, "limit": max(1, min(limit, 500))}
     drivers: list[Any] = []
@@ -11143,6 +11828,7 @@ def fleet_nearest_driver(lat: float, lon: float, status: str = "online", limit: 
             if not TAXI_BASE:
                 raise HTTPException(status_code=500, detail="TAXI_BASE_URL not configured")
             r = httpx.get(_taxi_url("/drivers"), params=params, headers=_taxi_headers(), timeout=10)
+            r.raise_for_status()
             if not r.headers.get("content-type", "").startswith("application/json"):
                 raise HTTPException(status_code=502, detail="unexpected taxi drivers payload")
             arr = r.json()
@@ -11196,70 +11882,23 @@ def fleet_nearest_driver(lat: float, lon: float, status: str = "online", limit: 
     return {"ok": True, "found": True, "drivers_checked": total, "nearest": best}
 
 
-@app.delete("/taxi/drivers/{driver_id}")
-def taxi_delete_driver(driver_id: str):
-    if _use_taxi_internal():
-        try:
-            result = _call_taxi(_taxi_driver_delete, need_session=True, inject_internal=True, driver_id=driver_id)
-            return result
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
-    try:
-        r = httpx.delete(_taxi_url(f"/drivers/{driver_id}"), headers=_taxi_headers(), timeout=10)
-        if r.headers.get("content-type","" ).startswith("application/json"):
-            return r.json()
-        return {"status_code": r.status_code, "raw": r.text}
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/taxi/drivers/{driver_id}/block")
-def taxi_block_driver(driver_id: str):
-    if _use_taxi_internal():
-        try:
-            return _call_taxi(_taxi_driver_block, need_session=True, inject_internal=True, driver_id=driver_id)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
-    try:
-        r = httpx.post(_taxi_url(f"/drivers/{driver_id}/block"), headers=_taxi_headers(), timeout=10)
-        return r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/taxi/drivers/{driver_id}/unblock")
-def taxi_unblock_driver(driver_id: str):
-    if _use_taxi_internal():
-        try:
-            return _call_taxi(_taxi_driver_unblock, need_session=True, inject_internal=True, driver_id=driver_id)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
-    try:
-        r = httpx.post(_taxi_url(f"/drivers/{driver_id}/unblock"), headers=_taxi_headers(), timeout=10)
-        return r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
 @app.post("/taxi/drivers/{driver_id}/balance")
 async def taxi_set_balance(driver_id: str, req: Request):
+    # Money-affecting operation -> admin only.
+    _require_admin_v2(req)
     try:
         try:
             body = await req.json()
         except Exception:
             body = None
+        if body is not None and not isinstance(body, dict):
+            body = {}
+        delta = None
+        try:
+            if isinstance(body, dict):
+                delta = body.get("set_cents") or body.get("delta_cents")
+        except Exception:
+            delta = None
         if _use_taxi_internal():
             data = body or {}
             if not isinstance(data, dict):
@@ -11268,7 +11907,7 @@ async def taxi_set_balance(driver_id: str, req: Request):
                 req_model = _TaxiBalanceSetReq(**data)
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
-            return _call_taxi(
+            out = _call_taxi(
                 _taxi_driver_balance,
                 need_session=True,
                 request_body=data,
@@ -11276,8 +11915,13 @@ async def taxi_set_balance(driver_id: str, req: Request):
                 driver_id=driver_id,
                 req=req_model,
             )
+            _audit_from_request(req, "taxi_set_balance", driver_id=driver_id, delta_cents=delta)
+            return out
         r = httpx.post(_taxi_url(f"/drivers/{driver_id}/balance"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
+        _audit_from_request(req, "taxi_set_balance", driver_id=driver_id, delta_cents=delta)
+        return out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11286,38 +11930,66 @@ async def taxi_set_balance(driver_id: str, req: Request):
 
 @app.post("/taxi/rides/request")
 async def taxi_request_ride(req: Request):
-    # Backend-side enrichment: rider phone from session; rider wallet via Payments
+    # Backend-side enrichment: enforce rider identity from session and compute
+    # rider wallet server-side (never trust client-supplied wallet ids).
+    phone = _auth_phone(req)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_ops = False
+    try:
+        is_ops = _is_operator(phone, "taxi")
+    except Exception:
+        is_ops = False
     try:
         body = await req.json()
     except Exception:
         body = {}
     if not isinstance(body, dict):
         body = {}
-    # Fill rider phone from session if absent
     try:
-        rider_phone = (body.get('rider_phone') or '').strip()
+        rider_phone = (body.get("rider_phone") or "").strip()
     except Exception:
-        rider_phone = ''
+        rider_phone = ""
     if not rider_phone:
-        sess_phone = _auth_phone(req)
-        if sess_phone:
-            body['rider_phone'] = sess_phone
-            rider_phone = sess_phone
-    # Fill rider wallet id via Payments if absent
+        rider_phone = phone
+    if not is_ops and rider_phone != phone:
+        raise HTTPException(status_code=403, detail="rider_phone does not match session")
+    body["rider_phone"] = rider_phone
+
+    # Compute rider wallet id (best-effort). In prod, Taxi may allow cash, so we
+    # do not hard-fail when Payments is unavailable.
+    wallet_id = None
     try:
-        rider_wallet = (body.get('rider_wallet_id') or '').strip()
+        wallet_id = _resolve_wallet_id_for_phone(rider_phone)
     except Exception:
-        rider_wallet = ''
-    if not rider_wallet and rider_phone and PAYMENTS_BASE:
+        wallet_id = None
+    if not wallet_id:
         try:
-            url = PAYMENTS_BASE.rstrip('/') + '/users'
-            async with httpx.AsyncClient(timeout=10) as client:
-                rr = await client.post(url, json={"phone": rider_phone}, headers=_payments_headers())
-                if rr.headers.get('content-type','').startswith('application/json'):
-                    j = rr.json()
-                    wid = j.get('wallet_id') or j.get('id')
-                    if wid:
-                        body['rider_wallet_id'] = wid
+            payload = {"phone": rider_phone}
+            if _use_pay_internal():
+                if _PAY_INTERNAL_AVAILABLE:
+                    req_model = _PayCreateUserReq(**payload)
+                    with _pay_internal_session() as s:
+                        _pay_create_user(req_model, s=s)
+            elif PAYMENTS_BASE:
+                httpx.post(
+                    _payments_url("/users"),
+                    json=payload,
+                    headers=_payments_headers(),
+                    timeout=8,
+                )
+        except Exception:
+            pass
+        try:
+            wallet_id = _resolve_wallet_id_for_phone(rider_phone)
+        except Exception:
+            wallet_id = None
+    if wallet_id and not is_ops:
+        body["rider_wallet_id"] = wallet_id
+    elif not is_ops:
+        # Prevent spoofing wallet ids when we cannot verify ownership.
+        try:
+            body.pop("rider_wallet_id", None)
         except Exception:
             pass
     try:
@@ -11346,7 +12018,8 @@ async def taxi_request_ride(req: Request):
                 pass
             return ride_obj
         r = httpx.post(_taxi_url("/rides/request"), json=body, headers=_taxi_headers(), timeout=10)
-        j = r.json()
+        r.raise_for_status()
+        j = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         try:
             if isinstance(j, dict):
                 await _maybe_send_driver_push_for_ride(j)
@@ -11363,7 +12036,8 @@ async def taxi_request_ride(req: Request):
 
 
 @app.get("/taxi/drivers")
-def taxi_list_drivers(status: str = "", limit: int = 50):
+def taxi_list_drivers(request: Request, status: str = "", limit: int = 50):
+    _require_operator(request, "taxi")
     params = {"status": status, "limit": max(1, min(limit, 200))}
     if _use_taxi_internal():
         try:
@@ -11379,7 +12053,8 @@ def taxi_list_drivers(status: str = "", limit: int = 50):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.get(_taxi_url("/drivers"), params=params, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else []
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11389,7 +12064,10 @@ def taxi_list_drivers(status: str = "", limit: int = 50):
 @app.post("/taxi/drivers")
 async def taxi_register_driver(request: Request):
     """
-    Admin / SuperAdmin endpoint to register a new taxi driver.
+    Register a new taxi driver.
+
+    - Operator/Admin: can register any driver (body.phone).
+    - Normal user: can only register themselves (body.phone must match session phone).
 
     Expected JSON body (forwarded to Taxi service):
       - name: string (optional but recommended)
@@ -11400,7 +12078,14 @@ async def taxi_register_driver(request: Request):
       - create the Driver record
       - auto-create a unique payments wallet for the driver (wallet_id) based on phone
     """
-    _require_operator(request, "taxi")
+    caller_phone = _auth_phone(request)
+    if not caller_phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_ops = False
+    try:
+        is_ops = _is_operator(caller_phone, "taxi")
+    except Exception:
+        is_ops = False
     try:
         try:
             body = await request.json()
@@ -11412,6 +12097,8 @@ async def taxi_register_driver(request: Request):
         phone = (body.get("phone") or "").strip()
         if not phone:
             raise HTTPException(status_code=400, detail="phone required")
+        if not is_ops and phone != caller_phone:
+            raise HTTPException(status_code=403, detail="cannot register other driver")
 
         # Prefer in-process Taxi integration in monolith mode
         if _use_taxi_internal():
@@ -11432,22 +12119,40 @@ async def taxi_register_driver(request: Request):
                     inject_internal=True,
                     req=req_model,
                 )
-                _audit_from_request(request, "taxi_register_driver", driver_phone=phone)
-                return result
+                driver_out = result
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-
-        # Fallback: HTTP call to external Taxi API
-        r = httpx.post(_taxi_url("/drivers"), json=body, headers=_taxi_headers(), timeout=10)
-        if r.headers.get("content-type", "").startswith("application/json"):
-            result = r.json()
         else:
-            # Propagate non-JSON error bodies instead of causing JSON decode errors
-            raise HTTPException(status_code=r.status_code, detail=r.text)
-        _audit_from_request(request, "taxi_register_driver", driver_phone=phone)
-        return result
+            # Fallback: HTTP call to external Taxi API
+            r = httpx.post(_taxi_url("/drivers"), json=body, headers=_taxi_headers(), timeout=10)
+            r.raise_for_status()
+            if r.headers.get("content-type", "").startswith("application/json"):
+                driver_out = r.json()
+            else:
+                raise HTTPException(status_code=502, detail="unexpected taxi driver payload")
+
+        # Best-effort: ensure Payments user + wallet for this driver's phone (idempotent).
+        try:
+            payload = {"phone": phone}
+            if _use_pay_internal():
+                if _PAY_INTERNAL_AVAILABLE:
+                    req_model = _PayCreateUserReq(**payload)
+                    with _pay_internal_session() as s:
+                        _pay_create_user(req_model, s=s)
+            elif PAYMENTS_BASE:
+                httpx.post(
+                    _payments_url("/users"),
+                    json=payload,
+                    headers=_payments_headers(),
+                    timeout=8,
+                )
+        except Exception:
+            pass
+
+        _audit_from_request(request, "taxi_register_driver", driver_phone=phone, mode=("operator" if is_ops else "self"))
+        return driver_out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except HTTPException:
@@ -11457,7 +12162,9 @@ async def taxi_register_driver(request: Request):
 
 
 @app.get("/taxi/rides")
-def taxi_list_rides(status: str = "", limit: int = 50):
+def taxi_list_rides(status: str = "", limit: int = 50, request: Request = None):
+    if request is not None:
+        _require_operator(request, "taxi")
     params = {"status": status, "limit": max(1, min(limit, 200))}
     if _use_taxi_internal():
         try:
@@ -11473,7 +12180,8 @@ def taxi_list_rides(status: str = "", limit: int = 50):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.get(_taxi_url("/rides"), params=params, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else []
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11870,7 +12578,8 @@ def taxi_topup_qr_logs(limit: int = 200, request: Request = None):
 
 
 @app.get("/taxi/settings")
-def taxi_get_settings():
+def taxi_get_settings(request: Request):
+    _require_operator(request, "taxi")
     if _use_taxi_internal():
         try:
             return _call_taxi(_taxi_get_settings, need_session=True)
@@ -11880,7 +12589,8 @@ def taxi_get_settings():
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.get(_taxi_url("/settings"), headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -11889,6 +12599,7 @@ def taxi_get_settings():
 
 @app.post("/taxi/settings")
 async def taxi_update_settings(req: Request):
+    _require_operator(req, "taxi")
     try:
         try:
             body = await req.json()
@@ -11910,15 +12621,19 @@ async def taxi_update_settings(req: Request):
                 req=req_model,
             )
         r = httpx.post(_taxi_url("/settings"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/taxi/rides/{ride_id}/rating")
 async def taxi_rate_ride(ride_id: str, req: Request):
+    _taxi_require_ride_access(req, ride_id)
     try:
         try:
             body = await req.json()
@@ -11941,15 +12656,19 @@ async def taxi_rate_ride(ride_id: str, req: Request):
                 req=req_model,
             )
         r = httpx.post(_taxi_url(f"/rides/{ride_id}/rating"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/taxi/drivers/{driver_id}/stats")
-def taxi_driver_stats(driver_id: str, period: str = "today"):
+def taxi_driver_stats(driver_id: str, request: Request, period: str = "today"):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     if _use_taxi_internal():
         try:
             return _call_taxi(
@@ -11964,7 +12683,8 @@ def taxi_driver_stats(driver_id: str, period: str = "today"):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.get(_taxi_url(f"/drivers/{driver_id}/stats"), params={"period": period}, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -12058,12 +12778,20 @@ def taxi_block_driver(driver_id: str, request: Request):
     Temporarily block a taxi driver (Taxi service flag only).
     Admin/SuperAdmin only.
     """
-    _require_admin(request)
+    _require_admin_v2(request)
     try:
-        r = httpx.post(_taxi_url(f"/drivers/{driver_id}/block"), headers=_taxi_headers(), timeout=10)
-        return r.json()
+        if _use_taxi_internal():
+            out = _call_taxi(_taxi_driver_block, need_session=True, inject_internal=True, driver_id=driver_id)
+        else:
+            r = httpx.post(_taxi_url(f"/drivers/{driver_id}/block"), headers=_taxi_headers(), timeout=10)
+            r.raise_for_status()
+            out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
+        _audit_from_request(request, "taxi_driver_block", driver_id=driver_id)
+        return out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -12074,12 +12802,20 @@ def taxi_unblock_driver(driver_id: str, request: Request):
     Unblock a taxi driver (Taxi service flag only).
     Admin/SuperAdmin only.
     """
-    _require_admin(request)
+    _require_admin_v2(request)
     try:
-        r = httpx.post(_taxi_url(f"/drivers/{driver_id}/unblock"), headers=_taxi_headers(), timeout=10)
-        return r.json()
+        if _use_taxi_internal():
+            out = _call_taxi(_taxi_driver_unblock, need_session=True, inject_internal=True, driver_id=driver_id)
+        else:
+            r = httpx.post(_taxi_url(f"/drivers/{driver_id}/unblock"), headers=_taxi_headers(), timeout=10)
+            r.raise_for_status()
+            out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
+        _audit_from_request(request, "taxi_driver_unblock", driver_id=driver_id)
+        return out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -12090,19 +12826,31 @@ def taxi_delete_driver(driver_id: str, request: Request):
     Permanently delete a taxi driver record.
     Admin/SuperAdmin only.
     """
-    _require_admin(request)
+    _require_admin_v2(request)
     try:
-        r = httpx.delete(_taxi_url(f"/drivers/{driver_id}"), headers=_taxi_headers(), timeout=10)
-        # Taxi service returns {"ok": True} on success; forward JSON or basic status.
-        return r.json() if r.headers.get("content-type","").startswith("application/json") else {"status_code": r.status_code, "raw": r.text}
+        if _use_taxi_internal():
+            out = _call_taxi(_taxi_driver_delete, need_session=True, inject_internal=True, driver_id=driver_id)
+        else:
+            r = httpx.delete(_taxi_url(f"/drivers/{driver_id}"), headers=_taxi_headers(), timeout=10)
+            r.raise_for_status()
+            out = (
+                r.json()
+                if r.headers.get("content-type", "").startswith("application/json")
+                else {"status_code": r.status_code, "raw": r.text}
+            )
+        _audit_from_request(request, "taxi_driver_delete", driver_id=driver_id)
+        return out
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/taxi/rides/{ride_id}/assign")
-def taxi_assign_ride(ride_id: str, driver_id: str):
+def taxi_assign_ride(ride_id: str, driver_id: str, request: Request):
+    _require_operator(request, "taxi")
     if _use_taxi_internal():
         try:
             return _call_taxi(
@@ -12119,7 +12867,8 @@ def taxi_assign_ride(ride_id: str, driver_id: str):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/rides/{ride_id}/assign"), params={"driver_id": driver_id}, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -12127,25 +12876,14 @@ def taxi_assign_ride(ride_id: str, driver_id: str):
 
 
 @app.get("/taxi/rides/{ride_id}")
-def taxi_get_ride(ride_id: str):
-    if _use_taxi_internal():
-        try:
-            return _call_taxi(_taxi_get_ride, need_session=True, ride_id=ride_id)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
-    try:
-        r = httpx.get(_taxi_url(f"/rides/{ride_id}"), headers=_taxi_headers(), timeout=10)
-        return r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+def taxi_get_ride(ride_id: str, request: Request):
+    _, ride, _ = _taxi_require_ride_access(request, ride_id)
+    return ride
 
 
 @app.post("/taxi/rides/{ride_id}/accept")
-def taxi_accept_ride(ride_id: str, driver_id: str):
+def taxi_accept_ride(ride_id: str, driver_id: str, request: Request):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     if _use_taxi_internal():
         try:
             return _call_taxi(
@@ -12162,7 +12900,8 @@ def taxi_accept_ride(ride_id: str, driver_id: str):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/rides/{ride_id}/accept"), params={"driver_id": driver_id}, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -12170,7 +12909,8 @@ def taxi_accept_ride(ride_id: str, driver_id: str):
 
 
 @app.post("/taxi/rides/{ride_id}/start")
-def taxi_start_ride(ride_id: str, driver_id: str):
+def taxi_start_ride(ride_id: str, driver_id: str, request: Request):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     if _use_taxi_internal():
         try:
             return _call_taxi(
@@ -12187,7 +12927,8 @@ def taxi_start_ride(ride_id: str, driver_id: str):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         r = httpx.post(_taxi_url(f"/rides/{ride_id}/start"), params={"driver_id": driver_id}, headers=_taxi_headers(), timeout=10)
-        return r.json()
+        r.raise_for_status()
+        return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"ok": True}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
@@ -12195,7 +12936,16 @@ def taxi_start_ride(ride_id: str, driver_id: str):
 
 
 @app.post("/taxi/rides/{ride_id}/complete")
-def taxi_complete_ride(ride_id: str, driver_id: str):
+def taxi_complete_ride(ride_id: str, driver_id: str, request: Request):
+    caller_phone, is_ops = _taxi_require_driver_self_or_operator(request, driver_id)
+    if not is_ops:
+        ride_obj = _taxi_fetch_ride(ride_id)
+        if ride_obj is None:
+            raise HTTPException(status_code=404, detail="ride not found")
+        ride = _taxi_obj_to_dict(ride_obj)
+        assigned_driver = str(ride.get("driver_id") or "").strip()
+        if assigned_driver and assigned_driver != driver_id:
+            raise HTTPException(status_code=403, detail="forbidden")
     try:
         if _use_taxi_internal():
             result_obj = _call_taxi(
@@ -12213,11 +12963,16 @@ def taxi_complete_ride(ride_id: str, driver_id: str):
                 rd = {}
         else:
             r = httpx.post(_taxi_url(f"/rides/{ride_id}/complete"), params={"driver_id": driver_id}, headers=_taxi_headers(), timeout=10)
-            result = r.json() if r.headers.get('content-type','').startswith('application/json') else {"raw": r.text, "status_code": r.status_code}
+            r.raise_for_status()
+            result = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text, "status_code": r.status_code}
             # Fetch ride details to determine amount and rider wallet
-            rd = httpx.get(_taxi_url(f"/rides/{ride_id}"), headers=_taxi_headers(), timeout=10).json()
+            rrd = httpx.get(_taxi_url(f"/rides/{ride_id}"), headers=_taxi_headers(), timeout=10)
+            rrd.raise_for_status()
+            rd = rrd.json() if rrd.headers.get("content-type", "").startswith("application/json") else {}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -12254,6 +13009,14 @@ def taxi_complete_ride(ride_id: str, driver_id: str):
                 httpx.post(url, json=leg2, headers=headers2, timeout=10)
             else:
                 _TAXI_PAYOUT_EVENTS[driver_id] = lst
+        _audit_from_request(
+            request,
+            "taxi_complete_ride",
+            ride_id=ride_id,
+            driver_id=driver_id,
+            caller_phone=caller_phone,
+            price_cents=price_cents,
+        )
     except Exception:
         # Settlement is best-effort; ride completion result still returned.
         pass
@@ -12262,7 +13025,8 @@ def taxi_complete_ride(ride_id: str, driver_id: str):
 
 
 @app.post("/taxi/rides/{ride_id}/cancel")
-def taxi_cancel_ride(ride_id: str):
+def taxi_cancel_ride(ride_id: str, request: Request):
+    _, ride, _ = _taxi_require_ride_access(request, ride_id)
     try:
         if _use_taxi_internal():
             result_obj = _call_taxi(
@@ -12276,10 +13040,16 @@ def taxi_cancel_ride(ride_id: str):
         else:
             r = httpx.post(_taxi_url(f"/rides/{ride_id}/cancel"), headers=_taxi_headers(), timeout=10)
             # Base response from Taxi service (ride object or raw payload)
-            result = r.json() if r.headers.get("content-type",""
-                     ).startswith("application/json") else {"raw": r.text, "status_code": r.status_code}
+            r.raise_for_status()
+            result = (
+                r.json()
+                if r.headers.get("content-type", "").startswith("application/json")
+                else {"raw": r.text, "status_code": r.status_code}
+            )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -12289,17 +13059,6 @@ def taxi_cancel_ride(ride_id: str):
         fee_syp = max(0, TAXI_CANCEL_FEE_SYP)
         if not PAYMENTS_BASE or fee_syp <= 0:
             return result
-        # Fetch latest ride details to resolve wallets/phone/driver
-        if _use_taxi_internal():
-            ride_obj = _call_taxi(_taxi_get_ride, need_session=True, ride_id=ride_id)
-            try:
-                ride = ride_obj.dict() if hasattr(ride_obj, "dict") else ride_obj  # type: ignore[call-arg]
-            except Exception:
-                ride = {}
-        else:
-            rd = httpx.get(_taxi_url(f"/rides/{ride_id}"), headers=_taxi_headers(), timeout=10)
-            ride = rd.json() if rd.headers.get("content-type",""
-                         ).startswith("application/json") else {}
         if not isinstance(ride, dict):
             return result
         driver_id = (ride.get("driver_id") or "").strip()
@@ -12370,6 +13129,7 @@ def taxi_cancel_ride(ride_id: str):
             headers=_payments_headers(headers),
             timeout=10,
         )
+        _audit_from_request(request, "taxi_cancel_ride", ride_id=ride_id, driver_id=driver_id, amount_cents=amount_cents)
     except Exception:
         # Best-effort: never break cancellation result on fee issues
         return result
@@ -12378,18 +13138,33 @@ def taxi_cancel_ride(ride_id: str):
 
 
 @app.post("/taxi/rides/{ride_id}/deny")
-def taxi_deny_ride(ride_id: str):
+def taxi_deny_ride(ride_id: str, request: Request):
     """Driver denies current ride request: cancel and re-request to allow next nearest driver to receive it.
     This assumes upstream Taxi service matches to nearest available driver on request.
     """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_ops = False
     try:
-        # Fetch original ride to extract pickup/dropoff
+        is_ops = _is_operator(phone, "taxi")
+    except Exception:
+        is_ops = False
+    orig_obj = _taxi_fetch_ride(ride_id)
+    if orig_obj is None:
+        raise HTTPException(status_code=404, detail="ride not found")
+    orig = _taxi_obj_to_dict(orig_obj)
+    if not is_ops:
+        did = str(orig.get("driver_id") or "").strip()
+        if not did:
+            raise HTTPException(status_code=403, detail="forbidden")
+        dphone = _taxi_driver_phone(did)
+        if not dphone or dphone != phone:
+            raise HTTPException(status_code=403, detail="forbidden")
+
+    try:
+        # Cancel existing ride (ignore errors)
         if _use_taxi_internal():
-            try:
-                orig_obj = _call_taxi(_taxi_get_ride, need_session=True, ride_id=ride_id)
-                orig = orig_obj.dict() if hasattr(orig_obj, "dict") else orig_obj  # type: ignore[call-arg]
-            except Exception:
-                orig = {}
             try:
                 _call_taxi(
                     _taxi_cancel_ride,
@@ -12401,18 +13176,14 @@ def taxi_deny_ride(ride_id: str):
             except Exception:
                 pass
         else:
-            r0 = httpx.get(_taxi_url(f"/rides/{ride_id}"), headers=_taxi_headers(), timeout=10)
-            orig = r0.json() if r0.headers.get("content-type",""
-                     ).startswith("application/json") else {}
-            # Cancel existing ride (ignore errors)
             try:
                 httpx.post(_taxi_url(f"/rides/{ride_id}/cancel"), headers=_taxi_headers(), timeout=10)
             except Exception:
                 pass
     except Exception:
-        orig = {}
+        pass
     # Build new request from original coordinates if available
-    body = {}
+    body: dict[str, Any] = {}
     def _to_f(v):
         try:
             if v is None:
@@ -12445,12 +13216,20 @@ def taxi_deny_ride(ride_id: str):
                 req=req_model,
                 idempotency_key=None,
             )
+            _audit_from_request(request, "taxi_deny_ride", ride_id=ride_id)
             return result
         r = httpx.post(_taxi_url("/rides/request"), json=body, headers=_taxi_headers(), timeout=10)
-        return r.json() if r.headers.get("content-type",""
-                 ).startswith("application/json") else {"raw": r.text, "status_code": r.status_code}
+        r.raise_for_status()
+        _audit_from_request(request, "taxi_deny_ride", ride_id=ride_id)
+        return (
+            r.json()
+            if r.headers.get("content-type", "").startswith("application/json")
+            else {"raw": r.text, "status_code": r.status_code}
+        )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -12870,12 +13649,19 @@ def topup_batch_detail(request: Request, batch_id: str):
                 raise HTTPException(status_code=500, detail="payments internal not available")
             with _pay_internal_session() as s:
                 rows = _pay_topup_batch_detail(batch_id=batch_id, s=s, admin_ok=True)
-                arr = []
-                for it in rows:
-                    try:
+            if not isinstance(rows, list):
+                rows = []
+            arr = []
+            for it in rows:
+                try:
+                    if hasattr(it, "model_dump"):
+                        # Use json-mode to avoid leaking non-JSON types (datetime/UUID/Decimal) to callers.
+                        arr.append(it.model_dump(mode="json"))  # type: ignore[attr-defined]
+                    else:
                         arr.append(it.dict())  # type: ignore[call-arg]
-                    except Exception:
-                        arr.append({
+                except Exception:
+                    arr.append(
+                        {
                             "code": getattr(it, "code", ""),
                             "amount_cents": getattr(it, "amount_cents", 0),
                             "currency": getattr(it, "currency", ""),
@@ -12887,7 +13673,8 @@ def topup_batch_detail(request: Request, batch_id: str):
                             "payload": getattr(it, "payload", ""),
                             "seller_id": getattr(it, "seller_id", None),
                             "note": getattr(it, "note", None),
-                        })
+                        }
+                    )
         else:
             if not PAYMENTS_INTERNAL_SECRET:
                 raise HTTPException(status_code=403, detail="Server not configured for topup admin")
@@ -12896,7 +13683,7 @@ def topup_batch_detail(request: Request, batch_id: str):
                 headers=_payments_headers(),
                 timeout=15,
             )
-            arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
+            arr = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
         if not isinstance(arr, list):
             arr = []
         # Ownership check: sellers may only see their own batch items.
@@ -13012,7 +13799,10 @@ def topup_print(request: Request, batch_id: str):
                 arr = []
                 for it in rows:
                     try:
-                        arr.append(it.dict())  # type: ignore[call-arg]
+                        if hasattr(it, "model_dump"):
+                            arr.append(it.model_dump())  # type: ignore[attr-defined]
+                        else:
+                            arr.append(it.dict())  # type: ignore[call-arg]
                     except Exception:
                         arr.append({
                             "code": getattr(it, "code", ""),
@@ -14206,7 +14996,10 @@ def topup_print_pdf(request: Request, batch_id: str):
                 arr = []
                 for it in rows:
                     try:
-                        arr.append(it.dict())  # type: ignore[call-arg]
+                        if hasattr(it, "model_dump"):
+                            arr.append(it.model_dump())  # type: ignore[attr-defined]
+                        else:
+                            arr.append(it.dict())  # type: ignore[call-arg]
                     except Exception:
                         arr.append({
                             "code": getattr(it, "code", ""),
@@ -14923,34 +15716,137 @@ async def bus_book(trip_id: str, req: Request):
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@app.get("/bus/bookings/{booking_id}")
-def bus_booking_status(booking_id: str):
+@app.get("/bus/bookings/search")
+def bus_booking_search(
+    request: Request,
+    wallet_id: str | None = None,
+    phone: str | None = None,
+    limit: int = 20,
+):
+    """
+    Search bus bookings.
+
+    Security:
+    - Admin: can search by wallet_id/phone (but at least one filter is required).
+    - Regular users: can only search for their own wallet/phone.
+    """
+    caller_phone, caller_wallet_id = _require_caller_wallet(request)
+    is_admin = _is_admin(caller_phone)
+
+    # Fail-closed: prevent dumping all bookings when filters are missing.
+    if is_admin and not (wallet_id or phone):
+        raise HTTPException(status_code=400, detail="wallet_id or phone required")
+
+    if not is_admin:
+        # Enforce caller ownership. Do not allow searching arbitrary wallet/phone.
+        if wallet_id and wallet_id.strip() != caller_wallet_id:
+            raise HTTPException(status_code=403, detail="wallet_id does not belong to caller")
+        if phone and phone.strip() != caller_phone:
+            raise HTTPException(status_code=403, detail="phone does not belong to caller")
+        wallet_id = caller_wallet_id
+        phone = caller_phone
+
+    limit = max(1, min(int(limit or 0), 200))
+    params: dict[str, str | int] = {"limit": limit}
+    if wallet_id:
+        params["wallet_id"] = wallet_id.strip()
+    if phone:
+        params["phone"] = phone.strip()
     try:
         if _use_bus_internal():
             if not _BUS_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="bus internal not available")
             with _bus_internal_session() as s:
-                return _bus_booking_status(booking_id=booking_id, s=s)
-        r = httpx.get(_bus_url(f"/bookings/{booking_id}"), timeout=10)
+                return _bus_booking_search(wallet_id=wallet_id, phone=phone, limit=limit, s=s)
+        r = httpx.get(_bus_url("/bookings/search"), params=params, timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/bus/bookings/{booking_id}")
+def bus_booking_status(booking_id: str, request: Request):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    is_admin = _is_admin(phone)
+
+    def _booking_wallet_id(obj: Any) -> str:
+        try:
+            if isinstance(obj, dict):
+                return str((obj.get("wallet_id") or "")).strip()
+            return str(getattr(obj, "wallet_id", "") or "").strip()
+        except Exception:
+            return ""
+
+    try:
+        if _use_bus_internal():
+            if not _BUS_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="bus internal not available")
+            with _bus_internal_session() as s:
+                booking = _bus_booking_status(booking_id=booking_id, s=s)
+                if not is_admin:
+                    wid = _booking_wallet_id(booking)
+                    if not wid or wid != caller_wallet_id:
+                        raise HTTPException(status_code=403, detail="booking does not belong to caller wallet")
+                return booking
+        r = httpx.get(_bus_url(f"/bookings/{booking_id}"), timeout=10)
+        r.raise_for_status()
+        booking = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if not is_admin:
+            wid = _booking_wallet_id(booking)
+            if not wid or wid != caller_wallet_id:
+                raise HTTPException(status_code=403, detail="booking does not belong to caller wallet")
+        return booking
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/bus/bookings/{booking_id}/tickets")
-def bus_booking_tickets(booking_id: str):
+def bus_booking_tickets(booking_id: str, request: Request):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    is_admin = _is_admin(phone)
+
+    def _booking_wallet_id(obj: Any) -> str:
+        try:
+            if isinstance(obj, dict):
+                return str((obj.get("wallet_id") or "")).strip()
+            return str(getattr(obj, "wallet_id", "") or "").strip()
+        except Exception:
+            return ""
+
     try:
         if _use_bus_internal():
             if not _BUS_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="bus internal not available")
             with _bus_internal_session() as s:
+                booking = _bus_booking_status(booking_id=booking_id, s=s)
+                if not is_admin:
+                    wid = _booking_wallet_id(booking)
+                    if not wid or wid != caller_wallet_id:
+                        raise HTTPException(status_code=403, detail="booking does not belong to caller wallet")
                 return _bus_booking_tickets(booking_id=booking_id, s=s)
+        r_status = httpx.get(_bus_url(f"/bookings/{booking_id}"), timeout=10)
+        r_status.raise_for_status()
+        booking = r_status.json() if r_status.headers.get("content-type", "").startswith("application/json") else {}
+        if not is_admin:
+            wid = _booking_wallet_id(booking)
+            if not wid or wid != caller_wallet_id:
+                raise HTTPException(status_code=403, detail="booking does not belong to caller wallet")
         r = httpx.get(_bus_url(f"/bookings/{booking_id}/tickets"), timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -14995,29 +15891,6 @@ async def bus_booking_cancel(booking_id: str, req: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.get("/bus/bookings/search")
-def bus_booking_search(wallet_id: str | None = None, phone: str | None = None, limit: int = 20):
-    params: dict[str, str | int] = {"limit": limit}
-    if wallet_id:
-        params["wallet_id"] = wallet_id
-    if phone:
-        params["phone"] = phone
-    try:
-        if _use_bus_internal():
-            if not _BUS_INTERNAL_AVAILABLE:
-                raise HTTPException(status_code=500, detail="bus internal not available")
-            with _bus_internal_session() as s:
-                return _bus_booking_search(wallet_id=wallet_id, phone=phone, limit=limit, s=s)
-        r = httpx.get(_bus_url("/bookings/search"), params=params, timeout=10)
-        return r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
 @app.post("/bus/tickets/board")
 async def bus_ticket_board(req: Request):
     phone = _require_operator(req, "bus")
@@ -15365,48 +16238,25 @@ def bus_list_operators(request: Request):
 
 
 @app.post("/bus/operators/{operator_id}/online")
-def bus_operator_online(operator_id: str):
-    """
-    Toggle a Bus operator online. In monolith/internal mode this hits the
-    Bus domain in‑process; otherwise it proxies to BUS_BASE_URL.
-    """
-    try:
-        if _use_bus_internal():
-            if not _BUS_INTERNAL_AVAILABLE:
-                raise HTTPException(status_code=500, detail="bus internal not available")
-            with _bus_internal_session() as s:  # type: ignore[name-defined]
-                return _bus_operator_online(operator_id=operator_id, s=s)  # type: ignore[name-defined]  # noqa: E501
-        r = httpx.post(_bus_url(f"/operators/{operator_id}/online"), timeout=10)
-        return r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/bus/operators/{operator_id}/offline")
-def bus_operator_offline(operator_id: str):
-    """
-    Toggle a Bus operator offline. In monolith/internal mode this hits the
-    Bus domain in‑process; otherwise it proxies to BUS_BASE_URL.
-    """
-    try:
-        if _use_bus_internal():
-            if not _BUS_INTERNAL_AVAILABLE:
-                raise HTTPException(status_code=500, detail="bus internal not available")
-            with _bus_internal_session() as s:  # type: ignore[name-defined]
-                return _bus_operator_offline(operator_id=operator_id, s=s)  # type: ignore[name-defined]  # noqa: E501
-        r = httpx.post(_bus_url(f"/operators/{operator_id}/offline"), timeout=10)
-        return r.json()
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post("/bus/operators/{operator_id}/online")
 def bus_operator_online(operator_id: str, request: Request):
-    _require_admin_or_superadmin(request)
+    """
+    Toggle a Bus operator online.
+
+    Security:
+    - prod/staging: admin/superadmin OR bus-operator (for own operator_id) only
+    - dev/test: any authenticated user (for local iteration)
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_admin = _is_admin(phone) or _is_superadmin(phone)
+    if _ENV_LOWER not in ("dev", "test") and not is_admin:
+        _require_operator(request, "bus")
+        allowed_ops = _bus_operator_ids_for_phone(phone)
+        if not allowed_ops:
+            raise HTTPException(status_code=403, detail="no bus operator linked to caller wallet")
+        if operator_id not in allowed_ops:
+            raise HTTPException(status_code=403, detail="operator not allowed for caller")
     try:
         if _use_bus_internal():
             if not _BUS_INTERNAL_AVAILABLE:
@@ -15414,16 +16264,36 @@ def bus_operator_online(operator_id: str, request: Request):
             with _bus_internal_session() as s:
                 return _bus_operator_online(operator_id=operator_id, s=s)
         r = httpx.post(_bus_url(f"/operators/{operator_id}/online"), timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/bus/operators/{operator_id}/offline")
 def bus_operator_offline(operator_id: str, request: Request):
-    _require_admin_or_superadmin(request)
+    """
+    Toggle a Bus operator offline.
+
+    Security:
+    - prod/staging: admin/superadmin OR bus-operator (for own operator_id) only
+    - dev/test: any authenticated user (for local iteration)
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    is_admin = _is_admin(phone) or _is_superadmin(phone)
+    if _ENV_LOWER not in ("dev", "test") and not is_admin:
+        _require_operator(request, "bus")
+        allowed_ops = _bus_operator_ids_for_phone(phone)
+        if not allowed_ops:
+            raise HTTPException(status_code=403, detail="no bus operator linked to caller wallet")
+        if operator_id not in allowed_ops:
+            raise HTTPException(status_code=403, detail="operator not allowed for caller")
     try:
         if _use_bus_internal():
             if not _BUS_INTERNAL_AVAILABLE:
@@ -15431,14 +16301,30 @@ def bus_operator_offline(operator_id: str, request: Request):
             with _bus_internal_session() as s:
                 return _bus_operator_offline(operator_id=operator_id, s=s)
         r = httpx.post(_bus_url(f"/operators/{operator_id}/offline"), timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/bus/operators/{operator_id}/stats")
-def bus_operator_stats(operator_id: str, period: str = "today"):
+def bus_operator_stats(operator_id: str, request: Request, period: str = "today"):
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    allowed_ops = _bus_operator_ids_for_phone(phone)
+    is_admin = _is_admin(phone)
+    # Allow any authenticated user in dev/test for local iteration.
+    if _ENV_LOWER not in ("dev", "test"):
+        if not is_admin:
+            _require_operator(request, "bus")
+        if not allowed_ops and not is_admin:
+            raise HTTPException(status_code=403, detail="no bus operator linked to caller wallet")
+        if allowed_ops and operator_id not in allowed_ops and not is_admin:
+            raise HTTPException(status_code=403, detail="operator not allowed for caller")
     try:
         if _use_bus_internal():
             if not _BUS_INTERNAL_AVAILABLE:
@@ -15446,9 +16332,12 @@ def bus_operator_stats(operator_id: str, period: str = "today"):
             with _bus_internal_session() as s:
                 return _bus_operator_stats(operator_id=operator_id, period=period, s=s)
         r = httpx.get(_bus_url(f"/operators/{operator_id}/stats"), params={"period": period}, timeout=10)
+        r.raise_for_status()
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -20751,6 +21640,7 @@ loadRides();
 
 @app.get("/taxi/events")
 async def taxi_events(request: Request):
+    _require_operator(request, "taxi")
     async def gen():
         while True:
             if await request.is_disconnected():
@@ -20759,10 +21649,28 @@ async def taxi_events(request: Request):
                 drivers = []
                 rides = []
                 if TAXI_BASE:
-                    dr = httpx.get(_taxi_url("/drivers"), params={"status": "online", "limit": 200}, timeout=10)
-                    rr = httpx.get(_taxi_url("/rides"), params={"status": "requested", "limit": 200}, timeout=10)
-                    drivers = dr.json() if dr.status_code == 200 else []
-                    rides = rr.json() if rr.status_code == 200 else []
+                    dr = httpx.get(
+                        _taxi_url("/drivers"),
+                        params={"status": "online", "limit": 200},
+                        headers=_taxi_headers(),
+                        timeout=10,
+                    )
+                    rr = httpx.get(
+                        _taxi_url("/rides"),
+                        params={"status": "requested", "limit": 200},
+                        headers=_taxi_headers(),
+                        timeout=10,
+                    )
+                    drivers = (
+                        dr.json()
+                        if dr.status_code == 200 and dr.headers.get("content-type", "").startswith("application/json")
+                        else []
+                    )
+                    rides = (
+                        rr.json()
+                        if rr.status_code == 200 and rr.headers.get("content-type", "").startswith("application/json")
+                        else []
+                    )
                 payload = {"type": "snapshot", "drivers": drivers, "rides": rides, "ts": int(asyncio.get_event_loop().time()*1000)}
                 yield f"data: {_json.dumps(payload)}\n\n"
             except Exception as e:
@@ -20774,6 +21682,7 @@ async def taxi_events(request: Request):
 
 @app.get("/taxi/driver/events")
 async def taxi_driver_events(driver_id: str, request: Request):
+    _taxi_require_driver_self_or_operator(request, driver_id)
     async def gen():
         last_ids = set()
         while True:
@@ -20782,8 +21691,17 @@ async def taxi_driver_events(driver_id: str, request: Request):
             try:
                 rides = []
                 if TAXI_BASE:
-                    rr = httpx.get(_taxi_url(f"/drivers/{driver_id}/rides"), params={"limit": 20}, timeout=10)
-                    rides = rr.json() if rr.status_code == 200 else []
+                    rr = httpx.get(
+                        _taxi_url(f"/drivers/{driver_id}/rides"),
+                        params={"limit": 20},
+                        headers=_taxi_headers(),
+                        timeout=10,
+                    )
+                    rides = (
+                        rr.json()
+                        if rr.status_code == 200 and rr.headers.get("content-type", "").startswith("application/json")
+                        else []
+                    )
                 # only emit if changed
                 ids = {r.get('id') for r in rides if r.get('status') in ('assigned','accepted','on_trip')}
                 if ids != last_ids:
@@ -20799,17 +21717,44 @@ async def taxi_driver_events(driver_id: str, request: Request):
 
 @app.websocket("/ws/taxi/driver")
 async def taxi_driver_ws(ws: WebSocket):
-    await ws.accept()
     try:
         params = dict(ws.query_params)
         driver_id = params.get('driver_id')
+        phone = _auth_phone_ws(ws)
+        if not phone:
+            await ws.close(code=4401)
+            return
+        is_ops = False
+        try:
+            is_ops = _is_operator(phone, "taxi")
+        except Exception:
+            is_ops = False
+        if not is_ops:
+            if not driver_id:
+                await ws.close(code=4400)
+                return
+            dphone = _taxi_driver_phone(str(driver_id))
+            if not dphone or dphone != phone:
+                await ws.close(code=4403)
+                return
+
+        await ws.accept()
         last_ids = set()
         while True:
             try:
                 rides = []
                 if TAXI_BASE and driver_id:
-                    rr = httpx.get(_taxi_url(f"/drivers/{driver_id}/rides"), params={"limit": 20}, timeout=10)
-                    rides = rr.json() if rr.status_code == 200 else []
+                    rr = httpx.get(
+                        _taxi_url(f"/drivers/{driver_id}/rides"),
+                        params={"limit": 20},
+                        headers=_taxi_headers(),
+                        timeout=10,
+                    )
+                    rides = (
+                        rr.json()
+                        if rr.status_code == 200 and rr.headers.get("content-type", "").startswith("application/json")
+                        else []
+                    )
                 ids = {r.get('id') for r in rides if r.get('status') in ('assigned','accepted','on_trip')}
                 if ids != last_ids:
                     await ws.send_json({"type":"rides","driver_id":driver_id,"active_ids":list(ids),"rides":rides})

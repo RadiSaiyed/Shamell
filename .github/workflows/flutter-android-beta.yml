@@ -9,10 +9,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
           channel: stable
 
@@ -35,7 +35,7 @@ jobs:
           echo "AAB_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${AAB_REL_PATH}" >> "$GITHUB_ENV"
 
       - name: Upload Android appbundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shamell-android-user-release-aab
           path: ${{ env.AAB_PATH }}

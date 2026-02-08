@@ -30,8 +30,7 @@ def test_metrics_ingest_rejects_oversize_payload(client, monkeypatch):
 
     resp = client.post(
         "/metrics",
-        data=b'{"a":"0123456789"}',
+        content=b'{"a":"0123456789"}',
         headers={"X-Metrics-Secret": "SENTINEL", "content-type": "application/json"},
     )
     assert resp.status_code == 413
-

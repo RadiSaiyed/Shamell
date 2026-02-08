@@ -78,6 +78,7 @@ def _setup_bus_stub(monkeypatch):
             "trip_id": trip_id,
             "seats": body.seats,
             "status": status,
+            "wallet_id": body.wallet_id,
             "payments_txn_id": None,
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "tickets": [],
@@ -95,6 +96,8 @@ def _setup_bus_stub(monkeypatch):
     monkeypatch.setattr(bff, "_use_bus_internal", lambda: True)
     monkeypatch.setattr(bff, "_BUS_INTERNAL_AVAILABLE", True, raising=False)
     monkeypatch.setattr(bff, "_bus_internal_session", lambda: _DummySessionCtx())
+    # Stable wallet ownership for authz checks on /bus/bookings/* endpoints.
+    monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", lambda phone: "w_user", raising=False)
     monkeypatch.setattr(bff, "_bus_search_trips", fake_search_trips, raising=False)
     monkeypatch.setattr(bff, "_bus_trip_detail", fake_trip_detail, raising=False)
     monkeypatch.setattr(bff, "_BusBookReq", _BookReq, raising=False)
@@ -138,7 +141,7 @@ def test_bus_search_and_book_flow_via_bff(client, monkeypatch):
     assert b["status"] == "confirmed"
     bid = b["id"]
 
-    resp_status = client.get(f"/bus/bookings/{bid}")
+    resp_status = client.get(f"/bus/bookings/{bid}", headers={"X-Test-Phone": "+491700000999"})
     assert resp_status.status_code == 200
     st = resp_status.json()
     assert st["id"] == bid

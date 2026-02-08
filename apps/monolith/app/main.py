@@ -474,50 +474,53 @@ except Exception:
     # Optional module in this branch layout.
     pass
 
-# Attach routers for domains that already export routers.
+# Attach routers for domain services under a dedicated prefix so the BFF remains
+# the primary public surface (avoids accidental auth bypass by shadowing BFF
+# routes like /taxi/*, /bus/*, /food/*, etc.).
+_SVC_PREFIX = os.getenv("SERVICE_ROUTERS_PREFIX", "/svc").rstrip("/") or "/svc"
+
 if jobs_router is not None:
-    root_app.include_router(jobs_router, prefix="/jobs")
+    root_app.include_router(jobs_router, prefix=f"{_SVC_PREFIX}/jobs")
 if food_router is not None:
-    root_app.include_router(food_router, prefix="/food")
+    root_app.include_router(food_router, prefix=f"{_SVC_PREFIX}/food")
 if stays_router is not None:
-    root_app.include_router(stays_router, prefix="/stays")
+    root_app.include_router(stays_router, prefix=f"{_SVC_PREFIX}/stays")
 if payments_router is not None and _EXPOSE_PAYMENTS_ROUTER:
-    root_app.include_router(payments_router, prefix="/payments")
+    root_app.include_router(payments_router, prefix=f"{_SVC_PREFIX}/payments")
 if taxi_router is not None:
-    root_app.include_router(taxi_router, prefix="/taxi")
+    root_app.include_router(taxi_router, prefix=f"{_SVC_PREFIX}/taxi")
 if bus_router is not None:
-    root_app.include_router(bus_router, prefix="/bus")
+    root_app.include_router(bus_router, prefix=f"{_SVC_PREFIX}/bus")
 if commerce_router is not None:
-    root_app.include_router(commerce_router, prefix="/commerce")
+    root_app.include_router(commerce_router, prefix=f"{_SVC_PREFIX}/commerce")
 if carrental_router is not None:
-    root_app.include_router(carrental_router, prefix="/carrental")
+    root_app.include_router(carrental_router, prefix=f"{_SVC_PREFIX}/carrental")
 if equipment_router is not None:
-    root_app.include_router(equipment_router, prefix="/equipment")
+    root_app.include_router(equipment_router, prefix=f"{_SVC_PREFIX}/equipment")
 if freight_router is not None:
-    # Legacy freight prefix (kept for backwards compatibility)
-    root_app.include_router(freight_router, prefix="/freight")
+    root_app.include_router(freight_router, prefix=f"{_SVC_PREFIX}/freight")
 if agriculture_router is not None:
-    root_app.include_router(agriculture_router, prefix="/agriculture")
+    root_app.include_router(agriculture_router, prefix=f"{_SVC_PREFIX}/agriculture")
 if doctors_router is not None:
-    root_app.include_router(doctors_router, prefix="/doctors")
+    root_app.include_router(doctors_router, prefix=f"{_SVC_PREFIX}/doctors")
 if flights_router is not None:
-    root_app.include_router(flights_router, prefix="/flights")
+    root_app.include_router(flights_router, prefix=f"{_SVC_PREFIX}/flights")
 if chat_router is not None and _EXPOSE_CHAT_ROUTER:
-    root_app.include_router(chat_router, prefix="/chat")
+    root_app.include_router(chat_router, prefix=f"{_SVC_PREFIX}/chat")
 if carmarket_router is not None:
-    root_app.include_router(carmarket_router, prefix="/carmarket")
+    root_app.include_router(carmarket_router, prefix=f"{_SVC_PREFIX}/carmarket")
 if livestock_router is not None:
-    root_app.include_router(livestock_router, prefix="/livestock")
+    root_app.include_router(livestock_router, prefix=f"{_SVC_PREFIX}/livestock")
 if pms_router is not None:
-    root_app.include_router(pms_router, prefix="/pms")
+    root_app.include_router(pms_router, prefix=f"{_SVC_PREFIX}/pms")
 if pos_router is not None:
-    root_app.include_router(pos_router, prefix="/pos")
+    root_app.include_router(pos_router, prefix=f"{_SVC_PREFIX}/pos")
 if courier_router is not None:
-    root_app.include_router(courier_router, prefix="/courier")
+    root_app.include_router(courier_router, prefix=f"{_SVC_PREFIX}/courier")
 if urbify_router is not None:
-    root_app.include_router(urbify_router, prefix="/urbify")
+    root_app.include_router(urbify_router, prefix=f"{_SVC_PREFIX}/urbify")
 if realestate_router is not None:
-    root_app.include_router(realestate_router, prefix="/realestate")
+    root_app.include_router(realestate_router, prefix=f"{_SVC_PREFIX}/realestate")
 
 # BFF stays at root (/) so its routes remain unchanged.
 # Keep this mount last so explicit monolith include_router() paths above
