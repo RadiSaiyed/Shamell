@@ -76,7 +76,7 @@ services:
       # Use CALL_APNS_P8_B64 in containers (avoid host file mounts).
       CALL_APNS_KEY_ID: "${CALL_APNS_KEY_ID:-}"
       CALL_APNS_TEAM_ID: "${CALL_APNS_TEAM_ID:-}"
-      CALL_APNS_BUNDLE_ID: "${CALL_APNS_BUNDLE_ID:-com.syriasuperapp.superapp}"
+      CALL_APNS_BUNDLE_ID: "${CALL_APNS_BUNDLE_ID:-online.shamell.app}"
       CALL_APNS_VOIP_TOPIC: "${CALL_APNS_VOIP_TOPIC:-}"
       CALL_APNS_P8_B64: "${CALL_APNS_P8_B64:-}"
       CALL_APNS_P8_PATH: "${CALL_APNS_P8_PATH:-}"
