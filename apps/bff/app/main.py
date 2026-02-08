@@ -844,6 +844,7 @@ FLIGHTS_BASE = _env_or("FLIGHTS_BASE_URL", "")
 JOBS_BASE = _env_or("JOBS_BASE_URL", "")
 LIVESTOCK_BASE = _env_or("LIVESTOCK_BASE_URL", "")
 PAYMENTS_INTERNAL_SECRET = os.getenv("PAYMENTS_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET")
+INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
 GMAPS_API_KEY = os.getenv("GMAPS_API_KEY", "")
 ORS_BASE = _env_or("ORS_BASE_URL", "")
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
@@ -912,6 +913,14 @@ PAY_API_RESOLVE_MAX_PER_WALLET = int(_env_or("PAY_API_RESOLVE_MAX_PER_WALLET", "
 PAY_API_RESOLVE_MAX_PER_IP = int(_env_or("PAY_API_RESOLVE_MAX_PER_IP", "120"))
 _PAY_API_RATE_WALLET: dict[str, list[int]] = {}
 _PAY_API_RATE_IP: dict[str, list[int]] = {}
+
+# Chat edge rate-limits (BFF layer, best-effort in-memory).
+CHAT_RATE_WINDOW_SECS = int(_env_or("CHAT_RATE_WINDOW_SECS", "60"))
+CHAT_REGISTER_MAX_PER_IP = int(_env_or("CHAT_REGISTER_MAX_PER_IP", "25"))
+CHAT_SEND_MAX_PER_DEVICE = int(_env_or("CHAT_SEND_MAX_PER_DEVICE", "120"))
+CHAT_SEND_MAX_PER_IP = int(_env_or("CHAT_SEND_MAX_PER_IP", "300"))
+_CHAT_RATE_DEVICE: dict[str, list[int]] = {}
+_CHAT_RATE_IP: dict[str, list[int]] = {}
 
 # Global security headers toggle
 SECURITY_HEADERS_ENABLED = _env_or("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
@@ -1230,6 +1239,53 @@ def _rate_limit_payments_edge(
             _audit_from_request(
                 request,
                 "payments_edge_rate_limit_ip",
+                scope=scope_key,
+                ip=ip,
+                max=ip_max,
+                hits=hits_ip,
+            )
+            raise HTTPException(status_code=429, detail="rate limited: too many requests")
+
+
+def _rate_limit_chat_edge(
+    request: Request,
+    *,
+    device_id: str | None,
+    scope: str,
+    device_max: int,
+    ip_max: int,
+) -> None:
+    scope_key = (scope or "").strip().lower() or "default"
+    dev = (device_id or "").strip()
+    if dev:
+        hits_dev = _rate_limit_bucket(
+            _CHAT_RATE_DEVICE,
+            f"{scope_key}:{dev}",
+            window_secs=CHAT_RATE_WINDOW_SECS,
+            max_hits=device_max,
+        )
+        if device_max > 0 and hits_dev > device_max:
+            _audit_from_request(
+                request,
+                "chat_edge_rate_limit_device",
+                scope=scope_key,
+                device_id=dev,
+                max=device_max,
+                hits=hits_dev,
+            )
+            raise HTTPException(status_code=429, detail="rate limited: too many requests")
+    ip = _auth_client_ip(request)
+    if ip and ip != "unknown":
+        hits_ip = _rate_limit_bucket(
+            _CHAT_RATE_IP,
+            f"{scope_key}:{ip}",
+            window_secs=CHAT_RATE_WINDOW_SECS,
+            max_hits=ip_max,
+        )
+        if ip_max > 0 and hits_ip > ip_max:
+            _audit_from_request(
+                request,
+                "chat_edge_rate_limit_ip",
                 scope=scope_key,
                 ip=ip,
                 max=ip_max,
@@ -4470,6 +4526,8 @@ def _chat_auth_headers_from_request(request: Request) -> Dict[str, str]:
         headers["X-Chat-Device-Id"] = did
     if tok:
         headers["X-Chat-Device-Token"] = tok
+    if INTERNAL_API_SECRET:
+        headers["X-Internal-Secret"] = INTERNAL_API_SECRET
     return headers
 
 
@@ -4492,6 +4550,8 @@ def _chat_auth_headers_from_ws(ws: WebSocket) -> Dict[str, str]:
         headers["X-Chat-Device-Id"] = did
     if tok:
         headers["X-Chat-Device-Token"] = tok
+    if INTERNAL_API_SECRET:
+        headers["X-Internal-Secret"] = INTERNAL_API_SECRET
     return headers
 
 
@@ -4501,6 +4561,22 @@ async def chat_register(req: Request):
         body = await req.json()
     except Exception:
         body = None
+    try:
+        did = ""
+        if isinstance(body, dict):
+            did = str(body.get("device_id") or "").strip()
+        _rate_limit_chat_edge(
+            req,
+            device_id=did or None,
+            scope="chat_register",
+            device_max=0,
+            ip_max=CHAT_REGISTER_MAX_PER_IP,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        # Rate limiting must never hard-break chat flows.
+        pass
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
@@ -4530,14 +4606,18 @@ async def chat_register(req: Request):
 
 
 @app.get("/chat/devices/{device_id}")
-def chat_get_device(device_id: str):
+def chat_get_device(device_id: str, request: Request):
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="chat internal not available")
             with _chat_internal_session() as s:
                 return _chat_get_device(device_id=device_id, s=s)
-        r = httpx.get(_chat_url(f"/devices/{device_id}"), timeout=10)
+        r = httpx.get(
+            _chat_url(f"/devices/{device_id}"),
+            headers=_chat_auth_headers_from_request(request),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -4733,6 +4813,21 @@ async def chat_send(req: Request):
         body = await req.json()
     except Exception:
         body = None
+    try:
+        sender = ""
+        if isinstance(body, dict):
+            sender = str(body.get("sender_id") or "").strip()
+        _rate_limit_chat_edge(
+            req,
+            device_id=sender or None,
+            scope="chat_send",
+            device_max=CHAT_SEND_MAX_PER_DEVICE,
+            ip_max=CHAT_SEND_MAX_PER_IP,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
@@ -4960,6 +5055,21 @@ async def chat_group_send(group_id: str, req: Request):
         body = await req.json()
     except Exception:
         body = None
+    try:
+        sender = ""
+        if isinstance(body, dict):
+            sender = str(body.get("sender_id") or "").strip()
+        _rate_limit_chat_edge(
+            req,
+            device_id=sender or None,
+            scope="chat_group_send",
+            device_max=CHAT_SEND_MAX_PER_DEVICE,
+            ip_max=CHAT_SEND_MAX_PER_IP,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     try:
         if _use_chat_internal():
             if not _CHAT_INTERNAL_AVAILABLE:
@@ -10214,7 +10324,6 @@ def _taxi_url(path: str) -> str:
         raise HTTPException(status_code=500, detail="TAXI_BASE_URL not configured")
     return TAXI_BASE.rstrip("/") + path
 
-INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
 def _taxi_headers() -> dict:
     return ({"X-Internal-Secret": INTERNAL_API_SECRET} if INTERNAL_API_SECRET else {})
 
