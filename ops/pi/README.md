@@ -16,6 +16,17 @@ Both templates focus on:
 - disabling OTP/alias code exposure in non-dev environments
 - trusted host allowlist (`ALLOWED_HOSTS`) to mitigate Host header attacks
 - disabling interactive API docs in staging/prod (unless explicitly enabled)
+- keeping raw domain routers disabled in prod/staging (BFF-only public surface)
+- disabling dev-only wallet websocket stream in prod/staging
+- protecting (or disabling) metrics ingest in prod/staging
+
+## Additional Runtime Flags
+
+These are intentionally fail-closed defaults for staging/prod:
+
+- `EXPOSE_PAYMENTS_ROUTER` / `EXPOSE_CHAT_ROUTER`: keep `false` in staging/prod so only the BFF is public.
+- `ENABLE_WALLET_WS_IN_PROD`: keep `false` unless you explicitly want the dev wallet stream exposed.
+- `METRICS_INGEST_SECRET`: when set, `/metrics` ingest requires the secret; when empty, ingest is disabled (403).
 
 ## Recommended Rollout
 

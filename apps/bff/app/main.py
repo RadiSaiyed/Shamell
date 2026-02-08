@@ -795,7 +795,11 @@ async def ws_wallet_events(websocket: WebSocket, wallet_id: str):
             try:
                 # fetch latest txn
                 client = _httpx_async_client()
-                r = await client.get(_payments_url(f"/txns"), params={"wallet_id": wallet_id, "limit": 1})
+                r = await client.get(
+                    _payments_url(f"/txns"),
+                    params={"wallet_id": wallet_id, "limit": 1},
+                    headers=_payments_headers(),
+                )
                 arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
                 if arr:
                     t = arr[0]
@@ -851,6 +855,22 @@ GOTIFY_APP_TOKEN = os.getenv("GOTIFY_APP_TOKEN", "")
 NOMINATIM_USER_AGENT = _env_or("NOMINATIM_USER_AGENT", "shamell-taxi/1.0 (contact@example.com)")
 OSRM_BASE = _env_or("OSRM_BASE_URL", "")
 OVERPASS_BASE = _env_or("OVERPASS_BASE_URL", "https://overpass-api.de/api/interpreter")
+
+
+def _payments_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Attach the internal auth header for all BFF->Payments HTTP calls.
+
+    In prod/staging the Payments API should be treated as an internal-only
+    service; the BFF is the public surface.
+    """
+    h: dict[str, str] = {}
+    if extra:
+        h.update(extra)
+    if PAYMENTS_INTERNAL_SECRET:
+        # Always override any caller-provided value (do not forward from clients).
+        h["X-Internal-Secret"] = PAYMENTS_INTERNAL_SECRET
+    return h
 
 # Force all domains to use internal integrations; ignore external BASE_URLs.
 FORCE_INTERNAL_DOMAINS = True
@@ -2470,7 +2490,11 @@ async def me_overview(request: Request):
                         pass
         elif PAYMENTS_BASE:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(_payments_url("/users"), json={"phone": phone})
+                r = await client.post(
+                    _payments_url("/users"),
+                    json={"phone": phone},
+                    headers=_payments_headers(),
+                )
             if r.headers.get("content-type", "").startswith("application/json"):
                 j = r.json()
             else:
@@ -6608,7 +6632,12 @@ def _building_transfer(
                 raise HTTPException(status_code=502, detail=str(e))
         if not PAYMENTS_BASE:
             raise HTTPException(status_code=500, detail="PAYMENTS_BASE_URL not configured")
-        r = httpx.post(_payments_url("/transfer"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/transfer"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         if r.headers.get("content-type", "").startswith("application/json"):
             return r.json()
         return {"status_code": r.status_code, "raw": r.text}
@@ -10605,7 +10634,12 @@ async def taxi_driver_register(req: Request):
                     with _pay_internal_session() as s:
                         _pay_create_user(req_model, s=s)
             elif PAYMENTS_BASE:
-                httpx.post(_payments_url("/users"), json=payload, timeout=8)
+                httpx.post(
+                    _payments_url("/users"),
+                    json=payload,
+                    headers=_payments_headers(),
+                    timeout=8,
+                )
     except Exception:
         # Wallet creation is best-effort; driver registration must still succeed.
         pass
@@ -11994,7 +12028,11 @@ def taxi_cancel_ride(ride_id: str):
             phone = (ride.get("rider_phone") or "").strip()
             if phone:
                 try:
-                    rr = httpx.get(_payments_url(f"/resolve/phone/{phone}"), timeout=10)
+                    rr = httpx.get(
+                        _payments_url(f"/resolve/phone/{phone}"),
+                        headers=_payments_headers(),
+                        timeout=10,
+                    )
                     if rr.headers.get("content-type",""
                              ).startswith("application/json"):
                         j = rr.json()
@@ -12025,7 +12063,12 @@ def taxi_cancel_ride(ride_id: str):
             "amount_cents": amount_cents,
             "reference": f"taxi {ride_id} cancel fee",
         }
-        httpx.post(_payments_url("/transfer"), json=body, headers=headers, timeout=10)
+        httpx.post(
+            _payments_url("/transfer"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
     except Exception:
         # Best-effort: never break cancellation result on fee issues
         return result
@@ -12210,7 +12253,11 @@ def _resolve_wallet_id_for_phone(phone: str) -> str | None:
                     wid = None
                 return (wid or "").strip() or None
         if PAYMENTS_BASE:
-            r = httpx.get(_payments_url(f"/resolve/phone/{phone}"), timeout=6)
+            r = httpx.get(
+                _payments_url(f"/resolve/phone/{phone}"),
+                headers=_payments_headers(),
+                timeout=6,
+            )
             if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
                 try:
                     j = r.json()
@@ -12450,10 +12497,12 @@ async def topup_batch_create(req: Request):
                 raise HTTPException(status_code=400, detail=str(e))
             with _pay_internal_session() as s:
                 return _pay_topup_batch_create(req_model, s=s, admin_ok=True)
-        headers = {}
-        if PAYMENTS_INTERNAL_SECRET:
-            headers["X-Internal-Secret"] = PAYMENTS_INTERNAL_SECRET
-        r = httpx.post(_payments_url("/topup/batch_create"), json=body, headers=headers, timeout=20)
+        r = httpx.post(
+            _payments_url("/topup/batch_create"),
+            json=body,
+            headers=_payments_headers(),
+            timeout=20,
+        )
         return r.json() if r.headers.get('content-type','').startswith('application/json') else {"raw": r.text, "status_code": r.status_code}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -12479,7 +12528,12 @@ def topup_batches(request: Request, seller_id: str = "", limit: int = 50):
                 raise HTTPException(status_code=500, detail="payments internal not available")
             with _pay_internal_session() as s:
                 return _pay_topup_batches(seller_id=seller_id or None, limit=max(1, min(limit, 2000)), s=s, admin_ok=True)
-        r = httpx.get(_payments_url("/topup/batches"), params=params, timeout=10)
+        r = httpx.get(
+            _payments_url("/topup/batches"),
+            params=params,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -12497,7 +12551,11 @@ def topup_batch_detail(request: Request, batch_id: str):
                 raise HTTPException(status_code=500, detail="payments internal not available")
             with _pay_internal_session() as s:
                 return _pay_topup_batch_detail(batch_id=batch_id, s=s, admin_ok=True)
-        r = httpx.get(_payments_url(f"/topup/batches/{batch_id}"), timeout=15)
+        r = httpx.get(
+            _payments_url(f"/topup/batches/{batch_id}"),
+            headers=_payments_headers(),
+            timeout=15,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -12518,7 +12576,11 @@ async def topup_voucher_void(request: Request, code: str):
             with _pay_internal_session() as s:
                 result = _pay_topup_voucher_void(code=code, s=s, admin_ok=True)
         else:
-            r = httpx.post(_payments_url(f"/topup/vouchers/{code}/void"), headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}, timeout=10)
+            r = httpx.post(
+                _payments_url(f"/topup/vouchers/{code}/void"),
+                headers=_payments_headers(),
+                timeout=10,
+            )
             result = r.json()
         _audit_from_request(request, "topup_voucher_void", code=code)
         return result
@@ -12554,7 +12616,12 @@ async def topup_redeem(req: Request):
                 raise HTTPException(status_code=400, detail=str(e))
             with _pay_internal_session() as s:
                 return _pay_topup_redeem(treq, s=s)
-        r = httpx.post(_payments_url("/topup/redeem"), json=body, headers=headers, timeout=12)
+        r = httpx.post(
+            _payments_url("/topup/redeem"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=12,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -12589,7 +12656,11 @@ def topup_print(batch_id: str):
                             "payload": getattr(it, "payload", ""),
                         })
         else:
-            r = httpx.get(_payments_url(f"/topup/batches/{batch_id}"), timeout=15)
+            r = httpx.get(
+                _payments_url(f"/topup/batches/{batch_id}"),
+                headers=_payments_headers(),
+                timeout=15,
+            )
             arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
     except HTTPException:
         raise
@@ -12653,7 +12724,12 @@ def bff_roles_list(request: Request, phone: str = "", role: str = "", limit: int
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url("/admin/roles"), params=params, headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET} if PAYMENTS_INTERNAL_SECRET else {}, timeout=10)
+        r = httpx.get(
+            _payments_url("/admin/roles"),
+            params=params,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -12702,7 +12778,11 @@ def admin_ids_for_phone(request: Request, phone: str):
                         user_id = None
                         wallet_id = None
         elif PAYMENTS_BASE:
-            r = httpx.get(_payments_url(f"/resolve/phone/{phone}"), timeout=6)
+            r = httpx.get(
+                _payments_url(f"/resolve/phone/{phone}"),
+                headers=_payments_headers(),
+                timeout=6,
+            )
             if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/json"):
                 try:
                     j = r.json()
@@ -12889,7 +12969,12 @@ async def bff_roles_add(request: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/admin/roles"), json=body, headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET} if PAYMENTS_INTERNAL_SECRET else {}, timeout=10)
+        r = httpx.post(
+            _payments_url("/admin/roles"),
+            json=body,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         resp = r.json()
         _audit_from_request(request, "admin_role_add", target_phone=target_phone, target_role=target_role)
         return resp
@@ -12953,13 +13038,26 @@ async def admin_bus_operator_create(request: Request):
                     wallet_id = None
         elif PAYMENTS_BASE:
             # Fallback: HTTP call to standalone Payments API.
-            r = httpx.get(_payments_url(f"/resolve/phone/{phone}"), timeout=10)
+            r = httpx.get(
+                _payments_url(f"/resolve/phone/{phone}"),
+                headers=_payments_headers(),
+                timeout=10,
+            )
             if r.status_code == 404:
                 # Create user then resolve again.
-                r_create = httpx.post(_payments_url("/users"), json={"phone": phone}, timeout=10)
+                r_create = httpx.post(
+                    _payments_url("/users"),
+                    json={"phone": phone},
+                    headers=_payments_headers(),
+                    timeout=10,
+                )
                 if r_create.status_code >= 400:
                     raise HTTPException(status_code=r_create.status_code, detail=r_create.text)
-                r = httpx.get(_payments_url(f"/resolve/phone/{phone}"), timeout=10)
+                r = httpx.get(
+                    _payments_url(f"/resolve/phone/{phone}"),
+                    headers=_payments_headers(),
+                    timeout=10,
+                )
             if r.headers.get("content-type", "").startswith("application/json"):
                 j = r.json()
                 if isinstance(j, dict):
@@ -13077,11 +13175,10 @@ async def admin_bus_operator_create(request: Request):
                 _pay_roles_add(body=ru, s=s, admin_ok=True)  # type: ignore[name-defined]
         elif PAYMENTS_BASE:
             client = _httpx_client()
-            headers = {"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET} if PAYMENTS_INTERNAL_SECRET else {}  # noqa: E501
             r = client.post(
                 _payments_url("/admin/roles"),
                 json={"phone": phone, "role": "operator_bus"},
-                headers=headers,
+                headers=_payments_headers(),
                 timeout=10,
             )
             if r.status_code >= 400:
@@ -13133,7 +13230,12 @@ async def bff_roles_remove(request: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.delete(_payments_url("/admin/roles"), json=body, headers={"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET} if PAYMENTS_INTERNAL_SECRET else {}, timeout=10)
+        r = httpx.delete(
+            _payments_url("/admin/roles"),
+            json=body,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         resp = r.json()
         _audit_from_request(request, "admin_role_remove", target_phone=target_phone, target_role=target_role)
         return resp
@@ -13274,7 +13376,12 @@ async def dev_seed_demo(request: Request):
                 wallet_id: str | None = None
                 # Ensure user + wallet.
                 try:
-                    r = httpx.post(_payments_url("/users"), json={"phone": ph}, timeout=10)
+                    r = httpx.post(
+                        _payments_url("/users"),
+                        json={"phone": ph},
+                        headers=_payments_headers(),
+                        timeout=10,
+                    )
                     if r.headers.get("content-type", "").startswith("application/json"):
                         j = r.json()
                         if isinstance(j, dict):
@@ -13286,10 +13393,12 @@ async def dev_seed_demo(request: Request):
                 for role in roles:
                     try:
                         body = {"phone": ph, "role": role}
-                        headers: dict[str, str] = {}
-                        if PAYMENTS_INTERNAL_SECRET:
-                            headers["X-Internal-Secret"] = PAYMENTS_INTERNAL_SECRET
-                        httpx.post(_payments_url("/admin/roles"), json=body, headers=headers, timeout=10)
+                        httpx.post(
+                            _payments_url("/admin/roles"),
+                            json=body,
+                            headers=_payments_headers(),
+                            timeout=10,
+                        )
                     except Exception as e:
                         errors.append({"phone": ph, "stage": f"role_add_http:{role}", "error": str(e)})
                 created.append(
@@ -13689,7 +13798,11 @@ def topup_print_pdf(batch_id: str):
         raise HTTPException(status_code=500, detail="PDF/QR library not available")
     # Fetch vouchers
     try:
-        r = httpx.get(_payments_url(f"/topup/batches/{batch_id}"), timeout=15)
+        r = httpx.get(
+            _payments_url(f"/topup/batches/{batch_id}"),
+            headers=_payments_headers(),
+            timeout=15,
+        )
         arr = r.json() if r.headers.get('content-type','').startswith('application/json') else []
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"fetch batch failed: {e}")
@@ -13762,7 +13875,12 @@ async def payments_create_user(req: Request):
             raise HTTPException(status_code=502, detail=str(e))
     try:
         # Fallback: HTTP call to standalone Payments API if configured.
-        r = httpx.post(_payments_url("/users"), json=body, timeout=10)
+        r = httpx.post(
+            _payments_url("/users"),
+            json=body,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except HTTPException:
         # Already a structured HTTP error from upstream helper.
@@ -13789,7 +13907,11 @@ def payments_wallet(wallet_id: str, request: Request):
         except Exception as e:
             raise HTTPException(status_code=502, detail=str(e))
     try:
-        r = httpx.get(_payments_url(f"/wallets/{wallet_id}"), timeout=10)
+        r = httpx.get(
+            _payments_url(f"/wallets/{wallet_id}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -13875,7 +13997,12 @@ async def payments_transfer(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/transfer"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/transfer"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         out = r.json()
         try:
             payload = {}
@@ -13945,7 +14072,12 @@ async def payments_topup(wallet_id: str, req: Request):
             ikey = None
         if ikey:
             headers["Idempotency-Key"] = ikey
-        r = httpx.post(_payments_url(f"/wallets/{wallet_id}/topup"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url(f"/wallets/{wallet_id}/topup"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -13989,7 +14121,12 @@ async def payments_cash_create(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/cash/create"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/cash/create"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -14044,7 +14181,12 @@ async def payments_fav_create(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/favorites"), json=payload, timeout=10)
+        r = httpx.post(
+            _payments_url("/favorites"),
+            json=payload,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -14078,7 +14220,12 @@ def payments_fav_list(request: Request, owner_wallet_id: str = ""):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url("/favorites"), params={"owner_wallet_id": target_wallet_id}, timeout=10)
+        r = httpx.get(
+            _payments_url("/favorites"),
+            params={"owner_wallet_id": target_wallet_id},
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -14125,7 +14272,12 @@ def payments_fav_delete(fid: str, request: Request):
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
         if not can_admin:
-            chk = httpx.get(_payments_url("/favorites"), params={"owner_wallet_id": caller_wallet_id}, timeout=10)
+            chk = httpx.get(
+                _payments_url("/favorites"),
+                params={"owner_wallet_id": caller_wallet_id},
+                headers=_payments_headers(),
+                timeout=10,
+            )
             rows = chk.json() if chk.headers.get("content-type", "").startswith("application/json") else []
             allowed = False
             if isinstance(rows, list):
@@ -14139,7 +14291,11 @@ def payments_fav_delete(fid: str, request: Request):
                         break
             if not allowed:
                 raise HTTPException(status_code=404, detail="favorite not found")
-        r = httpx.delete(_payments_url(f"/favorites/{fav_id}"), timeout=10)
+        r = httpx.delete(
+            _payments_url(f"/favorites/{fav_id}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15148,7 +15304,12 @@ async def payments_req_create(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/requests"), json=payload, timeout=10)
+        r = httpx.post(
+            _payments_url("/requests"),
+            json=payload,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15185,7 +15346,12 @@ def payments_req_list(request: Request, wallet_id: str = "", kind: str = "", lim
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url("/requests"), params=params, timeout=10)
+        r = httpx.get(
+            _payments_url("/requests"),
+            params=params,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15220,7 +15386,11 @@ def payments_resolve_phone(phone: str, request: Request):
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
         else:
-            r = httpx.get(_payments_url(f"/resolve/phone/{target_phone}"), timeout=10)
+            r = httpx.get(
+                _payments_url(f"/resolve/phone/{target_phone}"),
+                headers=_payments_headers(),
+                timeout=10,
+            )
             result = r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15299,13 +15469,22 @@ async def payments_req_by_phone(req: Request):
                 pass
             return pr
         # HTTP-Fallback
-        rr = httpx.get(_payments_url(f"/resolve/phone/{to_phone}"), timeout=10)
+        rr = httpx.get(
+            _payments_url(f"/resolve/phone/{to_phone}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         to_wallet = rr.json().get("wallet_id") if rr.status_code == 200 else None
         if not to_wallet:
             raise HTTPException(status_code=404, detail="phone not found")
         req_payload = {k: v for k, v in payload.items() if k != "to_phone"}
         req_payload["to_wallet_id"] = to_wallet
-        r = httpx.post(_payments_url("/requests"), json=req_payload, timeout=10)
+        r = httpx.post(
+            _payments_url("/requests"),
+            json=req_payload,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         try:
             j = r.json()
         except Exception:
@@ -15356,7 +15535,12 @@ async def payments_req_accept(rid: str, req: Request):
                 if _pay_accept_request_core:  # type: ignore[truthy-function]
                     return _pay_accept_request_core(rid=rid, ikey=ikey, s=s, to_wallet_id=to_wallet_id)  # type: ignore[arg-type]
                 return _pay_accept_request(rid=rid, s=s)
-        r = httpx.post(_payments_url(f"/requests/{rid}/accept"), json={"to_wallet_id": to_wallet_id}, timeout=10)
+        r = httpx.post(
+            _payments_url(f"/requests/{rid}/accept"),
+            json={"to_wallet_id": to_wallet_id},
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except HTTPException:
         raise
@@ -15408,6 +15592,7 @@ def payments_req_cancel(rid: str, request: Request):
                 chk = httpx.get(
                     _payments_url("/requests"),
                     params={"wallet_id": caller_wallet_id, "kind": kind, "limit": 500},
+                    headers=_payments_headers(),
                     timeout=10,
                 )
                 rows = chk.json() if chk.headers.get("content-type", "").startswith("application/json") else []
@@ -15424,7 +15609,11 @@ def payments_req_cancel(rid: str, request: Request):
                     break
             if not owned:
                 raise HTTPException(status_code=404, detail="payment request not found")
-        r = httpx.post(_payments_url(f"/requests/{rid}/cancel"), timeout=10)
+        r = httpx.post(
+            _payments_url(f"/requests/{rid}/cancel"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15466,7 +15655,12 @@ async def payments_cash_redeem(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/cash/redeem"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/cash/redeem"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15508,7 +15702,12 @@ async def payments_cash_cancel(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/cash/cancel"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/cash/cancel"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15529,7 +15728,11 @@ def payments_cash_status(code: str):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url(f"/cash/status/{code}"), timeout=10)
+        r = httpx.get(
+            _payments_url(f"/cash/status/{code}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15573,7 +15776,12 @@ async def payments_sonic_issue(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/sonic/issue"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/sonic/issue"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15624,7 +15832,12 @@ async def payments_sonic_redeem(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/sonic/redeem"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/sonic/redeem"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15689,7 +15902,12 @@ async def payments_redpacket_issue(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/redpacket/issue"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/redpacket/issue"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         out = r.json()
         try:
             payload = {}
@@ -15768,7 +15986,12 @@ async def payments_redpacket_claim(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/redpacket/claim"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/redpacket/claim"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         out = r.json()
         try:
             payload = {}
@@ -15803,7 +16026,11 @@ def payments_redpacket_status(rid: str):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url(f"/redpacket/status/{rid}"), timeout=10)
+        r = httpx.get(
+            _payments_url(f"/redpacket/status/{rid}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15815,7 +16042,11 @@ def payments_redpacket_status(rid: str):
 def payments_idempotency(ikey: str, request: Request):
     _require_caller_wallet(request)
     try:
-        r = httpx.get(_payments_url(f"/idempotency/{ikey}"), timeout=10)
+        r = httpx.get(
+            _payments_url(f"/idempotency/{ikey}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15879,7 +16110,12 @@ async def payments_savings_deposit(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/savings/deposit"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/savings/deposit"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         out = r.json()
         try:
             payload = {}
@@ -15954,7 +16190,12 @@ async def payments_savings_withdraw(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/savings/withdraw"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/savings/withdraw"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         out = r.json()
         try:
             payload = {}
@@ -15988,7 +16229,11 @@ def payments_savings_overview(wallet_id: str):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url(f"/savings/overview?wallet_id={wallet_id}"), timeout=10)
+        r = httpx.get(
+            _payments_url(f"/savings/overview?wallet_id={wallet_id}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16055,7 +16300,12 @@ async def payments_bills_pay(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/bills/pay"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/bills/pay"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         out = r.json()
         try:
             payload = {}
@@ -16170,7 +16420,12 @@ async def payments_alias_request(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/alias/request"), json=payload, timeout=10)
+        r = httpx.post(
+            _payments_url("/alias/request"),
+            json=payload,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16552,7 +16807,12 @@ async def payments_alias_verify(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/alias/verify"), json=body, timeout=10)
+        r = httpx.post(
+            _payments_url("/alias/verify"),
+            json=body,
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16573,7 +16833,11 @@ def payments_alias_resolve(handle: str):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url(f"/alias/resolve/{handle}"), timeout=10)
+        r = httpx.get(
+            _payments_url(f"/alias/resolve/{handle}"),
+            headers=_payments_headers(),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16593,7 +16857,12 @@ async def payments_admin_alias_block(req: Request):
         body = None
     headers = {"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}
     try:
-        r = httpx.post(_payments_url("/admin/alias/block"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/admin/alias/block"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16612,7 +16881,12 @@ async def payments_admin_alias_rename(req: Request):
         body = None
     headers = {"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}
     try:
-        r = httpx.post(_payments_url("/admin/alias/rename"), json=body, headers=headers, timeout=10)
+        r = httpx.post(
+            _payments_url("/admin/alias/rename"),
+            json=body,
+            headers=_payments_headers(headers),
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16635,7 +16909,12 @@ def payments_admin_alias_search(request: Request, handle: str = "", status: str 
         params["user_id"] = user_id
     params["limit"] = limit
     try:
-        r = httpx.get(_payments_url("/admin/alias/search"), headers=headers, params=params, timeout=10)
+        r = httpx.get(
+            _payments_url("/admin/alias/search"),
+            headers=_payments_headers(headers),
+            params=params,
+            timeout=10,
+        )
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -16658,7 +16937,12 @@ def payments_admin_risk_metrics(request: Request, minutes: int = 5, top: int = 1
             with _pay_internal_session() as s:
                 result = _pay_admin_risk_metrics(minutes=minutes, top=top, s=s, admin_ok=True)
         else:
-            r = httpx.get(_payments_url("/admin/risk/metrics"), headers=headers, params=params, timeout=10)
+            r = httpx.get(
+                _payments_url("/admin/risk/metrics"),
+                headers=_payments_headers(headers),
+                params=params,
+                timeout=10,
+            )
             result = r.json()
         _audit_from_request(request, "risk_metrics", minutes=minutes, top=top)
         return result
@@ -16682,7 +16966,13 @@ def payments_admin_export_merchant(request: Request, merchant: str, from_iso: st
         params["to_iso"] = to_iso
     try:
         _audit_from_request(request, "export_merchant_txns", merchant=merchant, from_iso=from_iso or None, to_iso=to_iso or None)
-        with httpx.stream("GET", _payments_url("/admin/txns/export_by_merchant"), headers=headers, params=params, timeout=None) as r:
+        with httpx.stream(
+            "GET",
+            _payments_url("/admin/txns/export_by_merchant"),
+            headers=_payments_headers(headers),
+            params=params,
+            timeout=None,
+        ) as r:
             disp = r.headers.get("content-disposition", f"attachment; filename=txns_{merchant}.csv")
             return StreamingResponse(r.iter_bytes(), media_type="text/csv", headers={"Content-Disposition": disp})
     except httpx.HTTPStatusError as e:
@@ -16711,7 +17001,12 @@ def payments_admin_risk_events(request: Request, minutes: int = 5, to_wallet_id:
             with _pay_internal_session() as s:
                 result = _pay_admin_risk_events(minutes=minutes, to_wallet_id=to_wallet_id or None, device_id=device_id or None, ip=ip or None, limit=limit, s=s, admin_ok=True)
         else:
-            r = httpx.get(_payments_url("/admin/risk/events"), headers=headers, params=params, timeout=10)
+            r = httpx.get(
+                _payments_url("/admin/risk/events"),
+                headers=_payments_headers(headers),
+                params=params,
+                timeout=10,
+            )
             result = r.json()
         _audit_from_request(
             request,
@@ -16753,7 +17048,12 @@ async def payments_admin_risk_deny_add(req: Request):
             with _pay_internal_session() as s:
                 result = _pay_admin_risk_deny_add(rreq, s=s, admin_ok=True)
         else:
-            r = httpx.post(_payments_url("/admin/risk/deny/add"), json=body, headers=headers, timeout=10)
+            r = httpx.post(
+                _payments_url("/admin/risk/deny/add"),
+                json=body,
+                headers=_payments_headers(headers),
+                timeout=10,
+            )
             result = r.json()
         kind = ""
         value = ""
@@ -16795,7 +17095,12 @@ async def payments_admin_risk_deny_remove(req: Request):
             with _pay_internal_session() as s:
                 result = _pay_admin_risk_deny_remove(rreq, s=s, admin_ok=True)
         else:
-            r = httpx.post(_payments_url("/admin/risk/deny/remove"), json=body, headers=headers, timeout=10)
+            r = httpx.post(
+                _payments_url("/admin/risk/deny/remove"),
+                json=body,
+                headers=_payments_headers(headers),
+                timeout=10,
+            )
             result = r.json()
         kind = ""
         value = ""
@@ -16829,7 +17134,12 @@ def payments_admin_risk_deny_list(request: Request, kind: str = "", limit: int =
             with _pay_internal_session() as s:
                 result = _pay_admin_risk_deny_list(kind=kind or None, limit=limit, s=s, admin_ok=True)
         else:
-            r = httpx.get(_payments_url("/admin/risk/deny/list"), headers=headers, params=params, timeout=10)
+            r = httpx.get(
+                _payments_url("/admin/risk/deny/list"),
+                headers=_payments_headers(headers),
+                params=params,
+                timeout=10,
+            )
             result = r.json()
         _audit_from_request(request, "risk_deny_list", kind=kind or None, limit=limit)
         return result

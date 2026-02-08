@@ -3,7 +3,7 @@ from fastapi import Depends, APIRouter
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
 from starlette.requests import Request
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 import re
@@ -393,6 +393,33 @@ if _allowed_hosts_raw:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 router = APIRouter()
+
+# ---- Internal-only guard (defense-in-depth) ----
+# In production/staging the Payments service should not be directly exposed to
+# end users. The public surface is the BFF; Payments is an internal service.
+_require_internal_raw = _env_or("PAYMENTS_REQUIRE_INTERNAL_SECRET", "").strip().lower()
+if _require_internal_raw in ("0", "false", "no", "off"):
+    PAYMENTS_REQUIRE_INTERNAL_SECRET = False
+elif _require_internal_raw:
+    PAYMENTS_REQUIRE_INTERNAL_SECRET = True
+else:
+    PAYMENTS_REQUIRE_INTERNAL_SECRET = ENV_NAME in ("prod", "production", "staging")
+
+
+@app.middleware("http")
+async def _internal_secret_guard(request: Request, call_next):
+    if not PAYMENTS_REQUIRE_INTERNAL_SECRET:
+        return await call_next(request)
+    # Keep health checks simple and always available.
+    if request.url.path == "/health":
+        return await call_next(request)
+    provided = (request.headers.get("X-Internal-Secret") or "").strip()
+    if not INTERNAL_API_SECRET:
+        # Misconfiguration: fail closed so the service is not accidentally exposed.
+        return JSONResponse(status_code=503, content={"detail": "internal auth not configured"})
+    if not provided or not _hmac.compare_digest(provided, INTERNAL_API_SECRET):
+        return JSONResponse(status_code=401, content={"detail": "internal auth required"})
+    return await call_next(request)
 
 
 def require_admin(request: Request) -> bool:
