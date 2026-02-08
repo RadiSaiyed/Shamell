@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, JSONResponse, StreamingResponse, FileResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import RedirectResponse
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
 from pydantic import BaseModel
@@ -59,11 +60,36 @@ def _env_or(key: str, default: str) -> str:
 from .events import emit_event
 
 
-app = FastAPI(title="Shamell BFF", version="0.1.0")
+_ENV_LOWER = _env_or("ENV", "dev").lower()
+# Never expose interactive API docs by default in prod.
+_ENABLE_DOCS = _ENV_LOWER in ("dev", "test") or os.getenv("ENABLE_API_DOCS_IN_PROD", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+app = FastAPI(
+    title="Shamell BFF",
+    version="0.1.0",
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
+)
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
 configure_cors(app, os.getenv("ALLOWED_ORIGINS", ""))
 add_standard_health(app)
+
+# Trusted hosts: mitigate Host header attacks and misrouting.
+_allowed_hosts_raw = (os.getenv("ALLOWED_HOSTS") or "").strip()
+if _allowed_hosts_raw:
+    _allowed_hosts = [h.strip() for h in _allowed_hosts_raw.split(",") if h.strip()]
+    # Keep local health checks working even if ALLOWED_HOSTS is minimal.
+    for _extra in ("localhost", "127.0.0.1"):
+        if _extra not in _allowed_hosts:
+            _allowed_hosts.append(_extra)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+
 _HTTPX_CLIENT: httpx.Client | None = None
 _HTTPX_ASYNC_CLIENT: httpx.AsyncClient | None = None
 # Include PMS router directly for monolith/internal mode so Cloudbeds UI works via BFF.
@@ -857,7 +883,6 @@ _PAY_API_RATE_IP: dict[str, list[int]] = {}
 # Global security headers toggle
 SECURITY_HEADERS_ENABLED = _env_or("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
 
-_ENV_LOWER = _env_or("ENV", "dev").lower()
 _AUTH_EXPOSE_DEFAULT = "true" if _ENV_LOWER in ("dev", "test") else "false"
 # Whether auth codes should be returned in responses (for dev/test only).
 AUTH_EXPOSE_CODES = _env_or("AUTH_EXPOSE_CODES", _AUTH_EXPOSE_DEFAULT).lower() == "true"
@@ -19056,14 +19081,14 @@ function renderDoctors(list){
   if(!list.length){ el.innerHTML='<div class="muted">No doctors found.</div>'; return; }
   list.forEach(d=>{
     const div=document.createElement('div'); div.className='item';
-    div.innerHTML=\`
+    div.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
         <div>
           <div style="font-weight:700">\${d.name}</div>
           <div class="muted">\${d.speciality||'—'} · \${d.city||'—'} · \${d.timezone}</div>
         </div>
         <button style="width:auto;padding:8px 12px;" onclick='selectDoctor(\${d.id}, "\${d.name.replace(/"/g,'')}" )'>Select</button>
-      </div>\`;
+      </div>`;
     el.appendChild(div);
   });
 }
