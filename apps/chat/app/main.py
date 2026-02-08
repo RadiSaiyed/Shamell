@@ -52,12 +52,9 @@ if _allowed_hosts_raw:
         if _extra not in _allowed_hosts:
             _allowed_hosts.append(_extra)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
-
-router = APIRouter()
-
-
 DB_URL = _env_or("DB_URL", "sqlite+pysqlite:////tmp/chat.db")
 DB_SCHEMA = os.getenv("DB_SCHEMA") if not DB_URL.startswith("sqlite") else None
+INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET") or os.getenv("CHAT_INTERNAL_SECRET") or ""
 FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY", "")
 FCM_ENDPOINT = "https://fcm.googleapis.com/fcm/send"
 PURGE_INTERVAL_SECONDS = int(os.getenv("CHAT_PURGE_INTERVAL_SECONDS", "600"))
@@ -65,6 +62,34 @@ logger = logging.getLogger("chat")
 _CHAT_AUTH_DEFAULT = "true" if _ENV_LOWER in ("prod", "production", "staging") else "false"
 CHAT_ENFORCE_DEVICE_AUTH = _env_or("CHAT_ENFORCE_DEVICE_AUTH", _CHAT_AUTH_DEFAULT).lower() == "true"
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,24}$")
+
+# ---- Internal-only guard (defense-in-depth) ----
+# In production/staging the Chat service should not be directly exposed to end
+# users. The public surface is the BFF; Chat is an internal service.
+_require_internal_raw = _env_or("CHAT_REQUIRE_INTERNAL_SECRET", "").strip().lower()
+if _require_internal_raw in ("0", "false", "no", "off"):
+    CHAT_REQUIRE_INTERNAL_SECRET = False
+elif _require_internal_raw:
+    CHAT_REQUIRE_INTERNAL_SECRET = True
+else:
+    CHAT_REQUIRE_INTERNAL_SECRET = _ENV_LOWER in ("prod", "production", "staging")
+
+
+def _require_internal_secret(request: Request) -> None:
+    if not CHAT_REQUIRE_INTERNAL_SECRET:
+        return
+    # nosemgrep: semgrep.rules.shamell.authz.trusting-client-internal-headers
+    # The value is treated as untrusted input and verified using constant-time
+    # comparison against a server-side secret.
+    provided = (request.headers.get("X-Internal-Secret") or "").strip()  # nosemgrep: semgrep.rules.shamell.authz.trusting-client-internal-headers
+    if not INTERNAL_API_SECRET:
+        # Misconfiguration: fail closed so the service is not accidentally exposed.
+        raise HTTPException(status_code=503, detail="internal auth not configured")
+    if not provided or not hmac.compare_digest(provided, INTERNAL_API_SECRET):
+        raise HTTPException(status_code=401, detail="internal auth required")
+
+
+router = APIRouter(dependencies=[Depends(_require_internal_secret)])
 
 
 class Base(DeclarativeBase):
@@ -293,8 +318,8 @@ app.router.on_startup.append(_startup)
 
 class RegisterReq(BaseModel):
     device_id: str = Field(min_length=4, max_length=24)
-    public_key_b64: str = Field(min_length=32)
-    name: Optional[str] = None
+    public_key_b64: str = Field(min_length=32, max_length=255)
+    name: Optional[str] = Field(default=None, max_length=120)
 
 
 class DeviceOut(BaseModel):
@@ -441,20 +466,20 @@ def get_device(device_id: str, s: Session = Depends(get_session)):
 
 
 class SendReq(BaseModel):
-    sender_id: str
-    recipient_id: str
-    sender_pubkey_b64: str
-    sender_dh_pub_b64: Optional[str] = None
-    nonce_b64: str
-    box_b64: str
-    idempotency_key: Optional[str] = None
+    sender_id: str = Field(min_length=4, max_length=24)
+    recipient_id: str = Field(min_length=4, max_length=24)
+    sender_pubkey_b64: str = Field(min_length=32, max_length=255)
+    sender_dh_pub_b64: Optional[str] = Field(default=None, max_length=255)
+    nonce_b64: str = Field(min_length=8, max_length=64)
+    box_b64: str = Field(min_length=16, max_length=8192)
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
     expire_after_seconds: Optional[int] = Field(default=None, ge=10, le=7 * 24 * 3600)
     client_ts: Optional[str] = None
     sealed_sender: bool = False
-    sender_hint: Optional[str] = None
-    sender_fingerprint: Optional[str] = None
-    key_id: Optional[str] = None
-    prev_key_id: Optional[str] = None
+    sender_hint: Optional[str] = Field(default=None, max_length=64)
+    sender_fingerprint: Optional[str] = Field(default=None, max_length=64)
+    key_id: Optional[str] = Field(default=None, max_length=64)
+    prev_key_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class ContactRuleReq(BaseModel):
@@ -504,7 +529,7 @@ class MsgOut(BaseModel):
 class GroupCreateReq(BaseModel):
     device_id: str = Field(min_length=4, max_length=24)
     name: str = Field(min_length=1, max_length=120)
-    member_ids: Optional[List[str]] = None
+    member_ids: Optional[List[str]] = Field(default=None, max_length=128)
     group_id: Optional[str] = None
 
 
@@ -524,9 +549,9 @@ class GroupSendReq(BaseModel):
     text: Optional[str] = Field(default=None, max_length=4096)
     kind: Optional[str] = Field(default=None, max_length=20)
     nonce_b64: Optional[str] = Field(default=None, max_length=64)
-    box_b64: Optional[str] = None
-    attachment_b64: Optional[str] = None
-    attachment_mime: Optional[str] = None
+    box_b64: Optional[str] = Field(default=None, max_length=65535)
+    attachment_b64: Optional[str] = Field(default=None, max_length=65535)
+    attachment_mime: Optional[str] = Field(default=None, max_length=64)
     voice_secs: Optional[int] = Field(default=None, ge=1, le=120)
     expire_after_seconds: Optional[int] = Field(default=None, ge=10, le=7 * 24 * 3600)
 
@@ -548,7 +573,7 @@ class GroupMsgOut(BaseModel):
 
 class GroupInviteReq(BaseModel):
     inviter_id: str = Field(min_length=4, max_length=24)
-    member_ids: List[str] = Field(min_length=1)
+    member_ids: List[str] = Field(min_length=1, max_length=128)
 
 
 class GroupLeaveReq(BaseModel):
@@ -564,7 +589,7 @@ class GroupRoleReq(BaseModel):
 class GroupUpdateReq(BaseModel):
     actor_id: str = Field(min_length=4, max_length=24)
     name: Optional[str] = Field(default=None, max_length=120)
-    avatar_b64: Optional[str] = None
+    avatar_b64: Optional[str] = Field(default=None, max_length=65535)
     avatar_mime: Optional[str] = Field(default=None, max_length=64)
 
 
@@ -1328,8 +1353,8 @@ def mark_read(mid: str, request: Request, req: ReadReq, s: Session = Depends(get
 
 
 class PushTokenReq(BaseModel):
-    token: str = Field(min_length=8)
-    platform: Optional[str] = None
+    token: str = Field(min_length=8, max_length=512)
+    platform: Optional[str] = Field(default=None, max_length=30)
     ts: Optional[str] = None
 
 
