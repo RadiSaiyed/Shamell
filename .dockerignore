@@ -1,0 +1,42 @@
+.git
+.github
+
+# Local env/config (never send to docker build context)
+.env
+.env.*
+
+# Python caches/virtualenvs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv*
+venv/
+
+# Editor/OS noise
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+
+# Logs and PID files
+**/*.log
+**/*.pid
+ops/dev/logs/
+ops/dev/pids/
+ops/gcp/logs/
+NonWeChat/ops/logs/
+
+# Secrets and local ops overlays
+NonWeChat/ops/secrets/
+ops/**/.env
+ops/**/.env.*
+
+# Not needed for backend images
+clients/
+NonWeChat/
+docs/
+backups/
+ops/reports/
+tools/
