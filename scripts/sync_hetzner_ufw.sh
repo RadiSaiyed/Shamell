@@ -103,27 +103,42 @@ PY
     tailscale_ip=\"\$(ip -brief address show dev tailscale0 | awk '{print \$3}' | head -n1 | cut -d/ -f1)\"
   fi
 
-  nums_to_delete=\"\$(sudo ufw status numbered | awk -v ts_ip=\"\$tailscale_ip\" -v allow_ssh=\"\$is_tailscale_client\" '
-    /^\\[/ {
-      num=\$2; gsub(/[^0-9]/, \"\", num)
-      line=\$0
-      sub(/^\\[[^]]+\\][[:space:]]*/, \"\", line)
-      # 1) delete any generic allow of 80/443 from Anywhere
-      if (line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
-      if (line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
-      # 2) delete generic deny rules for 80/443 from Anywhere (ordering hazard; default policy is deny)
-      if (line ~ /^80\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
-      if (line ~ /^443\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
-      if (allow_ssh == 1) {
+  nums_to_delete=''
+  if [[ \"\$is_tailscale_client\" == \"1\" ]]; then
+    nums_to_delete=\"\$(sudo ufw status numbered | awk -v ts_ip=\"\$tailscale_ip\" '
+      /^\\[/ {
+        num=\$2; gsub(/[^0-9]/, \"\", num)
+        line=\$0
+        sub(/^\\[[^]]+\\][[:space:]]*/, \"\", line)
+        # 1) delete any generic allow of 80/443 from Anywhere
+        if (line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        if (line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        # 2) delete generic deny rules for 80/443 from Anywhere (ordering hazard; default policy is deny)
+        if (line ~ /^80\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
+        if (line ~ /^443\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
         # 3) delete any public SSH allow (SSH should be Tailscale-only)
         if (line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
         # 4) delete broad tailnet SSH allow (prefer per-admin-device allow)
         if (line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && line ~ /100\\.64\\.0\\.0\\/10/) print num
-        # 5) delete an SSH allow from the server's own tailscale IP (useless)
+        # 5) delete an SSH allow from the server own tailscale IP (useless)
         if (ts_ip != \"\" && line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && index(line, ts_ip) > 0) print num
       }
-    }
-  ' | sort -rn | uniq)\"
+    ' | sort -rn | uniq)\"
+  else
+    nums_to_delete=\"\$(sudo ufw status numbered | awk '
+      /^\\[/ {
+        num=\$2; gsub(/[^0-9]/, \"\", num)
+        line=\$0
+        sub(/^\\[[^]]+\\][[:space:]]*/, \"\", line)
+        # 1) delete any generic allow of 80/443 from Anywhere
+        if (line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        if (line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        # 2) delete generic deny rules for 80/443 from Anywhere (ordering hazard; default policy is deny)
+        if (line ~ /^80\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
+        if (line ~ /^443\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
+      }
+    ' | sort -rn | uniq)\"
+  fi
 
   if [[ -n \"\$nums_to_delete\" ]]; then
     while IFS= read -r n; do
