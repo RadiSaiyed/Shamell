@@ -75,9 +75,11 @@ PY
   # we refuse to change SSH rules to avoid locking you out.
   if [[ \"\$is_tailscale_client\" == \"1\" ]]; then
     if ip link show tailscale0 >/dev/null 2>&1; then
-      sudo ufw allow in on tailscale0 to any port 22 proto tcp >/dev/null || true
+      # Best practice: allow SSH only from the current admin device's
+      # Tailscale IP, not from the entire tailnet.
+      sudo ufw allow in on tailscale0 proto tcp from \"\$client_ip\" to any port 22 >/dev/null || true
     else
-      sudo ufw allow proto tcp from 100.64.0.0/10 to any port 22 >/dev/null || true
+      sudo ufw allow proto tcp from \"\$client_ip\" to any port 22 >/dev/null || true
     fi
   else
     echo 'WARNING: SSH client IP is not in 100.64.0.0/10 (Tailscale). Skipping SSH rule changes.' >&2
@@ -101,7 +103,7 @@ PY
     tailscale_ip=\"\$(ip -brief address show dev tailscale0 | awk '{print \$3}' | head -n1 | cut -d/ -f1)\"
   fi
 
-  nums_to_delete=\"\$(sudo ufw status numbered | awk -v ts_ip=\"\$tailscale_ip\" '
+  nums_to_delete=\"\$(sudo ufw status numbered | awk -v ts_ip=\"\$tailscale_ip\" -v allow_ssh=\"\$is_tailscale_client\" '
     /^\\[/ {
       num=\$2; gsub(/[^0-9]/, \"\", num)
       line=\$0
@@ -112,8 +114,14 @@ PY
       # 2) delete generic deny rules for 80/443 from Anywhere (ordering hazard; default policy is deny)
       if (line ~ /^80\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
       if (line ~ /^443\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
-      # 3) delete an SSH allow from the server's own tailscale IP (useless)
-      if (ts_ip != \"\" && line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && index(line, ts_ip) > 0) print num
+      if (allow_ssh == 1) {
+        # 3) delete any public SSH allow (SSH should be Tailscale-only)
+        if (line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        # 4) delete broad tailnet SSH allow (prefer per-admin-device allow)
+        if (line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && line ~ /100\\.64\\.0\\.0\\/10/) print num
+        # 5) delete an SSH allow from the server's own tailscale IP (useless)
+        if (ts_ip != \"\" && line ~ /^22\\/tcp/ && line ~ /ALLOW IN/ && index(line, ts_ip) > 0) print num
+      }
     }
   ' | sort -rn | uniq)\"
 
