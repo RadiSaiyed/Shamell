@@ -2,6 +2,7 @@ import os
 import sys
 import uuid
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -182,11 +183,34 @@ def _mount_service_app(path_prefix: str, app_import_path: str):
     # When mounting, we rely on each service app having its own routers under its own prefix.
     root_app.mount(path_prefix, svc_app)
 
-
-root_app = FastAPI(title="Shamell Monolith", version="0.1.0")
+_ENV_LOWER = os.getenv("ENV", "dev").lower()
+# Never expose interactive API docs by default in prod.
+_ENABLE_DOCS = _ENV_LOWER in ("dev", "test") or os.getenv("ENABLE_API_DOCS_IN_PROD", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+root_app = FastAPI(
+    title="Shamell Monolith",
+    version="0.1.0",
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
+)
 
 # Shared CORS configuration (secure defaults, configurable via ALLOWED_ORIGINS).
 configure_cors(root_app, os.getenv("ALLOWED_ORIGINS", ""))
+
+# Trusted hosts: mitigate Host header attacks and misrouting.
+_allowed_hosts_raw = (os.getenv("ALLOWED_HOSTS") or "").strip()
+if _allowed_hosts_raw:
+    _allowed_hosts = [h.strip() for h in _allowed_hosts_raw.split(",") if h.strip()]
+    # Keep local health checks working even if ALLOWED_HOSTS is minimal.
+    for _extra in ("localhost", "127.0.0.1"):
+        if _extra not in _allowed_hosts:
+            _allowed_hosts.append(_extra)
+    root_app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 
 @root_app.get("/health")

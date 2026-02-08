@@ -10,6 +10,7 @@ import httpx
 import secrets
 import re
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import create_engine, String, Integer, DateTime, Boolean, ForeignKey, func, select, or_, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 from datetime import datetime, timezone, timedelta
@@ -22,11 +23,35 @@ def _env_or(key: str, default: str) -> str:
     return v if v is not None else default
 
 
-app = FastAPI(title="Chat API", version="0.1.0")
+_ENV_LOWER = _env_or("ENV", "dev").lower()
+# Never expose interactive API docs by default in prod.
+_ENABLE_DOCS = _ENV_LOWER in ("dev", "test") or os.getenv("ENABLE_API_DOCS_IN_PROD", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+app = FastAPI(
+    title="Chat API",
+    version="0.1.0",
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
+)
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
 configure_cors(app, os.getenv("ALLOWED_ORIGINS", ""))
 add_standard_health(app)
+
+# Trusted hosts: mitigate Host header attacks and misrouting.
+_allowed_hosts_raw = (os.getenv("ALLOWED_HOSTS") or "").strip()
+if _allowed_hosts_raw:
+    _allowed_hosts = [h.strip() for h in _allowed_hosts_raw.split(",") if h.strip()]
+    # Keep local health checks working even if ALLOWED_HOSTS is minimal.
+    for _extra in ("localhost", "127.0.0.1"):
+        if _extra not in _allowed_hosts:
+            _allowed_hosts.append(_extra)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 router = APIRouter()
 
@@ -37,7 +62,6 @@ FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY", "")
 FCM_ENDPOINT = "https://fcm.googleapis.com/fcm/send"
 PURGE_INTERVAL_SECONDS = int(os.getenv("CHAT_PURGE_INTERVAL_SECONDS", "600"))
 logger = logging.getLogger("chat")
-_ENV_LOWER = _env_or("ENV", "dev").lower()
 _CHAT_AUTH_DEFAULT = "true" if _ENV_LOWER in ("prod", "production", "staging") else "false"
 CHAT_ENFORCE_DEVICE_AUTH = _env_or("CHAT_ENFORCE_DEVICE_AUTH", _CHAT_AUTH_DEFAULT).lower() == "true"
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,24}$")
@@ -524,7 +548,7 @@ class GroupMsgOut(BaseModel):
 
 class GroupInviteReq(BaseModel):
     inviter_id: str = Field(min_length=4, max_length=24)
-    member_ids: List[str] = Field(min_items=1)
+    member_ids: List[str] = Field(min_length=1)
 
 
 class GroupLeaveReq(BaseModel):

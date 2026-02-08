@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi import Depends, APIRouter
 from shamell_shared import RequestIDMiddleware, configure_cors, add_standard_health, setup_json_logging
 from starlette.requests import Request
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
@@ -362,11 +363,34 @@ def get_session():
         yield s
 
 
-app = FastAPI(title="Payments API", version="0.1.0")
+# Never expose interactive API docs by default in prod.
+_ENABLE_DOCS = ENV_NAME in ("dev", "test") or os.getenv("ENABLE_API_DOCS_IN_PROD", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+app = FastAPI(
+    title="Payments API",
+    version="0.1.0",
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
+)
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
 configure_cors(app, os.getenv("ALLOWED_ORIGINS", ""))
 add_standard_health(app)
+
+# Trusted hosts: mitigate Host header attacks and misrouting.
+_allowed_hosts_raw = (os.getenv("ALLOWED_HOSTS") or "").strip()
+if _allowed_hosts_raw:
+    _allowed_hosts = [h.strip() for h in _allowed_hosts_raw.split(",") if h.strip()]
+    # Keep local health checks working even if ALLOWED_HOSTS is minimal.
+    for _extra in ("localhost", "127.0.0.1"):
+        if _extra not in _allowed_hosts:
+            _allowed_hosts.append(_extra)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 router = APIRouter()
 

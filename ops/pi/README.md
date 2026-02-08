@@ -14,6 +14,8 @@ Both templates focus on:
 - payments edge rate limits (`PAY_API_*`)
 - runtime security alerting (`SECURITY_ALERT_*`)
 - disabling OTP/alias code exposure in non-dev environments
+- trusted host allowlist (`ALLOWED_HOSTS`) to mitigate Host header attacks
+- disabling interactive API docs in staging/prod (unless explicitly enabled)
 
 ## Recommended Rollout
 
