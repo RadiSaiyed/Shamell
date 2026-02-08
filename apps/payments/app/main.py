@@ -33,6 +33,8 @@ AUTO_CREATE = _env_or("AUTO_CREATE_SCHEMA", "true").lower() == "true"
 DEFAULT_CURRENCY = _env_or("DEFAULT_CURRENCY", "SYP")
 DEV_ENABLE_TOPUP = _env_or("DEV_ENABLE_TOPUP", "false").lower() == "true"
 ALLOW_INSECURE_DEV_ADMIN_BYPASS = _env_or("ALLOW_INSECURE_DEV_ADMIN_BYPASS", "false").lower() == "true"
+ENV_NAME = _env_or("ENV", "dev").lower()
+ALIAS_EXPOSE_CODE = _env_or("ALIAS_EXPOSE_CODE", "").lower() == "true" or ENV_NAME in ("dev", "test")
 SONIC_SECRET = os.getenv("SONIC_SECRET", "change-me-sonic")
 SONIC_TTL_SECS = int(_env_or("SONIC_TTL_SECS", "120"))
 TOPUP_SECRET = os.getenv("TOPUP_SECRET", "change-me-topup")
@@ -363,7 +365,7 @@ def get_session():
 app = FastAPI(title="Payments API", version="0.1.0")
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
-configure_cors(app, os.getenv("ALLOWED_ORIGINS", "*"))
+configure_cors(app, os.getenv("ALLOWED_ORIGINS", ""))
 add_standard_health(app)
 
 router = APIRouter()
@@ -2601,8 +2603,11 @@ def alias_request(req: AliasRequest, s: Session = Depends(get_session)):
     else:
         s.add(Alias(id=str(uuid.uuid4()), handle=handle, display=req.handle.strip(), user_id=u.id, wallet_id=w.id, status="pending", code_hash=h, code_expires_at=expires))
     s.commit()
-    # For now, return code in response (SMS/Push to be integrated)
-    return {"ok": True, "handle": f"@{handle}", "code": code, "expires_at": expires.isoformat()}
+    # Return verification code only in explicitly non-production contexts.
+    response = {"ok": True, "handle": f"@{handle}", "expires_at": expires.isoformat()}
+    if ALIAS_EXPOSE_CODE:
+        response["code"] = code
+    return response
 
 
 @router.post("/alias/verify")

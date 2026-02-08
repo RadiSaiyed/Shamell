@@ -184,11 +184,79 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
   - secret scanning findings
   - admin auth anomalies
   - webhook signature failures and replay detections
+  - payments edge abuse signals (wallet mismatch attempts + repeated rate-limit hits)
   - staging DAST smoke failures crossing `DAST_ALERT_CONSECUTIVE_FAILURES`
 - Dashboards should include:
   - auth failures by endpoint/role
   - token issuance and revocation rates
   - webhook accepted/rejected counts by reason
+  - payments edge rate-limit events by scope (`requests_*`, `favorites_*`, `resolve_phone`)
+
+### Runtime Alert Controls (BFF)
+
+- `SECURITY_ALERT_WEBHOOK_URL`: optional webhook target for runtime security alerts.
+- `SECURITY_ALERT_WINDOW_SECS`: rolling window for threshold checks (default `300`).
+- `SECURITY_ALERT_COOLDOWN_SECS`: minimum resend interval per alert action (default `600`).
+- `SECURITY_ALERT_THRESHOLDS`: comma-separated `action:threshold` pairs. Default covers:
+  - `payments_transfer_wallet_mismatch`
+  - `alias_request_wallet_mismatch`
+  - `alias_request_user_override_blocked`
+  - `favorites_owner_wallet_mismatch`
+  - `payments_request_from_wallet_mismatch`
+  - `payments_edge_rate_limit_wallet`
+  - `payments_edge_rate_limit_ip`
+- Payments edge limiter controls:
+  - `PAY_API_RATE_WINDOW_SECS`
+  - `PAY_API_REQ_WRITE_MAX_PER_WALLET`, `PAY_API_REQ_WRITE_MAX_PER_IP`
+  - `PAY_API_REQ_READ_MAX_PER_WALLET`, `PAY_API_REQ_READ_MAX_PER_IP`
+  - `PAY_API_FAV_WRITE_MAX_PER_WALLET`, `PAY_API_FAV_WRITE_MAX_PER_IP`
+  - `PAY_API_FAV_READ_MAX_PER_WALLET`, `PAY_API_FAV_READ_MAX_PER_IP`
+  - `PAY_API_RESOLVE_MAX_PER_WALLET`, `PAY_API_RESOLVE_MAX_PER_IP`
+- Environment templates with concrete baseline values:
+  - `ops/pi/env.staging.example`
+  - `ops/pi/env.prod.example`
+
+### Rate-Limit Rollout (Staging -> Production)
+
+1. Apply staging template (`ops/pi/env.staging.example`) and run for at least 24h.
+2. Validate zero authz regressions on payments flows and monitor legitimate `429` ratio.
+3. Promote to production with canary rollout:
+   - 10% traffic for 30-60 minutes
+   - 50% traffic for 2-4 hours
+   - 100% traffic after stable signal
+4. During rollout, gate promotion on:
+   - no sustained increase in `5xx`
+   - no sustained increase in support-reported false blocks
+   - stable security alert volume (no unexplained spike)
+5. After 7 clean days, tighten high-risk limits (`resolve_phone`, write actions) by 10-15%.
+
+### Default Profiles (Current Baseline)
+
+`staging` (strict pre-prod):
+
+- `PAY_API_REQ_WRITE_MAX_PER_WALLET=20`
+- `PAY_API_REQ_WRITE_MAX_PER_IP=80`
+- `PAY_API_REQ_READ_MAX_PER_WALLET=100`
+- `PAY_API_REQ_READ_MAX_PER_IP=300`
+- `PAY_API_FAV_WRITE_MAX_PER_WALLET=15`
+- `PAY_API_FAV_WRITE_MAX_PER_IP=60`
+- `PAY_API_FAV_READ_MAX_PER_WALLET=100`
+- `PAY_API_FAV_READ_MAX_PER_IP=300`
+- `PAY_API_RESOLVE_MAX_PER_WALLET=8`
+- `PAY_API_RESOLVE_MAX_PER_IP=30`
+
+`prod` (balanced low/medium traffic):
+
+- `PAY_API_REQ_WRITE_MAX_PER_WALLET=45`
+- `PAY_API_REQ_WRITE_MAX_PER_IP=180`
+- `PAY_API_REQ_READ_MAX_PER_WALLET=180`
+- `PAY_API_REQ_READ_MAX_PER_IP=700`
+- `PAY_API_FAV_WRITE_MAX_PER_WALLET=30`
+- `PAY_API_FAV_WRITE_MAX_PER_IP=120`
+- `PAY_API_FAV_READ_MAX_PER_WALLET=180`
+- `PAY_API_FAV_READ_MAX_PER_IP=700`
+- `PAY_API_RESOLVE_MAX_PER_WALLET=15`
+- `PAY_API_RESOLVE_MAX_PER_IP=90`
 
 ## Post-Incident Closure
 

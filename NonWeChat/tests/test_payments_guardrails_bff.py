@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import apps.bff.app.main as bff  # type: ignore[import]
+from fastapi.testclient import TestClient
+import pytest
 
 
 class _DummyPaySessionCtx:
@@ -11,6 +13,11 @@ class _DummyPaySessionCtx:
 
   def __exit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - trivial
     return False
+
+
+@pytest.fixture()
+def client():
+  return TestClient(bff.app)
 
 
 def _stub_pay_transfer(data: Any, request: Any | None = None, s: Any | None = None) -> Dict[str, Any]:
@@ -23,6 +30,8 @@ def test_payments_guardrail_max_amount_blocks_large_txn(client, admin_auth, monk
   monkeypatch.setattr(bff, "_PAY_INTERNAL_AVAILABLE", True, raising=False)
   monkeypatch.setattr(bff, "_pay_internal_session", lambda: _DummyPaySessionCtx(), raising=False)
   monkeypatch.setattr(bff, "_pay_transfer", _stub_pay_transfer, raising=False)
+  monkeypatch.setattr(bff, "_auth_phone", lambda request: "+491700000001", raising=False)
+  monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", lambda phone: "w1", raising=False)
 
   # Set a strict max amount
   monkeypatch.setattr(bff, "PAY_MAX_PER_TXN_CENTS", 10_000, raising=False)
@@ -48,6 +57,8 @@ def test_payments_guardrail_velocity_blocks_after_limit(client, admin_auth, monk
   monkeypatch.setattr(bff, "_PAY_INTERNAL_AVAILABLE", True, raising=False)
   monkeypatch.setattr(bff, "_pay_internal_session", lambda: _DummyPaySessionCtx(), raising=False)
   monkeypatch.setattr(bff, "_pay_transfer", _stub_pay_transfer, raising=False)
+  monkeypatch.setattr(bff, "_auth_phone", lambda request: "+491700000001", raising=False)
+  monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", lambda phone: "w1", raising=False)
 
   # Strict velocity limits for test
   monkeypatch.setattr(bff, "PAY_VELOCITY_WINDOW_SECS", 60, raising=False)
@@ -81,4 +92,3 @@ def test_payments_guardrail_velocity_blocks_after_limit(client, admin_auth, monk
   assert "velocity guardrail" in data3.get("detail", "")
   actions = [e.get("action") for e in bff._AUDIT_EVENTS]  # type: ignore[attr-defined]
   assert "pay_velocity_guardrail_wallet" in actions
-

@@ -29,6 +29,7 @@ import httpx
 import logging
 import os
 import asyncio, json as _json, re
+import ipaddress
 import math
 from pathlib import Path
 import secrets as _secrets
@@ -61,7 +62,7 @@ from .events import emit_event
 app = FastAPI(title="Shamell BFF", version="0.1.0")
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
-configure_cors(app, os.getenv("ALLOWED_ORIGINS", "*"))
+configure_cors(app, os.getenv("ALLOWED_ORIGINS", ""))
 add_standard_health(app)
 _HTTPX_CLIENT: httpx.Client | None = None
 _HTTPX_ASYNC_CLIENT: httpx.AsyncClient | None = None
@@ -838,6 +839,21 @@ AUTH_MAX_PER_IP = int(_env_or("AUTH_MAX_PER_IP", "40"))
 _AUTH_RATE_PHONE: dict[str, list[int]] = {}
 _AUTH_RATE_IP: dict[str, list[int]] = {}
 
+# Payments edge rate-limits (BFF layer, best-effort in-memory).
+PAY_API_RATE_WINDOW_SECS = int(_env_or("PAY_API_RATE_WINDOW_SECS", "60"))
+PAY_API_REQ_WRITE_MAX_PER_WALLET = int(_env_or("PAY_API_REQ_WRITE_MAX_PER_WALLET", "40"))
+PAY_API_REQ_WRITE_MAX_PER_IP = int(_env_or("PAY_API_REQ_WRITE_MAX_PER_IP", "200"))
+PAY_API_REQ_READ_MAX_PER_WALLET = int(_env_or("PAY_API_REQ_READ_MAX_PER_WALLET", "120"))
+PAY_API_REQ_READ_MAX_PER_IP = int(_env_or("PAY_API_REQ_READ_MAX_PER_IP", "500"))
+PAY_API_FAV_WRITE_MAX_PER_WALLET = int(_env_or("PAY_API_FAV_WRITE_MAX_PER_WALLET", "30"))
+PAY_API_FAV_WRITE_MAX_PER_IP = int(_env_or("PAY_API_FAV_WRITE_MAX_PER_IP", "120"))
+PAY_API_FAV_READ_MAX_PER_WALLET = int(_env_or("PAY_API_FAV_READ_MAX_PER_WALLET", "120"))
+PAY_API_FAV_READ_MAX_PER_IP = int(_env_or("PAY_API_FAV_READ_MAX_PER_IP", "500"))
+PAY_API_RESOLVE_MAX_PER_WALLET = int(_env_or("PAY_API_RESOLVE_MAX_PER_WALLET", "20"))
+PAY_API_RESOLVE_MAX_PER_IP = int(_env_or("PAY_API_RESOLVE_MAX_PER_IP", "120"))
+_PAY_API_RATE_WALLET: dict[str, list[int]] = {}
+_PAY_API_RATE_IP: dict[str, list[int]] = {}
+
 # Global security headers toggle
 SECURITY_HEADERS_ENABLED = _env_or("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
 
@@ -849,6 +865,21 @@ AUTH_EXPOSE_CODES = _env_or("AUTH_EXPOSE_CODES", _AUTH_EXPOSE_DEFAULT).lower() =
 # Global maintenance mode toggle (read-only / outage banner).
 MAINTENANCE_MODE_ENABLED = _env_or("MAINTENANCE_MODE", "false").lower() == "true"
 METRICS_INGEST_SECRET = _env_or("METRICS_INGEST_SECRET", "").strip()
+SECURITY_ALERT_WEBHOOK_URL = _env_or("SECURITY_ALERT_WEBHOOK_URL", "").strip()
+SECURITY_ALERT_WINDOW_SECS = int(_env_or("SECURITY_ALERT_WINDOW_SECS", "300"))
+SECURITY_ALERT_COOLDOWN_SECS = int(_env_or("SECURITY_ALERT_COOLDOWN_SECS", "600"))
+SECURITY_ALERT_THRESHOLDS_RAW = _env_or(
+    "SECURITY_ALERT_THRESHOLDS",
+    (
+        "payments_transfer_wallet_mismatch:5,"
+        "alias_request_wallet_mismatch:5,"
+        "alias_request_user_override_blocked:5,"
+        "favorites_owner_wallet_mismatch:5,"
+        "payments_request_from_wallet_mismatch:5,"
+        "payments_edge_rate_limit_wallet:30,"
+        "payments_edge_rate_limit_ip:50"
+    ),
+).strip()
 
 # ---- Simple session auth (OTP via code; in-memory storage for demo) ----
 AUTH_SESSION_TTL_SECS = int(_env_or("AUTH_SESSION_TTL_SECS", "86400"))
@@ -861,6 +892,31 @@ _BLOCKED_PHONES: set[str] = set()
 _PUSH_ENDPOINTS: dict[str, list[dict]] = {}
 _AUTH_CLEANUP_INTERVAL_SECS = 60
 _AUTH_LAST_CLEANUP_TS = 0
+
+
+def _parse_security_alert_thresholds(raw: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for chunk in (raw or "").split(","):
+        item = chunk.strip()
+        if not item or ":" not in item:
+            continue
+        name, value = item.split(":", 1)
+        action = name.strip()
+        if not action:
+            continue
+        try:
+            threshold = int(value.strip())
+        except Exception:
+            continue
+        if threshold <= 0:
+            continue
+        out[action] = threshold
+    return out
+
+
+SECURITY_ALERT_THRESHOLDS = _parse_security_alert_thresholds(SECURITY_ALERT_THRESHOLDS_RAW)
+_SECURITY_ALERT_EVENTS: dict[str, list[int]] = {}
+_SECURITY_ALERT_LAST_SENT: dict[str, int] = {}
 
 def _now() -> int:
     return int(time.time())
@@ -943,19 +999,43 @@ def _normalize_session_token(raw: str | None) -> str | None:
     return token
 
 
+def _normalize_ip(raw: str | None) -> str | None:
+    candidate = (raw or "").strip()
+    if not candidate:
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except Exception:
+        return None
+
+
 def _auth_client_ip(request: Request) -> str:
     """
     Best-effort resolution of the client IP for rate limiting.
-    Uses X-Forwarded-For if present, otherwise request.client.host.
+    Prefer trusted proxy headers and avoid trusting attacker-controlled
+    left-most X-Forwarded-For entries.
     """
+    try:
+        real_ip = _normalize_ip(request.headers.get("x-real-ip") or request.headers.get("X-Real-IP"))
+        if real_ip:
+            return real_ip
+    except Exception:
+        pass
     try:
         fwd = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
         if fwd:
-            return fwd.split(",")[0].strip()
+            # Nginx appends the direct client as the right-most element.
+            for hop in reversed([p.strip() for p in fwd.split(",") if p.strip()]):
+                ip = _normalize_ip(hop)
+                if ip:
+                    return ip
     except Exception:
         pass
     try:
         if request.client and request.client.host:
+            ip = _normalize_ip(request.client.host)
+            if ip:
+                return ip
             return request.client.host
     except Exception:
         pass
@@ -1034,6 +1114,72 @@ def _rate_limit_auth(request: Request, phone: str) -> None:
         if len(lst_ip) > AUTH_MAX_PER_IP:
             raise HTTPException(status_code=429, detail="rate limited: too many requests from this ip")
 
+
+def _rate_limit_bucket(
+    store: dict[str, list[int]],
+    key: str,
+    *,
+    window_secs: int,
+    max_hits: int,
+) -> int:
+    if max_hits <= 0:
+        return 0
+    now = _now()
+    window = max(1, window_secs)
+    entries = store.get(key) or []
+    entries = [ts for ts in entries if ts >= now - window]
+    entries.append(now)
+    store[key] = entries
+    return len(entries)
+
+
+def _rate_limit_payments_edge(
+    request: Request,
+    *,
+    wallet_id: str,
+    scope: str,
+    wallet_max: int,
+    ip_max: int,
+) -> None:
+    scope_key = (scope or "").strip().lower() or "default"
+    wallet_key = (wallet_id or "").strip()
+    if wallet_key:
+        hits_wallet = _rate_limit_bucket(
+            _PAY_API_RATE_WALLET,
+            f"{scope_key}:{wallet_key}",
+            window_secs=PAY_API_RATE_WINDOW_SECS,
+            max_hits=wallet_max,
+        )
+        if wallet_max > 0 and hits_wallet > wallet_max:
+            _audit_from_request(
+                request,
+                "payments_edge_rate_limit_wallet",
+                scope=scope_key,
+                wallet_id=wallet_key,
+                max=wallet_max,
+                hits=hits_wallet,
+            )
+            raise HTTPException(status_code=429, detail="rate limited: too many requests")
+    ip = _auth_client_ip(request)
+    if ip and ip != "unknown":
+        hits_ip = _rate_limit_bucket(
+            _PAY_API_RATE_IP,
+            f"{scope_key}:{ip}",
+            window_secs=PAY_API_RATE_WINDOW_SECS,
+            max_hits=ip_max,
+        )
+        if ip_max > 0 and hits_ip > ip_max:
+            _audit_from_request(
+                request,
+                "payments_edge_rate_limit_ip",
+                scope=scope_key,
+                ip=ip,
+                max=ip_max,
+                hits=hits_ip,
+            )
+            raise HTTPException(status_code=429, detail="rate limited: too many requests")
+
+
 def _auth_phone(request: Request) -> str | None:
     # Test-only shortcut: allow injecting a phone number via header
     # when ENV=test so API tests do not need to orchestrate cookie login.
@@ -1086,9 +1232,79 @@ def _audit(action: str, phone: str | None = None, **extra: Any) -> None:
             if v is not None:
                 payload[k] = v
         _audit_logger.info(payload)
+        _maybe_send_security_alert(payload)
     except Exception:
         # Audit must never break normal flows
         pass
+
+
+def _maybe_send_security_alert(payload: dict[str, Any]) -> None:
+    if not SECURITY_ALERT_WEBHOOK_URL:
+        return
+    if not SECURITY_ALERT_THRESHOLDS:
+        return
+    action = str(payload.get("action") or "").strip()
+    if not action:
+        return
+    threshold = int(SECURITY_ALERT_THRESHOLDS.get(action) or 0)
+    if threshold <= 0:
+        return
+    now = _now()
+    window = max(30, SECURITY_ALERT_WINDOW_SECS)
+    events = _SECURITY_ALERT_EVENTS.get(action) or []
+    events = [ts for ts in events if ts >= now - window]
+    events.append(now)
+    _SECURITY_ALERT_EVENTS[action] = events
+    if len(events) < threshold:
+        return
+    last_sent = int(_SECURITY_ALERT_LAST_SENT.get(action) or 0)
+    if last_sent and now - last_sent < max(30, SECURITY_ALERT_COOLDOWN_SECS):
+        return
+    _SECURITY_ALERT_LAST_SENT[action] = now
+    sample_keys = (
+        "phone",
+        "caller_wallet_id",
+        "requested_wallet_id",
+        "scope",
+        "ip",
+        "hits",
+        "max",
+        "target_phone",
+    )
+    sample: dict[str, Any] = {}
+    for key in sample_keys:
+        value = payload.get(key)
+        if value is not None and value != "":
+            sample[key] = value
+    alert_payload = {
+        "source": "shamell-bff",
+        "event": "security_alert",
+        "action": action,
+        "count": len(events),
+        "threshold": threshold,
+        "window_secs": window,
+        "sample": sample,
+        "ts_ms": int(time.time() * 1000),
+    }
+    try:
+        _metrics_logger.info(alert_payload)
+    except Exception:
+        pass
+    try:
+        httpx.post(
+            SECURITY_ALERT_WEBHOOK_URL,
+            json={
+                "text": (
+                    f"Shamell security alert: {action} "
+                    f"count={len(events)} threshold={threshold} window={window}s"
+                ),
+                "alert": alert_payload,
+            },
+            timeout=4,
+        )
+    except Exception:
+        # Alert delivery must never break request path.
+        return
 
 
 def _audit_from_request(request: Request, action: str, **extra: Any) -> None:
@@ -5465,7 +5681,8 @@ async def courier_reschedule(oid: str, req: Request):
 
 
 @app.get("/courier/stats")
-def courier_stats(carrier: str | None = None, partner_id: str | None = None, service_type: str | None = None):
+def courier_stats(request: Request, carrier: str | None = None, partner_id: str | None = None, service_type: str | None = None):
+    _require_admin_v2(request)
     params = {}
     if carrier:
         params["carrier"] = carrier
@@ -5486,7 +5703,8 @@ def courier_stats(carrier: str | None = None, partner_id: str | None = None, ser
 
 
 @app.get("/courier/stats/export")
-def courier_stats_export(carrier: str | None = None, partner_id: str | None = None, service_type: str | None = None):
+def courier_stats_export(request: Request, carrier: str | None = None, partner_id: str | None = None, service_type: str | None = None):
+    _require_admin_v2(request)
     params = {}
     if carrier:
         params["carrier"] = carrier
@@ -5511,7 +5729,8 @@ def courier_stats_export(carrier: str | None = None, partner_id: str | None = No
 
 
 @app.get("/courier/kpis/partners")
-def courier_partner_kpis(start_iso: str | None = None, end_iso: str | None = None, carrier: str | None = None, service_type: str | None = None):
+def courier_partner_kpis(request: Request, start_iso: str | None = None, end_iso: str | None = None, carrier: str | None = None, service_type: str | None = None):
+    _require_admin_v2(request)
     params = {}
     if start_iso:
         params["start_iso"] = start_iso
@@ -5534,7 +5753,8 @@ def courier_partner_kpis(start_iso: str | None = None, end_iso: str | None = Non
 
 
 @app.get("/courier/kpis/partners/export")
-def courier_partner_kpis_export(start_iso: str | None = None, end_iso: str | None = None, carrier: str | None = None, service_type: str | None = None):
+def courier_partner_kpis_export(request: Request, start_iso: str | None = None, end_iso: str | None = None, carrier: str | None = None, service_type: str | None = None):
+    _require_admin_v2(request)
     params = {}
     if start_iso:
         params["start_iso"] = start_iso
@@ -5616,7 +5836,8 @@ def courier_apply(body: dict):
 
 
 @app.get("/courier/admin/applications")
-def courier_admin_applications(status: str | None = None):
+def courier_admin_applications(request: Request, status: str | None = None):
+    _require_admin_v2(request)
     params = {}
     if status:
         params["status"] = status
@@ -10075,6 +10296,7 @@ try:
         PaymentRequestCreate as _PayRequestCreate,
         _accept_request_core as _pay_accept_request_core,
         TopupReq as _PayTopupReq,
+        FavoriteCreate as _PayFavoriteCreate,
         CashCreateReq as _PayCashCreateReq,
         CashRedeemReq as _PayCashRedeemReq,
         CashCancelReq as _PayCashCancelReq,
@@ -10094,6 +10316,9 @@ try:
         get_wallet as _pay_get_wallet,
         list_txns as _pay_list_txns,
         transfer as _pay_transfer,
+        create_favorite as _pay_create_favorite,
+        list_favorites as _pay_list_favorites,
+        delete_favorite as _pay_delete_favorite,
         create_request as _pay_create_request,
         list_requests as _pay_list_requests,
         cancel_request as _pay_cancel_request,
@@ -11926,6 +12151,19 @@ def _resolve_wallet_id_for_phone(phone: str) -> str | None:
     return None
 
 
+def _require_caller_wallet(request: Request) -> tuple[str, str]:
+    """
+    Require an authenticated caller and resolve the caller-owned wallet id.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    wallet_id = _resolve_wallet_id_for_phone(phone)
+    if not wallet_id:
+        raise HTTPException(status_code=403, detail="wallet not found for caller")
+    return phone, wallet_id
+
+
 def _bus_operator_ids_for_phone(phone: str) -> list[str]:
     """
     Return all bus operator IDs that belong to the caller's wallet.
@@ -13461,7 +13699,10 @@ async def payments_create_user(req: Request):
 
 
 @app.get("/payments/wallets/{wallet_id}")
-def payments_wallet(wallet_id: str):
+def payments_wallet(wallet_id: str, request: Request):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    if wallet_id != caller_wallet_id and not _is_admin(phone):
+        raise HTTPException(status_code=403, detail="wallet does not belong to caller")
     if _use_pay_internal():
         if not _PAY_INTERNAL_AVAILABLE:
             raise HTTPException(status_code=500, detail="payments internal not available")
@@ -13488,6 +13729,20 @@ async def payments_transfer(req: Request):
         body = await req.json()
     except Exception:
         body = None
+    if not isinstance(body, dict):
+        body = {}
+    _phone, caller_wallet_id = _require_caller_wallet(req)
+    from_wallet_id = str(body.get("from_wallet_id") or "").strip()
+    if from_wallet_id and from_wallet_id != caller_wallet_id:
+        _audit_from_request(
+            req,
+            "payments_transfer_wallet_mismatch",
+            requested_wallet_id=from_wallet_id,
+            caller_wallet_id=caller_wallet_id,
+        )
+        raise HTTPException(status_code=403, detail="from_wallet_id does not belong to caller")
+    # Prevent wallet spoofing by forcing sender to caller-owned wallet.
+    body["from_wallet_id"] = caller_wallet_id
     # forward idempotency and risk headers
     headers = {}
     try:
@@ -13573,6 +13828,7 @@ async def payments_transfer(req: Request):
 
 @app.post("/payments/wallets/{wallet_id}/topup")
 async def payments_topup(wallet_id: str, req: Request):
+    _require_admin_v2(req)
     dev_allow = _env_or("BFF_DEV_ALLOW_TOPUP", "false").lower() == "true"
     if not PAYMENTS_INTERNAL_SECRET and not dev_allow:
         raise HTTPException(status_code=403, detail="Server not configured for admin topup")
@@ -13625,6 +13881,7 @@ async def payments_topup(wallet_id: str, req: Request):
 # ---- Cash Mandate proxies ----
 @app.post("/payments/cash/create")
 async def payments_cash_create(req: Request):
+    _require_admin_v2(req)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for cash create")
     try:
@@ -13668,12 +13925,51 @@ async def payments_cash_create(req: Request):
 # ---- Favorites & Requests proxies ----
 @app.post("/payments/favorites")
 async def payments_fav_create(req: Request):
+    phone, caller_wallet_id = _require_caller_wallet(req)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        req,
+        wallet_id=caller_wallet_id,
+        scope="favorites_write",
+        wallet_max=PAY_API_FAV_WRITE_MAX_PER_WALLET,
+        ip_max=PAY_API_FAV_WRITE_MAX_PER_IP,
+    )
     try:
         body = await req.json()
     except Exception:
-        body = None
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    payload = dict(body)
+    owner_wallet_id = str(payload.get("owner_wallet_id") or "").strip()
+    if owner_wallet_id and owner_wallet_id != caller_wallet_id and not can_admin:
+        _audit_from_request(
+            req,
+            "favorites_owner_wallet_mismatch",
+            requested_wallet_id=owner_wallet_id,
+            caller_wallet_id=caller_wallet_id,
+        )
+        raise HTTPException(status_code=403, detail="owner_wallet_id does not belong to caller")
+    payload["owner_wallet_id"] = caller_wallet_id if not can_admin else (owner_wallet_id or caller_wallet_id)
     try:
-        r = httpx.post(_payments_url("/favorites"), json=body, timeout=10)
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            data = payload or {}
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                req_model = _PayFavoriteCreate(**data)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            try:
+                with _pay_internal_session() as s:
+                    return _pay_create_favorite(req_model, s=s)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.post(_payments_url("/favorites"), json=payload, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -13682,9 +13978,32 @@ async def payments_fav_create(req: Request):
 
 
 @app.get("/payments/favorites")
-def payments_fav_list(owner_wallet_id: str):
+def payments_fav_list(request: Request, owner_wallet_id: str = ""):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        request,
+        wallet_id=caller_wallet_id,
+        scope="favorites_read",
+        wallet_max=PAY_API_FAV_READ_MAX_PER_WALLET,
+        ip_max=PAY_API_FAV_READ_MAX_PER_IP,
+    )
+    requested_wallet_id = (owner_wallet_id or "").strip()
+    if requested_wallet_id and requested_wallet_id != caller_wallet_id and not can_admin:
+        raise HTTPException(status_code=403, detail="owner_wallet_id does not belong to caller")
+    target_wallet_id = requested_wallet_id if requested_wallet_id else caller_wallet_id
     try:
-        r = httpx.get(_payments_url("/favorites"), params={"owner_wallet_id": owner_wallet_id}, timeout=10)
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            try:
+                with _pay_internal_session() as s:
+                    return _pay_list_favorites(owner_wallet_id=target_wallet_id, s=s)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        r = httpx.get(_payments_url("/favorites"), params={"owner_wallet_id": target_wallet_id}, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -13693,9 +14012,59 @@ def payments_fav_list(owner_wallet_id: str):
 
 
 @app.delete("/payments/favorites/{fid}")
-def payments_fav_delete(fid: str):
+def payments_fav_delete(fid: str, request: Request):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        request,
+        wallet_id=caller_wallet_id,
+        scope="favorites_write",
+        wallet_max=PAY_API_FAV_WRITE_MAX_PER_WALLET,
+        ip_max=PAY_API_FAV_WRITE_MAX_PER_IP,
+    )
+    fav_id = (fid or "").strip()
+    if not fav_id:
+        raise HTTPException(status_code=400, detail="favorite id required")
     try:
-        r = httpx.delete(_payments_url(f"/favorites/{fid}"), timeout=10)
+        if _use_pay_internal():
+            if not _PAY_INTERNAL_AVAILABLE:
+                raise HTTPException(status_code=500, detail="payments internal not available")
+            try:
+                with _pay_internal_session() as s:
+                    if not can_admin:
+                        rows = _pay_list_favorites(owner_wallet_id=caller_wallet_id, s=s)
+                        allowed = False
+                        for row in rows or []:
+                            try:
+                                row_id = str(getattr(row, "id", "") or "")
+                            except Exception:
+                                row_id = ""
+                            if row_id == fav_id:
+                                allowed = True
+                                break
+                        if not allowed:
+                            raise HTTPException(status_code=404, detail="favorite not found")
+                    return _pay_delete_favorite(fid=fav_id, s=s)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+        if not can_admin:
+            chk = httpx.get(_payments_url("/favorites"), params={"owner_wallet_id": caller_wallet_id}, timeout=10)
+            rows = chk.json() if chk.headers.get("content-type", "").startswith("application/json") else []
+            allowed = False
+            if isinstance(rows, list):
+                for row in rows:
+                    try:
+                        row_id = str((row or {}).get("id") or "").strip()
+                    except Exception:
+                        row_id = ""
+                    if row_id == fav_id:
+                        allowed = True
+                        break
+            if not allowed:
+                raise HTTPException(status_code=404, detail="favorite not found")
+        r = httpx.delete(_payments_url(f"/favorites/{fav_id}"), timeout=10)
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -14659,15 +15028,38 @@ def bus_admin_summary(request: Request):
 
 @app.post("/payments/requests")
 async def payments_req_create(req: Request):
+    phone, caller_wallet_id = _require_caller_wallet(req)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        req,
+        wallet_id=caller_wallet_id,
+        scope="requests_write",
+        wallet_max=PAY_API_REQ_WRITE_MAX_PER_WALLET,
+        ip_max=PAY_API_REQ_WRITE_MAX_PER_IP,
+    )
     try:
         body = await req.json()
     except Exception:
-        body = None
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    payload = dict(body)
+    from_wallet_id = str(payload.get("from_wallet_id") or "").strip()
+    if from_wallet_id and from_wallet_id != caller_wallet_id and not can_admin:
+        _audit_from_request(
+            req,
+            "payments_request_from_wallet_mismatch",
+            requested_wallet_id=from_wallet_id,
+            caller_wallet_id=caller_wallet_id,
+        )
+        raise HTTPException(status_code=403, detail="from_wallet_id does not belong to caller")
+    if not can_admin:
+        payload["from_wallet_id"] = caller_wallet_id
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="payments internal not available")
-            data = body or {}
+            data = payload or {}
             if not isinstance(data, dict):
                 data = {}
             try:
@@ -14681,7 +15073,7 @@ async def payments_req_create(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/requests"), json=body, timeout=10)
+        r = httpx.post(_payments_url("/requests"), json=payload, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -14690,8 +15082,21 @@ async def payments_req_create(req: Request):
 
 
 @app.get("/payments/requests")
-def payments_req_list(wallet_id: str, kind: str = "", limit: int = 100):
-    params = {"wallet_id": wallet_id}
+def payments_req_list(request: Request, wallet_id: str = "", kind: str = "", limit: int = 100):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        request,
+        wallet_id=caller_wallet_id,
+        scope="requests_read",
+        wallet_max=PAY_API_REQ_READ_MAX_PER_WALLET,
+        ip_max=PAY_API_REQ_READ_MAX_PER_IP,
+    )
+    requested_wallet_id = (wallet_id or "").strip()
+    if requested_wallet_id and requested_wallet_id != caller_wallet_id and not can_admin:
+        raise HTTPException(status_code=403, detail="wallet_id does not belong to caller")
+    target_wallet_id = requested_wallet_id if requested_wallet_id else caller_wallet_id
+    params = {"wallet_id": target_wallet_id}
     if kind: params["kind"] = kind
     params["limit"] = max(1, min(limit, 500))
     try:
@@ -14700,7 +15105,7 @@ def payments_req_list(wallet_id: str, kind: str = "", limit: int = 100):
                 raise HTTPException(status_code=500, detail="payments internal not available")
             try:
                 with _pay_internal_session() as s:
-                    return _pay_list_requests(wallet_id=wallet_id, kind=kind, limit=max(1, min(limit, 500)), s=s)
+                    return _pay_list_requests(wallet_id=target_wallet_id, kind=kind, limit=max(1, min(limit, 500)), s=s)
             except HTTPException:
                 raise
             except Exception as e:
@@ -14714,34 +15119,79 @@ def payments_req_list(wallet_id: str, kind: str = "", limit: int = 100):
 
 
 @app.get("/payments/resolve/phone/{phone}")
-def payments_resolve_phone(phone: str):
+def payments_resolve_phone(phone: str, request: Request):
+    caller_phone, caller_wallet_id = _require_caller_wallet(request)
+    _rate_limit_payments_edge(
+        request,
+        wallet_id=caller_wallet_id,
+        scope="resolve_phone",
+        wallet_max=PAY_API_RESOLVE_MAX_PER_WALLET,
+        ip_max=PAY_API_RESOLVE_MAX_PER_IP,
+    )
+    target_phone = (phone or "").strip()
+    if not re.fullmatch(r"\+[1-9][0-9]{7,14}", target_phone):
+        raise HTTPException(status_code=400, detail="invalid phone format")
+    can_admin = _is_admin(caller_phone)
+    result: Any
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="payments internal not available")
             try:
                 with _pay_internal_session() as s:
-                    return _pay_resolve_phone(phone=phone, s=s)
+                    result = _pay_resolve_phone(phone=target_phone, s=s)
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.get(_payments_url(f"/resolve/phone/{phone}"), timeout=10)
-        return r.json()
+        else:
+            r = httpx.get(_payments_url(f"/resolve/phone/{target_phone}"), timeout=10)
+            result = r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+    if can_admin or target_phone == caller_phone:
+        return result
+    wallet_id = ""
+    if isinstance(result, dict):
+        wallet_id = str(result.get("wallet_id") or "").strip()
+    else:
+        try:
+            wallet_id = str(getattr(result, "wallet_id", "") or "").strip()
+        except Exception:
+            wallet_id = ""
+    if not wallet_id:
+        raise HTTPException(status_code=404, detail="phone not found")
+    _audit_from_request(request, "payments_resolve_phone_privacy_redact", target_phone=target_phone)
+    return {"wallet_id": wallet_id}
 
 
 @app.post("/payments/requests/by_phone")
 async def payments_req_by_phone(req: Request):
+    phone, caller_wallet_id = _require_caller_wallet(req)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        req,
+        wallet_id=caller_wallet_id,
+        scope="requests_write",
+        wallet_max=PAY_API_REQ_WRITE_MAX_PER_WALLET,
+        ip_max=PAY_API_REQ_WRITE_MAX_PER_IP,
+    )
     # body: {from_wallet_id, to_phone, amount_cents, message?, expires_in_secs?}
     try:
         body = await req.json()
     except Exception:
         body = {}
-    to_phone = (body or {}).get("to_phone")
+    if not isinstance(body, dict):
+        body = {}
+    payload = dict(body)
+    requested_from_wallet_id = str(payload.get("from_wallet_id") or "").strip()
+    if requested_from_wallet_id and requested_from_wallet_id != caller_wallet_id and not can_admin:
+        raise HTTPException(status_code=403, detail="from_wallet_id does not belong to caller")
+    if not can_admin:
+        payload["from_wallet_id"] = caller_wallet_id
+    to_phone = payload.get("to_phone")
     if not to_phone:
         raise HTTPException(status_code=400, detail="to_phone required")
     try:
@@ -14757,17 +15207,17 @@ async def payments_req_by_phone(req: Request):
                     raise
                 except Exception as e:
                     raise HTTPException(status_code=502, detail=str(e))
-                payload = {k: v for k, v in body.items() if k != "to_phone"}
-                payload["to_wallet_id"] = to_wallet
+                req_payload = {k: v for k, v in payload.items() if k != "to_phone"}
+                req_payload["to_wallet_id"] = to_wallet
                 try:
-                    req_model = _PayRequestCreate(**payload)
+                    req_model = _PayRequestCreate(**req_payload)
                 except Exception as e:
                     raise HTTPException(status_code=400, detail=str(e))
                 pr = _pay_create_request(req_model, s=s)
             # SMS Notify bleibt wie bisher
             try:
-                amt = body.get("amount_cents")
-                msg = body.get("message") or ""
+                amt = payload.get("amount_cents")
+                msg = payload.get("message") or ""
                 if os.getenv("SMS_NOTIFY_URL"):
                     httpx.post(os.getenv("SMS_NOTIFY_URL"), json={"to": to_phone, "text": f"Payment request: {amt}. {msg}"}, timeout=5)
             except Exception:
@@ -14778,17 +15228,17 @@ async def payments_req_by_phone(req: Request):
         to_wallet = rr.json().get("wallet_id") if rr.status_code == 200 else None
         if not to_wallet:
             raise HTTPException(status_code=404, detail="phone not found")
-        payload = {k: v for k, v in body.items() if k != "to_phone"}
-        payload["to_wallet_id"] = to_wallet
-        r = httpx.post(_payments_url("/requests"), json=payload, timeout=10)
+        req_payload = {k: v for k, v in payload.items() if k != "to_phone"}
+        req_payload["to_wallet_id"] = to_wallet
+        r = httpx.post(_payments_url("/requests"), json=req_payload, timeout=10)
         try:
             j = r.json()
         except Exception:
             j = {"status_code": r.status_code, "raw": r.text}
         if r.status_code == 200:
             try:
-                amt = body.get("amount_cents")
-                msg = body.get("message") or ""
+                amt = payload.get("amount_cents")
+                msg = payload.get("message") or ""
                 if os.getenv('SMS_NOTIFY_URL'):
                     httpx.post(os.getenv('SMS_NOTIFY_URL'), json={"to": to_phone, "text": f"Payment request: {amt}. {msg}"}, timeout=5)
             except Exception:
@@ -14802,6 +15252,15 @@ async def payments_req_by_phone(req: Request):
 
 @app.post("/payments/requests/{rid}/accept")
 async def payments_req_accept(rid: str, req: Request):
+    phone, caller_wallet_id = _require_caller_wallet(req)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        req,
+        wallet_id=caller_wallet_id,
+        scope="requests_write",
+        wallet_max=PAY_API_REQ_WRITE_MAX_PER_WALLET,
+        ip_max=PAY_API_REQ_WRITE_MAX_PER_IP,
+    )
     try:
         try:
             body = await req.json() if hasattr(req, "json") else {}
@@ -14809,7 +15268,11 @@ async def payments_req_accept(rid: str, req: Request):
             body = {}
         if not isinstance(body, dict):
             body = {}
-        to_wallet_id = body.get("to_wallet_id")
+        to_wallet_id = str(body.get("to_wallet_id") or "").strip()
+        if to_wallet_id and to_wallet_id != caller_wallet_id and not can_admin:
+            raise HTTPException(status_code=403, detail="to_wallet_id does not belong to caller")
+        if not can_admin:
+            to_wallet_id = caller_wallet_id
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="payments internal not available")
@@ -14829,18 +15292,63 @@ async def payments_req_accept(rid: str, req: Request):
 
 
 @app.post("/payments/requests/{rid}/cancel")
-def payments_req_cancel(rid: str):
+def payments_req_cancel(rid: str, request: Request):
+    phone, caller_wallet_id = _require_caller_wallet(request)
+    can_admin = _is_admin(phone)
+    _rate_limit_payments_edge(
+        request,
+        wallet_id=caller_wallet_id,
+        scope="requests_write",
+        wallet_max=PAY_API_REQ_WRITE_MAX_PER_WALLET,
+        ip_max=PAY_API_REQ_WRITE_MAX_PER_IP,
+    )
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="payments internal not available")
             try:
                 with _pay_internal_session() as s:
+                    if not can_admin:
+                        incoming = _pay_list_requests(wallet_id=caller_wallet_id, kind="incoming", limit=500, s=s)
+                        outgoing = _pay_list_requests(wallet_id=caller_wallet_id, kind="outgoing", limit=500, s=s)
+                        owned = False
+                        for row in list(incoming or []) + list(outgoing or []):
+                            try:
+                                row_id = str(getattr(row, "id", "") or "")
+                            except Exception:
+                                row_id = ""
+                            if row_id == rid:
+                                owned = True
+                                break
+                        if not owned:
+                            raise HTTPException(status_code=404, detail="payment request not found")
                     return _pay_cancel_request(rid=rid, s=s)
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
+        if not can_admin:
+            owned = False
+            for kind in ("incoming", "outgoing"):
+                chk = httpx.get(
+                    _payments_url("/requests"),
+                    params={"wallet_id": caller_wallet_id, "kind": kind, "limit": 500},
+                    timeout=10,
+                )
+                rows = chk.json() if chk.headers.get("content-type", "").startswith("application/json") else []
+                if isinstance(rows, list):
+                    for row in rows:
+                        try:
+                            row_id = str((row or {}).get("id") or "").strip()
+                        except Exception:
+                            row_id = ""
+                        if row_id == rid:
+                            owned = True
+                            break
+                if owned:
+                    break
+            if not owned:
+                raise HTTPException(status_code=404, detail="payment request not found")
         r = httpx.post(_payments_url(f"/requests/{rid}/cancel"), timeout=10)
         return r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}
     except httpx.HTTPStatusError as e:
@@ -14851,6 +15359,7 @@ def payments_req_cancel(rid: str):
 
 @app.post("/payments/cash/redeem")
 async def payments_cash_redeem(req: Request):
+    _require_admin_v2(req)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for cash redeem")
     try:
@@ -14892,6 +15401,7 @@ async def payments_cash_redeem(req: Request):
 
 @app.post("/payments/cash/cancel")
 async def payments_cash_cancel(req: Request):
+    _require_admin_v2(req)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for cash cancel")
     try:
@@ -14955,6 +15465,7 @@ def payments_cash_status(code: str):
 # ---- Sonic Pay proxies ----
 @app.post("/payments/sonic/issue")
 async def payments_sonic_issue(req: Request):
+    _require_admin_v2(req)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for sonic issue")
     try:
@@ -15226,7 +15737,8 @@ def payments_redpacket_status(rid: str):
 
 
 @app.get("/payments/idempotency/{ikey}")
-def payments_idempotency(ikey: str):
+def payments_idempotency(ikey: str, request: Request):
+    _require_caller_wallet(request)
     try:
         r = httpx.get(_payments_url(f"/idempotency/{ikey}"), timeout=10)
         return r.json()
@@ -15538,15 +16050,38 @@ def payments_billers():
 # ---- Alias proxies ----
 @app.post("/payments/alias/request")
 async def payments_alias_request(req: Request):
+    _phone, caller_wallet_id = _require_caller_wallet(req)
     try:
         body = await req.json()
     except Exception:
         body = None
+    if not isinstance(body, dict):
+        body = {}
+    payload = dict(body)
+    requested_wallet_id = str(payload.get("wallet_id") or "").strip()
+    requested_user_id = str(payload.get("user_id") or "").strip()
+    if requested_wallet_id and requested_wallet_id != caller_wallet_id:
+        _audit_from_request(
+            req,
+            "alias_request_wallet_mismatch",
+            requested_wallet_id=requested_wallet_id,
+            caller_wallet_id=caller_wallet_id,
+        )
+        raise HTTPException(status_code=403, detail="wallet_id does not belong to caller")
+    if requested_user_id:
+        _audit_from_request(
+            req,
+            "alias_request_user_override_blocked",
+            requested_user_id=requested_user_id,
+        )
+        raise HTTPException(status_code=403, detail="user_id override not allowed")
+    payload["wallet_id"] = caller_wallet_id
+    payload.pop("user_id", None)
     try:
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
                 raise HTTPException(status_code=500, detail="payments internal not available")
-            data = body or {}
+            data = payload or {}
             if not isinstance(data, dict):
                 data = {}
             try:
@@ -15560,7 +16095,7 @@ async def payments_alias_request(req: Request):
                 raise
             except Exception as e:
                 raise HTTPException(status_code=502, detail=str(e))
-        r = httpx.post(_payments_url("/alias/request"), json=body, timeout=10)
+        r = httpx.post(_payments_url("/alias/request"), json=payload, timeout=10)
         return r.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
@@ -15974,6 +16509,7 @@ def payments_alias_resolve(handle: str):
 # ---- Admin alias moderation proxies ----
 @app.post("/payments/admin/alias/block")
 async def payments_admin_alias_block(req: Request):
+    _require_superadmin(req)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for admin alias")
     try:
@@ -15992,6 +16528,7 @@ async def payments_admin_alias_block(req: Request):
 
 @app.post("/payments/admin/alias/rename")
 async def payments_admin_alias_rename(req: Request):
+    _require_superadmin(req)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for admin alias")
     try:
@@ -16009,7 +16546,8 @@ async def payments_admin_alias_rename(req: Request):
 
 
 @app.get("/payments/admin/alias/search")
-def payments_admin_alias_search(handle: str = "", status: str = "", user_id: str = "", limit: int = 50):
+def payments_admin_alias_search(request: Request, handle: str = "", status: str = "", user_id: str = "", limit: int = 50):
+    _require_superadmin(request)
     if not PAYMENTS_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Server not configured for admin alias")
     headers = {"X-Internal-Secret": PAYMENTS_INTERNAL_SECRET}

@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 import apps.bff.app.main as bff  # type: ignore[import]
 
@@ -13,6 +14,11 @@ class _DummySessionCtx:
 
     def __exit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - trivial
         return False
+
+
+@pytest.fixture()
+def client():
+    return TestClient(bff.app)
 
 
 def _setup_fake_payments(monkeypatch) -> Dict[str, Any]:
@@ -94,6 +100,15 @@ def _setup_fake_payments(monkeypatch) -> Dict[str, Any]:
         ]
         return items[: max(1, min(limit, 200))]
 
+    def _fake_resolve_wallet_id_for_phone(phone: str) -> str | None:
+        target = (phone or "").strip()
+        if not target:
+            return None
+        for wallet in state["wallets"].values():
+            if str(wallet.get("phone") or "").strip() == target:
+                return str(wallet.get("wallet_id") or "").strip() or None
+        return None
+
     monkeypatch.setattr(bff, "_use_pay_internal", _fake_use_internal)
     monkeypatch.setattr(bff, "_PAY_INTERNAL_AVAILABLE", True, raising=False)
     monkeypatch.setattr(bff, "_pay_internal_session", lambda: _DummySessionCtx())
@@ -101,6 +116,7 @@ def _setup_fake_payments(monkeypatch) -> Dict[str, Any]:
     monkeypatch.setattr(bff, "_pay_get_wallet", _fake_get_wallet)
     monkeypatch.setattr(bff, "_pay_transfer", _fake_transfer)
     monkeypatch.setattr(bff, "_pay_list_txns", _fake_list_txns)
+    monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", _fake_resolve_wallet_id_for_phone)
     return state
 
 
@@ -135,12 +151,13 @@ def test_payments_basic_transfer_flow_via_bff(client, monkeypatch):
             "to_wallet_id": wa,
             "amount_cents": topup_amount,
         },
+        headers={"X-Test-Phone": "sys"},
     )
     assert resp_topup.status_code == 200
 
     # Check balances via BFF payments endpoint
-    wa_info = client.get(f"/payments/wallets/{wa}").json()
-    wb_info = client.get(f"/payments/wallets/{wb}").json()
+    wa_info = client.get(f"/payments/wallets/{wa}", headers={"X-Test-Phone": phone_a}).json()
+    wb_info = client.get(f"/payments/wallets/{wb}", headers={"X-Test-Phone": phone_b}).json()
 
     assert wa_info["balance_cents"] == topup_amount
     assert wb_info["balance_cents"] == 0
@@ -154,6 +171,7 @@ def test_payments_basic_transfer_flow_via_bff(client, monkeypatch):
             "to_wallet_id": wb,
             "amount_cents": transfer_amount,
         },
+        headers={"X-Test-Phone": phone_a},
     )
     assert resp_tx.status_code == 200
 
@@ -165,4 +183,3 @@ def test_payments_basic_transfer_flow_via_bff(client, monkeypatch):
 
     assert bal_a == topup_amount - transfer_amount
     assert bal_b == transfer_amount
-
