@@ -94,6 +94,7 @@ def test_bff_courier_track_public(monkeypatch):
 def test_bff_courier_stats_filters(monkeypatch):
     captured = {}
     bff.COURIER_BASE = "http://courier"
+    monkeypatch.setattr(bff, "_require_admin_v2", lambda *args, **kwargs: "admin")
 
     def fake_get(url, params=None, timeout=None, headers=None):
         captured["url"] = url
@@ -110,6 +111,14 @@ def test_bff_courier_stats_filters(monkeypatch):
     assert captured["params"]["partner_id"] == "p1"
     assert captured["params"]["service_type"] == "same_day"
     assert r.json()["delivered"] == 1
+
+
+def test_bff_courier_stats_requires_admin():
+    bff.COURIER_BASE = "http://courier"
+    client = TestClient(bff.app)
+
+    r = client.get("/courier/stats")
+    assert r.status_code in (401, 403)
 
 
 def test_bff_courier_status_forwards_idempotency(monkeypatch):
@@ -239,6 +248,7 @@ def test_bff_courier_partners(monkeypatch):
 def test_bff_courier_partner_kpis(monkeypatch):
     captured = {}
     bff.COURIER_BASE = "http://courier"
+    monkeypatch.setattr(bff, "_require_admin_v2", lambda *args, **kwargs: "admin")
 
     def fake_get(url, params=None, timeout=None, headers=None):
         captured["url"] = url
@@ -259,6 +269,7 @@ def test_bff_courier_partner_kpis(monkeypatch):
 def test_bff_courier_partner_kpis_export(monkeypatch):
     captured = {}
     bff.COURIER_BASE = "http://courier"
+    monkeypatch.setattr(bff, "_require_admin_v2", lambda *args, **kwargs: "admin")
 
     class FakeRespBytes:
         def __init__(self):
@@ -301,6 +312,7 @@ def test_bff_courier_apply(monkeypatch):
 def test_bff_courier_admin_applications(monkeypatch):
     captured = {}
     bff.COURIER_BASE = "http://courier"
+    monkeypatch.setattr(bff, "_require_admin_v2", lambda *args, **kwargs: "admin")
 
     def fake_get(url, params=None, timeout=None, headers=None):
         captured["url"] = url
@@ -319,6 +331,7 @@ def test_bff_courier_admin_applications(monkeypatch):
 def test_bff_courier_stats_export(monkeypatch):
     captured = {}
     bff.COURIER_BASE = "http://courier"
+    monkeypatch.setattr(bff, "_require_admin_v2", lambda *args, **kwargs: "admin")
 
     class FakeRespBytes:
         def __init__(self):

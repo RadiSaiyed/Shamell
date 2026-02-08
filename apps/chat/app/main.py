@@ -25,7 +25,7 @@ def _env_or(key: str, default: str) -> str:
 app = FastAPI(title="Chat API", version="0.1.0")
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
-configure_cors(app, os.getenv("ALLOWED_ORIGINS", "*"))
+configure_cors(app, os.getenv("ALLOWED_ORIGINS", ""))
 add_standard_health(app)
 
 router = APIRouter()

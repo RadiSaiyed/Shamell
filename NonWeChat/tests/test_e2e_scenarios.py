@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import apps.bff.app.main as bff  # type: ignore[import]
+import pytest
+from fastapi.testclient import TestClient
 
 from .test_payments_e2e_bff import _setup_fake_payments
 
@@ -31,6 +33,11 @@ def _login_via_otp(client, monkeypatch, phone: str) -> None:
     body = resp_ver.json()
     assert body.get("ok") is True
     assert body.get("phone") == phone
+
+
+@pytest.fixture()
+def client():
+    return TestClient(bff.app)
 
 
 def test_e2e_login_first_payment_and_history(client, monkeypatch):
@@ -68,6 +75,7 @@ def test_e2e_login_first_payment_and_history(client, monkeypatch):
             "to_wallet_id": wa,
             "amount_cents": topup_amount,
         },
+        headers={"X-Test-Phone": "sys"},
     )
     assert resp_topup.status_code == 200
 
@@ -80,6 +88,7 @@ def test_e2e_login_first_payment_and_history(client, monkeypatch):
             "to_wallet_id": wb,
             "amount_cents": transfer_amount,
         },
+        headers={"X-Test-Phone": phone_a},
     )
     assert resp_tx.status_code == 200
 

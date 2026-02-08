@@ -11,10 +11,13 @@ def _create_wallet(client, phone: str) -> str:
     return data["wallet_id"]
 
 
-def _topup(client, wallet_id: str, amount: int):
+def _topup(client, wallet_id: str, amount: int, internal_secret: str | None = None):
+    headers = {"Idempotency-Key": f"topup-{uuid.uuid4().hex}"}
+    if internal_secret:
+        headers["X-Internal-Secret"] = internal_secret
     resp = client.post(
         f"/payments/wallets/{wallet_id}/topup",
-        headers={"Idempotency-Key": f"topup-{uuid.uuid4().hex}"},
+        headers=headers,
         json={"amount_cents": amount},
     )
     assert resp.status_code == 200
@@ -24,6 +27,7 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
     # Enable dev topup path
     monkeypatch.setenv("DEV_ENABLE_TOPUP", "true")
     monkeypatch.setenv("BFF_DEV_ALLOW_TOPUP", "true")
+    monkeypatch.setattr(pay, "INTERNAL_API_SECRET", "test-internal-secret", raising=False)
 
     payer_phone = "+15550001001"
     payee_phone = "+15550001002"
@@ -31,7 +35,7 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
     payee_wallet = _create_wallet(client, payee_phone)
 
     # Fund payer
-    _topup(client, payer_wallet, 50_000)
+    _topup(client, payer_wallet, 50_000, internal_secret="test-internal-secret")
 
     # Create request payee <- payer
     req = client.post(
