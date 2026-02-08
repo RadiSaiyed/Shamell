@@ -31,10 +31,12 @@ ssh -tt "$HOST_ALIAS" "
   set -euo pipefail
   sudo install -m 0644 '$tmp_remote/api.shamell.online' /etc/nginx/sites-available/api.shamell.online
   sudo install -m 0644 '$tmp_remote/media.shamell.online' /etc/nginx/sites-available/media.shamell.online
+  sudo install -m 0644 '$tmp_remote/online.shamell.online' /etc/nginx/sites-available/online.shamell.online
   sudo install -m 0644 '$tmp_remote/shamell.online' /etc/nginx/sites-available/shamell.online
 
   sudo ln -sfn /etc/nginx/sites-available/api.shamell.online /etc/nginx/sites-enabled/api.shamell.online
   sudo ln -sfn /etc/nginx/sites-available/media.shamell.online /etc/nginx/sites-enabled/media.shamell.online
+  sudo ln -sfn /etc/nginx/sites-available/online.shamell.online /etc/nginx/sites-enabled/online.shamell.online
   sudo ln -sfn /etc/nginx/sites-available/shamell.online /etc/nginx/sites-enabled/shamell.online
 
   sudo nginx -t
