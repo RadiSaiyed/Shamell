@@ -41,7 +41,7 @@ expect_code() {
   rm -f "$tmp"
 }
 
-expect_code "Monolith upstream health" GET "${UPSTREAM_BASE}/health" "200"
+expect_code "BFF upstream health" GET "${UPSTREAM_BASE}/health" "200"
 # In prod we keep raw service routers disabled; validate that the BFF admin surface
 # is not reachable without auth (regardless of whether service routers are exposed).
 expect_code "BFF payments admin guard (upstream)" GET "${UPSTREAM_BASE}/payments/admin/risk/metrics" "401"

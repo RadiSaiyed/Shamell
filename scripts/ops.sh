@@ -94,13 +94,13 @@ case "$ENV_NAME" in
     COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.yml"
     DEFAULT_ENV_FILE="${APP_DIR}/ops/pi/.env"
     HEALTH_URL_DEFAULT="http://localhost:8080/health"
-    PRIMARY_SERVICE="monolith"
+    PRIMARY_SERVICE="bff"
     ;;
   prod)
     COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.yml"
     DEFAULT_ENV_FILE="${APP_DIR}/ops/pi/.env"
     HEALTH_URL_DEFAULT="http://localhost:8080/health"
-    PRIMARY_SERVICE="monolith"
+    PRIMARY_SERVICE="bff"
     ;;
   *)
     usage
@@ -399,9 +399,9 @@ health() {
   done
 
   if [[ "$local_domain" == "1" && "${HEALTH_FALLBACK:-1}" == "1" ]]; then
-    echo "Health check via Traefik failed; falling back to monolith exec." >&2
+    echo "Health check via edge failed; falling back to ${PRIMARY_SERVICE} exec." >&2
     local host_header="api.${base_domain}"
-    compose exec -T monolith python -c \
+    compose exec -T "$PRIMARY_SERVICE" python -c \
       "import urllib.request; req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Host': '${host_header}'}); print(urllib.request.urlopen(req, timeout=3).read().decode())"
     return $?
   fi
@@ -482,26 +482,27 @@ bootstrap_media_perms() {
     exit 1
   fi
 
-  if [[ "$ENV_NAME" == "dev" ]]; then
-    echo "Ensuring dev service volumes have safe ownership ..."
+  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "pi" || "$ENV_NAME" == "prod" ]]; then
+    echo "Ensuring service volumes have safe ownership ..."
     compose run --rm --no-deps bootstrap-perms
     return 0
   fi
 
-  local svc="monolith"
+  if [[ "$ENV_NAME" != "devmono" ]]; then
+    echo "bootstrap-media-perms is not supported for env=${ENV_NAME}" >&2
+    exit 1
+  fi
+
   local uid gid
   uid="${MONOLITH_UID:-$(read_env MONOLITH_UID)}"
   gid="${MONOLITH_GID:-$(read_env MONOLITH_GID)}"
   uid="${uid:-10001}"
   gid="${gid:-10001}"
-  local targets=("/data/chat_media" "/data/moments_media")
-  if [[ "$ENV_NAME" == "devmono" ]]; then
-    targets=("/data" "/data/chat_media" "/data/moments_media")
-  fi
+  local targets=("/data" "/data/chat_media" "/data/moments_media")
   echo "Ensuring media volumes are owned by ${uid}:${gid} ..."
   compose run --rm --no-deps --build --user 0:0 \
     --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
-    "$svc" sh -ceu "
+    monolith sh -ceu "
     uid='${uid}'; gid='${gid}';
     for d in ${targets[*]}; do
       if [ ! -d \"\$d\" ]; then
@@ -650,25 +651,23 @@ backup() {
     return 0
   fi
 
-  local user="${POSTGRES_USER:-$(read_env POSTGRES_USER)}"
-  local password="${POSTGRES_PASSWORD:-$(read_env POSTGRES_PASSWORD)}"
-  local db="${POSTGRES_DB:-$(read_env POSTGRES_DB)}"
-  if [[ -z "$user" || -z "$password" || -z "$db" ]]; then
-    echo "Missing POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB for backup." >&2
+  # Default pi/prod deployments currently run on SQLite volumes (not Postgres).
+  # Back up the service volumes as a single tarball that can be restored in one step.
+  local core_url pay_url
+  core_url="$(read_env DB_URL)"
+  pay_url="$(read_env PAYMENTS_DB_URL)"
+  local core_norm pay_norm
+  core_norm="$(printf '%s' "${core_url:-}" | tr '[:upper:]' '[:lower:]')"
+  pay_norm="$(printf '%s' "${pay_url:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$core_norm" == postgres* || "$core_norm" == postgresql* || "$pay_norm" == postgres* || "$pay_norm" == postgresql* ]]; then
+    echo "Postgres backup is not configured in this repo layout (no db service). Use your managed Postgres backup tooling." >&2
     exit 1
   fi
-  local out="${backup_dir}/${ENV_NAME}-db-${ts}.sql.gz"
-  require_cmd gzip
-  compose exec -T --env PGPASSWORD="$password" db pg_dump -U "$user" -d "$db" | gzip >"$out"
-  echo "Backup written: ${out}"
-  prune_backups "$backup_dir" "${ENV_NAME}-db-*.sql.gz"
 
-  if [[ "${BACKUP_MEDIA:-0}" == "1" ]]; then
-    local media_out="${backup_dir}/${ENV_NAME}-media-${ts}.tar.gz"
-    compose exec -T monolith sh -c "tar -czf - -C /data chat_media moments_media" >"$media_out"
-    echo "Media backup written: ${media_out}"
-    prune_backups "$backup_dir" "${ENV_NAME}-media-*.tar.gz"
-  fi
+  local out="${backup_dir}/${ENV_NAME}-service-volumes-${ts}.tar.gz"
+  compose run --rm --no-deps bootstrap-perms sh -ceu 'tar -czf - -C /vol bff_data chat_data payments_data' >"$out"
+  echo "Backup written: ${out}"
+  prune_backups "$backup_dir" "${ENV_NAME}-service-volumes-*.tar.gz"
 }
 
 restore() {
@@ -708,6 +707,30 @@ restore() {
       exit 1
     fi
     compose run --rm --no-deps monolith sh -c "rm -rf /data/* && tar -xzf - -C /data" <"$backup_file"
+    echo "Restore complete: ${backup_file}"
+    return 0
+  fi
+
+  if [[ "$ENV_NAME" == "pi" || "$ENV_NAME" == "prod" ]]; then
+    case "$backup_file" in
+      *.tar.gz|*.tgz)
+        ;;
+      *)
+        echo "${ENV_NAME} restore expects a .tar.gz backup from ./scripts/ops.sh ${ENV_NAME} backup" >&2
+        exit 1
+        ;;
+    esac
+    local running
+    running="$(compose ps -q bff || true)"
+    if [[ -n "$running" && "${ALLOW_RUNNING_RESTORE:-0}" != "1" ]]; then
+      echo "Services are running. Stop them or set ALLOW_RUNNING_RESTORE=1 to proceed." >&2
+      exit 1
+    fi
+    compose run --rm --no-deps bootstrap-perms sh -ceu "
+      rm -rf /vol/bff_data/* /vol/chat_data/* /vol/payments_data/* || true
+      tar -xzf - -C /vol
+      chown -R 10001:10001 /vol/bff_data /vol/chat_data /vol/payments_data || true
+    " <"$backup_file"
     echo "Restore complete: ${backup_file}"
     return 0
   fi
@@ -774,7 +797,7 @@ migrate_payments() {
     echo "${ENV_NAME} uses sqlite auto-create; migrations are optional."
     return 0
   fi
-  compose run --rm monolith alembic -c /app/apps/payments/alembic.ini upgrade head
+  compose run --rm payments alembic -c /app/apps/payments/alembic.ini upgrade head
 }
 
 migrate() {
