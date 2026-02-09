@@ -22,8 +22,9 @@ def test_pod_photo_and_pin_enforced():
             s=s,
         )
         # wrong PIN -> fail
+        wrong_pin = "0000" if od.pin_code != "0000" else "0001"
         try:
-            courier.update_status(od.id, courier.StatusUpdate(status="delivered", pin="0000", pod_photo_url="https://pod"), s=s)
+            courier.update_status(od.id, courier.StatusUpdate(status="delivered", pin=wrong_pin, pod_photo_url="https://pod"), s=s)
             assert False, "expected PIN failure"
         except courier.HTTPException:
             pass

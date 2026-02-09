@@ -95,8 +95,9 @@ def test_pin_is_enforced_on_delivery():
             customer_phone="+491700009999",
         )
         od = courier.create_order(req=req, s=s)
+        wrong_pin = "0000" if od.pin_code != "0000" else "0001"
         with pytest.raises(HTTPException) as excinfo:
-            courier.update_status(od.id, courier.StatusUpdate(status="delivered", pin="0000"), s=s)
+            courier.update_status(od.id, courier.StatusUpdate(status="delivered", pin=wrong_pin), s=s)
         assert excinfo.value.status_code == 403
 
 
