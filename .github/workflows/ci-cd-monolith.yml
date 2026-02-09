@@ -43,7 +43,7 @@ jobs:
           MONOLITH_MODE: "1"
           MONOLITH_ONLY: "1"
           PYTHONPATH: .
-        run: pytest -q NonWeChat/tests/test_smoke_monolith.py
+        run: pytest -q
 
   build-and-push:
     needs: tests

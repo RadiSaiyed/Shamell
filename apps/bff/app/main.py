@@ -1230,7 +1230,7 @@ def _should_trust_proxy_headers(peer: ipaddress._BaseAddress | None) -> bool:  #
                         return True
                 except Exception:
                     continue
-        if TRUST_PRIVATE_PROXY_HOPS and getattr(peer, "is_private", False):
+        if TRUST_PRIVATE_PROXY_HOPS and (getattr(peer, "is_private", False) or getattr(peer, "is_loopback", False)):
             return True
     except Exception:
         return False

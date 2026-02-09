@@ -12,6 +12,7 @@ Environment variables:
   - `off`: never trust proxy headers
   - `on`: always trust proxy headers (not recommended unless your origin only accepts traffic from a trusted proxy)
 - `TRUST_PRIVATE_PROXY_HOPS`: `true|false` (default: `true`)
+  - when enabled, loopback peers (e.g. Nginx on `127.0.0.1`) are treated as trusted hops too
 - `TRUSTED_PROXY_CIDRS`: comma-separated CIDRs/IPs (e.g. `10.0.0.0/8,192.168.0.0/16`)
 
 ## Push SSRF Guardrails (UnifiedPush)
@@ -59,4 +60,3 @@ Environment variables:
 Environment variables:
 - `SECURITY_HEADERS_ENABLED`: `true|false` (default: `true`)
 - `HSTS_ENABLED`: `true|false` (default: `true` in `prod|staging`, else `false`)
-

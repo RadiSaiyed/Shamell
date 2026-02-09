@@ -35,8 +35,12 @@ ops/**/.env.*
 
 # Not needed for backend images
 clients/
-NonWeChat/
 docs/
 backups/
 ops/reports/
 tools/
+
+# Exclude most of NonWeChat, but keep runtime domain apps imported as `apps.*`.
+NonWeChat/*
+!NonWeChat/apps/
+!NonWeChat/apps/**
