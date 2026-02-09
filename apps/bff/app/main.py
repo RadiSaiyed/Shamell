@@ -6493,12 +6493,32 @@ async def call_signaling_ws(ws: WebSocket):
     (CallSignalingClient) can use it for invites/answers/hangups and
     later WebRTC SDP/ICE exchange.
     """
+    # This signaling stub is intentionally disabled by default in prod/staging
+    # until a proper auth binding exists (device token / session / JWT).
+    env_name = (os.getenv("ENV") or "dev").strip().lower()
+    enabled_default = "true" if env_name in ("dev", "test") else "false"
+    enabled = _env_or("CALL_SIGNALING_ENABLED", enabled_default).strip().lower() in ("1", "true", "yes", "on")
+    if not enabled:
+        try:
+            await ws.close(code=1008)  # policy violation / disabled
+        except Exception:
+            pass
+        return
+
     await ws.accept()
     params = dict(ws.query_params)
     device_id = params.get("device_id") or ""
     if not device_id:
         await ws.close(code=4000)
         return
+    # Best-effort input validation and connection abuse guardrails.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,24}", device_id):
+        await ws.close(code=4400)
+        return
+    guard = await _chat_ws_guard_enter(ws, device_id=device_id)
+    if guard is None:
+        return
+    g_ip, g_dev = guard
     # Register connection
     _CALL_WS_CONNECTIONS[device_id] = ws
     try:
@@ -6550,6 +6570,10 @@ async def call_signaling_ws(ws: WebSocket):
           existing = _CALL_WS_CONNECTIONS.get(device_id)
           if existing is ws:
               _CALL_WS_CONNECTIONS.pop(device_id, None)
+        except Exception:
+            pass
+        try:
+            await _chat_ws_guard_exit(g_ip, g_dev)
         except Exception:
             pass
 
