@@ -3710,7 +3710,8 @@ def device_login_demo() -> HTMLResponse:
           const url = new URL(window.location.href);
           const base = url.origin || '';
           const payload = 'shamell://device_login?token=' + encodeURIComponent(dlToken) + (label ? '&label=' + encodeURIComponent(label) : '');
-          img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(payload);
+          // Never send login tokens to third-party QR generators.
+          img.src = '/qr.png?box_size=6&border=2&data=' + encodeURIComponent(payload) + '&ts=' + Date.now();
           img.alt = 'Device login QR';
           statusEl.textContent = 'Waiting for scan and approval on phone…';
           payloadEl.textContent = payload;
