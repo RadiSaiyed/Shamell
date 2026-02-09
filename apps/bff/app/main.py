@@ -15,6 +15,7 @@ from sqlalchemy import (
     DateTime as _sa_DateTime,
     Text as _sa_Text,
     UniqueConstraint as _sa_UniqueConstraint,
+    delete as _sa_delete,
     func as _sa_func,
     select as _sa_select,
     text as _sa_text,
@@ -30,6 +31,7 @@ import httpx
 import logging
 import os
 import asyncio, json as _json, re
+import hashlib
 import ipaddress
 import socket
 import hmac as _hmac
@@ -1118,13 +1120,17 @@ SECURITY_ALERT_THRESHOLDS_RAW = _env_or(
 AUTH_SESSION_TTL_SECS = int(_env_or("AUTH_SESSION_TTL_SECS", "86400"))
 LOGIN_CODE_TTL_SECS = int(_env_or("LOGIN_CODE_TTL_SECS", "300"))
 DEVICE_LOGIN_TTL_SECS = int(_env_or("DEVICE_LOGIN_TTL_SECS", "300"))
+DEVICE_LOGIN_START_RATE_WINDOW_SECS = int(_env_or("DEVICE_LOGIN_START_RATE_WINDOW_SECS", "60"))
+DEVICE_LOGIN_START_MAX_PER_IP = int(_env_or("DEVICE_LOGIN_START_MAX_PER_IP", "30"))
 _LOGIN_CODES: dict[str, tuple[str, int]] = {}  # phone -> (code, expires_at)
 _SESSIONS: dict[str, tuple[str, int]] = {}     # sid -> (phone, expires_at)
+# Legacy in-memory device-login store (DB-backed flow is used by the endpoints).
 _DEVICE_LOGIN_CHALLENGES: dict[str, dict[str, Any]] = {}  # token -> metadata
 _BLOCKED_PHONES: set[str] = set()
 _PUSH_ENDPOINTS: dict[str, list[dict]] = {}
 _AUTH_CLEANUP_INTERVAL_SECS = 60
 _AUTH_LAST_CLEANUP_TS = 0
+_DEVICE_LOGIN_START_RATE_IP: dict[str, list[int]] = {}
 
 
 def _parse_security_alert_thresholds(raw: str) -> dict[str, int]:
@@ -1153,6 +1159,24 @@ _SECURITY_ALERT_LAST_SENT: dict[str, int] = {}
 
 def _now() -> int:
     return int(time.time())
+
+def _sha256_hex(s: str) -> str:
+    """
+    Stable SHA-256 hex digest helper.
+
+    Used to store only hashes of bearer tokens (sessions, device-login tokens)
+    at rest in the DB.
+    """
+    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+
+
+def _dt_to_epoch_secs(dt: datetime) -> int:
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return 0
 
 
 def _cleanup_auth_state(now: int | None = None) -> None:
@@ -1187,6 +1211,27 @@ def _cleanup_auth_state(now: int | None = None) -> None:
             _DEVICE_LOGIN_CHALLENGES.pop(token, None)
     except Exception:
         pass
+    # DB-backed cleanup (best-effort): keep session/challenge tables bounded.
+    try:
+        now_dt = datetime.fromtimestamp(ts, timezone.utc)
+        with _officials_session() as s:  # type: ignore[name-defined]
+            try:
+                s.execute(_sa_delete(AuthSessionDB).where(AuthSessionDB.expires_at < now_dt))  # type: ignore[name-defined]
+            except Exception:
+                pass
+            try:
+                s.execute(
+                    _sa_delete(DeviceLoginChallengeDB).where(DeviceLoginChallengeDB.expires_at < now_dt)  # type: ignore[name-defined]
+                )
+            except Exception:
+                pass
+            try:
+                s.commit()
+            except Exception:
+                pass
+    except Exception:
+        # Cleanup must never break normal flows.
+        pass
 
 
 def _issue_code(phone: str) -> str:
@@ -1211,8 +1256,25 @@ def _check_code(phone: str, code: str) -> bool:
 
 def _create_session(phone: str) -> str:
     _cleanup_auth_state()
-    sid = _uuid.uuid4().hex
-    _SESSIONS[sid] = (phone, _now()+AUTH_SESSION_TTL_SECS)
+    # Session IDs are bearer tokens; keep them high-entropy and do not log them.
+    sid = _secrets.token_hex(16)  # 32 hex chars
+    exp_ts = _now() + AUTH_SESSION_TTL_SECS
+    _SESSIONS[sid] = (phone, exp_ts)
+    # Persist session to DB so restarts and multi-instance deployments keep users signed in.
+    try:
+        exp_dt = datetime.fromtimestamp(exp_ts, timezone.utc)
+        with _officials_session() as s:  # type: ignore[name-defined]
+            s.add(
+                AuthSessionDB(  # type: ignore[name-defined]
+                    sid_hash=_sha256_hex(sid),
+                    phone=phone,
+                    expires_at=exp_dt,
+                )
+            )
+            s.commit()
+    except Exception:
+        # If persistence fails, fall back to in-memory sessions so login does not hard-break.
+        pass
     return sid
 
 
@@ -1230,6 +1292,67 @@ def _normalize_session_token(raw: str | None) -> str | None:
     if not re.fullmatch(r"[a-f0-9]{32}", token):
         return None
     return token
+
+
+def _normalize_device_login_token(raw: str | None) -> str | None:
+    token = (raw or "").strip()
+    if not token:
+        return None
+    if not re.fullmatch(r"[a-f0-9]{32}", token):
+        return None
+    return token
+
+
+def _session_phone_from_sid(sid: str) -> str | None:
+    """
+    Resolve phone number for a session ID.
+
+    Uses a small in-memory cache, but treats the DB as source of truth so
+    sessions survive restarts and multi-instance deployments.
+    """
+    _cleanup_auth_state()
+    rec = _SESSIONS.get(sid)
+    if rec:
+        phone, exp = rec
+        if exp >= _now():
+            return phone
+        _SESSIONS.pop(sid, None)
+
+    try:
+        sid_hash = _sha256_hex(sid)
+        with _officials_session() as s:  # type: ignore[name-defined]
+            row = (
+                s.execute(
+                    _sa_select(AuthSessionDB).where(AuthSessionDB.sid_hash == sid_hash).limit(1)  # type: ignore[name-defined]
+                )
+                .scalars()
+                .first()
+            )
+            if not row:
+                return None
+            if getattr(row, "revoked_at", None):
+                return None
+            exp_dt = getattr(row, "expires_at", None)
+            exp_ts = _dt_to_epoch_secs(exp_dt) if isinstance(exp_dt, datetime) else 0
+            if exp_ts and exp_ts < _now():
+                # Best-effort cleanup of expired session row.
+                try:
+                    s.execute(
+                        _sa_delete(AuthSessionDB).where(AuthSessionDB.sid_hash == sid_hash)  # type: ignore[name-defined]
+                    )
+                    s.commit()
+                except Exception:
+                    pass
+                return None
+            phone = str(getattr(row, "phone", "") or "").strip()
+            if not phone:
+                return None
+            if not exp_ts:
+                exp_ts = _now() + AUTH_SESSION_TTL_SECS
+            _SESSIONS[sid] = (phone, exp_ts)
+            return phone
+    except Exception:
+        return None
 
 
 def _normalize_ip(raw: str | None) -> str | None:
@@ -1910,15 +2033,9 @@ def _auth_phone(request: Request) -> str | None:
     # 2) Fallback to regular cookie when no explicit header is used.
     if not sid:
         sid = _normalize_session_token(request.cookies.get("sa_session"))
-    if not sid: return None
-    rec = _SESSIONS.get(sid)
-    if not rec: return None
-    phone, exp = rec
-    if exp < _now():
-        try: del _SESSIONS[sid]
-        except Exception: pass
+    if not sid:
         return None
-    return phone
+    return _session_phone_from_sid(sid)
 
 
 def _auth_phone_ws(ws: WebSocket) -> str | None:
@@ -1961,17 +2078,7 @@ def _auth_phone_ws(ws: WebSocket) -> str | None:
 
     if not sid:
         return None
-    rec = _SESSIONS.get(sid)
-    if not rec:
-        return None
-    phone, exp = rec
-    if exp < _now():
-        try:
-            del _SESSIONS[sid]
-        except Exception:
-            pass
-        return None
-    return phone
+    return _session_phone_from_sid(sid)
 
 
 def _audit(action: str, phone: str | None = None, **extra: Any) -> None:
@@ -3621,6 +3728,15 @@ def auth_logout(request: Request):
             try:
                 _SESSIONS.pop(sid, None)
             except Exception:
+                pass
+            try:
+                with _officials_session() as s:  # type: ignore[name-defined]
+                    s.execute(
+                        _sa_delete(AuthSessionDB).where(AuthSessionDB.sid_hash == _sha256_hex(sid))  # type: ignore[name-defined]
+                    )
+                    s.commit()
+            except Exception:
+                # Logout must never break normal flows.
                 pass
     except Exception:
         # Logout must never break normal flows.
@@ -14998,15 +15114,56 @@ async def auth_device_login_start(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         body = {}
     label = (body.get("label") or "").strip()
-    token = _uuid.uuid4().hex
+    if len(label) > 64:
+        label = label[:64]
+
+    # Abuse guard: unauthenticated endpoint; rate-limit per IP (best-effort).
+    try:
+        ip = _auth_client_ip(request)
+        if ip and ip != "unknown":
+            hits = _rate_limit_bucket(
+                _DEVICE_LOGIN_START_RATE_IP,
+                ip,
+                window_secs=max(1, DEVICE_LOGIN_START_RATE_WINDOW_SECS),
+                max_hits=max(0, DEVICE_LOGIN_START_MAX_PER_IP),
+            )
+            if DEVICE_LOGIN_START_MAX_PER_IP > 0 and hits > DEVICE_LOGIN_START_MAX_PER_IP:
+                raise HTTPException(status_code=429, detail="rate limited")
+    except HTTPException:
+        raise
+    except Exception:
+        # Rate limiting must never break the login flow.
+        pass
+
+    token = _secrets.token_hex(16)  # 32 hex chars
     now = _now()
-    _DEVICE_LOGIN_CHALLENGES[token] = {
+    mem_rec = {
         "created_at": now,
         "status": "pending",
         "label": label,
         "phone": None,
         "session": None,
     }
+    # Persist challenge in DB (multi-instance safe); fall back to memory in dev/test.
+    try:
+        expires_dt = datetime.now(timezone.utc) + timedelta(seconds=max(1, DEVICE_LOGIN_TTL_SECS))
+        with _officials_session() as s:  # type: ignore[name-defined]
+            s.add(
+                DeviceLoginChallengeDB(  # type: ignore[name-defined]
+                    token_hash=_sha256_hex(token),
+                    label=label or None,
+                    status="pending",
+                    phone=None,
+                    approved_at=None,
+                    expires_at=expires_dt,
+                )
+            )
+            s.commit()
+    except Exception:
+        _DEVICE_LOGIN_CHALLENGES[token] = mem_rec
+    else:
+        # Keep a small in-memory mirror for fast same-process flows.
+        _DEVICE_LOGIN_CHALLENGES[token] = mem_rec
     return {"ok": True, "token": token, "label": label}
 
 
@@ -15027,9 +15184,55 @@ async def auth_device_login_approve(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="invalid body")
     token = (body.get("token") or "").strip()
+    token = _normalize_device_login_token(token)
     if not token:
         raise HTTPException(status_code=400, detail="token required")
     _cleanup_auth_state()
+
+    # Prefer DB-backed challenges so approval survives restarts.
+    try:
+        token_hash = _sha256_hex(token)
+        with _officials_session() as s:  # type: ignore[name-defined]
+            row = (
+                s.execute(
+                    _sa_select(DeviceLoginChallengeDB)  # type: ignore[name-defined]
+                    .where(DeviceLoginChallengeDB.token_hash == token_hash)  # type: ignore[name-defined]
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if row:
+                exp_dt = getattr(row, "expires_at", None)
+                exp_ts = _dt_to_epoch_secs(exp_dt) if isinstance(exp_dt, datetime) else 0
+                if exp_ts and exp_ts < _now():
+                    try:
+                        s.delete(row)
+                        s.commit()
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail="challenge expired")
+                status = str(getattr(row, "status", "") or "").strip().lower()
+                bound = str(getattr(row, "phone", "") or "").strip() or None
+                if status == "approved":
+                    if bound and bound != phone:
+                        raise HTTPException(status_code=409, detail="challenge already approved")
+                    return {"ok": True, "token": token}
+                if status != "pending":
+                    raise HTTPException(status_code=400, detail="challenge not pending")
+                row.status = "approved"
+                row.phone = phone
+                row.approved_at = datetime.now(timezone.utc)
+                s.add(row)
+                s.commit()
+                return {"ok": True, "token": token}
+    except HTTPException:
+        raise
+    except Exception:
+        # Fall back to legacy in-memory store below.
+        pass
+
+    # Legacy in-memory fallback.
     rec = _DEVICE_LOGIN_CHALLENGES.get(token)
     if not rec:
         raise HTTPException(status_code=404, detail="challenge not found")
@@ -15043,11 +15246,8 @@ async def auth_device_login_approve(request: Request) -> dict[str, Any]:
         except Exception:
             pass
         raise HTTPException(status_code=400, detail="challenge expired")
-    # Create a fresh session for the new device and mark as approved.
-    sid = _create_session(phone)
     rec["status"] = "approved"
     rec["phone"] = phone
-    rec["session"] = sid
     rec["approved_at"] = _now()
     _DEVICE_LOGIN_CHALLENGES[token] = rec
     return {"ok": True, "token": token}
@@ -15066,10 +15266,77 @@ async def auth_device_login_redeem(request: Request):
         raise HTTPException(status_code=400, detail="invalid body")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="invalid body")
-    token = (body.get("token") or "").strip()
+    token = _normalize_device_login_token((body.get("token") or "").strip())
     if not token:
         raise HTTPException(status_code=400, detail="token required")
     _cleanup_auth_state()
+
+    # Prefer DB-backed challenges so redeem works across restarts.
+    try:
+        token_hash = _sha256_hex(token)
+        now_ts = _now()
+        exp_ts = now_ts + AUTH_SESSION_TTL_SECS
+        sid = _secrets.token_hex(16)
+        exp_dt = datetime.fromtimestamp(exp_ts, timezone.utc)
+        with _officials_session() as s:  # type: ignore[name-defined]
+            row = (
+                s.execute(
+                    _sa_select(DeviceLoginChallengeDB)  # type: ignore[name-defined]
+                    .where(DeviceLoginChallengeDB.token_hash == token_hash)  # type: ignore[name-defined]
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if row:
+                exp_dt_row = getattr(row, "expires_at", None)
+                exp_ts_row = _dt_to_epoch_secs(exp_dt_row) if isinstance(exp_dt_row, datetime) else 0
+                if exp_ts_row and exp_ts_row < _now():
+                    try:
+                        s.delete(row)
+                        s.commit()
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail="challenge expired")
+                status = str(getattr(row, "status", "") or "").strip().lower()
+                if status != "approved":
+                    raise HTTPException(status_code=400, detail="challenge not approved")
+                phone = str(getattr(row, "phone", "") or "").strip()
+                if not phone:
+                    raise HTTPException(status_code=400, detail="challenge not bound to user")
+
+                # Mint a fresh session and consume the challenge in one commit.
+                s.add(
+                    AuthSessionDB(  # type: ignore[name-defined]
+                        sid_hash=_sha256_hex(sid),
+                        phone=phone,
+                        expires_at=exp_dt,
+                    )
+                )
+                try:
+                    s.delete(row)
+                except Exception:
+                    pass
+                s.commit()
+                _SESSIONS[sid] = (phone, exp_ts)
+                resp = JSONResponse({"ok": True, "phone": phone, "session": sid})
+                resp.set_cookie(
+                    "sa_session",
+                    sid,
+                    max_age=AUTH_SESSION_TTL_SECS,
+                    httponly=True,
+                    secure=True,
+                    samesite="lax",
+                    path="/",
+                )
+                return resp
+    except HTTPException:
+        raise
+    except Exception:
+        # Fall back to legacy in-memory store below.
+        pass
+
+    # Legacy in-memory fallback.
     rec = _DEVICE_LOGIN_CHALLENGES.get(token)
     if not rec:
         raise HTTPException(status_code=404, detail="challenge not found")
@@ -15089,9 +15356,7 @@ async def auth_device_login_redeem(request: Request):
     phone = (rec.get("phone") or "").strip()
     if not phone:
         raise HTTPException(status_code=400, detail="challenge not bound to user")
-    sid = rec.get("session")
-    if not isinstance(sid, str) or not sid:
-        sid = _create_session(phone)
+    sid = _create_session(phone)
     try:
         _DEVICE_LOGIN_CHALLENGES.pop(token, None)
     except Exception:
@@ -22942,12 +23207,7 @@ def _phone_from_moments_user_key(user_key: str) -> str | None:
         sid = token.strip()
         if not sid:
             return None
-        rec = _SESSIONS.get(sid)
-        if not rec:
-            return None
-        phone, exp = rec
-        if exp < _now():
-            return None
+        phone = _session_phone_from_sid(sid)
         return str(phone or "").strip() or None
     except Exception:
         return None
@@ -27135,6 +27395,80 @@ class OfficialServiceSessionDB(_OfficialBase):
     )
     unread_by_operator: _sa_Mapped[bool] = _sa_mapped_column(
         _sa_Boolean, default=True
+    )
+
+
+class AuthSessionDB(_OfficialBase):
+    """
+    DB-backed auth sessions.
+
+    We store only a SHA-256 hash of the bearer token (sid) to reduce blast
+    radius in case of accidental DB reads/dumps.
+    """
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        _sa_UniqueConstraint("sid_hash", name="uq_auth_sessions_sid_hash"),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    sid_hash: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    phone: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    expires_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), index=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    revoked_at: _sa_Mapped[datetime | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), nullable=True
+    )
+
+
+class DeviceLoginChallengeDB(_OfficialBase):
+    """
+    DB-backed QR device-login challenges.
+
+    Each challenge is identified by a random token (returned to clients),
+    but stored as a SHA-256 hash in the DB.
+    """
+
+    __tablename__ = "device_login_challenges"
+    __table_args__ = (
+        _sa_UniqueConstraint("token_hash", name="uq_device_login_challenges_token_hash"),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    token_hash: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(64), index=True
+    )
+    label: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(128), nullable=True
+    )
+    status: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="pending", index=True
+    )
+    phone: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(32), index=True, nullable=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    expires_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), index=True
+    )
+    approved_at: _sa_Mapped[datetime | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), nullable=True
     )
 
 
