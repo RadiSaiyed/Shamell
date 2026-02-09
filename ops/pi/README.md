@@ -4,6 +4,10 @@ This folder contains the production/staging **microservices** compose file for P
 
 - `docker-compose.yml` (BFF + Chat + Payments + LiveKit)
 
+An optional Postgres-backed variant is available for production-hardening and multi-instance readiness:
+
+- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + LiveKit + `migrate-sqlite-to-postgres`)
+
 For rollback and reference, the legacy monolith stack is preserved as:
 
 - `docker-compose.monolith.yml` (Monolith + LiveKit)
@@ -43,6 +47,15 @@ These are intentionally fail-closed defaults for staging/prod:
 - fixes volume ownership to the non-root runtime UID/GID (10001:10001)
 
 This enables a low-risk cutover while keeping the old monolith volume intact for rollback/backups.
+
+## Postgres Migration Note (SQLite -> Postgres)
+
+`docker-compose.postgres.yml` includes:
+
+- a `db` service (Postgres 16)
+- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`) and inserts rows into Postgres
+
+Best practice rollout is staging-first, with a full SQLite volume backup immediately before cutover.
 
 ## Recommended Rollout
 

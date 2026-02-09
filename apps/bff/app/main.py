@@ -5403,14 +5403,14 @@ try:
         list_key_events as _chat_list_key_events,
     )
     _CHAT_INTERNAL_AVAILABLE = True
-    try:
-        _chat_main._startup()  # type: ignore[attr-defined]
-    except Exception:
-        pass
 except Exception:
     _ChatSession = None  # type: ignore[assignment]
+    _chat_main = None  # type: ignore[assignment]
     _chat_engine = None  # type: ignore[assignment]
     _CHAT_INTERNAL_AVAILABLE = False
+
+
+_CHAT_INTERNAL_BOOTSTRAPPED = False
 
 
 def _use_chat_internal() -> bool:
@@ -5427,8 +5427,18 @@ def _use_chat_internal() -> bool:
 
 
 def _chat_internal_session():
+    global _CHAT_INTERNAL_BOOTSTRAPPED
     if not _CHAT_INTERNAL_AVAILABLE or _ChatSession is None or _chat_engine is None:  # type: ignore[truthy-function]
         raise RuntimeError("Chat internal service not available")
+    # Lazy bootstrap: avoid creating Chat tables in the BFF DB unless we are
+    # actually running in internal mode (monolith-style).
+    if not _CHAT_INTERNAL_BOOTSTRAPPED:
+        try:
+            if _use_chat_internal() and _chat_main is not None and hasattr(_chat_main, "_startup"):
+                _chat_main._startup()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        _CHAT_INTERNAL_BOOTSTRAPPED = True
     return _ChatSession(_chat_engine)  # type: ignore[call-arg]
 
 

@@ -1,0 +1,248 @@
+services:
+  db:
+    image: postgres:16-alpine
+    init: true
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER in ops/pi/.env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ops/pi/.env}"
+      # Keep a stable admin DB for init scripts; app DBs are created separately.
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      # App DB names (created by ./postgres/init/01-create-dbs.sh)
+      POSTGRES_DB_CORE: "${POSTGRES_DB_CORE:-shamell_core}"
+      POSTGRES_DB_CHAT: "${POSTGRES_DB_CHAT:-shamell_chat}"
+      POSTGRES_DB_PAYMENTS: "${POSTGRES_DB_PAYMENTS:-shamell_payments}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  bff:
+    image: shamell-core:pi
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      DB_URL: "${DB_URL:?set DB_URL (postgres) in ops/pi/.env}"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
+      PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      CHAT_BASE_URL: "${CHAT_BASE_URL:-http://chat:8081}"
+      PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+      CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-true}"
+      RATE_STORE_MAX_KEYS: "${RATE_STORE_MAX_KEYS:-20000}"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      EXPOSE_PAYMENTS_ROUTER: "${EXPOSE_PAYMENTS_ROUTER:-false}"
+      EXPOSE_CHAT_ROUTER: "${EXPOSE_CHAT_ROUTER:-false}"
+      ENABLE_WALLET_WS_IN_PROD: "${ENABLE_WALLET_WS_IN_PROD:-false}"
+      METRICS_INGEST_SECRET: "${METRICS_INGEST_SECRET:-}"
+      AUTH_EXPOSE_CODES: "${AUTH_EXPOSE_CODES:-false}"
+      ALIAS_EXPOSE_CODE: "${ALIAS_EXPOSE_CODE:-false}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-auto}"
+      TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
+      # UnifiedPush callback guardrails (SSRF prevention)
+      PUSH_ALLOWED_HOSTS: "${PUSH_ALLOWED_HOSTS:-}"
+      PUSH_ALLOW_HTTP: "${PUSH_ALLOW_HTTP:-false}"
+      PUSH_ALLOW_PRIVATE_IPS: "${PUSH_ALLOW_PRIVATE_IPS:-false}"
+      PUSH_VALIDATE_DNS: "${PUSH_VALIDATE_DNS:-true}"
+      PUSH_MAX_ENDPOINT_LEN: "${PUSH_MAX_ENDPOINT_LEN:-2048}"
+      # CPU-bound fleet helper caps
+      FLEET_MAX_STOPS: "${FLEET_MAX_STOPS:-200}"
+      FLEET_MAX_DEPOTS: "${FLEET_MAX_DEPOTS:-50}"
+      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:-}"
+      PAY_API_RATE_WINDOW_SECS: "${PAY_API_RATE_WINDOW_SECS:-60}"
+      PAY_API_REQ_WRITE_MAX_PER_WALLET: "${PAY_API_REQ_WRITE_MAX_PER_WALLET:-45}"
+      PAY_API_REQ_WRITE_MAX_PER_IP: "${PAY_API_REQ_WRITE_MAX_PER_IP:-180}"
+      PAY_API_REQ_READ_MAX_PER_WALLET: "${PAY_API_REQ_READ_MAX_PER_WALLET:-180}"
+      PAY_API_REQ_READ_MAX_PER_IP: "${PAY_API_REQ_READ_MAX_PER_IP:-700}"
+      PAY_API_FAV_WRITE_MAX_PER_WALLET: "${PAY_API_FAV_WRITE_MAX_PER_WALLET:-30}"
+      PAY_API_FAV_WRITE_MAX_PER_IP: "${PAY_API_FAV_WRITE_MAX_PER_IP:-120}"
+      PAY_API_FAV_READ_MAX_PER_WALLET: "${PAY_API_FAV_READ_MAX_PER_WALLET:-180}"
+      PAY_API_FAV_READ_MAX_PER_IP: "${PAY_API_FAV_READ_MAX_PER_IP:-700}"
+      PAY_API_RESOLVE_MAX_PER_WALLET: "${PAY_API_RESOLVE_MAX_PER_WALLET:-15}"
+      PAY_API_RESOLVE_MAX_PER_IP: "${PAY_API_RESOLVE_MAX_PER_IP:-90}"
+      # Chat edge abuse controls (BFF)
+      CHAT_RATE_WINDOW_SECS: "${CHAT_RATE_WINDOW_SECS:-60}"
+      CHAT_REGISTER_MAX_PER_IP: "${CHAT_REGISTER_MAX_PER_IP:-25}"
+      CHAT_SEND_MAX_PER_DEVICE: "${CHAT_SEND_MAX_PER_DEVICE:-120}"
+      CHAT_SEND_MAX_PER_IP: "${CHAT_SEND_MAX_PER_IP:-300}"
+      # Chat WebSocket abuse controls (BFF)
+      CHAT_WS_CONNECT_WINDOW_SECS: "${CHAT_WS_CONNECT_WINDOW_SECS:-60}"
+      CHAT_WS_CONNECT_MAX_PER_IP: "${CHAT_WS_CONNECT_MAX_PER_IP:-60}"
+      CHAT_WS_MAX_ACTIVE_PER_IP: "${CHAT_WS_MAX_ACTIVE_PER_IP:-20}"
+      CHAT_WS_MAX_ACTIVE_PER_DEVICE: "${CHAT_WS_MAX_ACTIVE_PER_DEVICE:-3}"
+      SECURITY_ALERT_WEBHOOK_URL: "${SECURITY_ALERT_WEBHOOK_URL:-}"
+      SECURITY_ALERT_WINDOW_SECS: "${SECURITY_ALERT_WINDOW_SECS:-300}"
+      SECURITY_ALERT_COOLDOWN_SECS: "${SECURITY_ALERT_COOLDOWN_SECS:-600}"
+      SECURITY_ALERT_THRESHOLDS: "${SECURITY_ALERT_THRESHOLDS:-payments_transfer_wallet_mismatch:4,alias_request_wallet_mismatch:4,alias_request_user_override_blocked:4,favorites_owner_wallet_mismatch:4,payments_request_from_wallet_mismatch:4,payments_edge_rate_limit_wallet:25,payments_edge_rate_limit_ip:40}"
+      LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
+    ports:
+      - "${MONOLITH_PUBLISH_ADDR:-127.0.0.1}:${MONOLITH_PUBLISH_PORT:-8080}:8080"
+    command: ["uvicorn", "apps.bff.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    depends_on:
+      db:
+        condition: service_healthy
+      chat:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  chat:
+    image: shamell-core:pi
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      DB_URL: "${CHAT_DB_URL:?set CHAT_DB_URL (postgres) in ops/pi/.env}"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
+      CHAT_REQUIRE_INTERNAL_SECRET: "true"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    command: ["uvicorn", "apps.chat.app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  payments:
+    image: shamell-core:pi
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      PAYMENTS_DB_URL: "${PAYMENTS_DB_URL:?set PAYMENTS_DB_URL (postgres) in ops/pi/.env}"
+      AUTO_CREATE_SCHEMA: "${AUTO_CREATE_SCHEMA:-false}"
+      RUN_ALEMBIC_ON_STARTUP: "${RUN_ALEMBIC_ON_STARTUP:-false}"
+      # IMPORTANT: payments uses INTERNAL_API_SECRET; point it to PAYMENTS_INTERNAL_SECRET.
+      INTERNAL_API_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      PAYMENTS_REQUIRE_INTERNAL_SECRET: "true"
+      SONIC_SECRET: "${SONIC_SECRET:?set SONIC_SECRET in ops/pi/.env}"
+      TOPUP_SECRET: "${TOPUP_SECRET:?set TOPUP_SECRET in ops/pi/.env}"
+      ALIAS_CODE_PEPPER: "${ALIAS_CODE_PEPPER:?set ALIAS_CODE_PEPPER in ops/pi/.env}"
+      CASH_SECRET_PEPPER: "${CASH_SECRET_PEPPER:?set CASH_SECRET_PEPPER in ops/pi/.env}"
+      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:-}"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    command: ["uvicorn", "apps.payments.app.main:app", "--host", "0.0.0.0", "--port", "8082"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  migrate-sqlite-to-postgres:
+    image: shamell-core:pi
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Source SQLite files from the previous stack.
+      MIGRATE_SQLITE_CORE_PATH: "${MIGRATE_SQLITE_CORE_PATH:-/src/bff_data/core.db}"
+      MIGRATE_SQLITE_CHAT_PATH: "${MIGRATE_SQLITE_CHAT_PATH:-/src/chat_data/chat.db}"
+      MIGRATE_SQLITE_PAYMENTS_PATH: "${MIGRATE_SQLITE_PAYMENTS_PATH:-/src/payments_data/payments.db}"
+      # Target Postgres URLs
+      MIGRATE_PG_CORE_URL: "${DB_URL:?set DB_URL (postgres) in ops/pi/.env}"
+      MIGRATE_PG_CHAT_URL: "${CHAT_DB_URL:?set CHAT_DB_URL (postgres) in ops/pi/.env}"
+      MIGRATE_PG_PAYMENTS_URL: "${PAYMENTS_DB_URL:?set PAYMENTS_DB_URL (postgres) in ops/pi/.env}"
+    command: ["python", "-m", "apps.ops.migrate_sqlite_to_postgres"]
+    volumes:
+      - bff_data:/src/bff_data:ro
+      - chat_data:/src/chat_data:ro
+      - payments_data:/src/payments_data:ro
+    restart: "no"
+
+  livekit:
+    image: livekit/livekit-server:v1.5.2
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret}${LIVEKIT_KEYS_EXTRA:-}}"
+    volumes:
+      - ./livekit:/etc/livekit:ro
+    ports:
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_HTTP_PORT:-7880}:7880"
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  # Legacy SQLite volumes, kept for rollback and migration.
+  bff_data:
+  chat_data:
+  payments_data:
