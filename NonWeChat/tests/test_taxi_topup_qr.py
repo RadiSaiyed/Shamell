@@ -15,7 +15,11 @@ def test_taxi_topup_qr_single_use(client, admin_auth, monkeypatch):
     _grant_admin(admin_auth.phone, monkeypatch)
 
     # Create driver
-    r_driver = client.post("/taxi/drivers", json={"name": "Driver QR", "phone": driver_phone})
+    r_driver = client.post(
+        "/taxi/drivers",
+        headers=admin_auth.headers(),
+        json={"name": "Driver QR", "phone": driver_phone},
+    )
     assert r_driver.status_code == 200
     driver_id = r_driver.json()["id"]
 

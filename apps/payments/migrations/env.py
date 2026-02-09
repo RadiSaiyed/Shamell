@@ -17,7 +17,7 @@ from apps.payments.app.main import Base  # type: ignore
 
 target_metadata = Base.metadata
 
-DB_URL = os.getenv("DB_URL")
+DB_URL = os.getenv("PAYMENTS_DB_URL") or os.getenv("DB_URL")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
 
 if DB_URL:
@@ -59,4 +59,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

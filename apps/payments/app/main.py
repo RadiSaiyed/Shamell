@@ -39,11 +39,48 @@ ALIAS_EXPOSE_CODE = _env_or("ALIAS_EXPOSE_CODE", "").lower() == "true" or ENV_NA
 SONIC_SECRET = os.getenv("SONIC_SECRET", "change-me-sonic")
 SONIC_TTL_SECS = int(_env_or("SONIC_TTL_SECS", "120"))
 TOPUP_SECRET = os.getenv("TOPUP_SECRET", "change-me-topup")
+ALIAS_CODE_PEPPER = os.getenv("ALIAS_CODE_PEPPER", "")
+CASH_SECRET_PEPPER = os.getenv("CASH_SECRET_PEPPER", "")
 
 # Admin/internal protection
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 ADMIN_TOKEN_SHA256 = os.getenv("ADMIN_TOKEN_SHA256") or os.getenv("PAYMENTS_ADMIN_TOKEN_SHA256")
 INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET") or os.getenv("PAYMENTS_INTERNAL_SECRET")
+
+_PROD_ENVS = ("prod", "production", "staging")
+
+
+def _is_weak_secret(value: str | None, *, min_len: int = 16, forbid_prefixes: tuple[str, ...] = ("change-me",)) -> bool:
+    v = (value or "").strip()
+    if not v:
+        return True
+    if len(v) < min_len:
+        return True
+    for p in forbid_prefixes:
+        if p and v.lower().startswith(p.lower()):
+            return True
+    return False
+
+
+# Fail fast in production-like environments when secrets are missing or weak.
+if ENV_NAME in _PROD_ENVS:
+    _bad: list[str] = []
+    if _is_weak_secret(INTERNAL_API_SECRET, min_len=16, forbid_prefixes=()):
+        _bad.append("INTERNAL_API_SECRET")
+    if _is_weak_secret(SONIC_SECRET, min_len=16):
+        _bad.append("SONIC_SECRET")
+    if _is_weak_secret(TOPUP_SECRET, min_len=16):
+        _bad.append("TOPUP_SECRET")
+    if _is_weak_secret(ALIAS_CODE_PEPPER, min_len=16, forbid_prefixes=()):
+        _bad.append("ALIAS_CODE_PEPPER")
+    if _is_weak_secret(CASH_SECRET_PEPPER, min_len=16, forbid_prefixes=()):
+        _bad.append("CASH_SECRET_PEPPER")
+    if _bad:
+        raise RuntimeError(
+            "Payments misconfiguration: missing/weak secrets for "
+            + ", ".join(_bad)
+            + ". Set strong values via environment variables."
+        )
 
 # Fees & KYC
 FEE_WALLET_PHONE = _env_or("FEE_WALLET_PHONE", "+963999999999")
@@ -2984,9 +3021,9 @@ class CashResp(BaseModel):
 
 
 def _hash_secret(secret: str) -> str:
-    pepper = os.getenv("CASH_SECRET_PEPPER", "")
     data = secret.strip().lower().encode()
-    return _hmac.new(pepper.encode(), data, _hashlib.sha256).hexdigest()
+    pepper = (CASH_SECRET_PEPPER or "").encode()
+    return _hmac.new(pepper, data, _hashlib.sha256).hexdigest()
 
 
 def _gen_code(s: Session) -> str:
@@ -3391,7 +3428,6 @@ ALIAS_VELOCITY_MAX_CENTS = int(_env_or("ALIAS_VELOCITY_MAX_CENTS", "500000"))
 ALIAS_RX_VELOCITY_MAX_TX = int(_env_or("ALIAS_RX_VELOCITY_MAX_TX", "20"))  # per receiver/min
 ALIAS_RX_VELOCITY_MAX_CENTS = int(_env_or("ALIAS_RX_VELOCITY_MAX_CENTS", "1000000"))
 ALIAS_DEVICE_MAX_TX_PER_MIN = int(_env_or("ALIAS_DEVICE_MAX_TX_PER_MIN", "5"))
-ALIAS_CODE_PEPPER = os.getenv("ALIAS_CODE_PEPPER", "")
 RESERVED_ALIASES = set(a.strip() for a in _env_or("RESERVED_ALIASES", "admin,root,support,help,sys,ops").split(","))
 
 # Risk controls

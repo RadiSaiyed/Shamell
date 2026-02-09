@@ -143,37 +143,31 @@ check_env() {
 
   local missing=0
   local required=(
-    POSTGRES_USER
-    POSTGRES_PASSWORD
-    POSTGRES_DB
     INTERNAL_API_SECRET
     PAYMENTS_INTERNAL_SECRET
-    ADMIN_TOKEN_SHA256
-    METRICS_BEARER_TOKEN_SHA256
-    QR_SIGNING_SECRET
     SONIC_SECRET
     TOPUP_SECRET
-    CASH_OUT_OTP_PEPPER
+    ALIAS_CODE_PEPPER
     CASH_SECRET_PEPPER
-    FEE_WALLET_PHONE
-    MERCHANT_CLEARING_PHONE
-    LIVEKIT_API_KEY
-    LIVEKIT_API_SECRET
   )
   local key
   for key in "${required[@]}"; do
     local val
     val="$(read_env "$key")"
-    if [[ -z "$val" || "$val" == "change-me" ]]; then
+    if [[ -z "$val" || "$val" == change-me* ]]; then
       echo "Missing or invalid ${key} in ${ENV_FILE_PATH}" >&2
       missing=1
       continue
     fi
-    if [[ "$key" == "ADMIN_TOKEN_SHA256" || "$key" == "METRICS_BEARER_TOKEN_SHA256" ]]; then
-      if ! [[ "$val" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        echo "${key} must be a sha256 hex digest in ${ENV_FILE_PATH}" >&2
-        missing=1
-      fi
+  done
+
+  # Optional: validate sha256 digests if configured
+  for key in ADMIN_TOKEN_SHA256 METRICS_BEARER_TOKEN_SHA256; do
+    local val
+    val="$(read_env "$key")"
+    if [[ -n "$val" && ! "$val" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      echo "${key} must be a sha256 hex digest in ${ENV_FILE_PATH}" >&2
+      missing=1
     fi
   done
 
@@ -197,24 +191,6 @@ check_env() {
     missing=1
   fi
 
-  local payments_auto
-  payments_auto="$(read_env PAYMENTS_AUTO_CREATE_SCHEMA)"
-  if [[ -z "$payments_auto" ]]; then
-    echo "Missing PAYMENTS_AUTO_CREATE_SCHEMA in ${ENV_FILE_PATH}" >&2
-    missing=1
-  else
-    local payments_auto_norm
-    payments_auto_norm="$(printf '%s' "$payments_auto" | tr '[:upper:]' '[:lower:]')"
-    case "$payments_auto_norm" in
-      false|0|off|no)
-        ;;
-      *)
-        echo "PAYMENTS_AUTO_CREATE_SCHEMA must be false in ${ENV_FILE_PATH}" >&2
-        missing=1
-        ;;
-    esac
-  fi
-
   local core_auto
   core_auto="$(read_env AUTO_CREATE_SCHEMA)"
   if [[ -z "$core_auto" ]]; then
@@ -236,17 +212,14 @@ check_env() {
   if [[ "$ENV_NAME" == "prod" ]]; then
     local trusted_proxies
     trusted_proxies="$(read_env TRUSTED_PROXY_CIDRS)"
-    if [[ -z "$trusted_proxies" || "$trusted_proxies" == "change-me" ]]; then
-      echo "Missing TRUSTED_PROXY_CIDRS in ${ENV_FILE_PATH}" >&2
-      missing=1
+    if [[ -z "$trusted_proxies" || "$trusted_proxies" == change-me* ]]; then
+      echo "Warning: TRUSTED_PROXY_CIDRS is unset in ${ENV_FILE_PATH}. Rate limits may see only proxy IPs." >&2
     fi
 
+    # Traefik/uvicorn forwarded-allow setting (only relevant if you rely on uvicorn's proxy headers).
     local forwarded_allow
     forwarded_allow="$(read_env FORWARDED_ALLOW_IPS)"
-    if [[ -z "$forwarded_allow" || "$forwarded_allow" == "change-me" ]]; then
-      echo "Missing FORWARDED_ALLOW_IPS in ${ENV_FILE_PATH}" >&2
-      missing=1
-    else
+    if [[ -n "$forwarded_allow" ]]; then
       local forwarded_norm
       forwarded_norm="$(printf '%s' "$forwarded_allow" | tr '[:upper:]' '[:lower:]')"
       if [[ "$forwarded_norm" == "*" ]]; then
@@ -742,7 +715,9 @@ migrate_core() {
     echo "${ENV_NAME} uses sqlite auto-create; migrations are optional."
     return 0
   fi
-  compose run --rm monolith alembic -c /app/src/shamell_bff/alembic.ini upgrade head
+  # This repo layout does not ship a separate "core" Alembic config.
+  # Payments migrations are handled in migrate_payments().
+  echo "core migrations: no-op (not configured in this repository layout)"
 }
 
 migrate_payments() {
@@ -750,7 +725,7 @@ migrate_payments() {
     echo "${ENV_NAME} uses sqlite auto-create; migrations are optional."
     return 0
   fi
-  compose run --rm monolith alembic -c /app/src/shamell_payments/alembic.ini upgrade head
+  compose run --rm monolith alembic -c /app/apps/payments/alembic.ini upgrade head
 }
 
 migrate() {

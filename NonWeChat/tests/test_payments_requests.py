@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import apps.bff.app.main as bff  # type: ignore[import]
 import apps.payments.app.main as pay
 
 
@@ -11,8 +12,10 @@ def _create_wallet(client, phone: str) -> str:
     return data["wallet_id"]
 
 
-def _topup(client, wallet_id: str, amount: int, internal_secret: str | None = None):
+def _topup(client, wallet_id: str, amount: int, internal_secret: str | None = None, auth_phone: str | None = None):
     headers = {"Idempotency-Key": f"topup-{uuid.uuid4().hex}"}
+    if auth_phone:
+        headers["X-Test-Phone"] = auth_phone
     if internal_secret:
         headers["X-Internal-Secret"] = internal_secret
     resp = client.post(
@@ -35,11 +38,15 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
     payee_wallet = _create_wallet(client, payee_phone)
 
     # Fund payer
-    _topup(client, payer_wallet, 50_000, internal_secret="test-internal-secret")
+    admin_phone = "+491700000099"
+    monkeypatch.setenv("BFF_ADMINS", admin_phone)
+    bff.BFF_ADMINS.add(admin_phone)
+    _topup(client, payer_wallet, 50_000, internal_secret="test-internal-secret", auth_phone=admin_phone)
 
     # Create request payee <- payer
     req = client.post(
         "/payments/requests",
+        headers={"X-Test-Phone": payee_phone},
         json={
             "from_wallet_id": payee_wallet,
             "to_wallet_id": payer_wallet,
@@ -55,7 +62,7 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
     ikey = f"req-{uuid.uuid4().hex}"
     acc1 = client.post(
         f"/payments/requests/{rid}/accept",
-        headers={"Idempotency-Key": ikey},
+        headers={"Idempotency-Key": ikey, "X-Test-Phone": payer_phone},
         json={"to_wallet_id": payer_wallet},
     )
     assert acc1.status_code == 200
@@ -64,7 +71,7 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
     # Retry with same idempotency key -> same balance, no double debit
     acc2 = client.post(
         f"/payments/requests/{rid}/accept",
-        headers={"Idempotency-Key": ikey},
+        headers={"Idempotency-Key": ikey, "X-Test-Phone": payer_phone},
         json={"to_wallet_id": payer_wallet},
     )
     assert acc2.status_code == 200
@@ -73,6 +80,7 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
     # Manually expire another request and ensure accept is rejected
     req2 = client.post(
         "/payments/requests",
+        headers={"X-Test-Phone": payee_phone},
         json={
             "from_wallet_id": payee_wallet,
             "to_wallet_id": payer_wallet,
@@ -88,6 +96,10 @@ def test_payment_request_accept_idempotent_and_expires(client, monkeypatch):
         r.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
         s.add(r); s.commit()
 
-    acc_exp = client.post(f"/payments/requests/{rid2}/accept", json={"to_wallet_id": payer_wallet})
+    acc_exp = client.post(
+        f"/payments/requests/{rid2}/accept",
+        headers={"X-Test-Phone": payer_phone},
+        json={"to_wallet_id": payer_wallet},
+    )
     assert acc_exp.status_code == 400
     assert "expired" in acc_exp.json().get("detail", "")

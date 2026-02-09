@@ -20,7 +20,12 @@ def test_metrics_does_not_leak_internal_api_secret_in_json(client, monkeypatch):
     monkeypatch.setattr(bff, "INTERNAL_API_SECRET", secret, raising=False)
     monkeypatch.setattr(bff, "PAYMENTS_INTERNAL_SECRET", pay_secret, raising=False)
 
-    resp = client.get("/metrics")
+    # /metrics is admin-only; authenticate as admin for this privacy test.
+    admin_phone = "+491700000099"
+    monkeypatch.setenv("BFF_ADMINS", admin_phone)
+    bff.BFF_ADMINS.add(admin_phone)
+
+    resp = client.get("/metrics", headers={"X-Test-Phone": admin_phone})
     assert resp.status_code == 200
     body = resp.text
     assert secret not in body
@@ -50,4 +55,3 @@ def test_admin_metrics_does_not_leak_internal_api_secret_in_html(client, monkeyp
     html = resp.text
     assert secret not in html
     assert pay_secret not in html
-

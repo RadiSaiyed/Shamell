@@ -89,7 +89,7 @@ def test_taxi_cancel_triggers_single_fee_transfer_via_bff(client, monkeypatch):
     calls = _setup_taxi_cancel_stub(monkeypatch, fee_syp=fee_syp)
 
     ride_id = "ride_cancel_1"
-    resp = client.post(f"/taxi/rides/{ride_id}/cancel")
+    resp = client.post(f"/taxi/rides/{ride_id}/cancel", headers={"X-Test-Phone": "+491700000002"})
     assert resp.status_code == 200
 
     # Exactly one transfer call.

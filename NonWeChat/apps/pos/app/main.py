@@ -1085,18 +1085,19 @@ def create_order(req: OrderCreate, s: Session = Depends(get_session)):
             inv = s.get(InventoryItem, rl.inventory_item_id)
             if not inv:
                 continue
-    inv.stock_qty = (inv.stock_qty or 0) - (rl.qty * ln.qty)
-    mv = InventoryMovement(
-        inventory_item_id=inv.id,
-        qty=-(rl.qty * ln.qty),
-        reason="order_consume",
-        note=f"Order {order_id}",
-    )
-    s.add(mv); s.add(inv)
-s.commit()
-_queue_broadcast({"type": "orders_changed"})
-_queue_broadcast({"type": "tickets_changed"})
-return _order_to_out(s, od)
+            inv.stock_qty = (inv.stock_qty or 0) - (rl.qty * ln.qty)
+            mv = InventoryMovement(
+                inventory_item_id=inv.id,
+                qty=-(rl.qty * ln.qty),
+                reason="order_consume",
+                note=f"Order {order_id}",
+            )
+            s.add(mv)
+            s.add(inv)
+    s.commit()
+    _queue_broadcast({"type": "orders_changed"})
+    _queue_broadcast({"type": "tickets_changed"})
+    return _order_to_out(s, od)
 
 
 @router.get("/orders", response_model=List[OrderOut])
