@@ -43,11 +43,17 @@ ssh -tt "$HOST_ALIAS" "
   fi
 
   sudo install -m 0644 '$tmp_remote/api.shamell.online' /etc/nginx/sites-available/api.shamell.online
+  if [[ -f '$tmp_remote/staging-api.shamell.online' ]]; then
+    sudo install -m 0644 '$tmp_remote/staging-api.shamell.online' /etc/nginx/sites-available/staging-api.shamell.online
+  fi
   sudo install -m 0644 '$tmp_remote/media.shamell.online' /etc/nginx/sites-available/media.shamell.online
   sudo install -m 0644 '$tmp_remote/online.shamell.online' /etc/nginx/sites-available/online.shamell.online
   sudo install -m 0644 '$tmp_remote/shamell.online' /etc/nginx/sites-available/shamell.online
 
   sudo ln -sfn /etc/nginx/sites-available/api.shamell.online /etc/nginx/sites-enabled/api.shamell.online
+  if [[ -f /etc/nginx/sites-available/staging-api.shamell.online ]]; then
+    sudo ln -sfn /etc/nginx/sites-available/staging-api.shamell.online /etc/nginx/sites-enabled/staging-api.shamell.online
+  fi
   sudo ln -sfn /etc/nginx/sites-available/media.shamell.online /etc/nginx/sites-enabled/media.shamell.online
   sudo ln -sfn /etc/nginx/sites-available/online.shamell.online /etc/nginx/sites-enabled/online.shamell.online
   sudo ln -sfn /etc/nginx/sites-available/shamell.online /etc/nginx/sites-enabled/shamell.online
