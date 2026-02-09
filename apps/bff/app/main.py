@@ -3602,7 +3602,29 @@ async def me_journey_snapshot(request: Request, response: Response = None):  # t
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/auth/logout")
-def auth_logout():
+def auth_logout(request: Request):
+    # Best-effort session revocation (defense-in-depth).
+    try:
+        sid = None
+        try:
+            raw = request.headers.get("sa_cookie") or request.headers.get("Sa-Cookie")
+            if raw:
+                sid = _normalize_session_token(raw)
+        except Exception:
+            sid = None
+        if not sid:
+            try:
+                sid = _normalize_session_token(request.cookies.get("sa_session"))
+            except Exception:
+                sid = None
+        if sid:
+            try:
+                _SESSIONS.pop(sid, None)
+            except Exception:
+                pass
+    except Exception:
+        # Logout must never break normal flows.
+        pass
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("sa_session", path="/")
     return resp
