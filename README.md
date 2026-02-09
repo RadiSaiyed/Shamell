@@ -15,6 +15,7 @@ This repository hosts Shamell backend services, clients, and ops tooling.
 - Microservices (default local dev): `./scripts/ops.sh dev up`
 - Legacy monolith (fallback): `./scripts/ops.sh devmono up`
 - Server (Hetzner/edge): `./scripts/ops.sh pi deploy` (uses `ops/pi/docker-compose.yml`)
+- Server (Hetzner/edge, Postgres): `./scripts/ops.sh pipg deploy` (uses `ops/pi/docker-compose.postgres.yml`)
 
 Useful commands:
 - `./scripts/ops.sh dev health`

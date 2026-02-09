@@ -10,6 +10,19 @@ on:
         required: false
         type: boolean
         default: false
+      pi_stack:
+        description: "Pi stack to deploy (default: sqlite volumes)"
+        required: false
+        type: choice
+        options:
+          - sqlite
+          - postgres
+        default: sqlite
+      migrate_to_postgres:
+        description: "When pi_stack=postgres: run one-time SQLite -> Postgres migration"
+        required: false
+        type: boolean
+        default: false
 
 env:
   IMAGE_NAME: ghcr.io/radisaiyed/shamell
@@ -100,7 +113,24 @@ jobs:
             echo "Missing required GitHub secret: PI_ENV_FILE" >&2
             exit 1
           fi
-          COMPOSE_FILE="ops/pi/docker-compose.yml"
+          STACK="${{ inputs.pi_stack }}"
+          if [ -z "${STACK:-}" ]; then
+            STACK="sqlite"
+          fi
+          case "$STACK" in
+            sqlite)
+              COMPOSE_FILE="ops/pi/docker-compose.yml"
+              OPS_ENV="pi"
+              ;;
+            postgres)
+              COMPOSE_FILE="ops/pi/docker-compose.postgres.yml"
+              OPS_ENV="pipg"
+              ;;
+            *)
+              echo "Invalid input pi_stack=$STACK (expected sqlite or postgres)" >&2
+              exit 1
+              ;;
+          esac
           ENV_FILE="ops/pi/.env"
           if [ ! -f "$COMPOSE_FILE" ]; then
             echo "Missing compose file: $COMPOSE_FILE" >&2
@@ -134,7 +164,7 @@ jobs:
           fi
 
           # Fail fast on misconfiguration (prevents pushing broken config to prod).
-          bash scripts/ops.sh pi check
+          bash scripts/ops.sh "$OPS_ENV" check
 
           # Deploy the image built for this commit (deterministic, avoids "latest" races).
           docker pull ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -142,6 +172,20 @@ jobs:
           # Stop the legacy monolith first so the SQLite files in monolith_data are consistent
           # before bootstrap-perms seeds the microservice volumes.
           docker compose -f "ops/pi/docker-compose.monolith.yml" --env-file "$ENV_FILE" stop monolith || true
+
+          if [ "$STACK" = "postgres" ] && [ "${{ inputs.migrate_to_postgres }}" = "true" ]; then
+            # Freeze SQLite source volumes for a consistent migration snapshot.
+            docker compose -f "ops/pi/docker-compose.yml" --env-file "$ENV_FILE" stop bff chat payments || true
+            # Ensure Postgres is healthy first.
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d db
+
+            # Bootstrap schemas (best-effort).
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm payments alembic -c /app/apps/payments/alembic.ini upgrade head
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm chat python -c "from apps.chat.app.main import _startup; _startup()"
+
+            # One-shot data migration from legacy SQLite volumes.
+            docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm migrate-sqlite-to-postgres
+          fi
 
           docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans livekit payments chat bff
 

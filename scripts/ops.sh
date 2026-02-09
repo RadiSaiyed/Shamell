@@ -11,6 +11,7 @@ env:
   dev    local microservices compose
   devmono legacy local monolith compose
   pi     hetzner/edge compose (uses ops/pi/.env)
+  pipg   hetzner/edge compose with Postgres (uses ops/pi/.env)
   prod   alias of pi (deprecated)
 
 commands:
@@ -56,6 +57,7 @@ Examples:
   scripts/ops.sh dev up
   scripts/ops.sh dev logs
   scripts/ops.sh pi up
+  scripts/ops.sh pipg up
   ENV_FILE=ops/pi/.env scripts/ops.sh pi backup
 EOF
 }
@@ -92,6 +94,12 @@ case "$ENV_NAME" in
     ;;
   pi)
     COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.yml"
+    DEFAULT_ENV_FILE="${APP_DIR}/ops/pi/.env"
+    HEALTH_URL_DEFAULT="http://localhost:8080/health"
+    PRIMARY_SERVICE="bff"
+    ;;
+  pipg|pi-pg|pi-postgres)
+    COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.postgres.yml"
     DEFAULT_ENV_FILE="${APP_DIR}/ops/pi/.env"
     HEALTH_URL_DEFAULT="http://localhost:8080/health"
     PRIMARY_SERVICE="bff"
@@ -161,6 +169,36 @@ check_env() {
     fi
   done
 
+  # Postgres stack requires explicit DB URLs + credentials in the env file.
+  if [[ "$ENV_NAME" == "pipg" || "$ENV_NAME" == "pi-pg" || "$ENV_NAME" == "pi-postgres" ]]; then
+    local pg_required=(
+      POSTGRES_USER
+      POSTGRES_PASSWORD
+      DB_URL
+      CHAT_DB_URL
+      PAYMENTS_DB_URL
+    )
+    for key in "${pg_required[@]}"; do
+      local val
+      val="$(read_env "$key")"
+      if [[ -z "$val" || "$val" == change-me* ]]; then
+        echo "Missing or invalid ${key} in ${ENV_FILE_PATH}" >&2
+        missing=1
+        continue
+      fi
+    done
+
+    for key in DB_URL CHAT_DB_URL PAYMENTS_DB_URL; do
+      local url url_norm
+      url="$(read_env "$key")"
+      url_norm="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')"
+      if [[ -n "$url_norm" && "$url_norm" != postgres* && "$url_norm" != postgresql* ]]; then
+        echo "${key} must be a postgres URL in ${ENV_FILE_PATH}" >&2
+        missing=1
+      fi
+    done
+  fi
+
   # Optional: validate sha256 digests if configured
   for key in ADMIN_TOKEN_SHA256 METRICS_BEARER_TOKEN_SHA256; do
     local val
@@ -197,7 +235,7 @@ check_env() {
 
   # Prevent outages from overly-restrictive TrustedHost config.
   # Production and staging edges expect specific hostnames to be accepted.
-  if [[ "$ENV_NAME" == "prod" || "$ENV_NAME" == "pi" ]]; then
+  if [[ "$ENV_NAME" == "prod" || "$ENV_NAME" == "pi" || "$ENV_NAME" == "pipg" || "$ENV_NAME" == "pi-pg" || "$ENV_NAME" == "pi-postgres" ]]; then
     local hosts_norm origins_norm must
     hosts_norm="$(printf '%s' "$hosts" | tr -d '[:space:]')"
     origins_norm="$(printf '%s' "$origins" | tr -d '[:space:]')"
@@ -618,6 +656,93 @@ prune_backups() {
   done
 }
 
+_pg_read_or() {
+  local key="$1"
+  local default="$2"
+  local v
+  v="$(read_env "$key")"
+  if [[ -z "$v" ]]; then
+    v="$default"
+  fi
+  printf "%s" "$v"
+}
+
+backup_postgres_bundle() {
+  local backup_dir="$1"
+  local ts="$2"
+
+  local user password
+  user="$(read_env POSTGRES_USER)"
+  password="$(read_env POSTGRES_PASSWORD)"
+  if [[ -z "$user" || -z "$password" ]]; then
+    echo "Missing POSTGRES_USER/POSTGRES_PASSWORD in ${ENV_FILE_PATH}" >&2
+    exit 1
+  fi
+
+  local core_db chat_db payments_db
+  core_db="$(_pg_read_or POSTGRES_DB_CORE shamell_core)"
+  chat_db="$(_pg_read_or POSTGRES_DB_CHAT shamell_chat)"
+  payments_db="$(_pg_read_or POSTGRES_DB_PAYMENTS shamell_payments)"
+
+  local out="${backup_dir}/${ENV_NAME}-postgres-${ts}.tar.gz"
+  local tmp
+  tmp="$(mktemp -d)"
+
+  # Ensure Postgres is available (backup may be invoked while the stack is down).
+  compose up -d db >/dev/null
+
+  compose exec -T --env PGPASSWORD="$password" db pg_dump -U "$user" -d "$core_db" --no-owner --no-privileges > "${tmp}/core.sql"
+  compose exec -T --env PGPASSWORD="$password" db pg_dump -U "$user" -d "$chat_db" --no-owner --no-privileges > "${tmp}/chat.sql"
+  compose exec -T --env PGPASSWORD="$password" db pg_dump -U "$user" -d "$payments_db" --no-owner --no-privileges > "${tmp}/payments.sql"
+
+  tar -czf "$out" -C "$tmp" core.sql chat.sql payments.sql
+  rm -rf "$tmp" || true
+  echo "Backup written: ${out}"
+  prune_backups "$backup_dir" "${ENV_NAME}-postgres-*.tar.gz"
+}
+
+restore_postgres_bundle() {
+  local backup_file="$1"
+  local user password
+  user="$(read_env POSTGRES_USER)"
+  password="$(read_env POSTGRES_PASSWORD)"
+  if [[ -z "$user" || -z "$password" ]]; then
+    echo "Missing POSTGRES_USER/POSTGRES_PASSWORD in ${ENV_FILE_PATH}" >&2
+    exit 1
+  fi
+
+  local core_db chat_db payments_db
+  core_db="$(_pg_read_or POSTGRES_DB_CORE shamell_core)"
+  chat_db="$(_pg_read_or POSTGRES_DB_CHAT shamell_chat)"
+  payments_db="$(_pg_read_or POSTGRES_DB_PAYMENTS shamell_payments)"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  tar -xzf "$backup_file" -C "$tmp"
+
+  for f in core.sql chat.sql payments.sql; do
+    if [[ ! -f "${tmp}/${f}" ]]; then
+      echo "Invalid postgres backup bundle (missing ${f}): ${backup_file}" >&2
+      exit 1
+    fi
+  done
+
+  compose up -d db >/dev/null
+
+  if [[ "${RESTORE_DROP_SCHEMA:-0}" == "1" ]]; then
+    for db in "$core_db" "$chat_db" "$payments_db"; do
+      compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$db" -v ON_ERROR_STOP=1 \
+        -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+    done
+  fi
+
+  cat "${tmp}/core.sql" | compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$core_db" -v ON_ERROR_STOP=1
+  cat "${tmp}/chat.sql" | compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$chat_db" -v ON_ERROR_STOP=1
+  cat "${tmp}/payments.sql" | compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$payments_db" -v ON_ERROR_STOP=1
+  rm -rf "$tmp" || true
+  echo "Restore complete: ${backup_file}"
+}
+
 backup() {
   local backup_dir="${BACKUP_DIR:-${APP_DIR}/backups}"
   mkdir -p "$backup_dir"
@@ -648,6 +773,11 @@ backup() {
     compose run --rm --no-deps monolith sh -c "tar -czf - -C /data ." >"$out"
     echo "Backup written: ${out}"
     prune_backups "$backup_dir" "devmono-monolith-data-*.tar.gz"
+    return 0
+  fi
+
+  if [[ "$ENV_NAME" == "pipg" || "$ENV_NAME" == "pi-pg" || "$ENV_NAME" == "pi-postgres" ]]; then
+    backup_postgres_bundle "$backup_dir" "$ts"
     return 0
   fi
 
@@ -711,6 +841,25 @@ restore() {
     return 0
   fi
 
+  if [[ "$ENV_NAME" == "pipg" || "$ENV_NAME" == "pi-pg" || "$ENV_NAME" == "pi-postgres" ]]; then
+    case "$backup_file" in
+      *.tar.gz|*.tgz)
+        ;;
+      *)
+        echo "${ENV_NAME} restore expects a .tar.gz backup from ./scripts/ops.sh ${ENV_NAME} backup" >&2
+        exit 1
+        ;;
+    esac
+    local running
+    running="$(compose ps -q bff || true)"
+    if [[ -n "$running" && "${ALLOW_RUNNING_RESTORE:-0}" != "1" ]]; then
+      echo "Services are running. Stop them or set ALLOW_RUNNING_RESTORE=1 to proceed." >&2
+      exit 1
+    fi
+    restore_postgres_bundle "$backup_file"
+    return 0
+  fi
+
   if [[ "$ENV_NAME" == "pi" || "$ENV_NAME" == "prod" ]]; then
     case "$backup_file" in
       *.tar.gz|*.tgz)
@@ -734,27 +883,6 @@ restore() {
     echo "Restore complete: ${backup_file}"
     return 0
   fi
-
-  local user="${POSTGRES_USER:-$(read_env POSTGRES_USER)}"
-  local password="${POSTGRES_PASSWORD:-$(read_env POSTGRES_PASSWORD)}"
-  local db="${POSTGRES_DB:-$(read_env POSTGRES_DB)}"
-  if [[ -z "$user" || -z "$password" || -z "$db" ]]; then
-    echo "Missing POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB for restore." >&2
-    exit 1
-  fi
-
-  if [[ "${RESTORE_DROP_SCHEMA:-0}" == "1" ]]; then
-    compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$db" -v ON_ERROR_STOP=1 \
-      -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-  fi
-
-  if [[ "$backup_file" == *.gz ]]; then
-    require_cmd gzip
-    gzip -dc "$backup_file" | compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$db" -v ON_ERROR_STOP=1
-  else
-    cat "$backup_file" | compose exec -T --env PGPASSWORD="$password" db psql -U "$user" -d "$db" -v ON_ERROR_STOP=1
-  fi
-  echo "Restore complete: ${backup_file}"
 }
 
 report() {
