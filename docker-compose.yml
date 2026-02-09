@@ -55,6 +55,8 @@ services:
       XDG_CACHE_HOME: "/tmp/.cache"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+      CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-false}"
+      RATE_STORE_MAX_KEYS: "${RATE_STORE_MAX_KEYS:-20000}"
       DB_URL: "sqlite+pysqlite:////data/core.db"
       MOMENTS_DB_URL: "sqlite+pysqlite:////data/moments.db"
       FRIENDS_DB_URL: "sqlite+pysqlite:////data/friends.db"
@@ -211,4 +213,3 @@ volumes:
   bff_data:
   chat_data:
   payments_data:
-

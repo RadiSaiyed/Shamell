@@ -63,6 +63,8 @@ services:
       PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:-}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+      CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-false}"
+      RATE_STORE_MAX_KEYS: "${RATE_STORE_MAX_KEYS:-20000}"
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-off}"
       TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
@@ -107,4 +109,3 @@ services:
 
 volumes:
   monolith_data:
-

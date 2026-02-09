@@ -270,6 +270,17 @@ async def _security_headers_mw(request: Request, call_next):
                 headers={"Retry-After": "60"},
             )
 
+    # Defense-in-depth CSRF guard: only applies to cookie-authenticated
+    # non-idempotent requests. Header-based sessions (`sa_cookie`) are not
+    # vulnerable to browser CSRF, because attackers cannot set custom headers.
+    try:
+        block = _csrf_guard(request)
+        if block is not None:
+            return block
+    except Exception:
+        # CSRF guard must never break normal flows
+        pass
+
     response = await call_next(request)
     if SECURITY_HEADERS_ENABLED:
         try:
@@ -946,6 +957,14 @@ TAXI_CANCEL_MAX_PER_DRIVER_DAY = int(_env_or("TAXI_CANCEL_MAX_PER_DRIVER_DAY", "
 _TAXI_PAYOUT_EVENTS: dict[str, list[int]] = {}
 _TAXI_CANCEL_EVENTS: dict[str, list[int]] = {}
 
+# Upper bound for per-process in-memory rate/velocity stores (best-effort).
+# Prevents unbounded growth when attackers spam many unique keys (IPs, devices, wallet IDs).
+try:
+    RATE_STORE_MAX_KEYS = int(_env_or("RATE_STORE_MAX_KEYS", "20000"))
+except Exception:
+    RATE_STORE_MAX_KEYS = 20000
+RATE_STORE_MAX_KEYS = max(0, min(RATE_STORE_MAX_KEYS, 200000))
+
 # Simple in-memory rate limiting for auth flows (per process).
 AUTH_RATE_WINDOW_SECS = int(_env_or("AUTH_RATE_WINDOW_SECS", "60"))
 AUTH_MAX_PER_PHONE = int(_env_or("AUTH_MAX_PER_PHONE", "5"))
@@ -1044,6 +1063,15 @@ HSTS_ENABLED = _env_or("HSTS_ENABLED", "true" if _ENV_LOWER in ("prod", "staging
 TRUST_PROXY_HEADERS_MODE = _env_or("TRUST_PROXY_HEADERS", "auto").strip().lower()  # off|on|auto
 TRUST_PRIVATE_PROXY_HOPS = _env_or("TRUST_PRIVATE_PROXY_HOPS", "true").lower() == "true"
 TRUSTED_PROXY_CIDRS = _parse_ip_networks(_env_or("TRUSTED_PROXY_CIDRS", ""))
+
+# CSRF guard (defense-in-depth)
+# Only applies to cookie-authenticated, non-idempotent requests.
+CSRF_GUARD_ENABLED = _env_or("CSRF_GUARD_ENABLED", "true" if _ENV_LOWER in ("prod", "staging") else "false").lower() == "true"
+_CSRF_ALLOWED_ORIGINS_RAW = [o.strip() for o in (os.getenv("ALLOWED_ORIGINS") or "").split(",") if o.strip()]
+if not _CSRF_ALLOWED_ORIGINS_RAW:
+    _CSRF_ALLOWED_ORIGINS_RAW = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_CSRF_ORIGIN_WILDCARD = "*" in _CSRF_ALLOWED_ORIGINS_RAW
+_CSRF_ALLOWED_ORIGINS = {o for o in _CSRF_ALLOWED_ORIGINS_RAW if o and o != "*"}
 
 _AUTH_EXPOSE_DEFAULT = "true" if _ENV_LOWER in ("dev", "test") else "false"
 # Whether auth codes should be returned in responses (for dev/test only).
@@ -1212,6 +1240,106 @@ def _normalize_ip(raw: str | None) -> str | None:
         return str(ipaddress.ip_address(candidate))
     except Exception:
         return None
+
+
+def _normalize_origin(raw: str | None) -> str | None:
+    """
+    Normalize an Origin header to a stable `scheme://host[:port]` form.
+    Returns None for invalid/non-http(s) origins.
+    """
+    s = (raw or "").strip()
+    if not s or s.lower() == "null":
+        return None
+    try:
+        u = _urlparse.urlparse(s)
+        scheme = (u.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            return None
+        host = (u.hostname or "").strip().lower()
+        if not host:
+            return None
+        port = u.port
+        if port:
+            return f"{scheme}://{host}:{int(port)}"
+        return f"{scheme}://{host}"
+    except Exception:
+        return None
+
+
+def _csrf_guard(request: Request) -> Response | None:
+    """
+    Defense-in-depth CSRF guard.
+
+    We only enforce this for cookie-authenticated, non-idempotent requests.
+    Header-based sessions (`sa_cookie`) are not vulnerable to classic browser
+    CSRF because attackers cannot set custom headers without passing CORS.
+    """
+    try:
+        if not CSRF_GUARD_ENABLED:
+            return None
+    except Exception:
+        return None
+
+    try:
+        method = (request.method or "").upper()
+    except Exception:
+        return None
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+
+    # Only protect cookie-auth flows. If the request is using explicit header auth,
+    # do not apply CSRF checks.
+    try:
+        if request.headers.get("sa_cookie") or request.headers.get("Sa-Cookie"):
+            return None
+    except Exception:
+        return None
+    try:
+        if not (request.cookies.get("sa_session") or "").strip():
+            return None
+    except Exception:
+        return None
+
+    # Primary signal: Origin header (present on modern browsers for non-idempotent requests).
+    origin_raw = None
+    try:
+        origin_raw = request.headers.get("Origin") or request.headers.get("origin")
+    except Exception:
+        origin_raw = None
+    if origin_raw:
+        origin = _normalize_origin(origin_raw)
+        if not origin:
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+        try:
+            if _CSRF_ORIGIN_WILDCARD:
+                return None
+        except Exception:
+            # If misconfigured, fail open (defense-in-depth only).
+            return None
+        try:
+            if origin in _CSRF_ALLOWED_ORIGINS:
+                return None
+        except Exception:
+            return None
+        # Allow same-host even if scheme/proxy rewriting differs.
+        try:
+            req_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
+            origin_host = (_urlparse.urlparse(origin).hostname or "").strip().lower()
+            if req_host and origin_host and req_host == origin_host:
+                return None
+        except Exception:
+            pass
+        return JSONResponse(status_code=403, content={"detail": "forbidden"})
+
+    # Fallback signal: Fetch metadata. If the browser says "cross-site" and we have
+    # an auth cookie, block.
+    try:
+        sfs = (request.headers.get("Sec-Fetch-Site") or request.headers.get("sec-fetch-site") or "").strip().lower()
+        if sfs == "cross-site":
+            return JSONResponse(status_code=403, content={"detail": "forbidden"})
+    except Exception:
+        return None
+    return None
 
 def _should_trust_proxy_headers(peer: ipaddress._BaseAddress | None) -> bool:  # type: ignore[name-defined]
     mode = (TRUST_PROXY_HEADERS_MODE or "auto").strip().lower()
@@ -1475,11 +1603,70 @@ def _check_payment_guardrails(from_wallet_id: str | None, amount_cents: int | No
                 raise HTTPException(status_code=429, detail="payment velocity guardrail (device)")
             events_d.append(now)
             _PAY_VELOCITY_DEVICE[dev] = events_d
+
+        # Bound in-memory state even under key-spam attacks (best-effort).
+        _prune_rate_store(_PAY_VELOCITY_WALLET, max_keys=RATE_STORE_MAX_KEYS, window_secs=window)
+        _prune_rate_store(_PAY_VELOCITY_DEVICE, max_keys=RATE_STORE_MAX_KEYS, window_secs=window)
     except HTTPException:
         # Guardrail intentionally blocking request
         raise
     except Exception:
         # Guardrails must never break normal flows
+        return
+
+
+def _prune_rate_store(store: dict[str, list[Any]], *, max_keys: int, window_secs: int | None = None) -> None:
+    """
+    Keep in-memory per-process rate/velocity stores bounded.
+
+    Stores map a key (ip/phone/device/wallet) to a list of timestamps (seconds).
+    We prune only when the store grows beyond max_keys.
+    """
+    try:
+        if max_keys <= 0:
+            store.clear()
+            return
+        if len(store) <= max_keys:
+            return
+
+        now = float(time.time())
+        cutoff = None
+        if window_secs is not None:
+            try:
+                w = max(1.0, float(window_secs))
+                cutoff = now - w
+            except Exception:
+                cutoff = None
+
+        # Prefer removing stale keys first (keys with no recent activity).
+        if cutoff is not None:
+            for k, entries in list(store.items()):
+                try:
+                    if not entries:
+                        store.pop(k, None)
+                        continue
+                    last = float(entries[-1])
+                    if last < cutoff:
+                        store.pop(k, None)
+                except Exception:
+                    store.pop(k, None)
+
+        if len(store) <= max_keys:
+            return
+
+        # Still oversized: drop least-recently-used keys by last timestamp.
+        items: list[tuple[float, str]] = []
+        for k, entries in store.items():
+            try:
+                last = float(entries[-1]) if entries else 0.0
+            except Exception:
+                last = 0.0
+            items.append((last, k))
+        items.sort(key=lambda t: t[0])
+        drop = len(store) - max_keys
+        for i in range(min(drop, len(items))):
+            store.pop(items[i][1], None)
+    except Exception:
         return
 
 
@@ -1495,6 +1682,7 @@ def _rate_limit_auth(request: Request, phone: str) -> None:
         lst = [ts for ts in lst if ts >= now - AUTH_RATE_WINDOW_SECS]
         lst.append(now)
         _AUTH_RATE_PHONE[phone] = lst
+        _prune_rate_store(_AUTH_RATE_PHONE, max_keys=RATE_STORE_MAX_KEYS, window_secs=AUTH_RATE_WINDOW_SECS)
         if len(lst) > AUTH_MAX_PER_PHONE:
             raise HTTPException(status_code=429, detail="rate limited: too many codes for this phone")
     # Limit pro IP
@@ -1504,6 +1692,7 @@ def _rate_limit_auth(request: Request, phone: str) -> None:
         lst_ip = [ts for ts in lst_ip if ts >= now - AUTH_RATE_WINDOW_SECS]
         lst_ip.append(now)
         _AUTH_RATE_IP[ip] = lst_ip
+        _prune_rate_store(_AUTH_RATE_IP, max_keys=RATE_STORE_MAX_KEYS, window_secs=AUTH_RATE_WINDOW_SECS)
         if len(lst_ip) > AUTH_MAX_PER_IP:
             raise HTTPException(status_code=429, detail="rate limited: too many requests from this ip")
 
@@ -1523,6 +1712,7 @@ def _rate_limit_bucket(
     entries = [ts for ts in entries if ts >= now - window]
     entries.append(now)
     store[key] = entries
+    _prune_rate_store(store, max_keys=RATE_STORE_MAX_KEYS, window_secs=window_secs)
     return len(entries)
 
 
@@ -13009,6 +13199,7 @@ def taxi_complete_ride(ride_id: str, driver_id: str, request: Request):
                 httpx.post(url, json=leg2, headers=headers2, timeout=10)
             else:
                 _TAXI_PAYOUT_EVENTS[driver_id] = lst
+            _prune_rate_store(_TAXI_PAYOUT_EVENTS, max_keys=RATE_STORE_MAX_KEYS, window_secs=86400)
         _audit_from_request(
             request,
             "taxi_complete_ride",
@@ -13113,6 +13304,7 @@ def taxi_cancel_ride(ride_id: str, request: Request):
                 return result
             events.append(now)
             _TAXI_CANCEL_EVENTS[driver_id] = events
+            _prune_rate_store(_TAXI_CANCEL_EVENTS, max_keys=RATE_STORE_MAX_KEYS, window_secs=86400)
         except Exception:
             pass
         ikey = f"tx-taxi-cancel-{ride_id}-{amount_cents}"
