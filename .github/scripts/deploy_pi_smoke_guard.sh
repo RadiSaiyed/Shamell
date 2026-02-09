@@ -42,8 +42,10 @@ expect_code() {
 }
 
 expect_code "Monolith upstream health" GET "${UPSTREAM_BASE}/health" "200"
-expect_code "Payments admin guard (upstream)" GET "${UPSTREAM_BASE}/payments/admin/debug/tables" "401"
+# In prod we keep raw service routers disabled; validate that the BFF admin surface
+# is not reachable without auth (regardless of whether service routers are exposed).
+expect_code "BFF payments admin guard (upstream)" GET "${UPSTREAM_BASE}/payments/admin/risk/metrics" "401"
 expect_code "Edge health via nginx host route" GET "${EDGE_BASE}/health" "200" "$API_HOST"
-expect_code "Payments admin guard (edge)" GET "${EDGE_BASE}/payments/admin/debug/tables" "401" "$API_HOST"
+expect_code "BFF payments admin guard (edge)" GET "${EDGE_BASE}/payments/admin/risk/metrics" "401" "$API_HOST"
 
 echo "deploy_pi smoke guard checks passed."
