@@ -14,6 +14,11 @@ __pycache__/
 .mypy_cache/
 .Rhistory
 
+# Python packaging/build artifacts
+**/build/
+**/dist/
+**/*.egg-info/
+
 # Workspace root .gitignore mirrors common patterns used here.
 
 # Local run logs
@@ -30,6 +35,11 @@ clients/**/build/
 clients/**/.dart_tool/
 clients/**/ios/Pods/
 clients/**/android/.gradle/
+NonWeChat/clients/**/build/
+NonWeChat/clients/**/.dart_tool/
+NonWeChat/clients/**/ios/Pods/
+NonWeChat/clients/**/android/.gradle/
+**/macos/Flutter/ephemeral/
 
 # Local archives / exports
 shamell-pi.tar.gz

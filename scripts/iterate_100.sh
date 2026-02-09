@@ -27,7 +27,7 @@ check_security_guards() {
       -e 'subprocess\.[A-Za-z_]+\([^)]*shell\s*=\s*True' \
       -e 'verify\s*=\s*False' \
       -e 'allow_origins\s*=\s*\[[^]]*["'"'"']\*["'"'"']' \
-      apps src libs NonWeChat scripts ops -S || true
+      apps libs NonWeChat scripts ops -S || true
   )"
   if [[ -n "${matches}" ]]; then
     echo "[security-guard] potential risky patterns found:" | tee -a "${REPORT_FILE}" >&2
@@ -45,7 +45,7 @@ for i in $(seq 1 "${ITERATIONS}"); do
   (
     cd "${APP_DIR}"
     # Basic syntax/type sanity (no third-party tooling needed).
-    "${PYTHON_BIN}" -m compileall -q apps src libs NonWeChat || exit 1
+    "${PYTHON_BIN}" -m compileall -q apps libs NonWeChat || exit 1
 
     # Optional: docker-compose config validation.
     #

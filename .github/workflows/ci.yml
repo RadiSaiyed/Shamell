@@ -145,7 +145,7 @@ jobs:
 
       - name: Compile sources
         run: |
-          python -m compileall -q apps src libs NonWeChat
+          python -m compileall -q apps libs NonWeChat
 
       - name: Run pytest
         env:
