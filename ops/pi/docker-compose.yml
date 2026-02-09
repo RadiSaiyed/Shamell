@@ -34,33 +34,33 @@ services:
         dst_chat="/vol/chat_data/chat.db"
         dst_pay="/vol/payments_data/payments.db"
 
-        if [ -f "$src_core" ] && [ ! -f "$dst_core" ]; then
+        if [ -f "$$src_core" ] && [ ! -f "$$dst_core" ]; then
           echo "Seeding core.db -> bff_data" >&2
-          cp "$src_core" "$dst_core"
+          cp "$$src_core" "$$dst_core"
         fi
-        if [ ! -f "$dst_chat" ]; then
-          if [ -f "$src_chat" ]; then
+        if [ ! -f "$$dst_chat" ]; then
+          if [ -f "$$src_chat" ]; then
             echo "Seeding chat.db -> chat_data" >&2
-            cp "$src_chat" "$dst_chat"
-          elif [ -f "$src_core" ]; then
+            cp "$$src_chat" "$$dst_chat"
+          elif [ -f "$$src_core" ]; then
             echo "Seeding chat.db from core.db -> chat_data" >&2
-            cp "$src_core" "$dst_chat"
+            cp "$$src_core" "$$dst_chat"
           fi
         fi
-        if [ -f "$src_pay" ] && [ ! -f "$dst_pay" ]; then
+        if [ -f "$$src_pay" ] && [ ! -f "$$dst_pay" ]; then
           echo "Seeding payments.db -> payments_data" >&2
-          cp "$src_pay" "$dst_pay"
+          cp "$$src_pay" "$$dst_pay"
         fi
 
         # Ensure the runtime UID/GID can write service volumes.
         for d in /vol/bff_data /vol/chat_data /vol/payments_data; do
-          [ -d "$d" ] || continue
-          owner="$(stat -c '%u:%g' "$d" 2>/dev/null || true)"
-          if [ "$owner" = "$uid:$gid" ]; then
+          [ -d "$$d" ] || continue
+          owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
+          if [ "$$owner" = "$$uid:$$gid" ]; then
             continue
           fi
-          echo "Fixing ownership: $d -> ${uid}:${gid} (was ${owner:-unknown})" >&2
-          chown -R "${uid}:${gid}" "$d"
+          echo "Fixing ownership: $$d -> $${uid}:$${gid} (was $${owner:-unknown})" >&2
+          chown -R "$${uid}:$${gid}" "$$d"
         done
     volumes:
       # Read-only access to the previous monolith volume (kept for rollback/backups).
