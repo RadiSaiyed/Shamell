@@ -73,6 +73,17 @@ Environment variables:
   - must include your web app origin(s) if you rely on cookie sessions (e.g. `https://online.shamell.online`)
   - `*` disables the allowlist check (not recommended)
 
+## Host Header Allowlist (Trusted Hosts)
+
+The monolith enables Starlette's `TrustedHostMiddleware` when `ALLOWED_HOSTS` is set.
+This mitigates Host header attacks and prevents misrouting, but it will also hard-fail
+requests with unknown Host headers (HTTP 400).
+
+Environment variables:
+- `ALLOWED_HOSTS`: comma-separated host allowlist (no wildcards)
+  - production must include your public domains (at least `api.shamell.online` and `online.shamell.online`)
+  - include `localhost,127.0.0.1` for local health checks
+
 ## In-Memory Store Bounds (Rate Limits / Guardrails)
 
 The BFF uses best-effort in-memory stores for rate limiting and velocity guardrails.

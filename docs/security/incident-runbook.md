@@ -168,14 +168,14 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
    - `systemctl reload nginx`
 3. Re-run smoke checks:
    - `/health` must return `200`
-   - `/payments/admin/debug/tables` must return `401` without token.
+   - `/payments/admin/risk/metrics` must return `401` without auth (BFF admin guard).
 
 ### Regression Test
 
 - Keep Nginx vhost config in git (IaC) and deploy through scripted sync.
 - CI deploy guard must assert:
   - upstream health = `200`
-  - payments admin endpoint without token = `401`
+  - BFF payments admin endpoint without auth = `401`
   - same checks through edge host route.
 
 ## Monitoring & Alerting Baseline
