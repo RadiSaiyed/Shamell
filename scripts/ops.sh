@@ -191,24 +191,40 @@ check_env() {
     missing=1
   fi
 
+  local runtime_env runtime_env_norm
+  runtime_env="$(read_env ENV)"
+  runtime_env_norm="$(printf '%s' "$runtime_env" | tr '[:upper:]' '[:lower:]')"
+
   # Prevent outages from overly-restrictive TrustedHost config.
-  # Shamell's production edge expects these hostnames to be accepted.
+  # Production and staging edges expect specific hostnames to be accepted.
   if [[ "$ENV_NAME" == "prod" || "$ENV_NAME" == "pi" ]]; then
     local hosts_norm origins_norm must
     hosts_norm="$(printf '%s' "$hosts" | tr -d '[:space:]')"
     origins_norm="$(printf '%s' "$origins" | tr -d '[:space:]')"
-    for must in api.shamell.online online.shamell.online; do
-      if [[ -n "$hosts_norm" && ",${hosts_norm}," != *",${must},"* ]]; then
-        echo "ALLOWED_HOSTS must include ${must} in ${ENV_FILE_PATH}" >&2
-        missing=1
-      fi
-    done
-    if [[ -n "$origins_norm" && ",${origins_norm}," != *",https://online.shamell.online,"* ]]; then
-      echo "ALLOWED_ORIGINS must include https://online.shamell.online in ${ENV_FILE_PATH}" >&2
-      missing=1
-    fi
+    case "$runtime_env_norm" in
+      staging)
+        for must in staging-api.shamell.online; do
+          if [[ -n "$hosts_norm" && ",${hosts_norm}," != *",${must},"* ]]; then
+            echo "ALLOWED_HOSTS must include ${must} in ${ENV_FILE_PATH}" >&2
+            missing=1
+          fi
+        done
+        ;;
+      prod|production|"")
+        for must in api.shamell.online online.shamell.online; do
+          if [[ -n "$hosts_norm" && ",${hosts_norm}," != *",${must},"* ]]; then
+            echo "ALLOWED_HOSTS must include ${must} in ${ENV_FILE_PATH}" >&2
+            missing=1
+          fi
+        done
+        if [[ -n "$origins_norm" && ",${origins_norm}," != *",https://online.shamell.online,"* ]]; then
+          echo "ALLOWED_ORIGINS must include https://online.shamell.online in ${ENV_FILE_PATH}" >&2
+          missing=1
+        fi
+        ;;
+    esac
     if [[ "$origins_norm" == *"http://"* ]]; then
-      echo "Warning: ALLOWED_ORIGINS contains http:// origins in ${ENV_FILE_PATH}. Prefer https-only in production." >&2
+      echo "Warning: ALLOWED_ORIGINS contains http:// origins in ${ENV_FILE_PATH}. Prefer https-only outside dev." >&2
     fi
   fi
 
@@ -220,12 +236,25 @@ check_env() {
   else
     local core_auto_norm
     core_auto_norm="$(printf '%s' "$core_auto" | tr '[:upper:]' '[:lower:]')"
-    case "$core_auto_norm" in
-      false|0|off|no)
+    case "$runtime_env_norm" in
+      prod|production|"")
+        case "$core_auto_norm" in
+          false|0|off|no)
+            ;;
+          *)
+            echo "AUTO_CREATE_SCHEMA must be false in ${ENV_FILE_PATH}" >&2
+            missing=1
+            ;;
+        esac
         ;;
-      *)
-        echo "AUTO_CREATE_SCHEMA must be false in ${ENV_FILE_PATH}" >&2
-        missing=1
+      staging)
+        case "$core_auto_norm" in
+          false|0|off|no)
+            ;;
+          *)
+            echo "Warning: AUTO_CREATE_SCHEMA is '${core_auto_norm}' in staging. Prefer 'false' once the schema is bootstrapped." >&2
+            ;;
+        esac
         ;;
     esac
   fi

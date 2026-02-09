@@ -18,9 +18,9 @@ Set these repository secrets (or environment `staging` secrets):
 Example:
 
 ```bash
-gh secret set STAGING_BFF_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-api.example.com"
-gh secret set STAGING_PAYMENTS_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-payments.example.com"
-gh secret set STAGING_CHAT_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-chat.example.com"
+gh secret set STAGING_BFF_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-api.shamell.online"
+gh secret set STAGING_PAYMENTS_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-api.shamell.online"
+gh secret set STAGING_CHAT_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-api.shamell.online"
 ```
 
 Single-host/monolith staging is supported too (all three secrets can point to the same API host).
