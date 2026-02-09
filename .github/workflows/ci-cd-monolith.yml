@@ -108,8 +108,12 @@ jobs:
           printf '%s\n' "$PI_ENV_FILE" > "$ENV_FILE"
           chmod 600 "$ENV_FILE"
 
-          docker pull ${{ env.IMAGE_NAME }}:latest
-          docker tag ${{ env.IMAGE_NAME }}:latest shamell-core:pi
+          # Fail fast on misconfiguration (prevents pushing broken config to prod).
+          bash scripts/ops.sh pi check
+
+          # Deploy the image built for this commit (deterministic, avoids "latest" races).
+          docker pull ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} shamell-core:pi
           docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans livekit monolith
 
           for _ in $(seq 1 30); do
