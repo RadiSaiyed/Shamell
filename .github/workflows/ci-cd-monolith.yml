@@ -93,6 +93,7 @@ jobs:
       - name: Deploy on self-hosted Hetzner runner
         env:
           PI_ENV_FILE: ${{ secrets.PI_ENV_FILE }}
+          PI_ALIAS_CODE_PEPPER: ${{ secrets.PI_ALIAS_CODE_PEPPER }}
         run: |
           set -euo pipefail
           if [ -z "${PI_ENV_FILE:-}" ]; then
@@ -107,6 +108,30 @@ jobs:
           fi
           printf '%s\n' "$PI_ENV_FILE" > "$ENV_FILE"
           chmod 600 "$ENV_FILE"
+
+          # Avoid keeping secrets on disk beyond this job unless explicitly requested.
+          cleanup_env() {
+            if [ "${KEEP_PI_ENV_FILE:-0}" = "1" ]; then
+              echo "KEEP_PI_ENV_FILE=1 set; leaving ${ENV_FILE} on disk."
+              return
+            fi
+            rm -f "$ENV_FILE"
+          }
+          trap cleanup_env EXIT
+
+          # Allow separating ALIAS_CODE_PEPPER from the main PI_ENV_FILE secret (safer rotation and avoids
+          # placeholder values blocking deploy).
+          if [ -n "${PI_ALIAS_CODE_PEPPER:-}" ]; then
+            tmp="$(mktemp)"
+            grep -v '^ALIAS_CODE_PEPPER=' "$ENV_FILE" > "$tmp" || true
+            mv "$tmp" "$ENV_FILE"
+            printf 'ALIAS_CODE_PEPPER=%s\n' "$PI_ALIAS_CODE_PEPPER" >> "$ENV_FILE"
+            chmod 600 "$ENV_FILE"
+          fi
+          if ! grep -q '^ALIAS_CODE_PEPPER=' "$ENV_FILE"; then
+            echo "Missing ALIAS_CODE_PEPPER. Add it to PI_ENV_FILE or set GitHub secret PI_ALIAS_CODE_PEPPER." >&2
+            exit 1
+          fi
 
           # Fail fast on misconfiguration (prevents pushing broken config to prod).
           bash scripts/ops.sh pi check
