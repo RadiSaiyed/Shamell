@@ -14,6 +14,7 @@ Both templates focus on:
 - payments edge rate limits (`PAY_API_*`)
 - runtime security alerting (`SECURITY_ALERT_*`)
 - ensuring strong payments secrets are configured (no `change-me-*` defaults in prod/staging)
+- avoiding dangerous schema auto-create in prod/staging (`AUTO_CREATE_SCHEMA=false`)
 - disabling OTP/alias code exposure in non-dev environments
 - trusted host allowlist (`ALLOWED_HOSTS`) to mitigate Host header attacks
 - disabling interactive API docs in staging/prod (unless explicitly enabled)
