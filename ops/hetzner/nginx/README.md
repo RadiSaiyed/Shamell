@@ -4,6 +4,7 @@ This directory stores the canonical Nginx vhost configs for the Hetzner host
 serving:
 
 - `api.shamell.online`
+- `staging-api.shamell.online`
 - `online.shamell.online`
 - `media.shamell.online`
 - `shamell.online`
