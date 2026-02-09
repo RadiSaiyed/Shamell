@@ -25,8 +25,7 @@ test: venv
 	ENV=test MONOLITH_MODE=1 PYTHONPATH=. "$(PY)" -m pytest -q
 
 compile: venv
-	"$(PY)" -m compileall -q apps src libs NonWeChat
+	"$(PY)" -m compileall -q apps libs NonWeChat
 
 iterate: venv
 	PYTHON_BIN="$(PY)" bash scripts/iterate_100.sh "$(ITERATIONS)"
-

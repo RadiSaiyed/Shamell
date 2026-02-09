@@ -10,8 +10,8 @@ Usage: scripts/ops.sh <env> <command> [args]
 env:
   dev    local microservices compose
   devmono legacy local monolith compose
-  prod   production compose (uses ops/production/.env)
-  pi     raspberry pi compose (uses ops/pi/.env)
+  pi     hetzner/edge compose (uses ops/pi/.env)
+  prod   alias of pi (deprecated)
 
 commands:
   up            build and start
@@ -19,29 +19,29 @@ commands:
   restart       restart services
   logs          tail logs (pass service names or flags)
   ps            show status
-  bootstrap-media-perms  chown volume perms (dev/devmono/prod/pi)
-  proxy-cidrs   suggest reverse-proxy CIDRs (prod; Traefik)
-  metrics-scrapers  show observed /metrics client IPs (prod; Traefik)
+  bootstrap-media-perms  chown volume perms (dev/devmono/pi)
+  proxy-cidrs   (deprecated) suggest reverse-proxy CIDRs (Traefik-only)
+  metrics-scrapers  (deprecated) show observed /metrics client IPs (Traefik-only)
   report        status + health + disk + backups
   build         build images
   pull          pull images
   health        call /health
-  check         validate env file (prod/pi)
-  deploy        check + up + migrate + health (prod/pi; devmono supported)
-  migrate       run core + payments migrations (prod/pi; optional in dev/devmono)
-  migrate-core  run core migrations only (prod/pi; optional in dev/devmono)
-  migrate-payments run payments migrations only (prod/pi; optional in dev/devmono)
-  backup        backup database (prod/pi) or local service data (dev/devmono)
-  restore       restore database (prod/pi) or local data (devmono)
+  check         validate env file (pi)
+  deploy        check + up + migrate + health (pi; devmono supported)
+  migrate       run core + payments migrations (pi; optional in dev/devmono)
+  migrate-core  run core migrations only (pi; optional in dev/devmono)
+  migrate-payments run payments migrations only (pi; optional in dev/devmono)
+  backup        backup database (pi) or local service data (dev/devmono)
+  restore       restore database (pi) or local data (devmono)
   shell         shell into primary app container
 
 Environment variables:
-  ENV_FILE      override the default env file for prod/pi
+  ENV_FILE      override the default env file for pi
   BACKUP_DIR    override the backup destination (default: platform/shamell-app/backups)
-  BACKUP_MEDIA  set to 1 to include media volumes in prod/pi backups
+  BACKUP_MEDIA  set to 1 to include media volumes in pi backups
   BACKUP_KEEP   keep last N backups per type (0 disables pruning)
   CONFIRM_RESTORE=1  allow destructive restore
-  RESTORE_DROP_SCHEMA=1  drop public schema before restore (prod/pi)
+  RESTORE_DROP_SCHEMA=1  drop public schema before restore (pi)
   ALLOW_RUNNING_RESTORE=1 allow devmono restore while monolith is running
   HEALTH_URL    override health check URL
   HEALTH_HOST   optional Host header for health check
@@ -55,8 +55,8 @@ Environment variables:
 Examples:
   scripts/ops.sh dev up
   scripts/ops.sh dev logs
-  scripts/ops.sh prod up
-  ENV_FILE=ops/production/.env scripts/ops.sh prod backup
+  scripts/ops.sh pi up
+  ENV_FILE=ops/pi/.env scripts/ops.sh pi backup
 EOF
 }
 
@@ -90,13 +90,13 @@ case "$ENV_NAME" in
     HEALTH_URL_DEFAULT="http://localhost:8088/health"
     PRIMARY_SERVICE="monolith"
     ;;
-  prod)
-    COMPOSE_FILE="${APP_DIR}/ops/production/docker-compose.yml"
-    DEFAULT_ENV_FILE="${APP_DIR}/ops/production/.env"
-    HEALTH_URL_DEFAULT=""
+  pi)
+    COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.yml"
+    DEFAULT_ENV_FILE="${APP_DIR}/ops/pi/.env"
+    HEALTH_URL_DEFAULT="http://localhost:8080/health"
     PRIMARY_SERVICE="monolith"
     ;;
-  pi)
+  prod)
     COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.yml"
     DEFAULT_ENV_FILE="${APP_DIR}/ops/pi/.env"
     HEALTH_URL_DEFAULT="http://localhost:8080/health"
@@ -457,8 +457,7 @@ metrics_scrapers() {
     echo >&2
     echo "If you run the recommended local Prometheus scrape (Docker internal)," >&2
     echo "there is no public /metrics route and this command will stay empty." >&2
-    echo "To enable `metrics.<BASE_DOMAIN>`, use:" >&2
-    echo "  docker compose -f ${COMPOSE_FILE} -f ${APP_DIR}/ops/production/docker-compose.metrics-public.yml --env-file ${ENV_FILE_PATH} up -d" >&2
+    echo "Public metrics exposure is not configured in this repository layout." >&2
     exit 1
   fi
   echo "$ips"
