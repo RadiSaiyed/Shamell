@@ -19,17 +19,57 @@ services:
       - |
         uid=10001
         gid=10001
-        d="/vol/monolith_data"
-        [ -d "$$d" ] || exit 0
-        owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
-        if [ "$$owner" != "$$uid:$$gid" ]; then
-          echo "Fixing ownership: $$d -> $${uid}:$${gid} (was $${owner:-unknown})" >&2
-          chown -R "$${uid}:$${gid}" "$$d"
-        fi
-    volumes:
-      - monolith_data:/vol/monolith_data
 
-  monolith:
+        # Seed microservice volumes from the previous monolith volume.
+        # This is idempotent: it never overwrites existing destination files.
+        #
+        # - bff:   /data/core.db
+        # - chat:  /data/chat.db (seeded from core.db if no dedicated chat db exists)
+        # - pay:   /data/payments.db
+        src_core="/src/core.db"
+        src_chat="/src/chat.db"
+        src_pay="/src/payments.db"
+
+        dst_core="/vol/bff_data/core.db"
+        dst_chat="/vol/chat_data/chat.db"
+        dst_pay="/vol/payments_data/payments.db"
+
+        if [ -f "$src_core" ] && [ ! -f "$dst_core" ]; then
+          echo "Seeding core.db -> bff_data" >&2
+          cp "$src_core" "$dst_core"
+        fi
+        if [ ! -f "$dst_chat" ]; then
+          if [ -f "$src_chat" ]; then
+            echo "Seeding chat.db -> chat_data" >&2
+            cp "$src_chat" "$dst_chat"
+          elif [ -f "$src_core" ]; then
+            echo "Seeding chat.db from core.db -> chat_data" >&2
+            cp "$src_core" "$dst_chat"
+          fi
+        fi
+        if [ -f "$src_pay" ] && [ ! -f "$dst_pay" ]; then
+          echo "Seeding payments.db -> payments_data" >&2
+          cp "$src_pay" "$dst_pay"
+        fi
+
+        # Ensure the runtime UID/GID can write service volumes.
+        for d in /vol/bff_data /vol/chat_data /vol/payments_data; do
+          [ -d "$d" ] || continue
+          owner="$(stat -c '%u:%g' "$d" 2>/dev/null || true)"
+          if [ "$owner" = "$uid:$gid" ]; then
+            continue
+          fi
+          echo "Fixing ownership: $d -> ${uid}:${gid} (was ${owner:-unknown})" >&2
+          chown -R "${uid}:${gid}" "$d"
+        done
+    volumes:
+      # Read-only access to the previous monolith volume (kept for rollback/backups).
+      - monolith_data:/src:ro
+      - bff_data:/vol/bff_data
+      - chat_data:/vol/chat_data
+      - payments_data:/vol/payments_data
+
+  bff:
     image: shamell-core:pi
     init: true
     security_opt:
@@ -44,23 +84,22 @@ services:
       HOME: "/tmp"
       TMPDIR: "/tmp"
       XDG_CACHE_HOME: "/tmp/.cache"
-      MONOLITH_MODE: "${MONOLITH_MODE:-1}"
-      MONOLITH_ONLY: "${MONOLITH_ONLY:-1}"
-      MONOLITH_DB_URL: "${MONOLITH_DB_URL:-sqlite+pysqlite:////data/monolith.db}"
-      PAYMENTS_DB_URL: "${PAYMENTS_DB_URL:-sqlite+pysqlite:////data/payments.db}"
       DB_URL: "${DB_URL:-sqlite+pysqlite:////data/core.db}"
-      AUTO_CREATE_SCHEMA: "${AUTO_CREATE_SCHEMA:-true}"
-      RUN_ALEMBIC_ON_STARTUP: "${RUN_ALEMBIC_ON_STARTUP:-false}"
       INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
       PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
-      SONIC_SECRET: "${SONIC_SECRET:?set SONIC_SECRET in ops/pi/.env}"
-      TOPUP_SECRET: "${TOPUP_SECRET:?set TOPUP_SECRET in ops/pi/.env}"
-      ALIAS_CODE_PEPPER: "${ALIAS_CODE_PEPPER:?set ALIAS_CODE_PEPPER in ops/pi/.env}"
-      CASH_SECRET_PEPPER: "${CASH_SECRET_PEPPER:?set CASH_SECRET_PEPPER in ops/pi/.env}"
+      CHAT_BASE_URL: "${CHAT_BASE_URL:-http://chat:8081}"
+      PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
       CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-true}"
       RATE_STORE_MAX_KEYS: "${RATE_STORE_MAX_KEYS:-20000}"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      EXPOSE_PAYMENTS_ROUTER: "${EXPOSE_PAYMENTS_ROUTER:-false}"
+      EXPOSE_CHAT_ROUTER: "${EXPOSE_CHAT_ROUTER:-false}"
+      ENABLE_WALLET_WS_IN_PROD: "${ENABLE_WALLET_WS_IN_PROD:-false}"
+      METRICS_INGEST_SECRET: "${METRICS_INGEST_SECRET:-}"
+      AUTH_EXPOSE_CODES: "${AUTH_EXPOSE_CODES:-false}"
+      ALIAS_EXPOSE_CODE: "${ALIAS_EXPOSE_CODE:-false}"
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-auto}"
       TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
@@ -100,16 +139,18 @@ services:
       SECURITY_ALERT_COOLDOWN_SECS: "${SECURITY_ALERT_COOLDOWN_SECS:-600}"
       SECURITY_ALERT_THRESHOLDS: "${SECURITY_ALERT_THRESHOLDS:-payments_transfer_wallet_mismatch:4,alias_request_wallet_mismatch:4,alias_request_user_override_blocked:4,favorites_owner_wallet_mismatch:4,payments_request_from_wallet_mismatch:4,payments_edge_rate_limit_wallet:25,payments_edge_rate_limit_ip:40}"
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
-      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
-      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
     volumes:
-      - monolith_data:/data
+      - bff_data:/data
     ports:
       - "${MONOLITH_PUBLISH_ADDR:-127.0.0.1}:${MONOLITH_PUBLISH_PORT:-8080}:8080"
-    command: ["uvicorn", "apps.monolith.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["uvicorn", "apps.bff.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
       bootstrap-perms:
         condition: service_completed_successfully
+      chat:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
       livekit:
         condition: service_started
     restart: unless-stopped
@@ -119,6 +160,93 @@ services:
         - python
         - -c
         - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  chat:
+    image: shamell-core:pi
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      DB_URL: "sqlite+pysqlite:////data/chat.db"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
+      CHAT_REQUIRE_INTERNAL_SECRET: "true"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    volumes:
+      - chat_data:/data
+    command: ["uvicorn", "apps.chat.app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  payments:
+    image: shamell-core:pi
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      PAYMENTS_DB_URL: "${PAYMENTS_DB_URL:-sqlite+pysqlite:////data/payments.db}"
+      AUTO_CREATE_SCHEMA: "${AUTO_CREATE_SCHEMA:-true}"
+      RUN_ALEMBIC_ON_STARTUP: "${RUN_ALEMBIC_ON_STARTUP:-false}"
+      # IMPORTANT: payments uses INTERNAL_API_SECRET; point it to PAYMENTS_INTERNAL_SECRET
+      # so BFF-to-payments internal calls validate against the dedicated payments secret.
+      INTERNAL_API_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      PAYMENTS_REQUIRE_INTERNAL_SECRET: "true"
+      SONIC_SECRET: "${SONIC_SECRET:?set SONIC_SECRET in ops/pi/.env}"
+      TOPUP_SECRET: "${TOPUP_SECRET:?set TOPUP_SECRET in ops/pi/.env}"
+      ALIAS_CODE_PEPPER: "${ALIAS_CODE_PEPPER:?set ALIAS_CODE_PEPPER in ops/pi/.env}"
+      CASH_SECRET_PEPPER: "${CASH_SECRET_PEPPER:?set CASH_SECRET_PEPPER in ops/pi/.env}"
+      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:-}"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    volumes:
+      - payments_data:/data
+    command: ["uvicorn", "apps.payments.app.main:app", "--host", "0.0.0.0", "--port", "8082"]
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=3).read()"
       interval: 10s
       timeout: 3s
       retries: 12
@@ -147,3 +275,6 @@ services:
 
 volumes:
   monolith_data:
+  bff_data:
+  chat_data:
+  payments_data:
