@@ -31,6 +31,7 @@ import httpx
 import logging
 import os
 import asyncio, json as _json, re
+import base64
 import hashlib
 import ipaddress
 import socket
@@ -1122,6 +1123,18 @@ LOGIN_CODE_TTL_SECS = int(_env_or("LOGIN_CODE_TTL_SECS", "300"))
 DEVICE_LOGIN_TTL_SECS = int(_env_or("DEVICE_LOGIN_TTL_SECS", "300"))
 DEVICE_LOGIN_START_RATE_WINDOW_SECS = int(_env_or("DEVICE_LOGIN_START_RATE_WINDOW_SECS", "60"))
 DEVICE_LOGIN_START_MAX_PER_IP = int(_env_or("DEVICE_LOGIN_START_MAX_PER_IP", "30"))
+LIVEKIT_PUBLIC_URL = _env_or("LIVEKIT_PUBLIC_URL", _env_or("LIVEKIT_URL", "")).strip()
+LIVEKIT_API_KEY = _env_or("LIVEKIT_API_KEY", "").strip()
+LIVEKIT_API_SECRET = _env_or("LIVEKIT_API_SECRET", "").strip()
+LIVEKIT_TOKEN_ENDPOINT_ENABLED = _env_or(
+    "LIVEKIT_TOKEN_ENDPOINT_ENABLED",
+    "true" if _ENV_LOWER in ("dev", "test") else "false",
+).strip().lower() in ("1", "true", "yes", "on")
+LIVEKIT_TOKEN_TTL_SECS_DEFAULT = int(_env_or("LIVEKIT_TOKEN_TTL_SECS", "300"))
+LIVEKIT_TOKEN_MAX_TTL_SECS = int(_env_or("LIVEKIT_TOKEN_MAX_TTL_SECS", "3600"))
+LIVEKIT_TOKEN_RATE_WINDOW_SECS = int(_env_or("LIVEKIT_TOKEN_RATE_WINDOW_SECS", "60"))
+LIVEKIT_TOKEN_MAX_PER_PHONE = int(_env_or("LIVEKIT_TOKEN_MAX_PER_PHONE", "30"))
+LIVEKIT_TOKEN_MAX_PER_IP = int(_env_or("LIVEKIT_TOKEN_MAX_PER_IP", "80"))
 _LOGIN_CODES: dict[str, tuple[str, int]] = {}  # phone -> (code, expires_at)
 _SESSIONS: dict[str, tuple[str, int]] = {}     # sid -> (phone, expires_at)
 # Legacy in-memory device-login store (DB-backed flow is used by the endpoints).
@@ -1131,6 +1144,8 @@ _PUSH_ENDPOINTS: dict[str, list[dict]] = {}
 _AUTH_CLEANUP_INTERVAL_SECS = 60
 _AUTH_LAST_CLEANUP_TS = 0
 _DEVICE_LOGIN_START_RATE_IP: dict[str, list[int]] = {}
+_LIVEKIT_TOKEN_RATE_PHONE: dict[str, list[int]] = {}
+_LIVEKIT_TOKEN_RATE_IP: dict[str, list[int]] = {}
 
 
 def _parse_security_alert_thresholds(raw: str) -> dict[str, int]:
@@ -1168,6 +1183,47 @@ def _sha256_hex(s: str) -> str:
     at rest in the DB.
     """
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+
+def _b64url(data: bytes) -> str:
+    try:
+        return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+    except Exception:
+        return ""
+
+
+def _jwt_hs256(secret: str, payload: dict[str, Any]) -> str:
+    """
+    Minimal HS256 JWT encoder (no external deps).
+
+    LiveKit expects HS256-signed access tokens using the API secret.
+    """
+    header = {"alg": "HS256", "typ": "JWT"}
+    try:
+        h = _b64url(_json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        p = _b64url(_json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        msg = f"{h}.{p}".encode("utf-8")
+        sig = _hmac.new((secret or "").encode("utf-8"), msg, hashlib.sha256).digest()
+        s = _b64url(sig)
+        if not h or not p or not s:
+            return ""
+        return f"{h}.{p}.{s}"
+    except Exception:
+        return ""
+
+
+def _livekit_identity(*, phone: str, device_id: str | None, sid: str | None) -> str:
+    """
+    Return a stable, non-PII participant identity for LiveKit.
+
+    Avoid leaking phone numbers to other participants by hashing.
+    """
+    base = _sha256_hex(f"phone:{(phone or '').strip()}")[:16]
+    dev = (device_id or "").strip()
+    if dev:
+        return f"u_{base}_d_{_sha256_hex(f'dev:{dev}')[:8]}"
+    if sid:
+        return f"u_{base}_s_{_sha256_hex(f'sid:{sid}')[:8]}"
+    return f"u_{base}"
 
 
 def _dt_to_epoch_secs(dt: datetime) -> int:
@@ -1254,7 +1310,7 @@ def _check_code(phone: str, code: str) -> bool:
     return ok
 
 
-def _create_session(phone: str) -> str:
+def _create_session(phone: str, *, device_id: str | None = None) -> str:
     _cleanup_auth_state()
     # Session IDs are bearer tokens; keep them high-entropy and do not log them.
     sid = _secrets.token_hex(16)  # 32 hex chars
@@ -1263,11 +1319,15 @@ def _create_session(phone: str) -> str:
     # Persist session to DB so restarts and multi-instance deployments keep users signed in.
     try:
         exp_dt = datetime.fromtimestamp(exp_ts, timezone.utc)
+        dev = (device_id or "").strip() or None
+        if dev and len(dev) > 128:
+            dev = dev[:128]
         with _officials_session() as s:  # type: ignore[name-defined]
             s.add(
                 AuthSessionDB(  # type: ignore[name-defined]
                     sid_hash=_sha256_hex(sid),
                     phone=phone,
+                    device_id=dev,
                     expires_at=exp_dt,
                 )
             )
@@ -1294,6 +1354,39 @@ def _normalize_session_token(raw: str | None) -> str | None:
     return token
 
 
+def _normalize_device_id(raw: str | None) -> str | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    # Keep identifiers bounded and log-safe.
+    if len(s) > 128:
+        s = s[:128]
+    try:
+        for ch in s:
+            o = ord(ch)
+            if o < 32 or o == 127:
+                return None
+    except Exception:
+        return None
+    return s
+
+
+def _extract_session_id_from_request(request: Request) -> str | None:
+    sid = None
+    try:
+        raw = request.headers.get("sa_cookie") or request.headers.get("Sa-Cookie")
+        if raw:
+            sid = _normalize_session_token(raw)
+    except Exception:
+        sid = None
+    if not sid:
+        try:
+            sid = _normalize_session_token(request.cookies.get("sa_session"))
+        except Exception:
+            sid = None
+    return sid
+
+
 def _normalize_device_login_token(raw: str | None) -> str | None:
     token = (raw or "").strip()
     if not token:
@@ -1311,15 +1404,11 @@ def _session_phone_from_sid(sid: str) -> str | None:
     sessions survive restarts and multi-instance deployments.
     """
     _cleanup_auth_state()
-    rec = _SESSIONS.get(sid)
-    if rec:
-        phone, exp = rec
-        if exp >= _now():
-            return phone
-        _SESSIONS.pop(sid, None)
+    now_ts = _now()
+    sid_hash = _sha256_hex(sid)
 
+    # DB is the source of truth so logout/revocation is immediate.
     try:
-        sid_hash = _sha256_hex(sid)
         with _officials_session() as s:  # type: ignore[name-defined]
             row = (
                 s.execute(
@@ -1328,13 +1417,13 @@ def _session_phone_from_sid(sid: str) -> str | None:
                 .scalars()
                 .first()
             )
-            if not row:
-                return None
-            if getattr(row, "revoked_at", None):
+            if not row or getattr(row, "revoked_at", None):
+                _SESSIONS.pop(sid, None)
                 return None
             exp_dt = getattr(row, "expires_at", None)
             exp_ts = _dt_to_epoch_secs(exp_dt) if isinstance(exp_dt, datetime) else 0
-            if exp_ts and exp_ts < _now():
+            if exp_ts and exp_ts < now_ts:
+                _SESSIONS.pop(sid, None)
                 # Best-effort cleanup of expired session row.
                 try:
                     s.execute(
@@ -1346,13 +1435,22 @@ def _session_phone_from_sid(sid: str) -> str | None:
                 return None
             phone = str(getattr(row, "phone", "") or "").strip()
             if not phone:
+                _SESSIONS.pop(sid, None)
                 return None
             if not exp_ts:
-                exp_ts = _now() + AUTH_SESSION_TTL_SECS
+                exp_ts = now_ts + AUTH_SESSION_TTL_SECS
             _SESSIONS[sid] = (phone, exp_ts)
             return phone
     except Exception:
-        return None
+        # If DB is unavailable, fall back to the in-memory cache.
+        rec = _SESSIONS.get(sid)
+        if not rec:
+            return None
+        phone, exp = rec
+        if exp < now_ts:
+            _SESSIONS.pop(sid, None)
+            return None
+        return phone
 
 
 def _normalize_ip(raw: str | None) -> str | None:
@@ -3387,6 +3485,7 @@ async def auth_verify(req: Request):
         phone = (body.get("phone") or "").strip()
         code = (body.get("code") or "").strip()
         name = (body.get("name") or "").strip()
+        device_id = _normalize_device_id(str(body.get("device_id") or ""))
     except Exception:
         raise HTTPException(status_code=400, detail="invalid body")
     # Optional: also rate-limit verify requests (same limits as request_code)
@@ -3442,7 +3541,7 @@ async def auth_verify(req: Request):
                     j = r.json(); rider_id = j.get("id")
     except Exception:
         rider_id = None
-    sid = _create_session(phone)
+    sid = _create_session(phone, device_id=device_id)
     # Also return the session ID in JSON so web clients
     # can send it explicitly as header (sa_cookie).
     resp = JSONResponse({"ok": True, "phone": phone, "wallet_id": wallet_id, "rider_id": rider_id, "session": sid})
@@ -15035,7 +15134,7 @@ async def auth_devices_register(request: Request) -> dict[str, Any]:
         body = {}
     if not isinstance(body, dict):
         body = {}
-    device_id = (body.get("device_id") or "").strip()
+    device_id = _normalize_device_id(str(body.get("device_id") or ""))
     if not device_id:
         raise HTTPException(status_code=400, detail="device_id required")
     device_type = (body.get("device_type") or "").strip() or None
@@ -15064,9 +15163,6 @@ async def auth_devices_register(request: Request) -> dict[str, Any]:
             row.last_ip = ip or row.last_ip
             row.user_agent = ua or row.user_agent
             row.last_seen_at = now
-            s.add(row)
-            s.commit()
-            s.refresh(row)
         else:
             row = DeviceSessionDB(
                 phone=phone,
@@ -15079,9 +15175,30 @@ async def auth_devices_register(request: Request) -> dict[str, Any]:
                 user_agent=ua,
                 last_seen_at=now,
             )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
+
+        # Bind the current auth session to this device id so device removal can revoke sessions.
+        try:
+            sid = _extract_session_id_from_request(request)
+            if sid:
+                sess_row = (
+                    s.execute(
+                        _sa_select(AuthSessionDB).where(  # type: ignore[name-defined]
+                            AuthSessionDB.sid_hash == _sha256_hex(sid),  # type: ignore[name-defined]
+                            AuthSessionDB.phone == phone,  # type: ignore[name-defined]
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if sess_row and not getattr(sess_row, "revoked_at", None):
+                    sess_row.device_id = device_id
+                    s.add(sess_row)
+        except Exception:
+            pass
+
+        s.add(row)
+        s.commit()
+        s.refresh(row)
         return {
             "id": row.id,
             "phone": row.phone,
@@ -15116,6 +15233,7 @@ async def auth_device_login_start(request: Request) -> dict[str, Any]:
     label = (body.get("label") or "").strip()
     if len(label) > 64:
         label = label[:64]
+    device_id = _normalize_device_id(str(body.get("device_id") or ""))
 
     # Abuse guard: unauthenticated endpoint; rate-limit per IP (best-effort).
     try:
@@ -15141,6 +15259,7 @@ async def auth_device_login_start(request: Request) -> dict[str, Any]:
         "created_at": now,
         "status": "pending",
         "label": label,
+        "device_id": device_id,
         "phone": None,
         "session": None,
     }
@@ -15154,6 +15273,7 @@ async def auth_device_login_start(request: Request) -> dict[str, Any]:
                     label=label or None,
                     status="pending",
                     phone=None,
+                    device_id=device_id,
                     approved_at=None,
                     expires_at=expires_dt,
                 )
@@ -15269,6 +15389,7 @@ async def auth_device_login_redeem(request: Request):
     token = _normalize_device_login_token((body.get("token") or "").strip())
     if not token:
         raise HTTPException(status_code=400, detail="token required")
+    device_id_req = _normalize_device_id(str(body.get("device_id") or ""))
     _cleanup_auth_state()
 
     # Prefer DB-backed challenges so redeem works across restarts.
@@ -15304,12 +15425,14 @@ async def auth_device_login_redeem(request: Request):
                 phone = str(getattr(row, "phone", "") or "").strip()
                 if not phone:
                     raise HTTPException(status_code=400, detail="challenge not bound to user")
+                dev = _normalize_device_id(str(getattr(row, "device_id", "") or "")) or device_id_req
 
                 # Mint a fresh session and consume the challenge in one commit.
                 s.add(
                     AuthSessionDB(  # type: ignore[name-defined]
                         sid_hash=_sha256_hex(sid),
                         phone=phone,
+                        device_id=dev,
                         expires_at=exp_dt,
                     )
                 )
@@ -15356,7 +15479,8 @@ async def auth_device_login_redeem(request: Request):
     phone = (rec.get("phone") or "").strip()
     if not phone:
         raise HTTPException(status_code=400, detail="challenge not bound to user")
-    sid = _create_session(phone)
+    dev_mem = _normalize_device_id(str(rec.get("device_id") or "")) or device_id_req
+    sid = _create_session(phone, device_id=dev_mem)
     try:
         _DEVICE_LOGIN_CHALLENGES.pop(token, None)
     except Exception:
@@ -15372,6 +15496,130 @@ async def auth_device_login_redeem(request: Request):
         path="/",
     )
     return resp
+
+
+@app.post("/livekit/token", response_class=JSONResponse)
+async def livekit_token(request: Request) -> dict[str, Any]:
+    """
+    Mint a LiveKit access token for an authenticated user.
+
+    LiveKit itself can be publicly reachable, but joining requires a server-minted
+    token signed with LIVEKIT_API_SECRET.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    if not LIVEKIT_TOKEN_ENDPOINT_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+
+    # Enforce sane config in prod/staging when the endpoint is enabled.
+    if _ENV_LOWER in ("prod", "production", "staging"):
+        if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+            raise HTTPException(status_code=503, detail="livekit not configured")
+        if LIVEKIT_API_KEY in ("devkey", "change-me") or LIVEKIT_API_SECRET in ("devsecret", "change-me"):
+            raise HTTPException(status_code=503, detail="livekit not configured")
+        # Don't fall back to the internal docker URL in prod/staging; require an explicit public URL.
+        if not (os.getenv("LIVEKIT_PUBLIC_URL") or "").strip():
+            raise HTTPException(status_code=503, detail="livekit not configured")
+
+    if not LIVEKIT_PUBLIC_URL:
+        raise HTTPException(status_code=503, detail="livekit not configured")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    room = str(body.get("room") or "").strip()
+    if not room:
+        room = f"call_{_secrets.token_hex(8)}"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", room):
+        raise HTTPException(status_code=400, detail="invalid room")
+
+    ttl = LIVEKIT_TOKEN_TTL_SECS_DEFAULT
+    try:
+        ttl = int(body.get("ttl_secs") or ttl)
+    except Exception:
+        ttl = LIVEKIT_TOKEN_TTL_SECS_DEFAULT
+    ttl = max(30, min(int(ttl), max(30, int(LIVEKIT_TOKEN_MAX_TTL_SECS))))
+
+    # Rate-limit token minting (best-effort).
+    try:
+        hits_phone = _rate_limit_bucket(
+            _LIVEKIT_TOKEN_RATE_PHONE,
+            phone,
+            window_secs=max(1, LIVEKIT_TOKEN_RATE_WINDOW_SECS),
+            max_hits=max(0, LIVEKIT_TOKEN_MAX_PER_PHONE),
+        )
+        if LIVEKIT_TOKEN_MAX_PER_PHONE > 0 and hits_phone > LIVEKIT_TOKEN_MAX_PER_PHONE:
+            raise HTTPException(status_code=429, detail="rate limited")
+        ip = _auth_client_ip(request)
+        if ip and ip != "unknown":
+            hits_ip = _rate_limit_bucket(
+                _LIVEKIT_TOKEN_RATE_IP,
+                ip,
+                window_secs=max(1, LIVEKIT_TOKEN_RATE_WINDOW_SECS),
+                max_hits=max(0, LIVEKIT_TOKEN_MAX_PER_IP),
+            )
+            if LIVEKIT_TOKEN_MAX_PER_IP > 0 and hits_ip > LIVEKIT_TOKEN_MAX_PER_IP:
+                raise HTTPException(status_code=429, detail="rate limited")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # Try to derive a stable per-device identity if the session is device-bound.
+    sid = _extract_session_id_from_request(request)
+    device_id = None
+    try:
+        if sid:
+            with _officials_session() as s:  # type: ignore[name-defined]
+                row = (
+                    s.execute(
+                        _sa_select(AuthSessionDB).where(  # type: ignore[name-defined]
+                            AuthSessionDB.sid_hash == _sha256_hex(sid),  # type: ignore[name-defined]
+                            AuthSessionDB.phone == phone,  # type: ignore[name-defined]
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if row:
+                    device_id = _normalize_device_id(str(getattr(row, "device_id", "") or ""))
+    except Exception:
+        device_id = None
+
+    identity = _livekit_identity(phone=phone, device_id=device_id, sid=sid)
+    now_ts = _now()
+    exp_ts = now_ts + ttl
+    payload = {
+        "iss": LIVEKIT_API_KEY,
+        "sub": identity,
+        "nbf": now_ts,
+        "exp": exp_ts,
+        "video": {
+            "room": room,
+            "roomJoin": True,
+            "canPublish": True,
+            "canSubscribe": True,
+            "canPublishData": True,
+        },
+    }
+    token = _jwt_hs256(LIVEKIT_API_SECRET, payload)
+    if not token:
+        raise HTTPException(status_code=500, detail="failed to mint token")
+
+    _audit_from_request(
+        request,
+        "livekit_token_minted",
+        room=room,
+        ttl=ttl,
+        device_id=device_id,
+    )
+    return {"ok": True, "url": LIVEKIT_PUBLIC_URL, "room": room, "token": token, "ttl_secs": ttl}
 
 @app.get("/auth/devices", response_class=JSONResponse)
 def auth_devices_list(request: Request) -> dict[str, Any]:
@@ -15416,13 +15664,13 @@ def auth_devices_delete(device_id: str, request: Request) -> dict[str, Any]:
     """
     Entfernt einen Geräte-Eintrag für den aktuellen Benutzer.
 
-    Dies ist ein reines Verwaltungsfeature; bestehende Sessions werden
-    dadurch nicht hart invalidiert, da OTP-Sessions in-memory laufen.
+    Best practice: removing a device should also revoke sessions bound
+    to that device so stolen cookies/tokens cannot remain active.
     """
     phone = _auth_phone(request)
     if not phone:
         raise HTTPException(status_code=401, detail="unauthorized")
-    clean = (device_id or "").strip()
+    clean = _normalize_device_id(device_id)
     if not clean:
         raise HTTPException(status_code=400, detail="device_id required")
     with _officials_session() as s:
@@ -15439,8 +15687,27 @@ def auth_devices_delete(device_id: str, request: Request) -> dict[str, Any]:
         if not row:
             return {"status": "ignored"}
         s.delete(row)
+        revoked = 0
+        try:
+            # Revoke all DB-backed sessions associated with this device.
+            # (No session IDs are stored in plaintext; we delete by device_id.)
+            res = s.execute(
+                _sa_delete(AuthSessionDB).where(  # type: ignore[name-defined]
+                    AuthSessionDB.phone == phone,  # type: ignore[name-defined]
+                    AuthSessionDB.device_id == clean,  # type: ignore[name-defined]
+                )
+            )
+            try:
+                revoked = int(getattr(res, "rowcount", 0) or 0)
+            except Exception:
+                revoked = 0
+        except Exception:
+            revoked = 0
         s.commit()
-    return {"status": "ok"}
+    # Also evict any in-memory cached sessions that were tied to this device, if possible.
+    # We cannot reverse hashes to sids, so we rely on DB being the source of truth.
+    _audit("auth_device_removed", phone=phone, device_id=clean, revoked_sessions=revoked)
+    return {"status": "ok", "revoked_sessions": revoked}
 
 
 @app.post("/me/dsr/export")
@@ -27421,6 +27688,9 @@ class AuthSessionDB(_OfficialBase):
     phone: _sa_Mapped[str] = _sa_mapped_column(
         _sa_String(32), index=True
     )
+    device_id: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(128), index=True, nullable=True
+    )
     expires_at: _sa_Mapped[datetime] = _sa_mapped_column(
         _sa_DateTime(timezone=True), index=True
     )
@@ -27460,6 +27730,9 @@ class DeviceLoginChallengeDB(_OfficialBase):
     )
     phone: _sa_Mapped[str | None] = _sa_mapped_column(
         _sa_String(32), index=True, nullable=True
+    )
+    device_id: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(128), nullable=True
     )
     created_at: _sa_Mapped[datetime] = _sa_mapped_column(
         _sa_DateTime(timezone=True), server_default=_sa_func.now()
@@ -28083,6 +28356,41 @@ def _officials_startup() -> None:
                         f"ALTER TABLE {table_name} ADD COLUMN featured BOOLEAN DEFAULT FALSE"
                     )
                 )
+            # Best-effort schema upgrade for auth_sessions/device_login_challenges (new auth persistence layer).
+            try:
+                if _OFFICIALS_DB_URL.startswith("sqlite"):
+                    conn.execute(
+                        _sa_text("ALTER TABLE auth_sessions ADD COLUMN device_id VARCHAR(128)")
+                    )
+                else:
+                    sess_table = "auth_sessions"
+                    if _OFFICIALS_DB_SCHEMA:
+                        sess_table = f"{_OFFICIALS_DB_SCHEMA}.{sess_table}"
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {sess_table} ADD COLUMN device_id VARCHAR(128)"
+                        )
+                    )
+            except Exception:
+                pass
+            try:
+                if _OFFICIALS_DB_URL.startswith("sqlite"):
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE device_login_challenges ADD COLUMN device_id VARCHAR(128)"
+                        )
+                    )
+                else:
+                    dl_table = "device_login_challenges"
+                    if _OFFICIALS_DB_SCHEMA:
+                        dl_table = f"{_OFFICIALS_DB_SCHEMA}.{dl_table}"
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {dl_table} ADD COLUMN device_id VARCHAR(128)"
+                        )
+                    )
+            except Exception:
+                pass
             # Best-effort schema upgrade for MiniAppDB.moments_shares and runtime_app_id.
             if _OFFICIALS_DB_URL.startswith("sqlite"):
                 try:
@@ -28379,6 +28687,51 @@ def _officials_startup() -> None:
                     pass
     except Exception:
         # Ignore if column already exists or migration fails; model uses nullable field.
+        pass
+
+    # Ensure auth persistence tables stay forward-compatible even if earlier
+    # best-effort ALTERs failed (e.g. because some columns already existed).
+    try:
+        with _officials_engine.begin() as conn:
+            if _OFFICIALS_DB_URL.startswith("sqlite"):
+                try:
+                    conn.execute(
+                        _sa_text("ALTER TABLE auth_sessions ADD COLUMN device_id VARCHAR(128)")
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            "ALTER TABLE device_login_challenges ADD COLUMN device_id VARCHAR(128)"
+                        )
+                    )
+                except Exception:
+                    pass
+            else:
+                sess_table = "auth_sessions"
+                if _OFFICIALS_DB_SCHEMA:
+                    sess_table = f"{_OFFICIALS_DB_SCHEMA}.{sess_table}"
+                dl_table = "device_login_challenges"
+                if _OFFICIALS_DB_SCHEMA:
+                    dl_table = f"{_OFFICIALS_DB_SCHEMA}.{dl_table}"
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {sess_table} ADD COLUMN IF NOT EXISTS device_id VARCHAR(128)"
+                        )
+                    )
+                except Exception:
+                    pass
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {dl_table} ADD COLUMN IF NOT EXISTS device_id VARCHAR(128)"
+                        )
+                    )
+                except Exception:
+                    pass
+    except Exception:
         pass
     # Seed built-in Official accounts and their feed items using a direct
     # SQLAlchemy Session bound to _officials_engine. We deliberately avoid
