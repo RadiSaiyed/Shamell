@@ -191,6 +191,27 @@ check_env() {
     missing=1
   fi
 
+  # Prevent outages from overly-restrictive TrustedHost config.
+  # Shamell's production edge expects these hostnames to be accepted.
+  if [[ "$ENV_NAME" == "prod" || "$ENV_NAME" == "pi" ]]; then
+    local hosts_norm origins_norm must
+    hosts_norm="$(printf '%s' "$hosts" | tr -d '[:space:]')"
+    origins_norm="$(printf '%s' "$origins" | tr -d '[:space:]')"
+    for must in api.shamell.online online.shamell.online; do
+      if [[ -n "$hosts_norm" && ",${hosts_norm}," != *",${must},"* ]]; then
+        echo "ALLOWED_HOSTS must include ${must} in ${ENV_FILE_PATH}" >&2
+        missing=1
+      fi
+    done
+    if [[ -n "$origins_norm" && ",${origins_norm}," != *",https://online.shamell.online,"* ]]; then
+      echo "ALLOWED_ORIGINS must include https://online.shamell.online in ${ENV_FILE_PATH}" >&2
+      missing=1
+    fi
+    if [[ "$origins_norm" == *"http://"* ]]; then
+      echo "Warning: ALLOWED_ORIGINS contains http:// origins in ${ENV_FILE_PATH}. Prefer https-only in production." >&2
+    fi
+  fi
+
   local core_auto
   core_auto="$(read_env AUTO_CREATE_SCHEMA)"
   if [[ -z "$core_auto" ]]; then
