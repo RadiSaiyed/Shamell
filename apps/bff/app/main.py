@@ -3637,6 +3637,9 @@ def device_login_demo() -> HTMLResponse:
     Renders a QR code with a one-time device_login token and polls
     the backend until the phone approves the login.
     """
+    # Never expose demo auth surfaces in prod/staging (attack-surface reduction).
+    if (os.getenv("ENV") or "dev").strip().lower() in ("prod", "production", "staging"):
+        raise HTTPException(status_code=404, detail="Not Found")
     html = """
 <!doctype html>
 <html>
