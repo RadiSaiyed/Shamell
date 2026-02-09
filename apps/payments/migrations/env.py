@@ -18,7 +18,7 @@ from apps.payments.app.main import Base  # type: ignore
 target_metadata = Base.metadata
 
 DB_URL = os.getenv("PAYMENTS_DB_URL") or os.getenv("DB_URL")
-DB_SCHEMA = os.getenv("DB_SCHEMA")
+DB_SCHEMA = (os.getenv("DB_SCHEMA") or "").strip() or None
 
 if DB_URL:
     config.set_main_option("sqlalchemy.url", DB_URL)
