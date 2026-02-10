@@ -429,6 +429,24 @@ check_env() {
     fi
   fi
 
+  # LiveKit service itself must never run with dev defaults in prod/staging.
+  # Without strong keys, anyone can mint valid tokens offline.
+  case "$runtime_env_norm" in
+    prod|production|staging|"")
+      local lk_key lk_secret
+      lk_key="$(read_env LIVEKIT_API_KEY)"
+      lk_secret="$(read_env LIVEKIT_API_SECRET)"
+      if [[ -z "$lk_key" || -z "$lk_secret" || "$lk_key" == change-me* || "$lk_secret" == change-me* ]]; then
+        echo "Missing or invalid LIVEKIT_API_KEY/LIVEKIT_API_SECRET in ${ENV_FILE_PATH}" >&2
+        missing=1
+      fi
+      if [[ "$lk_key" == "devkey" || "$lk_secret" == "devsecret" ]]; then
+        echo "LIVEKIT_API_KEY/SECRET must not use dev defaults in ${ENV_FILE_PATH}" >&2
+        missing=1
+      fi
+      ;;
+  esac
+
   if [[ "$missing" -ne 0 ]]; then
     exit 1
   fi

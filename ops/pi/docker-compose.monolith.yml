@@ -139,7 +139,8 @@ services:
       - /tmp
     command: ["--config", "/etc/livekit/livekit.yaml"]
     environment:
-      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret}${LIVEKIT_KEYS_EXTRA:-}}"
+      # Never allow dev defaults in prod/staging: if keys are unset, fail fast.
+      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in ops/pi/.env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in ops/pi/.env}${LIVEKIT_KEYS_EXTRA:-}}"
     volumes:
       - ./livekit:/etc/livekit:ro
     ports:
