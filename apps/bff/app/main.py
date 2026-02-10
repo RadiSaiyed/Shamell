@@ -1135,6 +1135,22 @@ LIVEKIT_TOKEN_MAX_TTL_SECS = int(_env_or("LIVEKIT_TOKEN_MAX_TTL_SECS", "3600"))
 LIVEKIT_TOKEN_RATE_WINDOW_SECS = int(_env_or("LIVEKIT_TOKEN_RATE_WINDOW_SECS", "60"))
 LIVEKIT_TOKEN_MAX_PER_PHONE = int(_env_or("LIVEKIT_TOKEN_MAX_PER_PHONE", "30"))
 LIVEKIT_TOKEN_MAX_PER_IP = int(_env_or("LIVEKIT_TOKEN_MAX_PER_IP", "80"))
+CALLING_ENABLED = _env_or(
+    "CALLING_ENABLED",
+    "true" if _ENV_LOWER in ("dev", "test") else "false",
+).strip().lower() in ("1", "true", "yes", "on")
+CALL_RATE_WINDOW_SECS = int(_env_or("CALL_RATE_WINDOW_SECS", "60"))
+CALL_START_MAX_PER_PHONE = int(_env_or("CALL_START_MAX_PER_PHONE", "8"))
+CALL_START_MAX_PER_IP = int(_env_or("CALL_START_MAX_PER_IP", "40"))
+CALL_START_MAX_PER_CALLEE = int(_env_or("CALL_START_MAX_PER_CALLEE", "12"))
+CALL_RING_TTL_SECS = int(_env_or("CALL_RING_TTL_SECS", "120"))
+CALL_MAX_TTL_SECS = int(_env_or("CALL_MAX_TTL_SECS", "7200"))
+CALL_RATE_WINDOW_SECS = max(1, min(CALL_RATE_WINDOW_SECS, 3600))
+CALL_START_MAX_PER_PHONE = max(0, min(CALL_START_MAX_PER_PHONE, 1000))
+CALL_START_MAX_PER_IP = max(0, min(CALL_START_MAX_PER_IP, 5000))
+CALL_START_MAX_PER_CALLEE = max(0, min(CALL_START_MAX_PER_CALLEE, 2000))
+CALL_RING_TTL_SECS = max(10, min(CALL_RING_TTL_SECS, 600))
+CALL_MAX_TTL_SECS = max(CALL_RING_TTL_SECS, min(CALL_MAX_TTL_SECS, 12 * 3600))
 _LOGIN_CODES: dict[str, tuple[str, int]] = {}  # phone -> (code, expires_at)
 _SESSIONS: dict[str, tuple[str, int]] = {}     # sid -> (phone, expires_at)
 # Legacy in-memory device-login store (DB-backed flow is used by the endpoints).
@@ -1146,6 +1162,9 @@ _AUTH_LAST_CLEANUP_TS = 0
 _DEVICE_LOGIN_START_RATE_IP: dict[str, list[int]] = {}
 _LIVEKIT_TOKEN_RATE_PHONE: dict[str, list[int]] = {}
 _LIVEKIT_TOKEN_RATE_IP: dict[str, list[int]] = {}
+_CALL_START_RATE_PHONE: dict[str, list[int]] = {}
+_CALL_START_RATE_IP: dict[str, list[int]] = {}
+_CALL_START_RATE_CALLEE: dict[str, list[int]] = {}
 
 
 def _parse_security_alert_thresholds(raw: str) -> dict[str, int]:
@@ -1367,6 +1386,33 @@ def _normalize_device_id(raw: str | None) -> str | None:
             if o < 32 or o == 127:
                 return None
     except Exception:
+        return None
+    return s
+
+
+def _normalize_phone_e164(raw: str | None) -> str | None:
+    """
+    Best-effort E.164 normalizer for call flows.
+
+    Auth flows currently accept arbitrary phone strings for flexibility, but
+    calling is high-risk for abuse and should only accept canonical E.164.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None
+    # Keep bounded and log-safe.
+    if len(s) > 32:
+        s = s[:32]
+    if not re.fullmatch(r"\+[1-9][0-9]{7,14}", s):
+        return None
+    return s
+
+
+def _normalize_call_id(raw: str | None) -> str | None:
+    s = (raw or "").strip().lower()
+    if not s:
+        return None
+    if not re.fullmatch(r"[a-f0-9]{32}", s):
         return None
     return s
 
@@ -15498,6 +15544,328 @@ async def auth_device_login_redeem(request: Request):
     return resp
 
 
+@app.post("/calls/start", response_class=JSONResponse)
+async def calls_start(request: Request) -> dict[str, Any]:
+    """
+    Start a 1:1 call.
+
+    Policy (current): any authenticated user can call any E.164 phone.
+    Abuse is mitigated with tight rate limits + short ringing TTL.
+    """
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not CALLING_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+    # Calls require server-minted LiveKit tokens; keep surfaces consistent.
+    if not LIVEKIT_TOKEN_ENDPOINT_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    to_phone = _normalize_phone_e164(str(body.get("to_phone") or body.get("to") or ""))
+    if not to_phone:
+        raise HTTPException(status_code=400, detail="to_phone must be E.164")
+    if to_phone == phone:
+        raise HTTPException(status_code=400, detail="invalid to_phone")
+
+    mode = str(body.get("mode") or "video").strip().lower()
+    if mode not in ("audio", "video"):
+        raise HTTPException(status_code=400, detail="invalid mode")
+
+    # Rate limit: caller phone, caller IP, callee phone (anti-harassment).
+    try:
+        hits_phone = _rate_limit_bucket(
+            _CALL_START_RATE_PHONE,
+            phone,
+            window_secs=CALL_RATE_WINDOW_SECS,
+            max_hits=CALL_START_MAX_PER_PHONE,
+        )
+        if CALL_START_MAX_PER_PHONE > 0 and hits_phone > CALL_START_MAX_PER_PHONE:
+            raise HTTPException(status_code=429, detail="rate limited")
+        ip = _auth_client_ip(request)
+        if ip and ip != "unknown":
+            hits_ip = _rate_limit_bucket(
+                _CALL_START_RATE_IP,
+                ip,
+                window_secs=CALL_RATE_WINDOW_SECS,
+                max_hits=CALL_START_MAX_PER_IP,
+            )
+            if CALL_START_MAX_PER_IP > 0 and hits_ip > CALL_START_MAX_PER_IP:
+                raise HTTPException(status_code=429, detail="rate limited")
+        hits_callee = _rate_limit_bucket(
+            _CALL_START_RATE_CALLEE,
+            to_phone,
+            window_secs=CALL_RATE_WINDOW_SECS,
+            max_hits=CALL_START_MAX_PER_CALLEE,
+        )
+        if CALL_START_MAX_PER_CALLEE > 0 and hits_callee > CALL_START_MAX_PER_CALLEE:
+            raise HTTPException(status_code=429, detail="rate limited")
+    except HTTPException:
+        raise
+    except Exception:
+        # Rate limiting must not hard-break calls.
+        pass
+
+    call_id = _secrets.token_hex(16)
+    room = f"call_{call_id}"
+    now_ts = _now()
+    now_dt = datetime.fromtimestamp(now_ts, timezone.utc)
+    ring_exp_dt = now_dt + timedelta(seconds=int(CALL_RING_TTL_SECS))
+    exp_dt = now_dt + timedelta(seconds=int(CALL_MAX_TTL_SECS))
+
+    try:
+        with _officials_session() as s:  # type: ignore[name-defined]
+            s.add(
+                CallDB(  # type: ignore[name-defined]
+                    call_id=call_id,
+                    room=room,
+                    from_phone=phone,
+                    to_phone=to_phone,
+                    mode=mode,
+                    status="ringing",
+                    ring_expires_at=ring_exp_dt,
+                    expires_at=exp_dt,
+                )
+            )
+            s.commit()
+    except Exception:
+        raise HTTPException(status_code=502, detail="failed to start call")
+
+    _audit_from_request(
+        request,
+        "call_started",
+        call_id=call_id[-6:],
+        to_phone=to_phone,
+        mode=mode,
+        ring_ttl_secs=int(CALL_RING_TTL_SECS),
+    )
+    return {
+        "ok": True,
+        "call_id": call_id,
+        "to_phone": to_phone,
+        "from_phone": phone,
+        "mode": mode,
+        "status": "ringing",
+        "ring_expires_at": ring_exp_dt.isoformat().replace("+00:00", "Z"),
+        "expires_at": exp_dt.isoformat().replace("+00:00", "Z"),
+    }
+
+
+@app.get("/calls/incoming", response_class=JSONResponse)
+def calls_incoming(request: Request, limit: int = 20) -> dict[str, Any]:
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not CALLING_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+    if limit <= 0:
+        limit = 20
+    limit = min(limit, 50)
+    now_dt = datetime.fromtimestamp(_now(), timezone.utc)
+    items: list[dict[str, Any]] = []
+    try:
+        with _officials_session() as s:  # type: ignore[name-defined]
+            rows = (
+                s.execute(
+                    _sa_select(CallDB)  # type: ignore[name-defined]
+                    .where(
+                        CallDB.to_phone == phone,  # type: ignore[name-defined]
+                        CallDB.ended_at.is_(None),  # type: ignore[name-defined]
+                        CallDB.expires_at > now_dt,  # type: ignore[name-defined]
+                        (
+                            (CallDB.status != "ringing")  # type: ignore[name-defined]
+                            | (CallDB.ring_expires_at > now_dt)  # type: ignore[name-defined]
+                        ),
+                    )
+                    .order_by(CallDB.id.desc())  # type: ignore[name-defined]
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            for row in rows:
+                items.append(
+                    {
+                        "call_id": row.call_id,
+                        "from_phone": row.from_phone,
+                        "to_phone": row.to_phone,
+                        "mode": row.mode,
+                        "status": row.status,
+                        "created_at": row.created_at.isoformat().replace("+00:00", "Z") if row.created_at else None,
+                        "ring_expires_at": row.ring_expires_at.isoformat().replace("+00:00", "Z")
+                        if row.ring_expires_at
+                        else None,
+                        "accepted_at": row.accepted_at.isoformat().replace("+00:00", "Z")
+                        if getattr(row, "accepted_at", None)
+                        else None,
+                    }
+                )
+    except Exception:
+        items = []
+    return {"ok": True, "calls": items}
+
+
+@app.post("/calls/{call_id}/accept", response_class=JSONResponse)
+def calls_accept(call_id: str, request: Request) -> dict[str, Any]:
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not CALLING_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+    cid = _normalize_call_id(call_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="invalid call_id")
+    now_ts = _now()
+    now_dt = datetime.fromtimestamp(now_ts, timezone.utc)
+    try:
+        with _officials_session() as s:  # type: ignore[name-defined]
+            row = (
+                s.execute(
+                    _sa_select(CallDB)  # type: ignore[name-defined]
+                    .where(CallDB.call_id == cid)  # type: ignore[name-defined]
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="call not found")
+            if row.to_phone != phone:
+                raise HTTPException(status_code=403, detail="forbidden")
+            if row.ended_at is not None:
+                raise HTTPException(status_code=400, detail="call ended")
+            exp_ts = _dt_to_epoch_secs(getattr(row, "expires_at", None))
+            if not exp_ts or exp_ts <= now_ts:
+                raise HTTPException(status_code=400, detail="call expired")
+            ring_ts = _dt_to_epoch_secs(getattr(row, "ring_expires_at", None))
+            if row.status == "ringing" and (not ring_ts or ring_ts <= now_ts):
+                row.status = "missed"
+                try:
+                    s.commit()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=400, detail="call expired")
+            if row.status != "accepted":
+                row.status = "accepted"
+                row.accepted_at = now_dt  # type: ignore[assignment]
+                s.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="failed to accept call")
+
+    _audit_from_request(
+        request,
+        "call_accepted",
+        call_id=cid[-6:],
+    )
+    return {"ok": True, "call_id": cid, "status": "accepted"}
+
+
+@app.post("/calls/{call_id}/reject", response_class=JSONResponse)
+def calls_reject(call_id: str, request: Request) -> dict[str, Any]:
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not CALLING_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+    cid = _normalize_call_id(call_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="invalid call_id")
+    now_ts = _now()
+    now_dt = datetime.fromtimestamp(now_ts, timezone.utc)
+    try:
+        with _officials_session() as s:  # type: ignore[name-defined]
+            row = (
+                s.execute(
+                    _sa_select(CallDB)  # type: ignore[name-defined]
+                    .where(CallDB.call_id == cid)  # type: ignore[name-defined]
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="call not found")
+            if row.to_phone != phone:
+                raise HTTPException(status_code=403, detail="forbidden")
+            if row.ended_at is not None:
+                raise HTTPException(status_code=400, detail="call ended")
+            exp_ts = _dt_to_epoch_secs(getattr(row, "expires_at", None))
+            if not exp_ts or exp_ts <= now_ts:
+                row.status = "missed"
+                try:
+                    s.commit()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=400, detail="call expired")
+            row.status = "rejected"
+            row.ended_at = now_dt  # type: ignore[assignment]
+            row.ended_by_phone = phone  # type: ignore[assignment]
+            s.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="failed to reject call")
+
+    _audit_from_request(
+        request,
+        "call_rejected",
+        call_id=cid[-6:],
+    )
+    return {"ok": True, "call_id": cid, "status": "rejected"}
+
+
+@app.post("/calls/{call_id}/end", response_class=JSONResponse)
+def calls_end(call_id: str, request: Request) -> dict[str, Any]:
+    phone = _auth_phone(request)
+    if not phone:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not CALLING_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+    cid = _normalize_call_id(call_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="invalid call_id")
+    now_dt = datetime.fromtimestamp(_now(), timezone.utc)
+    try:
+        with _officials_session() as s:  # type: ignore[name-defined]
+            row = (
+                s.execute(
+                    _sa_select(CallDB)  # type: ignore[name-defined]
+                    .where(CallDB.call_id == cid)  # type: ignore[name-defined]
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="call not found")
+            if phone not in (row.from_phone, row.to_phone):
+                raise HTTPException(status_code=403, detail="forbidden")
+            if row.ended_at is None:
+                row.ended_at = now_dt  # type: ignore[assignment]
+                row.ended_by_phone = phone  # type: ignore[assignment]
+            row.status = "ended"
+            s.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="failed to end call")
+
+    _audit_from_request(
+        request,
+        "call_ended",
+        call_id=cid[-6:],
+    )
+    return {"ok": True, "call_id": cid, "status": "ended"}
+
+
 @app.post("/livekit/token", response_class=JSONResponse)
 async def livekit_token(request: Request) -> dict[str, Any]:
     """
@@ -15541,11 +15909,73 @@ async def livekit_token(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         body = {}
 
-    room = str(body.get("room") or "").strip()
-    if not room:
-        room = f"call_{_secrets.token_hex(8)}"
-    if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", room):
-        raise HTTPException(status_code=400, detail="invalid room")
+    call_id = _normalize_call_id(str(body.get("call_id") or body.get("id") or ""))
+    room = ""
+    call_exp_ts: int | None = None
+    if call_id:
+        # Call-minted tokens are only available when the calling feature is enabled.
+        if not CALLING_ENABLED:
+            raise HTTPException(status_code=404, detail="not found")
+        now_ts_call = _now()
+        now_dt = datetime.fromtimestamp(now_ts_call, timezone.utc)
+        try:
+            with _officials_session() as s:  # type: ignore[name-defined]
+                row = (
+                    s.execute(
+                        _sa_select(CallDB)  # type: ignore[name-defined]
+                        .where(CallDB.call_id == call_id)  # type: ignore[name-defined]
+                        .limit(1)
+                    )
+                    .scalars()
+                    .first()
+                )
+                if not row:
+                    raise HTTPException(status_code=404, detail="call not found")
+                if phone not in (row.from_phone, row.to_phone):
+                    raise HTTPException(status_code=403, detail="forbidden")
+                if row.ended_at is not None or row.status in ("ended", "rejected", "missed", "canceled"):
+                    raise HTTPException(status_code=400, detail="call ended")
+                exp_ts = _dt_to_epoch_secs(getattr(row, "expires_at", None))
+                if not exp_ts or exp_ts <= now_ts_call:
+                    try:
+                        row.status = "missed"
+                        s.commit()
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail="call expired")
+                ring_ts = _dt_to_epoch_secs(getattr(row, "ring_expires_at", None))
+                if row.status == "ringing" and (not ring_ts or ring_ts <= now_ts_call):
+                    try:
+                        row.status = "missed"
+                        s.commit()
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail="call expired")
+                # If the callee mints a token, treat that as an implicit accept.
+                if row.status == "ringing" and row.to_phone == phone:
+                    try:
+                        row.status = "accepted"
+                        row.accepted_at = now_dt  # type: ignore[assignment]
+                        s.commit()
+                    except Exception:
+                        pass
+                room = str(row.room or "").strip()
+                call_exp_ts = _dt_to_epoch_secs(row.expires_at) if getattr(row, "expires_at", None) else None
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=502, detail="call lookup failed")
+        if not room or not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", room):
+            raise HTTPException(status_code=500, detail="invalid call room")
+    else:
+        # In non-dev environments, do not expose "mint arbitrary room token" capability.
+        if _ENV_LOWER not in ("dev", "test"):
+            raise HTTPException(status_code=400, detail="call_id required")
+        room = str(body.get("room") or "").strip()
+        if not room:
+            room = f"call_{_secrets.token_hex(8)}"
+        if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", room):
+            raise HTTPException(status_code=400, detail="invalid room")
 
     ttl = LIVEKIT_TOKEN_TTL_SECS_DEFAULT
     try:
@@ -15553,6 +15983,12 @@ async def livekit_token(request: Request) -> dict[str, Any]:
     except Exception:
         ttl = LIVEKIT_TOKEN_TTL_SECS_DEFAULT
     ttl = max(30, min(int(ttl), max(30, int(LIVEKIT_TOKEN_MAX_TTL_SECS))))
+    # Never mint a token that outlives the call record (defense-in-depth).
+    if call_exp_ts:
+        remaining = int(call_exp_ts - _now())
+        if remaining <= 0:
+            raise HTTPException(status_code=400, detail="call expired")
+        ttl = max(30, min(ttl, remaining))
 
     # Rate-limit token minting (best-effort).
     try:
@@ -15623,6 +16059,7 @@ async def livekit_token(request: Request) -> dict[str, Any]:
     _audit_from_request(
         request,
         "livekit_token_minted",
+        call_id=(call_id[-6:] if call_id else None),
         room=room,
         ttl=ttl,
         device_id=device_id,
@@ -27794,6 +28231,61 @@ class DeviceSessionDB(_OfficialBase):
         _sa_DateTime(timezone=True),
         server_default=_sa_func.now(),
         onupdate=_sa_func.now(),
+    )
+
+
+class CallDB(_OfficialBase):
+    """
+    DB-backed 1:1 call registry for LiveKit token authorization.
+
+    We treat the call_id as an opaque capability token (unguessable) and use
+    it to authorize token minting for exactly two participants (from/to).
+    """
+
+    __tablename__ = "calls"
+    __table_args__ = (
+        _sa_UniqueConstraint("call_id", name="uq_calls_call_id"),
+        {"schema": _OFFICIALS_DB_SCHEMA} if _OFFICIALS_DB_SCHEMA else {},
+    )
+
+    id: _sa_Mapped[int] = _sa_mapped_column(
+        _sa_Integer, primary_key=True, autoincrement=True
+    )
+    call_id: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    room: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(128), index=True
+    )
+    from_phone: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    to_phone: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(32), index=True
+    )
+    mode: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="video", index=True
+    )
+    status: _sa_Mapped[str] = _sa_mapped_column(
+        _sa_String(16), default="ringing", index=True
+    )
+    created_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), server_default=_sa_func.now()
+    )
+    ring_expires_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), index=True
+    )
+    expires_at: _sa_Mapped[datetime] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), index=True
+    )
+    accepted_at: _sa_Mapped[datetime | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), nullable=True
+    )
+    ended_at: _sa_Mapped[datetime | None] = _sa_mapped_column(
+        _sa_DateTime(timezone=True), nullable=True
+    )
+    ended_by_phone: _sa_Mapped[str | None] = _sa_mapped_column(
+        _sa_String(32), nullable=True
     )
 
 
