@@ -78,3 +78,20 @@ LiveKit RTC ports, use:
 ```bash
 scripts/sync_hetzner_ufw.sh shamell --allow-livekit
 ```
+
+### LiveKit On Separate Host (DNS-Only)
+
+If you run LiveKit on a dedicated host and you set `livekit.<domain>` to
+**DNS-only** (required for UDP unless you have a Spectrum-like proxy), then the
+Cloudflare-only allowlist for `80/443` will block real clients.
+
+On the LiveKit host you typically want:
+
+- `80/tcp` and `443/tcp` open to the public internet (ACME + WSS signaling)
+- `7881/tcp` and `7882/udp` open to the public internet (WebRTC media)
+
+Apply that policy with:
+
+```bash
+scripts/sync_hetzner_ufw.sh livekit-host-alias --direct-web --allow-livekit
+```
