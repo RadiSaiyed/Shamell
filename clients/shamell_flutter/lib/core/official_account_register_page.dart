@@ -251,8 +251,8 @@ class _OfficialAccountRegisterPageState
                 decoration: InputDecoration(
                   labelText: isArabic ? 'معرّف الحساب' : 'Account ID',
                   helperText: isArabic
-                      ? 'أحرف صغيرة، أرقام، "_" و "-". مثال: taxi_official'
-                      : 'Lowercase letters, digits, "_" and "-". Example: taxi_official',
+                      ? 'أحرف صغيرة، أرقام، "_" و "-". مثال: bus_official'
+                      : 'Lowercase letters, digits, "_" and "-". Example: bus_official',
                 ),
               ),
               const SizedBox(height: 8),
@@ -316,8 +316,8 @@ class _OfficialAccountRegisterPageState
                 controller: _categoryCtrl,
                 decoration: InputDecoration(
                   labelText: isArabic
-                      ? 'الفئة (مثال: النقل، الطعام)'
-                      : 'Category (e.g. transport, food)',
+                      ? 'الفئة (مثال: النقل، المدفوعات)'
+                      : 'Category (e.g. transport, payments)',
                 ),
               ),
               const SizedBox(height: 8),
@@ -354,8 +354,8 @@ class _OfficialAccountRegisterPageState
                       ? 'معرّف التطبيق المصغر المرتبط (اختياري)'
                       : 'Linked mini‑app ID (optional)',
                   helperText: isArabic
-                      ? 'مثال: taxi_rider، food، stays'
-                      : 'Example: taxi_rider, food, stays',
+                      ? 'مثال: bus، payments'
+                      : 'Example: bus, payments',
                 ),
               ),
               const SizedBox(height: 12),

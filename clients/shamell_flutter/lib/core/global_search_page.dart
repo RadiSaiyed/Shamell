@@ -1588,15 +1588,8 @@ String _labelForOfficialCategory(String raw, L10n l) {
   if (key.isEmpty) return raw;
   if (l.isArabic) {
     switch (key) {
-      case 'taxi':
       case 'transport':
-        return 'تاكسي والنقل';
-      case 'food':
-      case 'food_delivery':
-        return 'خدمة الطعام';
-      case 'stays':
-      case 'travel':
-        return 'الإقامات والسفر';
+        return 'التنقل والنقل';
       case 'wallet':
       case 'payments':
         return 'المحفظة والمدفوعات';
@@ -1605,15 +1598,8 @@ String _labelForOfficialCategory(String raw, L10n l) {
     }
   } else {
     switch (key) {
-      case 'taxi':
       case 'transport':
-        return 'Taxi & transport';
-      case 'food':
-      case 'food_delivery':
-        return 'Food service';
-      case 'stays':
-      case 'travel':
-        return 'Stays & travel';
+        return 'Transport';
       case 'wallet':
       case 'payments':
         return 'Wallet & payments';

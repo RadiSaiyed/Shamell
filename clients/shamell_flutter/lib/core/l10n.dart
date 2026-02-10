@@ -77,36 +77,16 @@ class L10n {
   String get sonicTitle => isArabic ? 'دفعة Sonic' : 'Sonic Pay';
   String get vouchersTitle => isArabic ? 'قسائم الشحن' : 'Vouchers';
   String get busTitle => isArabic ? 'الحافلات' : 'Bus';
-  String get staysOperatorTitle =>
-      isArabic ? 'الإقامات والفنادق' : 'Stays & Hotel';
 
   // Home / modules
   String get homeActions => isArabic ? 'الإجراءات' : 'Actions';
-  String get homeTaxi => isArabic ? 'تاكسي' : 'Taxi';
-  String get homeTaxiRider => isArabic ? 'راكب تاكسي' : 'Taxi';
-  String get homeTaxiDriver => isArabic ? 'سائق تاكسي' : 'Taxi Driver';
-  String get homeTaxiOperator => isArabic ? 'مشغل تاكسي' : 'Taxi Operator';
-  String get taxiHistoryTitle => isArabic ? 'رحلات التاكسي' : 'Taxi Rides';
   String get homePayments => isArabic ? 'المدفوعات' : 'Payment';
   String get homeWallet => isArabic ? 'المحفظة' : 'Wallet';
   String get homeBills => isArabic ? 'الفواتير' : 'Bills';
   String get homeRequests => isArabic ? 'الطلبات' : 'Requests';
   String get homeVouchers => isArabic ? 'قسائم' : 'Vouchers';
-  String get homeFood => isArabic ? 'الطعام' : 'Food';
-  String get homeStays => isArabic ? 'الفنادق والإقامات' : 'Hotels & Stays';
   String get homeBus => isArabic ? 'الحافلات' : 'Bus';
   String get homeChat => isArabic ? 'مرسال' : 'Mirsaal';
-  String get homeDoctors => isArabic ? 'الأطباء' : 'Doctors';
-  String get homeFlights => isArabic ? 'الرحلات' : 'Flights';
-  String get homeJobs => isArabic ? 'الوظائف' : 'Jobs';
-  String get homeAgriculture =>
-      isArabic ? 'سوق المنتجات الزراعية' : 'Agri Marketplace';
-  String get homeLivestock =>
-      isArabic ? 'سوق الثروة الحيوانية' : 'Livestock Marketplace';
-  String get homeCommerce => isArabic ? 'السوق' : 'Marketplace';
-  String get homeMerchantPos => isArabic ? 'نقطة بيع التاجر' : 'Merchant POS';
-  String get homeBuildingMaterials =>
-      isArabic ? 'مواد البناء' : 'Building Materials';
   String get homeTopup => isArabic ? 'شحن الرصيد' : 'Topup';
 
   // Settings / debug
@@ -267,8 +247,8 @@ class L10n {
   String get mirsaalContactsServiceAccounts =>
       isArabic ? 'حسابات الخدمات' : 'Service accounts';
   String get mirsaalContactsServiceAccountsSubtitle => isArabic
-      ? 'Shamell Taxi, Food, Pay والمزيد'
-      : 'Shamell Taxi, Food, Pay and more';
+      ? 'Shamell Bus, Pay والمزيد'
+      : 'Shamell Bus, Pay and more';
   String get mirsaalContactsPeopleP2P =>
       isArabic ? 'الأشخاص والمدفوعات' : 'People & P2P';
   String get mirsaalContactsPeopleP2PSubtitle => isArabic
@@ -749,28 +729,7 @@ class L10n {
   String get notSet => isArabic ? 'غير معيّن' : '(not set)';
   String get unknownLabel => isArabic ? 'غير معروف' : 'Unknown';
 
-  // Real‑estate / stays helpers
-  String get rsBrowseByPropertyType =>
-      isArabic ? 'تصفح حسب نوع العقار' : 'Browse by property type';
-  String get rsPropertyType => isArabic ? 'نوع العقار' : 'Property type';
-  String get rsAllTypes => isArabic ? 'كل الأنواع' : 'All types';
-  String get rsAvailable => isArabic ? 'متاح' : 'Available';
-  String get rsUnavailable => isArabic ? 'غير متاح' : 'Unavailable';
-  String get rsPrices => isArabic ? 'الأسعار' : 'Prices';
-  String get rsSelect => isArabic ? 'اختيار' : 'Select';
-  String get rsSelectedListingPrefix =>
-      isArabic ? 'تم اختيار العقار #' : 'Selected listing #';
-
-  String get realEstateTitle => isArabic ? 'العقارات' : 'RealEstate';
-  String get rePropertyId => isArabic ? 'معرف العقار' : 'property id';
-  String get reBuyerWallet => isArabic ? 'محفظة المشتري' : 'buyer wallet';
-  String get reDeposit => isArabic ? 'الدفعة المقدمة (SYP)' : 'deposit (SYP)';
-  String get reSearch => isArabic ? 'بحث' : 'Search';
-  String get reReserveAndPay => isArabic ? 'حجز و دفع' : 'Reserve & Pay';
-  String get reSendInquiry => isArabic ? 'إرسال استفسار' : 'Send inquiry';
-
   // Small stats labels
-  String get taxiTodayTitle => isArabic ? 'تاكسي · اليوم' : 'Taxi · Today';
   String get busTodayTitle => isArabic ? 'الحافلات · اليوم' : 'Bus · Today';
   String get ridesLabel => isArabic ? 'رحلات' : 'rides';
   String get completedLabel => isArabic ? 'مكتملة' : 'completed';
@@ -952,96 +911,12 @@ class L10n {
   String get payReqStatusCancelled => isArabic ? 'ملغاة' : 'Cancelled';
   String get payReqStatusExpired => isArabic ? 'منتهية الصلاحية' : 'Expired';
 
-  // Taxi helpers
-  String get taxiNoActiveRide =>
-      isArabic ? 'لا توجد رحلة نشطة' : 'No active ride';
-  String get taxiIncomingRide =>
-      isArabic ? 'طلب رحلة جديد' : 'Incoming ride request';
-  String get taxiDenyRequest =>
-      isArabic ? 'رفض هذا الطلب؟' : 'Deny this request?';
-  String get taxiTopupScanErrorPrefix =>
-      isArabic ? 'خطأ في مسح رصيد الشحن' : 'Topup scan error';
-  String get taxiTopupErrorPrefix => isArabic ? 'خطأ في الشحن' : 'Topup error';
-
-  // Freight / Courier & Transport
-  String get freightTitle => isArabic ? 'التوصيل' : 'Courier';
-  String get freightQuoteLabel => isArabic ? 'تسعير' : 'Quote';
-  String get freightBookPayLabel => isArabic ? 'حجز و دفع' : 'Book & Pay';
-  String get freightGuardrailAmount => isArabic
-      ? 'قيمة الشحنة تتجاوز الحد المسموح به لهذه الخدمة.'
-      : 'Shipment amount exceeds the maximum allowed for this service.';
-  String get freightGuardrailDistance => isArabic
-      ? 'مسافة الشحنة بعيدة جداً بالنسبة لهذه الخدمة. حاول تقليل المسافة أو تقسيم الشحنة.'
-      : 'Shipment distance is too far for this service. Try reducing the distance or splitting the shipment.';
-  String get freightGuardrailWeight => isArabic
-      ? 'وزن الشحنة أعلى من الحد المسموح. حاول تقليل الوزن أو تقسيم الشحنة.'
-      : 'Shipment weight is above the allowed limit. Try reducing the weight or splitting the shipment.';
-  String get freightGuardrailVelocityPayer => isArabic
-      ? 'عدد كبير من شحنات الدفع من هذه المحفظة خلال فترة قصيرة. يرجى الانتظار قليلاً قبل المحاولة مرة أخرى.'
-      : 'Too many paid shipments from this wallet in a short period. Please wait a bit and try again.';
-  String get freightGuardrailVelocityDevice => isArabic
-      ? 'عدد كبير من شحنات الدفع من هذا الجهاز خلال فترة قصيرة. يرجى الانتظار قليلاً قبل المحاولة مرة أخرى.'
-      : 'Too many paid shipments from this device in a short period. Please wait a bit and try again.';
   String get operatorDashboardTitle =>
       isArabic ? 'لوحة المشغل' : 'Operator Dashboard';
   String get adminDashboardTitle =>
       isArabic ? 'لوحة المسؤول' : 'Admin dashboard';
   String get superadminDashboardTitle =>
       isArabic ? 'لوحة السوبر أدمن' : 'Superadmin dashboard';
-
-  // Carmarket / Carrental
-  String get carmarketTitle =>
-      isArabic ? 'تأجير وبيع السيارات' : 'Carrental & Carmarket';
-  String get carrentalTitle =>
-      isArabic ? 'تأجير وبيع السيارات' : 'Carrental & Carmarket';
-  String get equipmentTitle => isArabic ? 'تأجير المعدات' : 'Equipment rental';
-
-  // Food orders
-  String get foodOrdersTitle => isArabic ? 'طلبات الطعام' : 'Food orders';
-  String get foodOrdersAutoRefresh =>
-      isArabic ? 'تحديث تلقائي (10ث)' : 'Auto‑refresh (10s)';
-  String get foodOrdersPendingOfflineTitle =>
-      isArabic ? 'معلّق (بدون اتصال)' : 'Pending (offline)';
-  String foodOrdersSignedInLabel(String phone) {
-    final p = phone.trim();
-    if (isArabic) {
-      return 'تم تسجيل الدخول: ${p.isEmpty ? '(بدون رقم)' : p}';
-    }
-    return 'Signed in: ${p.isEmpty ? '(no phone)' : p}';
-  }
-
-  String get foodOrdersLoadList => isArabic ? 'تحميل القائمة' : 'Load list';
-  String get foodOrdersExportCsv => isArabic ? 'تصدير CSV' : 'Export CSV';
-  String get foodOrdersPeriodTitle => isArabic ? 'الفترة' : 'Period';
-  String get foodOrdersFrom => isArabic ? 'من' : 'From';
-  String get foodOrdersTo => isArabic ? 'إلى' : 'To';
-  String get foodOrdersListTitle => isArabic ? 'الطلبات' : 'Orders';
-  String get foodOrderIdLabel => isArabic ? 'معرّف الطلب' : 'Order ID';
-  String get foodOrdersCheckStatus =>
-      isArabic ? 'تحقق من الحالة' : 'Check status';
-  String get foodOrdersRecentTitle =>
-      isArabic ? 'الطلبات الأخيرة' : 'Recent orders';
-  String foodOrdersOrderTitle(String id) => isArabic ? 'طلب $id' : 'Order $id';
-  String get foodFilterAll => isArabic ? 'الكل' : 'All';
-  String get foodStatusPending => isArabic ? 'قيد الانتظار' : 'Pending';
-  String get foodStatusConfirmed => isArabic ? 'مؤكد' : 'Confirmed';
-  String get foodStatusDelivered => isArabic ? 'تم التسليم' : 'Delivered';
-  String get foodStatusCanceled => isArabic ? 'ملغى' : 'Canceled';
-  String get foodPeriodAll => isArabic ? 'كل الوقت' : 'All time';
-  String get foodPeriod7d => isArabic ? 'آخر 7 أيام' : 'Last 7 days';
-  String get foodPeriod30d => isArabic ? 'آخر 30 يوماً' : 'Last 30 days';
-  String get foodPeriodCustom => isArabic ? 'مخصص' : 'Custom';
-  String get foodOrderIdRequired =>
-      isArabic ? 'معرّف الطلب مطلوب' : 'Order id required';
-  String get foodStatusTitle => isArabic ? 'الحالة' : 'Status';
-  String get foodCreatedTitle => isArabic ? 'تم الإنشاء' : 'Created';
-  String get foodTotalTitle => isArabic ? 'المجموع' : 'Total';
-  String get foodRestaurantTitle => isArabic ? 'المطعم' : 'Restaurant';
-  String get foodItemsTitle => isArabic ? 'العناصر' : 'Items';
-  String get foodReorderPlaced =>
-      isArabic ? 'تم إرسال طلب جديد' : 'Reorder placed';
-  String foodErrorPrefix(int code) => isArabic ? 'خطأ: $code' : 'Error: $code';
-  String foodErrorGeneric(Object e) => isArabic ? 'خطأ: $e' : 'Error: $e';
 }
 
 class _L10nDelegate extends LocalizationsDelegate<L10n> {

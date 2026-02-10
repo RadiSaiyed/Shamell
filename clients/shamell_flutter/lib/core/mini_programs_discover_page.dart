@@ -839,8 +839,14 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
 
   List<Map<String, dynamic>> _mergeWithLocal(
       List<Map<String, dynamic>> remote) {
+    // Bus-only build: only keep allow-listed mini-programs (defense-in-depth
+    // against remote catalogs showing more apps than this build supports).
+    const allowedIds = <String>{'bus'};
     final merged = <Map<String, dynamic>>[
-      for (final p in remote) Map<String, dynamic>.from(p),
+      for (final p in remote)
+        if (allowedIds.contains(
+            (p['app_id'] ?? '').toString().trim().toLowerCase()))
+          Map<String, dynamic>.from(p),
     ];
     final existing = <String>{};
     for (final p in merged) {
@@ -849,53 +855,34 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
     }
     for (final p in _localMiniPrograms()) {
       final id = (p['app_id'] ?? '').toString().trim().toLowerCase();
-      if (id.isEmpty || existing.contains(id)) continue;
+      if (id.isEmpty || !allowedIds.contains(id) || existing.contains(id)) {
+        continue;
+      }
       merged.add(p);
     }
     return merged;
   }
 
-  _IconSpec _iconSpecFor(String appId) {
-    final id = appId.trim().toLowerCase();
-    if (id.contains('pay') || id.contains('wallet') || id.contains('payment')) {
-      return const _IconSpec(
-        Icons.account_balance_wallet_outlined,
-        Tokens.colorPayments,
-        Colors.white,
-      );
-    }
-    if (id.contains('taxi') || id.contains('ride')) {
-      return const _IconSpec(
-        Icons.local_taxi_outlined,
-        Tokens.colorTaxi,
-        Color(0xFF111111),
-      );
-    }
-    if (id.contains('bus')) {
-      return const _IconSpec(
-        Icons.directions_bus_filled_outlined,
-        Tokens.colorBus,
-        Colors.white,
-      );
-    }
-    if (id.contains('food') || id.contains('restaurant')) {
-      return const _IconSpec(
-        Icons.restaurant_outlined,
-        Tokens.colorFood,
-        Colors.white,
-      );
-    }
-    if (id.contains('stay') || id.contains('hotel') || id.contains('travel')) {
-      return const _IconSpec(
-        Icons.hotel_outlined,
-        Tokens.colorHotelsStays,
-        Colors.white,
-      );
-    }
-    return const _IconSpec(
-      Icons.widgets_outlined,
-      Color(0xFF64748B),
-      Colors.white,
+	  _IconSpec _iconSpecFor(String appId) {
+	    final id = appId.trim().toLowerCase();
+		    if (id.contains('pay') || id.contains('wallet') || id.contains('payment')) {
+		      return const _IconSpec(
+		        Icons.account_balance_wallet_outlined,
+		        Tokens.colorPayments,
+		        Colors.white,
+		      );
+		    }
+		    if (id.contains('bus') || id.contains('ride') || id.contains('mobility')) {
+		      return const _IconSpec(
+		        Icons.directions_bus_filled_outlined,
+		        Tokens.colorBus,
+		        Colors.white,
+		      );
+		    }
+	    return const _IconSpec(
+	      Icons.widgets_outlined,
+	      Color(0xFF64748B),
+	      Colors.white,
     );
   }
 
@@ -1738,27 +1725,18 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                 '${descAr.toLowerCase()} '
                 '${appIdRaw.toLowerCase()}'
             .trim();
-        bool matches = false;
-        switch (_categoryFilter) {
-          case 'transport':
-            matches = hay.contains('taxi') ||
-                hay.contains('ride') ||
-                hay.contains('transport');
-            break;
-          case 'food':
-            matches = hay.contains('food') ||
-                hay.contains('restaurant') ||
-                hay.contains('delivery');
-            break;
-          case 'stays':
-            matches = hay.contains('stay') ||
-                hay.contains('hotel') ||
-                hay.contains('travel');
-            break;
-          case 'wallet':
-            matches = hay.contains('wallet') ||
-                hay.contains('pay') ||
-                hay.contains('payment') ||
+	        bool matches = false;
+		        switch (_categoryFilter) {
+		          case 'transport':
+		            matches = hay.contains('bus') ||
+		                hay.contains('ride') ||
+		                hay.contains('transport') ||
+		                hay.contains('mobility');
+		            break;
+	          case 'wallet':
+	            matches = hay.contains('wallet') ||
+	                hay.contains('pay') ||
+	                hay.contains('payment') ||
                 hay.contains('payments');
             break;
           default:
@@ -1806,40 +1784,29 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
               '${appId.toLowerCase()}'
           .trim();
       if (haystack.isEmpty) continue;
-      if (haystack.contains('taxi') ||
-          haystack.contains('ride') ||
-          haystack.contains('transport')) {
-        cats.add('transport');
-      } else if (haystack.contains('food') ||
-          haystack.contains('restaurant') ||
-          haystack.contains('delivery')) {
-        cats.add('food');
-      } else if (haystack.contains('stay') ||
-          haystack.contains('hotel') ||
-          haystack.contains('travel')) {
-        cats.add('stays');
-      } else if (haystack.contains('wallet') ||
-          haystack.contains('pay') ||
-          haystack.contains('payment') ||
-          haystack.contains('payments')) {
+		      if (haystack.contains('bus') ||
+		          haystack.contains('ride') ||
+		          haystack.contains('transport') ||
+		          haystack.contains('mobility')) {
+		        cats.add('transport');
+	      } else if (haystack.contains('wallet') ||
+	          haystack.contains('pay') ||
+	          haystack.contains('payment') ||
+	          haystack.contains('payments')) {
         cats.add('wallet');
       }
     }
     if (cats.isEmpty) {
       return const SizedBox.shrink();
     }
-    String labelFor(String key) {
-      switch (key) {
-        case 'transport':
-          return isArabic ? 'تاكسي والنقل' : 'Taxi & transport';
-        case 'food':
-          return isArabic ? 'خدمة الطعام' : 'Food service';
-        case 'stays':
-          return isArabic ? 'الإقامات والسفر' : 'Stays & travel';
-        case 'wallet':
-          return isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
-        default:
-          return key;
+		    String labelFor(String key) {
+		      switch (key) {
+		        case 'transport':
+		          return isArabic ? 'التنقل والنقل' : 'Transport';
+		        case 'wallet':
+	          return isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
+	        default:
+	          return key;
       }
     }
 
@@ -1938,27 +1905,18 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                 '${descAr.toLowerCase()} '
                 '${appIdRaw.toLowerCase()}'
             .trim();
-        bool matches = false;
-        switch (_categoryFilter) {
-          case 'transport':
-            matches = hay.contains('taxi') ||
-                hay.contains('ride') ||
-                hay.contains('transport');
-            break;
-          case 'food':
-            matches = hay.contains('food') ||
-                hay.contains('restaurant') ||
-                hay.contains('delivery');
-            break;
-          case 'stays':
-            matches = hay.contains('stay') ||
-                hay.contains('hotel') ||
-                hay.contains('travel');
-            break;
-          case 'wallet':
-            matches = hay.contains('wallet') ||
-                hay.contains('pay') ||
-                hay.contains('payment') ||
+	        bool matches = false;
+		        switch (_categoryFilter) {
+		          case 'transport':
+		            matches = hay.contains('bus') ||
+		                hay.contains('ride') ||
+		                hay.contains('transport') ||
+		                hay.contains('mobility');
+		            break;
+	          case 'wallet':
+	            matches = hay.contains('wallet') ||
+	                hay.contains('pay') ||
+	                hay.contains('payment') ||
                 hay.contains('payments');
             break;
           default:

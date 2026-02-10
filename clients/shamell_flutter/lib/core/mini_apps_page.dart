@@ -109,9 +109,13 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
           }
         }
       }
-      if (!mounted || list.isEmpty) return;
+      // Bus-only build: ignore remote mini-apps that are not allow-listed.
+      const allowedIds = <String>{'bus'};
+      final filtered =
+          list.where((m) => allowedIds.contains(m.id.trim().toLowerCase())).toList();
+      if (!mounted || filtered.isEmpty) return;
       setState(() {
-        _remoteApps = list;
+        _remoteApps = filtered;
       });
     } catch (_) {}
   }
@@ -350,12 +354,8 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
         .where((m) => m.id.isNotEmpty)
         .toList();
 
-    final hasTaxiTopic = apps.any((m) => m.id == 'taxi_rider');
-    final hasFoodTopic = apps.any((m) => m.id == 'food');
-    final hasStaysTopic = apps.any((m) => m.id == 'stays');
     final hasWalletTopic = apps.any((m) => m.id == 'payments');
-    final hasAnyTopic =
-        hasTaxiTopic || hasFoodTopic || hasStaysTopic || hasWalletTopic;
+    final hasAnyTopic = hasWalletTopic;
 
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -539,72 +539,6 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                     spacing: 8,
                     runSpacing: 6,
                     children: [
-                      if (hasTaxiTopic)
-                        ActionChip(
-                          avatar: const Icon(
-                            Icons.local_taxi_outlined,
-                            size: 18,
-                          ),
-                          label: Text(
-                            l.isArabic
-                                ? 'لحظات تطبيقات التاكسي'
-                                : 'Taxi mini‑apps Moments',
-                          ),
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => MomentsPage(
-                                  baseUrl: widget.baseUrl,
-                                  topicTag: '#TaxiMiniApp',
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      if (hasFoodTopic)
-                        ActionChip(
-                          avatar: const Icon(
-                            Icons.restaurant_outlined,
-                            size: 18,
-                          ),
-                          label: Text(
-                            l.isArabic
-                                ? 'لحظات تطبيقات الطعام'
-                                : 'Food mini‑apps Moments',
-                          ),
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => MomentsPage(
-                                  baseUrl: widget.baseUrl,
-                                  topicTag: '#FoodMiniApp',
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      if (hasStaysTopic)
-                        ActionChip(
-                          avatar: const Icon(
-                            Icons.hotel_outlined,
-                            size: 18,
-                          ),
-                          label: Text(
-                            l.isArabic
-                                ? 'لحظات تطبيقات الإقامات'
-                                : 'Stays mini‑apps Moments',
-                          ),
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => MomentsPage(
-                                  baseUrl: widget.baseUrl,
-                                  topicTag: '#StaysMiniApp',
-                                ),
-                              ),
-                            );
-                          },
-                        ),
                       if (hasWalletTopic)
                         ActionChip(
                           avatar: const Icon(
@@ -879,15 +813,6 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                           txt += ' #ShamellMiniApp #Services';
                         }
                         switch (m.id) {
-                          case 'taxi_rider':
-                            txt += ' #TaxiMiniApp';
-                            break;
-                          case 'food':
-                            txt += ' #FoodMiniApp';
-                            break;
-                          case 'stays':
-                            txt += ' #StaysMiniApp';
-                            break;
                           case 'payments':
                             txt += ' #WalletMiniApp';
                             break;

@@ -40,14 +40,5 @@ class Tokens {
 
   // Domain accent colours (used for icons / chips)
   static const Color colorPayments = Color(0xFF07C160); // WeChat-inspired green
-  static const Color colorTaxi = Color(0xFFFACC15); // yellow
   static const Color colorBus = Color(0xFF3B82F6); // blue
-  static const Color colorFood = Color(0xFFF97316); // orange
-  static const Color colorHotelsStays = Color(0xFF6366F1); // indigo
-  static const Color colorBuildingMaterials = Color(0xFFA16207); // amber/brown
-  static const Color colorCourierTransport = Color(0xFF0EA5E9); // light blue
-  static const Color colorAgricultureLivestock =
-      Color(0xFF16A34A); // dark green
-  static const Color colorCars =
-      Color(0xFF0891B2); // cyan (Carrental & Carmarket)
 }

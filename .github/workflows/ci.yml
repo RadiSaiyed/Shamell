@@ -139,18 +139,22 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r apps/monolith/requirements.txt
+          pip install -r requirements.txt
           pip install -e libs/shamell_shared/python
           pip install pytest
 
       - name: Compile sources
         run: |
-          python -m compileall -q apps libs NonWeChat
+          python -m compileall -q apps libs tests
+
+      - name: Guard internal port exposure
+        run: |
+          python scripts/check_internal_port_exposure.py
 
       - name: Run pytest
         env:
           ENV: test
-          MONOLITH_MODE: "1"
+          MONOLITH_MODE: "0"
           PYTHONPATH: .
         run: |
           pytest -q
@@ -180,7 +184,7 @@ jobs:
             --exclude .git \
             --exclude .github \
             --exclude .semgrep \
-            apps/bff apps/chat apps/monolith
+            apps/bff apps/chat apps/payments apps/bus
 
   flutter:
     runs-on: ubuntu-latest

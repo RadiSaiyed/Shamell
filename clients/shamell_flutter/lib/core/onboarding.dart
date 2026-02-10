@@ -45,36 +45,37 @@ class OnboardingPage extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             FormSection(
-              title: l.isArabic ? 'أول رحلة تاكسي' : '3. First taxi ride',
+              title: l.isArabic ? 'التنقل والرحلات' : '3. Journeys & mobility',
               children: [
                 Text(
                   l.isArabic
-                      ? '١) افتح شاشة الراكب في التاكسي.\n٢) اختر نقطة الانطلاق والوصول.\n٣) شاهد السعر التقديري ثم اطلب الرحلة وادفع من المحفظة.'
-                      : '1) On the home screen open \"Taxi Rider\".\n2) Choose pickup and dropoff on the map or via coordinates.\n3) Check the estimated fare, request the ride and pay from your wallet.',
+                      ? '١) افتح صفحة \"Journey\" من الشاشة الرئيسية.\n٢) راجع ملخص التنقل وسجل رحلات الباص.\n٣) استخدمها لمتابعة حجوزاتك وتنقلاتك.'
+                      : '1) On the home screen open \"Journey\".\n2) Review your mobility overview and bus trip history.\n3) Use it to track bookings and trips.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
             ),
             const SizedBox(height: 16),
             FormSection(
-              title: l.isArabic ? 'الباصات والطعام' : '4. Buses & food',
+              title: l.isArabic ? 'حجز الباص' : '4. Bus booking',
               children: [
                 Text(
                   l.isArabic
-                      ? '١) من الشاشة الرئيسية اختر Bus للحجوزات بين المدن.\n٢) اختر مدينة الانطلاق والوصول والتاريخ ثم احجز وادفع.\n٣) لطلب الطعام افتح \"Food\"، اختر مطعماً، ثم أضف الطلب وادفع من المحفظة.'
-                      : '1) For intercity buses open \"Bus\" and select origin, destination and date.\n2) Pick a connection and book it directly with your wallet.\n3) For food orders open \"Food\", choose a restaurant and pay the order from your balance.',
+                      ? '١) من الشاشة الرئيسية اختر \"Bus\" للحجوزات بين المدن.\n٢) اختر مدينة الانطلاق والوصول والتاريخ ثم احجز وادفع من محفظتك.\n٣) راجع حجوزاتك من \"Journey\" أو \"My trips\".'
+                      : '1) On the home screen open \"Bus\" for intercity bookings.\n2) Select origin, destination and date, then book and pay from your wallet.\n3) Review bookings in \"Journey\" or \"My trips\".',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
             ),
             const SizedBox(height: 16),
             FormSection(
-              title: l.isArabic ? 'الفنادق والإقامات' : '5. Hotels & stays',
+              title:
+                  l.isArabic ? 'الحسابات الرسمية والخدمات' : '5. Official accounts',
               children: [
                 Text(
                   l.isArabic
-                      ? '١) افتح \"Hotels & Stays\" للبحث عن أماكن إقامة.\n٢) استخدم الفلاتر (المدينة، النوع، التاريخ) ثم اطلب عرض سعر.\n٣) عند رضاك عن السعر، أكمل الحجز وادفع من المحفظة.'
-                      : '1) Open \"Hotels & Stays\" to search for accommodation.\n2) Use filters (city, type, dates) and request a quote.\n3) If the price looks good, confirm the booking and pay from the wallet.',
+                      ? '١) افتح \"Contacts\" ثم \"Service accounts\".\n٢) تابع \"Shamell Bus\" للحصول على التحديثات.\n٣) استخدم \"Shamell Pay\" للتحويلات ورؤية المعاملات.'
+                      : '1) Open \"Contacts\" then \"Service accounts\".\n2) Follow \"Shamell Bus\" for updates.\n3) Use \"Shamell Pay\" for transfers and transaction history.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
@@ -85,8 +86,8 @@ class OnboardingPage extends StatelessWidget {
               children: [
                 Text(
                   l.isArabic
-                      ? 'كمستخدم نهائي ترى فقط التطبيقات المخصصة لك. المشغلون والمديرون لديهم واجهات منفصلة لكل مجال (مثل مشغل الفنادق أو مشغل الباص).'
-                      : 'As an end user you only see the parts that are enabled for you. Operators and admins have their own consoles per domain (for example hotel operator, bus operator).',
+                      ? 'كمستخدم نهائي ترى فقط الأجزاء المخصصة لك. المشغلون والمديرون لديهم واجهات منفصلة (مثل مشغل الباص).'
+                      : 'As an end user you only see the parts that are enabled for you. Operators and admins have their own consoles (for example bus operator).',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],

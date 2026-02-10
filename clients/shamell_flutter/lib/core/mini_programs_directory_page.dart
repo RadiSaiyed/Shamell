@@ -149,8 +149,14 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
           }
         }
       }
+      // Bus-only build: only show allow-listed mini-programs.
+      const allowedIds = <String>{'bus'};
+      final filtered = list
+          .where((p) => allowedIds.contains(
+              (p['app_id'] ?? '').toString().trim().toLowerCase()))
+          .toList();
       setState(() {
-        _programs = list;
+        _programs = filtered;
         _loading = false;
       });
     } catch (e) {
@@ -314,18 +320,11 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
               '${appId.toLowerCase()}'
           .trim();
       if (haystack.isEmpty) continue;
-      if (haystack.contains('taxi') ||
+      if (haystack.contains('bus') ||
           haystack.contains('ride') ||
-          haystack.contains('transport')) {
+          haystack.contains('transport') ||
+          haystack.contains('mobility')) {
         cats.add('transport');
-      } else if (haystack.contains('food') ||
-          haystack.contains('restaurant') ||
-          haystack.contains('delivery')) {
-        cats.add('food');
-      } else if (haystack.contains('stay') ||
-          haystack.contains('hotel') ||
-          haystack.contains('travel')) {
-        cats.add('stays');
       } else if (haystack.contains('wallet') ||
           haystack.contains('pay') ||
           haystack.contains('payment') ||
@@ -339,11 +338,7 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
     String labelFor(String key) {
       switch (key) {
         case 'transport':
-          return isArabic ? 'تاكسي والنقل' : 'Taxi & transport';
-        case 'food':
-          return isArabic ? 'خدمة الطعام' : 'Food service';
-        case 'stays':
-          return isArabic ? 'الإقامات والسفر' : 'Stays & travel';
+          return isArabic ? 'التنقل والنقل' : 'Transport';
         case 'wallet':
           return isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
         default:
@@ -414,19 +409,10 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
         bool matches = false;
         switch (_categoryFilter) {
           case 'transport':
-            matches = hay.contains('taxi') ||
+            matches = hay.contains('bus') ||
                 hay.contains('ride') ||
-                hay.contains('transport');
-            break;
-          case 'food':
-            matches = hay.contains('food') ||
-                hay.contains('restaurant') ||
-                hay.contains('delivery');
-            break;
-          case 'stays':
-            matches = hay.contains('stay') ||
-                hay.contains('hotel') ||
-                hay.contains('travel');
+                hay.contains('transport') ||
+                hay.contains('mobility');
             break;
           case 'wallet':
             matches = hay.contains('wallet') ||
@@ -540,18 +526,11 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
                 '${(p['description_ar'] ?? '').toString().toLowerCase()} '
                 '${appId.toLowerCase()}'
             .trim();
-        if (haystack.contains('taxi') ||
+        if (haystack.contains('bus') ||
             haystack.contains('ride') ||
-            haystack.contains('transport')) {
-          categoryLabel = isArabic ? 'تاكسي والنقل' : 'Taxi & transport';
-        } else if (haystack.contains('food') ||
-            haystack.contains('restaurant') ||
-            haystack.contains('delivery')) {
-          categoryLabel = isArabic ? 'خدمة الطعام' : 'Food service';
-        } else if (haystack.contains('stay') ||
-            haystack.contains('hotel') ||
-            haystack.contains('travel')) {
-          categoryLabel = isArabic ? 'الإقامات والسفر' : 'Stays & travel';
+            haystack.contains('transport') ||
+            haystack.contains('mobility')) {
+          categoryLabel = isArabic ? 'التنقل والنقل' : 'Transport';
         } else if (haystack.contains('wallet') ||
             haystack.contains('pay') ||
             haystack.contains('payment') ||

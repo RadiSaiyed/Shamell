@@ -1,1 +1,0 @@
-"""Courier delivery mini-service."""

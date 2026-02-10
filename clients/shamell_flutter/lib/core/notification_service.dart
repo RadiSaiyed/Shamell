@@ -199,14 +199,14 @@ class NotificationService {
   }) async {
     if (!_inited) await initialize();
     final nid = 3200 + (rideId.hashCode & 0x0FFF);
-    final title = 'New taxi ride request';
+    final title = 'New ride request';
     final details = <String>[];
     if (riderPhone != null && riderPhone.isNotEmpty)
       details.add('Rider: $riderPhone');
     if (pickupSummary != null && pickupSummary.isNotEmpty)
       details.add(pickupSummary);
     final body =
-        details.isEmpty ? 'Tap to open the driver app.' : details.join(' · ');
+        details.isEmpty ? 'Tap to view details.' : details.join(' · ');
     final android = AndroidNotificationDetails(
       _channel.id,
       _channel.name,

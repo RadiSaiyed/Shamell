@@ -21,14 +21,14 @@ fi
 check_security_guards() {
   local matches
   matches="$(
-    rg -n \
-      -e '(^|[^[:alnum:]_])eval\(' \
-      -e '(^|[^[:alnum:]_])exec\(' \
-      -e 'subprocess\.[A-Za-z_]+\([^)]*shell\s*=\s*True' \
-      -e 'verify\s*=\s*False' \
-      -e 'allow_origins\s*=\s*\[[^]]*["'"'"']\*["'"'"']' \
-      apps libs NonWeChat scripts ops -S || true
-  )"
+	    rg -n \
+	      -e '(^|[^[:alnum:]_])eval\(' \
+	      -e '(^|[^[:alnum:]_])exec\(' \
+	      -e 'subprocess\.[A-Za-z_]+\([^)]*shell\s*=\s*True' \
+	      -e 'verify\s*=\s*False' \
+	      -e 'allow_origins\s*=\s*\[[^]]*["'"'"']\*["'"'"']' \
+	      apps libs tests scripts ops -S || true
+	  )"
   if [[ -n "${matches}" ]]; then
     echo "[security-guard] potential risky patterns found:" | tee -a "${REPORT_FILE}" >&2
     echo "${matches}" | tee -a "${REPORT_FILE}" >&2
@@ -43,9 +43,9 @@ for i in $(seq 1 "${ITERATIONS}"); do
   printf '[%03d/%03d] checks...\n' "${i}" "${ITERATIONS}" | tee -a "${REPORT_FILE}"
 
   (
-    cd "${APP_DIR}"
-    # Basic syntax/type sanity (no third-party tooling needed).
-    "${PYTHON_BIN}" -m compileall -q apps libs NonWeChat || exit 1
+	    cd "${APP_DIR}"
+	    # Basic syntax/type sanity (no third-party tooling needed).
+	    "${PYTHON_BIN}" -m compileall -q apps libs tests || exit 1
 
     # Optional: docker-compose config validation.
     #

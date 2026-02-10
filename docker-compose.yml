@@ -1,6 +1,6 @@
 x-core-build: &core_build
   context: .
-  dockerfile: apps/monolith/Dockerfile
+  dockerfile: apps/core/Dockerfile
 
 services:
   bootstrap-perms:
@@ -23,7 +23,7 @@ services:
       - |
         uid=10001
         gid=10001
-        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/taxi_data; do
+        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/bus_data; do
           [ -d "$$d" ] || continue
           owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
           if [ "$$owner" = "$$uid:$$gid" ]; then
@@ -36,7 +36,7 @@ services:
       - bff_data:/vol/bff_data
       - chat_data:/vol/chat_data
       - payments_data:/vol/payments_data
-      - taxi_data:/vol/taxi_data
+      - bus_data:/vol/bus_data
 
   bff:
     build: *core_build
@@ -66,10 +66,12 @@ services:
       OFFICIALS_DB_URL: "sqlite+pysqlite:////data/officials.db"
       INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
       PAYMENTS_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
+      BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in .env}"
       CHAT_BASE_URL: "http://chat:8081"
       PAYMENTS_BASE_URL: "http://payments:8082"
-      TAXI_BASE_URL: "http://taxi:8083"
-      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:-}"
+      BUS_BASE_URL: "http://bus:8083"
+      BUS_INTERNAL_MODE: "off"
+      FORCE_INTERNAL_DOMAINS: "false"
       # LiveKit (dev defaults)
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
       LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
@@ -101,7 +103,7 @@ services:
         condition: service_healthy
       payments:
         condition: service_healthy
-      taxi:
+      bus:
         condition: service_healthy
     healthcheck:
       test:
@@ -201,7 +203,7 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  taxi:
+  bus:
     image: shamell-core:dev
     init: true
     security_opt:
@@ -214,24 +216,20 @@ services:
     depends_on:
       bootstrap-perms:
         condition: service_completed_successfully
-      payments:
-        condition: service_healthy
     environment:
       ENV: "dev"
       HOME: "/tmp"
       TMPDIR: "/tmp"
       XDG_CACHE_HOME: "/tmp/.cache"
-      TAXI_DB_URL: "sqlite+pysqlite:////data/taxi.db"
-      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
-      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:-}"
-      # Taxi calls Payments as an internal client.
-      PAYMENTS_BASE_URL: "http://payments:8082"
-      PAYMENTS_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
+      BUS_DB_URL: "sqlite+pysqlite:////data/bus.db"
+      BUS_TICKET_SECRET: "${BUS_TICKET_SECRET:-dev-bus-ticket-secret}"
+      BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in .env}"
+      BUS_REQUIRE_INTERNAL_SECRET: "true"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
     volumes:
-      - taxi_data:/data
-    command: ["uvicorn", "apps.taxi.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
+      - bus_data:/data
+    command: ["uvicorn", "apps.bus.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
     healthcheck:
       test:
         - CMD
@@ -269,4 +267,4 @@ volumes:
   bff_data:
   chat_data:
   payments_data:
-  taxi_data:
+  bus_data:

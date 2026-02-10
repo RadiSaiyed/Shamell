@@ -707,12 +707,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) {
-          final baseUri = Uri.tryParse(base);
-          final uri = baseUri?.resolve('/taxi/driver') ??
-              Uri.parse('${base.replaceAll(RegExp(r'/+$'), '')}/taxi/driver');
-          return WeChatWebViewPage(initialUri: uri, baseUri: baseUri);
-        }),
+        MaterialPageRoute(builder: (_) => OperatorDashboardPage(base)),
       );
       return;
     }

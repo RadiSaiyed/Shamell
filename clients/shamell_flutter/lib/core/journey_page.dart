@@ -24,7 +24,6 @@ class _JourneyPageState extends State<JourneyPage> {
   bool _loading = true;
   String _error = '';
   Map<String, dynamic> _home = {};
-  List<Map<String, dynamic>> _taxi = [];
   List<Map<String, dynamic>> _bus = [];
 
   @override
@@ -52,11 +51,7 @@ class _JourneyPageState extends State<JourneyPage> {
         final home = j['home'];
         final mob = j['mobility_history'] ?? {};
         _home = home is Map<String, dynamic> ? home : <String, dynamic>{};
-        final tx = (mob is Map<String, dynamic>) ? mob['taxi'] : null;
         final bs = (mob is Map<String, dynamic>) ? mob['bus'] : null;
-        _taxi = (tx is List
-            ? tx.whereType<Map<String, dynamic>>().toList()
-            : <Map<String, dynamic>>[]);
         _bus = (bs is List
             ? bs.whereType<Map<String, dynamic>>().toList()
             : <Map<String, dynamic>>[]);
@@ -188,7 +183,7 @@ class _JourneyPageState extends State<JourneyPage> {
   }
 
   Widget _buildMobilitySection(L10n l) {
-    final hasAny = _taxi.isNotEmpty || _bus.isNotEmpty;
+    final hasAny = _bus.isNotEmpty;
     return FormSection(
       title: l.mobilityTitle,
       children: [
@@ -201,12 +196,6 @@ class _JourneyPageState extends State<JourneyPage> {
                     .onSurface
                     .withValues(alpha: .70)),
           ),
-        if (_taxi.isNotEmpty) ...[
-          Text(l.homeTaxi, style: const TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          ..._taxi.take(3).map(_buildTaxiTile),
-          const SizedBox(height: 12),
-        ],
         if (_bus.isNotEmpty) ...[
           Text(l.homeBus, style: const TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
@@ -249,27 +238,6 @@ class _JourneyPageState extends State<JourneyPage> {
     if (diffDays == 0) return 'Today · $hm';
     if (diffDays == 1) return 'Yesterday · $hm';
     return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} · $hm';
-  }
-
-  Widget _buildTaxiTile(Map<String, dynamic> r) {
-    final status = (r['status'] ?? '').toString();
-    final created = _fmtTs(r);
-    final driver = (r['driver_id'] ?? '').toString();
-    final subtitle = StringBuffer();
-    if (created.isNotEmpty) {
-      subtitle.write(created);
-    }
-    if (driver.isNotEmpty) {
-      if (subtitle.isNotEmpty) subtitle.write('\n');
-      subtitle.write('Driver: $driver');
-    }
-    return StandardListTile(
-      leading: const Icon(Icons.local_taxi_outlined),
-      title: Text(status, style: const TextStyle(fontWeight: FontWeight.w700)),
-      subtitle: subtitle.isEmpty
-          ? null
-          : Text(subtitle.toString(), style: const TextStyle(fontSize: 12)),
-    );
   }
 
   Widget _buildBusTile(Map<String, dynamic> r) {

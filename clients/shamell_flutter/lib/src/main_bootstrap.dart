@@ -209,10 +209,10 @@ class _DriverChip extends StatelessWidget {
     final l = L10n.of(context);
     final theme = Theme.of(context);
     final label = l.isArabic ? 'سائق' : 'Driver';
-    final icon = Icons.local_taxi;
+    final icon = Icons.badge_outlined;
     final isDisabled = !enabled;
     final bg = selected
-        ? Tokens.colorTaxi.withValues(alpha: .18)
+        ? Tokens.colorBus.withValues(alpha: .18)
         : (isDisabled
             ? theme.colorScheme.surface.withValues(alpha: .4)
             : theme.colorScheme.surface.withValues(alpha: .9));
@@ -232,7 +232,7 @@ class _DriverChip extends StatelessWidget {
               color: bg,
               borderRadius: BorderRadius.circular(999),
               border: Border.all(
-                color: selected ? Tokens.colorTaxi : Colors.white24,
+                color: selected ? Tokens.colorBus : Colors.white24,
               ),
             ),
             child: Row(
@@ -756,11 +756,4 @@ bool _computeShowOps(List<String> roles, AppMode mode) {
     case AppMode.admin:
       return hasOps;
   }
-}
-
-bool _computeTaxiOnly(AppMode mode, List<String> operatorDomains) {
-  if (mode != AppMode.operator) return false;
-  if (operatorDomains.isEmpty) return false;
-  // Taxi-only homescreen is only enabled when Taxi is the sole operator domain.
-  return operatorDomains.contains('taxi') && operatorDomains.length == 1;
 }

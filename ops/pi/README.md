@@ -2,15 +2,11 @@
 
 This folder contains the production/staging **microservices** compose file for Pi/edge deployments:
 
-- `docker-compose.yml` (BFF + Chat + Payments + Taxi + LiveKit)
+- `docker-compose.yml` (BFF + Chat + Payments + Bus + LiveKit)
 
 An optional Postgres-backed variant is available for production-hardening and multi-instance readiness:
 
-- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + Taxi + LiveKit + `migrate-sqlite-to-postgres`)
-
-For rollback and reference, the legacy monolith stack is preserved as:
-
-- `docker-compose.monolith.yml` (Monolith + LiveKit)
+- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + Bus + LiveKit + `migrate-sqlite-to-postgres`)
 
 Security baseline env templates are provided for staged rollout:
 
@@ -59,22 +55,17 @@ To enable the token mint endpoint (`POST /livekit/token`):
 - set `LIVEKIT_PUBLIC_URL` to the client-facing `wss://...` URL
 - set strong `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (non-dev values)
 
-## Data Migration Note (Monolith -> Microservices)
+## Volume Ownership Note
 
-`docker-compose.yml` includes a `bootstrap-perms` init container that:
-
-- seeds the new service volumes from the previous monolith volume (`monolith_data`) on first run
-- never overwrites existing destination DB files (idempotent)
-- fixes volume ownership to the non-root runtime UID/GID (10001:10001)
-
-This enables a low-risk cutover while keeping the old monolith volume intact for rollback/backups.
+`docker-compose.yml` includes a `bootstrap-perms` init container that fixes volume ownership
+to the non-root runtime UID/GID (10001:10001) for the service volumes.
 
 ## Postgres Migration Note (SQLite -> Postgres)
 
 `docker-compose.postgres.yml` includes:
 
 - a `db` service (Postgres 16)
-- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`, `taxi_data`) and inserts rows into Postgres
+- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`) and inserts rows into Postgres
 
 Best practice rollout is staging-first, with a full SQLite volume backup immediately before cutover.
 

@@ -260,8 +260,8 @@ def _build_env_values(env_files: list[str]) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Fail if Docker Compose mappings expose container port 8081/8082 "
-            "without localhost-only host_ip."
+            "Fail if Docker Compose mappings expose internal container ports "
+            "8081/8082/8083 without localhost-only host_ip."
         )
     )
     parser.add_argument(
@@ -296,7 +296,10 @@ def main() -> int:
         print(f"[OK] internal port exposure guard passed ({len(files)} files scanned)")
         return 0
 
-    print("[FAIL] detected non-localhost exposure for container ports 8081/8082:", file=sys.stderr)
+    print(
+        "[FAIL] detected non-localhost exposure for internal container ports 8081/8082/8083:",
+        file=sys.stderr,
+    )
     for v in violations:
         print(
             f"  - {v.path}:{v.line}: {v.reason} | value={v.value}",

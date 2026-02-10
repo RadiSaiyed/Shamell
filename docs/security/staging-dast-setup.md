@@ -23,7 +23,7 @@ gh secret set STAGING_PAYMENTS_BASE_URL --repo RadiSaiyed/Shamell --body "https:
 gh secret set STAGING_CHAT_BASE_URL --repo RadiSaiyed/Shamell --body "https://staging-api.shamell.online"
 ```
 
-Single-host/monolith staging is supported too (all three secrets can point to the same API host).
+Single-host staging is supported too (all three secrets can point to the same API host).
 In that mode, the smoke script automatically uses:
 - payments admin check path: `/payments/admin/debug/tables`
 - payments webhook path: `/payments/webhooks/psp`

@@ -8,7 +8,6 @@ import 'l10n.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'app_shell_widgets.dart' show AppBG;
-import 'wechat_webview_page.dart';
 
 class OrderCenterPage extends StatefulWidget {
   final String baseUrl;
@@ -21,9 +20,7 @@ class OrderCenterPage extends StatefulWidget {
 class _OrderCenterPageState extends State<OrderCenterPage> {
   bool _loading = true;
   String _error = '';
-  List<Map<String, dynamic>> _taxi = [];
   List<Map<String, dynamic>> _bus = [];
-  List<Map<String, dynamic>> _food = [];
 
   @override
   void initState() {
@@ -42,29 +39,13 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
     return h;
   }
 
-  Future<Map<String, String>> _hdrFood({bool json = false}) async {
-    final headers = <String, String>{};
-    if (json) headers['content-type'] = 'application/json';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return headers;
-  }
-
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _error = '';
     });
     try {
-      await Future.wait([
-        _loadMobility(),
-        _loadFood(),
-      ]);
+      await _loadMobility();
     } catch (e) {
       _error = 'Error: $e';
     }
@@ -76,44 +57,18 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
 
   Future<void> _loadMobility() async {
     try {
-      final qp = <String, String>{'taxi_limit': '20', 'bus_limit': '20'};
+      final qp = <String, String>{'limit': '20'};
       final uri = Uri.parse('${widget.baseUrl}/me/mobility_history')
           .replace(queryParameters: qp);
       final r = await http.get(uri, headers: await _hdr());
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final tx = j['taxi'];
         final bs = j['bus'];
-        final taxi = tx is List
-            ? tx.whereType<Map<String, dynamic>>().toList()
-            : <Map<String, dynamic>>[];
         final bus = bs is List
             ? bs.whereType<Map<String, dynamic>>().toList()
             : <Map<String, dynamic>>[];
-        taxi.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
         bus.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
-        _taxi = taxi.take(5).toList();
         _bus = bus.take(5).toList();
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _loadFood() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final phone = sp.getString('last_login_phone') ?? '';
-      if (phone.isEmpty) return;
-      final qp = <String, String>{'phone': phone, 'limit': '20'};
-      final uri = Uri.parse('${widget.baseUrl}/food/orders')
-          .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdrFood());
-      if (r.statusCode == 200) {
-        final arr = jsonDecode(r.body);
-        final orders = arr is List
-            ? arr.whereType<Map<String, dynamic>>().toList()
-            : <Map<String, dynamic>>[];
-        orders.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
-        _food = orders.take(5).toList();
       }
     } catch (_) {}
   }
@@ -167,10 +122,10 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
               FormSection(
                 title: l.isArabic ? 'التنقل' : 'Mobility',
                 subtitle: l.isArabic
-                    ? 'أحدث رحلات التاكسي والحافلات'
-                    : 'Recent taxi and bus trips',
+                    ? 'أحدث رحلات الحافلات'
+                    : 'Recent bus trips',
                 children: [
-                  if (_taxi.isEmpty && _bus.isEmpty)
+                  if (_bus.isEmpty)
                     Text(
                       l.noMobilityHistory,
                       style: TextStyle(
@@ -180,9 +135,8 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
                             .withValues(alpha: .70),
                       ),
                     ),
-                  ..._taxi.map((r) => _buildTaxiTile(r, l)),
                   ..._bus.map((r) => _buildBusTile(r, l)),
-                  if (_taxi.isNotEmpty || _bus.isNotEmpty)
+                  if (_bus.isNotEmpty)
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
@@ -196,74 +150,13 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
                     ),
                 ],
               ),
-              FormSection(
-                title: l.isArabic ? 'طلبات الطعام' : 'Food orders',
-                subtitle: l.isArabic
-                    ? 'أحدث طلبات الطعام المرتبطة بحسابك'
-                    : 'Recent food orders for your account',
-                children: [
-                  if (_food.isEmpty)
-                    Text(
-                      l.isArabic
-                          ? 'لا توجد طلبات طعام بعد'
-                          : 'No food orders yet',
-                      style: TextStyle(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: .70),
-                      ),
-                    ),
-                  ..._food.map((r) => _buildFoodTile(r, l)),
-                  if (_food.isNotEmpty)
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () {
-                          final base = widget.baseUrl
-                              .trim()
-                              .replaceAll(RegExp(r'/+$'), '');
-                          final baseUri = Uri.tryParse(base);
-                          if (baseUri == null) return;
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => WeChatWebViewPage(
-                                initialUri: Uri(path: '/food'),
-                                baseUri: baseUri,
-                                initialTitle: l.isArabic ? 'الطعام' : 'Food',
-                              ),
-                            ),
-                          );
-                        },
-                        child: Text(
-                          l.isArabic ? 'عرض كل الطلبات' : 'View all orders',
-                        ),
-                      ),
-                    ),
-                ],
-              ),
             ],
           );
     return DomainPageScaffold(
       background: const AppBG(),
-      title: l.isArabic ? 'طلباتي' : 'My orders',
+      title: l.isArabic ? 'رحلاتي' : 'My trips',
       child: body,
       scrollable: false,
-    );
-  }
-
-  Widget _buildTaxiTile(Map<String, dynamic> r, L10n l) {
-    final status = (r['status'] ?? '').toString();
-    final subtitle = _fmtTs(r, l);
-    return StandardListTile(
-      leading: const Icon(Icons.local_taxi_outlined),
-      title: Text(
-        status.isEmpty ? (l.isArabic ? 'رحلة تاكسي' : 'Taxi ride') : status,
-        style: const TextStyle(fontWeight: FontWeight.w700),
-      ),
-      subtitle: subtitle.isEmpty
-          ? null
-          : Text(subtitle, style: const TextStyle(fontSize: 12)),
     );
   }
 
@@ -279,28 +172,6 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
       subtitle: subtitle.isEmpty
           ? null
           : Text(subtitle, style: const TextStyle(fontSize: 12)),
-    );
-  }
-
-  Widget _buildFoodTile(Map<String, dynamic> r, L10n l) {
-    final status = (r['status'] ?? '').toString();
-    final restaurant =
-        (r['restaurant_name'] ?? r['restaurant_id'] ?? '').toString();
-    final subtitle = StringBuffer();
-    subtitle.write(_fmtTs(r, l));
-    if (restaurant.isNotEmpty) {
-      if (subtitle.isNotEmpty) subtitle.write('\n');
-      subtitle.write(restaurant);
-    }
-    return StandardListTile(
-      leading: const Icon(Icons.restaurant_outlined),
-      title: Text(
-        status.isEmpty ? (l.isArabic ? 'طلب طعام' : 'Food order') : status,
-        style: const TextStyle(fontWeight: FontWeight.w700),
-      ),
-      subtitle: subtitle.isEmpty
-          ? null
-          : Text(subtitle.toString(), style: const TextStyle(fontSize: 12)),
     );
   }
 }

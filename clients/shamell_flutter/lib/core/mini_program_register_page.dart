@@ -191,8 +191,8 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
                 decoration: InputDecoration(
                   labelText: isArabic ? 'App-ID' : 'App‑ID',
                   helperText: isArabic
-                      ? 'أحرف صغيرة، أرقام، "_" و "-". مثال: taxi_demo'
-                      : 'Lowercase letters, digits, "_" and "-". Example: taxi_demo',
+                      ? 'أحرف صغيرة، أرقام، "_" و "-". مثال: bus_demo'
+                      : 'Lowercase letters, digits, "_" and "-". Example: bus_demo',
                 ),
               ),
               const SizedBox(height: 8),
@@ -272,16 +272,8 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
                     isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments',
                   ),
                   _buildScopeChip(
-                    'taxi',
-                    isArabic ? 'تاكسي والنقل' : 'Taxi & transport',
-                  ),
-                  _buildScopeChip(
-                    'food',
-                    isArabic ? 'خدمة الطعام' : 'Food service',
-                  ),
-                  _buildScopeChip(
-                    'stays',
-                    isArabic ? 'الإقامات والسفر' : 'Stays & travel',
+                    'transport',
+                    isArabic ? 'التنقل والنقل' : 'Transport',
                   ),
                   _buildScopeChip(
                     'notifications',

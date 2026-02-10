@@ -2421,17 +2421,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
         icon = Icons.account_balance_wallet_outlined;
         buttonLabel = isAr ? 'فتح المحفظة' : 'Open wallet';
         break;
-      case 'taxi_rider':
-        icon = Icons.local_taxi_outlined;
-        buttonLabel = isAr ? 'فتح تاكسي' : 'Open taxi';
-        break;
-      case 'food':
-        icon = Icons.restaurant_outlined;
-        buttonLabel = isAr ? 'فتح خدمة الطعام' : 'Open food service';
-        break;
-      case 'stays':
-        icon = Icons.hotel;
-        buttonLabel = isAr ? 'فتح الإقامات' : 'Open stays';
+      case 'bus':
+        icon = Icons.directions_bus_filled_outlined;
+        buttonLabel = isAr ? 'فتح الباص' : 'Open bus';
         break;
       default:
         icon = Icons.apps_outlined;
@@ -2479,12 +2471,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
       case 'alias':
       case 'merchant':
         return '#ShamellWallet';
-      case 'taxi_rider':
-        return '#ShamellTaxi';
-      case 'food':
-        return '#ShamellFood';
-      case 'stays':
-        return '#ShamellStays';
+      case 'bus':
+        return '#ShamellBus';
       default:
         return '#ShamellMiniApp';
     }
@@ -2738,26 +2726,18 @@ class _ChannelsPageState extends State<ChannelsPage> {
     if (l.isArabic) {
       switch (key) {
         case 'transport':
-          return 'تاكسي والنقل';
-        case 'food_delivery':
-          return 'خدمة الطعام';
+          return 'التنقل والنقل';
         case 'payments':
           return 'المحفظة والمدفوعات';
-        case 'travel':
-          return 'الإقامات والسفر';
         default:
           return raw;
       }
     } else {
       switch (key) {
         case 'transport':
-          return 'Taxi & transport';
-        case 'food_delivery':
-          return 'Food service';
+          return 'Transport';
         case 'payments':
           return 'Wallet & payments';
-        case 'travel':
-          return 'Stays & travel';
         default:
           return raw;
       }

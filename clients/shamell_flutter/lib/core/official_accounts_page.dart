@@ -770,57 +770,19 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                       // Common service categories as quick filters when available.
                       if (categories
                           .map((c) => c.toLowerCase())
-                          .contains('taxi'))
+                          .contains('transport'))
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 4),
                           child: ChoiceChip(
                             label: Text(
-                              l.isArabic ? 'تاكسي' : 'Taxi & transport',
+                              l.isArabic ? 'التنقل والنقل' : 'Transport',
                             ),
                             selected: _selectedCategory.trim().toLowerCase() ==
-                                'taxi',
+                                'transport',
                             onSelected: (sel) {
                               if (!sel) return;
                               setState(() {
-                                _selectedCategory = 'taxi';
-                              });
-                            },
-                          ),
-                        ),
-                      if (categories
-                          .map((c) => c.toLowerCase())
-                          .contains('food'))
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: ChoiceChip(
-                            label: Text(
-                              l.isArabic ? 'خدمة الطعام' : 'Food service',
-                            ),
-                            selected: _selectedCategory.trim().toLowerCase() ==
-                                'food',
-                            onSelected: (sel) {
-                              if (!sel) return;
-                              setState(() {
-                                _selectedCategory = 'food';
-                              });
-                            },
-                          ),
-                        ),
-                      if (categories
-                          .map((c) => c.toLowerCase())
-                          .contains('stays'))
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: ChoiceChip(
-                            label: Text(
-                              l.isArabic ? 'الإقامات' : 'Stays & travel',
-                            ),
-                            selected: _selectedCategory.trim().toLowerCase() ==
-                                'stays',
-                            onSelected: (sel) {
-                              if (!sel) return;
-                              setState(() {
-                                _selectedCategory = 'stays';
+                                _selectedCategory = 'transport';
                               });
                             },
                           ),
@@ -1097,8 +1059,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                                 FilterChip(
                                   label: Text(
                                     l.isArabic
-                                        ? 'لحظات: تاكسي في ${recommendedCityLabel!}'
-                                        : 'Moments: taxi in ${recommendedCityLabel!}',
+                                        ? 'لحظات: النقل في ${recommendedCityLabel!}'
+                                        : 'Moments: transport in ${recommendedCityLabel!}',
                                   ),
                                   onSelected: (sel) {
                                     if (!sel) return;
@@ -1106,7 +1068,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                                       MaterialPageRoute(
                                         builder: (_) => MomentsPage(
                                           baseUrl: widget.baseUrl,
-                                          officialCategory: 'taxi',
+                                          officialCategory: 'transport',
                                           officialCity: recommendedCityLabel,
                                         ),
                                       ),
@@ -1193,15 +1155,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     if (key.isEmpty) return raw;
     if (l.isArabic) {
       switch (key) {
-        case 'taxi':
         case 'transport':
-          return 'تاكسي والنقل';
-        case 'food':
-        case 'food_delivery':
-          return 'خدمة الطعام';
-        case 'stays':
-        case 'travel':
-          return 'الإقامات والسفر';
+          return 'التنقل والنقل';
         case 'wallet':
         case 'payments':
           return 'المحفظة والمدفوعات';
@@ -1210,15 +1165,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
       }
     } else {
       switch (key) {
-        case 'taxi':
         case 'transport':
-          return 'Taxi & transport';
-        case 'food':
-        case 'food_delivery':
-          return 'Food service';
-        case 'stays':
-        case 'travel':
-          return 'Stays & travel';
+          return 'Transport';
         case 'wallet':
         case 'payments':
           return 'Wallet & payments';
@@ -1549,17 +1497,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   IconButton(
                     tooltip: () {
                       final id = (a.miniAppId ?? '').trim();
-                      if (id == 'taxi_rider') {
-                        return l.isArabic ? 'فتح تاكسي' : 'Open taxi';
-                      }
-                      if (id == 'food') {
-                        return l.isArabic
-                            ? 'فتح خدمة الطعام'
-                            : 'Open food service';
-                      }
-                      if (id == 'stays') {
-                        return l.isArabic ? 'فتح الإقامات' : 'Open stays';
-                      }
+                      if (id == 'bus') return l.isArabic ? 'فتح الباص' : 'Open bus';
                       if (id == 'payments') {
                         return l.isArabic ? 'فتح المحفظة' : 'Open wallet';
                       }
@@ -5259,27 +5197,11 @@ Widget _buildServiceMenu(
     ));
   }
 
-  void addTaxi() {
+  void addBus() {
     actions.add(_ServiceAction(
-      icon: Icons.local_taxi_outlined,
-      label: l.isArabic ? 'فتح تاكسي' : 'Open taxi',
-      onTap: () => openMod('taxi_rider'),
-    ));
-  }
-
-  void addFood() {
-    actions.add(_ServiceAction(
-      icon: Icons.restaurant_outlined,
-      label: l.isArabic ? 'فتح خدمة الطعام' : 'Open food service',
-      onTap: () => openMod('food'),
-    ));
-  }
-
-  void addStays() {
-    actions.add(_ServiceAction(
-      icon: Icons.hotel,
-      label: l.isArabic ? 'فتح الإقامات' : 'Open stays',
-      onTap: () => openMod('stays'),
+      icon: Icons.directions_bus_filled_outlined,
+      label: l.isArabic ? 'فتح الباص' : 'Open bus',
+      onTap: () => openMod('bus'),
     ));
   }
 
@@ -5292,7 +5214,7 @@ Widget _buildServiceMenu(
         IconData icon;
         String fallbackLabel;
         VoidCallback onTap;
-        switch (mid) {
+		        switch (mid) {
           case 'payments':
           case 'alias':
           case 'merchant':
@@ -5318,26 +5240,15 @@ Widget _buildServiceMenu(
               } catch (_) {}
             };
             break;
-          case 'taxi_rider':
-            icon = Icons.local_taxi_outlined;
-            fallbackLabel = l.isArabic ? 'فتح تاكسي' : 'Open taxi';
-            onTap = () => openMod(mid);
-            break;
-          case 'food':
-            icon = Icons.restaurant_outlined;
-            fallbackLabel =
-                l.isArabic ? 'فتح خدمة الطعام' : 'Open food service';
-            onTap = () => openMod(mid);
-            break;
-          case 'stays':
-            icon = Icons.hotel;
-            fallbackLabel = l.isArabic ? 'فتح الإقامات' : 'Open stays';
-            onTap = () => openMod(mid);
-            break;
-          default:
-            icon = Icons.open_in_new;
-            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
-            onTap = () => openMod(mid);
+		          case 'bus':
+		            icon = Icons.directions_bus_filled_outlined;
+		            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
+		            onTap = () => openMod(mid);
+		            break;
+	          default:
+	            icon = Icons.open_in_new;
+	            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
+	            onTap = () => openMod(mid);
             break;
         }
         final label = item.label(l, fallbackLabel);
@@ -5372,26 +5283,20 @@ Widget _buildServiceMenu(
   }
 
   // Fallback for older BFFs without menu_items.
-  if (actions.isEmpty) {
-    switch (id) {
+		  if (actions.isEmpty) {
+		    switch (id) {
       case 'payments':
       case 'alias':
       case 'merchant':
         addPayments();
         break;
-      case 'taxi_rider':
-        addTaxi();
-        break;
-      case 'food':
-        addFood();
-        break;
-      case 'stays':
-        addStays();
-        break;
-      default:
-        break;
-    }
-  }
+		      case 'bus':
+		        addBus();
+		        break;
+	      default:
+	        break;
+	    }
+	  }
 
   if (actions.isEmpty) {
     return const SizedBox.shrink();

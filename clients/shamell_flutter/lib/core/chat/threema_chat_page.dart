@@ -2198,7 +2198,7 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
       }
       if (picks.isEmpty) {
         // Fallback: highlight a few core Shamell mini‑apps.
-        final fallbackIds = ['taxi_rider', 'food', 'payments', 'stays'];
+        final fallbackIds = ['payments', 'bus'];
         for (final id in fallbackIds) {
           final m = allApps.firstWhere(
             (a) => a.id == id,
@@ -3987,24 +3987,9 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
     final t = text.trim();
     if (t.isEmpty) return false;
     final lower = t.toLowerCase();
-    // /taxi -> open Taxi Rider mini-program
-    if (lower == '/taxi') {
-      _openMiniAppFromMirsaal('taxi_rider');
-      return true;
-    }
-    // /food -> open Food mini-program
-    if (lower == '/food') {
-      _openMiniAppFromMirsaal('food');
-      return true;
-    }
     // /bus -> open Bus mini-program
     if (lower == '/bus') {
       _openMiniAppFromMirsaal('bus');
-      return true;
-    }
-    // /stays -> open Stays mini-program
-    if (lower == '/stays') {
-      _openMiniAppFromMirsaal('stays');
       return true;
     }
     // /pay [amount] [@recipient or phone]
@@ -9541,13 +9526,13 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
     );
   }
 
-  Widget _buildServiceAccountsSection(L10n l) {
-    return FormSection(
-      title: l.isArabic ? 'حسابات الخدمات' : 'Service accounts',
-      subtitle: l.isArabic
-          ? 'اختصارات لتاكسي، الطعام والمدفوعات داخل Shamell'
-          : 'Shortcuts for taxi, food and payments inside Shamell',
-      children: [
+	  Widget _buildServiceAccountsSection(L10n l) {
+	    return FormSection(
+	      title: l.isArabic ? 'حسابات الخدمات' : 'Service accounts',
+	      subtitle: l.isArabic
+	          ? 'اختصارات للباص والمدفوعات داخل Shamell'
+	          : 'Shortcuts for bus and payments inside Shamell',
+	      children: [
         ListTile(
           dense: true,
           leading: const Icon(Icons.local_fire_department_outlined),
@@ -9578,46 +9563,28 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
             );
           },
         ),
-        ListTile(
-          dense: true,
-          leading: const CircleAvatar(
-            radius: 20,
-            child: Icon(Icons.local_taxi_outlined, size: 20),
+	        ListTile(
+	          dense: true,
+	          leading: const CircleAvatar(
+	            radius: 20,
+	            child: Icon(Icons.directions_bus_filled_outlined, size: 20),
           ),
           title: Text(
-            l.isArabic ? 'Shamell Taxi' : 'Shamell Taxi',
+            l.isArabic ? 'Shamell Bus' : 'Shamell Bus',
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
           ),
           subtitle: Text(
             l.isArabic
-                ? 'احجز رحلة أو راجع رحلاتك'
-                : 'Book a ride or review your rides',
+                ? 'احجز رحلة أو راجع حجوزاتك'
+                : 'Book a trip or review your bookings',
             style: const TextStyle(fontSize: 12),
-          ),
-          onTap: _openTaxiService,
-        ),
-        ListTile(
-          dense: true,
-          leading: const CircleAvatar(
-            radius: 20,
-            child: Icon(Icons.restaurant_outlined, size: 20),
-          ),
-          title: Text(
-            l.isArabic ? 'Shamell Food' : 'Shamell Food',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-          ),
-          subtitle: Text(
-            l.isArabic
-                ? 'اطلب طعاماً أو راقب الطلبات'
-                : 'Order food or track your orders',
-            style: const TextStyle(fontSize: 12),
-          ),
-          onTap: _openFoodService,
-        ),
-        ListTile(
-          dense: true,
-          leading: const CircleAvatar(
-            radius: 20,
+	          ),
+	          onTap: _openBusService,
+	        ),
+	        ListTile(
+	          dense: true,
+	          leading: const CircleAvatar(
+	            radius: 20,
             child: Icon(Icons.account_balance_wallet_outlined, size: 20),
           ),
           title: Text(
@@ -9636,21 +9603,21 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
     );
   }
 
-  void _openTaxiService() {
-    final l = L10n.of(context);
-    showModalBottomSheet(
+	  void _openBusService() {
+	    final l = L10n.of(context);
+	    showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
         return _ServiceSheet(
-          title: l.isArabic ? 'Shamell Taxi' : 'Shamell Taxi',
+          title: l.isArabic ? 'Shamell Bus' : 'Shamell Bus',
           actions: [
             ListTile(
               dense: true,
-              leading: const Icon(Icons.local_taxi_outlined),
+              leading: const Icon(Icons.directions_bus_filled_outlined),
               minLeadingWidth: 32,
               title: Text(
-                l.homeTaxiRider,
+                l.busTitle,
                 style:
                     const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
               ),
@@ -9662,7 +9629,7 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
                   context,
                   MaterialPageRoute(
                     builder: (_) => MiniProgramPage(
-                      id: 'taxi_rider',
+                      id: 'bus',
                       baseUrl: widget.baseUrl,
                       walletId: '',
                       deviceId: _me?.id ?? '',
@@ -9685,76 +9652,18 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
                   const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
               onTap: () {
                 Navigator.pop(ctx);
-                _openMiniAppFromMirsaal('taxi_rider');
+                _openMiniAppFromMirsaal('bus');
               },
             ),
           ],
         );
       },
-    );
-  }
+	    );
+	  }
 
-  void _openFoodService() {
-    final l = L10n.of(context);
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return _ServiceSheet(
-          title: l.isArabic ? 'Shamell Food' : 'Shamell Food',
-          actions: [
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.restaurant_outlined),
-              minLeadingWidth: 32,
-              title: Text(
-                l.homeFood,
-                style:
-                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              trailing:
-                  const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => MiniProgramPage(
-                      id: 'food',
-                      baseUrl: widget.baseUrl,
-                      walletId: '',
-                      deviceId: _me?.id ?? '',
-                      onOpenMod: _openMiniAppFromMirsaal,
-                    ),
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.receipt_long_outlined),
-              minLeadingWidth: 32,
-              title: Text(
-                l.foodOrdersTitle,
-                style:
-                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-              ),
-              trailing:
-                  const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
-              onTap: () {
-                Navigator.pop(ctx);
-                _openMiniAppFromMirsaal('food');
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _openPayService() {
-    final l = L10n.of(context);
-    showModalBottomSheet(
+	  void _openPayService() {
+	    final l = L10n.of(context);
+	    showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
@@ -9817,56 +9726,8 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
           ],
         );
       },
-    );
-  }
-
-  void _openStaysService() {
-    final l = L10n.of(context);
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return _ServiceSheet(
-          title: l.isArabic ? 'Shamell Stays' : 'Shamell Stays',
-          actions: [
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.hotel_outlined),
-              minLeadingWidth: 32,
-              title: Text(
-                l.homeStays,
-                style:
-                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              subtitle: Text(
-                l.isArabic
-                    ? 'استعرض الفنادق والإقامات، واحجز رحلتك'
-                    : 'Browse hotels & stays and book your trip',
-                style: const TextStyle(fontSize: 12),
-              ),
-              trailing:
-                  const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => MiniProgramPage(
-                      id: 'stays',
-                      baseUrl: widget.baseUrl,
-                      walletId: '',
-                      deviceId: _me?.id ?? '',
-                      onOpenMod: _openMiniAppFromMirsaal,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
+	    );
+	  }
 
   int _archivedThreadsCount() {
     final archivedContacts = _contacts.where((c) =>
@@ -10116,66 +9977,37 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
           color: theme.colorScheme.onSurface.withValues(alpha: .40),
         );
 
-    WeChatLeadingIcon miniIcon(String appId) {
-      final id = appId.trim().toLowerCase();
-      if (id.contains('pay') ||
-          id.contains('wallet') ||
-          id.contains('payment')) {
-        return const WeChatLeadingIcon(
-          icon: Icons.account_balance_wallet_outlined,
-          background: Tokens.colorPayments,
-          foreground: Colors.white,
-          size: 44,
-          iconSize: 20,
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-        );
-      }
-      if (id.contains('taxi') || id.contains('ride')) {
-        return const WeChatLeadingIcon(
-          icon: Icons.local_taxi_outlined,
-          background: Tokens.colorTaxi,
-          foreground: Color(0xFF111111),
-          size: 44,
-          iconSize: 20,
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-        );
-      }
-      if (id.contains('bus')) {
-        return const WeChatLeadingIcon(
-          icon: Icons.directions_bus_filled_outlined,
-          background: Tokens.colorBus,
-          foreground: Colors.white,
-          size: 44,
-          iconSize: 20,
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-        );
-      }
-      if (id.contains('food') || id.contains('restaurant')) {
-        return const WeChatLeadingIcon(
-          icon: Icons.restaurant_outlined,
-          background: Tokens.colorFood,
-          foreground: Colors.white,
-          size: 44,
-          iconSize: 20,
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-        );
-      }
-      if (id.contains('stay') ||
-          id.contains('hotel') ||
-          id.contains('travel')) {
-        return const WeChatLeadingIcon(
-          icon: Icons.hotel_outlined,
-          background: Tokens.colorHotelsStays,
-          foreground: Colors.white,
-          size: 44,
-          iconSize: 20,
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-        );
-      }
-      final local = miniAppById(appId);
-      return WeChatLeadingIcon(
-        icon: local?.icon ?? Icons.widgets_outlined,
-        background: const Color(0xFF64748B),
+		    WeChatLeadingIcon miniIcon(String appId) {
+		      final id = appId.trim().toLowerCase();
+		      if (id.contains('pay') ||
+		          id.contains('wallet') ||
+		          id.contains('payment')) {
+	        return const WeChatLeadingIcon(
+	          icon: Icons.account_balance_wallet_outlined,
+	          background: Tokens.colorPayments,
+	          foreground: Colors.white,
+	          size: 44,
+	          iconSize: 20,
+	          borderRadius: BorderRadius.all(Radius.circular(12)),
+	        );
+	      }
+		      if (id.contains('bus') ||
+		          id.contains('ride') ||
+		          id.contains('mobility') ||
+		          id.contains('transport')) {
+		        return const WeChatLeadingIcon(
+		          icon: Icons.directions_bus_filled_outlined,
+		          background: Tokens.colorBus,
+		          foreground: Colors.white,
+		          size: 44,
+		          iconSize: 20,
+	          borderRadius: BorderRadius.all(Radius.circular(12)),
+	        );
+	      }
+	      final local = miniAppById(appId);
+	      return WeChatLeadingIcon(
+	        icon: local?.icon ?? Icons.widgets_outlined,
+	        background: const Color(0xFF64748B),
         foreground: Colors.white,
         size: 44,
         iconSize: 20,
@@ -10260,20 +10092,20 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
       ),
     );
 
-    final idsRaw = _pullDownMiniProgramIds.isNotEmpty
-        ? _pullDownMiniProgramIds
-        : _topMiniApps.map((m) => m.id).toList();
-    final ordered = <String>[];
-    final seen = <String>{};
-    for (final id in idsRaw) {
-      final clean = id.trim();
-      if (clean.isEmpty) continue;
-      if (seen.add(clean)) ordered.add(clean);
-    }
-    if (ordered.isEmpty) {
-      ordered.addAll(const ['payments', 'taxi_rider', 'food', 'stays']);
-    }
-    final displayIds = ordered.take(7).toList();
+	    final idsRaw = _pullDownMiniProgramIds.isNotEmpty
+	        ? _pullDownMiniProgramIds
+	        : _topMiniApps.map((m) => m.id).toList();
+	    final ordered = <String>[];
+	    final seen = <String>{};
+		    for (final id in idsRaw) {
+		      final clean = id.trim();
+		      if (clean.isEmpty) continue;
+		      if (seen.add(clean)) ordered.add(clean);
+		    }
+		    if (ordered.isEmpty) {
+		      ordered.addAll(const ['payments', 'bus']);
+		    }
+	    final displayIds = ordered.take(7).toList();
     final hasMiniBadges =
         displayIds.any(_pullDownMiniProgramUpdateBadges.contains);
 
@@ -11388,13 +11220,13 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
                 Icons.apps_outlined,
                 color: theme.colorScheme.primary,
               ),
-              title: Text(l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs'),
-              subtitle: Text(
-                l.isArabic
-                    ? 'استعرض البرامج المصغّرة مثل Taxi و Pay'
-                    : 'Browse mini‑programs like Taxi and Pay',
-                style: theme.textTheme.bodySmall,
-              ),
+	              title: Text(l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs'),
+	              subtitle: Text(
+	                l.isArabic
+	                    ? 'استعرض البرامج المصغّرة مثل الباص والمدفوعات'
+	                    : 'Browse mini‑programs like Bus and Pay',
+	                style: theme.textTheme.bodySmall,
+	              ),
               trailing: const Icon(Icons.chevron_right, size: 18),
               onTap: () {
                 Navigator.push(
@@ -11469,57 +11301,35 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
                 ?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 8),
-          section([
-            ListTile(
-              leading: const Icon(Icons.local_taxi_outlined),
-              title: const Text('Shamell Taxi'),
-              subtitle: Text(
-                l.isArabic
-                    ? 'خدمة تاكسي مدمجة مع المحفظة'
-                    : 'Taxi service integrated with Shamell Pay',
-                style: theme.textTheme.bodySmall,
-              ),
-              trailing: const Icon(Icons.chevron_right, size: 18),
-              onTap: _openTaxiService,
-            ),
-            ListTile(
-              leading: const Icon(Icons.restaurant_outlined),
-              title: const Text('Shamell Food'),
-              subtitle: Text(
-                l.isArabic
-                    ? 'اطلب الطعام من مطاعم قريبة'
-                    : 'Order food from nearby restaurants',
-                style: theme.textTheme.bodySmall,
-              ),
-              trailing: const Icon(Icons.chevron_right, size: 18),
-              onTap: _openFoodService,
-            ),
-            ListTile(
-              leading: const Icon(Icons.account_balance_wallet_outlined),
-              title: const Text('Shamell Pay'),
-              subtitle: Text(
+		          section([
+		            ListTile(
+		              leading: const Icon(Icons.directions_bus_filled_outlined),
+		              title: const Text('Shamell Bus'),
+		              subtitle: Text(
+	                l.isArabic
+	                    ? 'خدمة الباص مدمجة مع المحفظة'
+	                    : 'Bus service integrated with Shamell Pay',
+	                style: theme.textTheme.bodySmall,
+	              ),
+		              trailing: const Icon(Icons.chevron_right, size: 18),
+		              onTap: _openBusService,
+		            ),
+		            ListTile(
+		              leading: const Icon(Icons.account_balance_wallet_outlined),
+		              title: const Text('Shamell Pay'),
+		              subtitle: Text(
                 l.isArabic
                     ? 'ادفع، حوّل، وأدِر محفظتك'
                     : 'Pay, transfer and manage your wallet',
                 style: theme.textTheme.bodySmall,
               ),
-              trailing: const Icon(Icons.chevron_right, size: 18),
-              onTap: _openPayService,
-            ),
-            ListTile(
-              leading: const Icon(Icons.hotel_outlined),
-              title: const Text('Shamell Stays'),
-              subtitle: Text(
-                l.isArabic ? 'احجز فنادق وإقامات' : 'Book hotels and stays',
-                style: theme.textTheme.bodySmall,
-              ),
-              trailing: const Icon(Icons.chevron_right, size: 18),
-              onTap: _openStaysService,
-            ),
-          ]),
-        ],
-      ),
-    );
+		              trailing: const Icon(Icons.chevron_right, size: 18),
+		              onTap: _openPayService,
+		            ),
+		          ]),
+	        ],
+	      ),
+	    );
   }
 
   Widget _buildChannelTab() {
@@ -11549,63 +11359,43 @@ class _ThreemaChatPageState extends State<ThreemaChatPage> {
           ),
         );
 
-    IconData miniPreviewIconFor(String id) {
-      final meta = miniAppById(id);
-      if (meta != null) return meta.icon;
-      final lower = id.toLowerCase();
-      if (lower.contains('pay') ||
-          lower.contains('wallet') ||
-          lower.contains('payment')) {
-        return Icons.account_balance_wallet_outlined;
-      }
-      if (lower.contains('taxi') || lower.contains('ride')) {
-        return Icons.local_taxi_outlined;
-      }
-      if (lower.contains('bus')) {
-        return Icons.directions_bus_filled_outlined;
-      }
-      if (lower.contains('food') || lower.contains('restaurant')) {
-        return Icons.restaurant_outlined;
-      }
-      if (lower.contains('stay') ||
-          lower.contains('hotel') ||
-          lower.contains('travel')) {
-        return Icons.hotel_outlined;
-      }
-      return Icons.widgets_outlined;
-    }
+		    IconData miniPreviewIconFor(String id) {
+		      final meta = miniAppById(id);
+		      if (meta != null) return meta.icon;
+		      final lower = id.toLowerCase();
+	      if (lower.contains('pay') ||
+	          lower.contains('wallet') ||
+	          lower.contains('payment')) {
+	        return Icons.account_balance_wallet_outlined;
+	      }
+		      if (lower.contains('bus') ||
+		          lower.contains('ride') ||
+		          lower.contains('mobility') ||
+		          lower.contains('transport')) {
+		        return Icons.directions_bus_filled_outlined;
+		      }
+	      return Icons.widgets_outlined;
+	    }
 
-    Color miniPreviewBgFor(String id) {
-      final lower = id.toLowerCase();
-      if (lower.contains('pay') ||
-          lower.contains('wallet') ||
-          lower.contains('payment')) {
-        return Tokens.colorPayments;
-      }
-      if (lower.contains('taxi') || lower.contains('ride')) {
-        return Tokens.colorTaxi;
-      }
-      if (lower.contains('bus')) {
-        return Tokens.colorBus;
-      }
-      if (lower.contains('food') || lower.contains('restaurant')) {
-        return Tokens.colorFood;
-      }
-      if (lower.contains('stay') ||
-          lower.contains('hotel') ||
-          lower.contains('travel')) {
-        return Tokens.colorHotelsStays;
-      }
-      return const Color(0xFF64748B);
-    }
+		    Color miniPreviewBgFor(String id) {
+		      final lower = id.toLowerCase();
+		      if (lower.contains('pay') ||
+		          lower.contains('wallet') ||
+		          lower.contains('payment')) {
+	        return Tokens.colorPayments;
+	      }
+		      if (lower.contains('bus') ||
+		          lower.contains('ride') ||
+		          lower.contains('mobility') ||
+		          lower.contains('transport')) {
+		        return Tokens.colorBus;
+		      }
+	      return const Color(0xFF64748B);
+	    }
 
-    Color miniPreviewFgFor(String id) {
-      final lower = id.toLowerCase();
-      if (lower.contains('taxi') || lower.contains('ride')) {
-        return const Color(0xFF111111);
-      }
-      return Colors.white;
-    }
+	    Color miniPreviewFgFor(String id) {
+	      return Colors.white;
+	    }
 
     List<String> miniProgramsPreviewIds() {
       final ids = <String>[];
@@ -16739,28 +16529,18 @@ extension _MirsaalChatHelpers on _ThreemaChatPageState {
 
     VoidCallback? openMiniApp;
     IconData? miniIcon;
-    String? miniLabel;
-    switch (official.miniAppId) {
-      case 'taxi_rider':
-        openMiniApp = _openTaxiService;
-        miniIcon = Icons.local_taxi_outlined;
-        miniLabel = l.isArabic ? 'فتح تاكسي' : 'Open taxi';
-        break;
-      case 'food':
-        openMiniApp = _openFoodService;
-        miniIcon = Icons.restaurant_outlined;
-        miniLabel = l.isArabic ? 'فتح خدمة الطعام' : 'Open food service';
-        break;
-      case 'stays':
-        openMiniApp = _openStaysService;
-        miniIcon = Icons.hotel_outlined;
-        miniLabel = l.isArabic ? 'فتح الإقامات' : 'Open stays';
-        break;
-      case 'payments':
-        openMiniApp = _openPayService;
-        miniIcon = Icons.account_balance_wallet_outlined;
-        miniLabel = l.isArabic ? 'فتح المحفظة' : 'Open wallet';
-        break;
+	    String? miniLabel;
+		    switch (official.miniAppId) {
+		      case 'bus':
+		        openMiniApp = _openBusService;
+		        miniIcon = Icons.directions_bus_filled_outlined;
+		        miniLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
+		        break;
+	      case 'payments':
+	        openMiniApp = _openPayService;
+	        miniIcon = Icons.account_balance_wallet_outlined;
+	        miniLabel = l.isArabic ? 'فتح المحفظة' : 'Open wallet';
+	        break;
     }
 
     final subtitle = _officialSubtitle(official, l);
@@ -17003,36 +16783,15 @@ extension _MirsaalChatHelpers on _ThreemaChatPageState {
   }
 
   // ignore: unused_element
-  Widget? _buildQuickServiceShortcuts(ChatContact? peer) {
-    if (peer == null) return null;
-    final id = peer.id;
-    final l = L10n.of(context);
-    final actions = <Map<String, Object>>[];
-    if (id == 'shamell_taxi') {
-      actions.add({
-        'icon': Icons.local_taxi_outlined,
-        'label': l.isArabic ? 'خدمة التاكسي' : 'Taxi service',
-        'onTap': () => _openTaxiService(),
-      });
-    }
-    if (id == 'shamell_food') {
-      actions.add({
-        'icon': Icons.restaurant_outlined,
-        'label': l.isArabic ? 'خدمة الطعام' : 'Food service',
-        'onTap': () => _openFoodService(),
-      });
-    }
-    if (id == 'shamell_stays') {
-      actions.add({
-        'icon': Icons.hotel,
-        'label': l.isArabic ? 'الإقامات والفنادق' : 'Stays & hotels',
-        'onTap': () => _openStaysService(),
-      });
-    }
-    if (id == 'shamell_pay') {
-      actions.add({
-        'icon': Icons.account_balance_wallet_outlined,
-        'label': l.isArabic ? 'المحفظة والمدفوعات' : 'Wallet & pay',
+	  Widget? _buildQuickServiceShortcuts(ChatContact? peer) {
+	    if (peer == null) return null;
+		    final id = peer.id;
+		    final l = L10n.of(context);
+		    final actions = <Map<String, Object>>[];
+	    if (id == 'shamell_pay') {
+	      actions.add({
+	        'icon': Icons.account_balance_wallet_outlined,
+	        'label': l.isArabic ? 'المحفظة والمدفوعات' : 'Wallet & pay',
         'onTap': () => _openPayService(),
       });
       actions.add({

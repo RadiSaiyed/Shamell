@@ -22,7 +22,6 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
   bool _loading = true;
   String _statusFilter = 'all';
   final List<String> _statuses = const ['all', 'completed', 'canceled'];
-  List<Map<String, dynamic>> _taxi = [];
   List<Map<String, dynamic>> _bus = [];
   String _out = '';
 
@@ -38,7 +37,7 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
 
   Future<void> _warmStart() async {
     await _loadFromCache();
-    await _load(showSpinner: _taxi.isEmpty && _bus.isEmpty);
+    await _load(showSpinner: _bus.isEmpty);
   }
 
   Future<void> _loadFromCache() async {
@@ -47,19 +46,13 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
       final raw = sp.getString('mobility_history_all');
       if (raw == null || raw.isEmpty) return;
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      final tx = j['taxi'];
       final bs = j['bus'];
-      final taxi = tx is List
-          ? tx.whereType<Map<String, dynamic>>().toList()
-          : <Map<String, dynamic>>[];
       final bus = bs is List
           ? bs.whereType<Map<String, dynamic>>().toList()
           : <Map<String, dynamic>>[];
-      taxi.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
       bus.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
       if (!mounted) return;
       setState(() {
-        _taxi = taxi;
         _bus = bus;
         _out = '';
         _loading = false;
@@ -98,7 +91,7 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
       setState(() => _loading = true);
     }
     try {
-      final qp = <String, String>{'taxi_limit': '100', 'bus_limit': '100'};
+      final qp = <String, String>{'limit': '100'};
       if (_statusFilter != 'all') qp['status'] = _statusFilter;
       final uri = Uri.parse('${widget.baseUrl}/me/mobility_history')
           .replace(queryParameters: qp);
@@ -107,22 +100,17 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
       final r = await http.get(uri, headers: {'Cookie': cookie});
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final tx = j['taxi'];
         final bs = j['bus'];
-        _taxi = (tx is List
-            ? tx.whereType<Map<String, dynamic>>().toList()
-            : <Map<String, dynamic>>[]);
         _bus = (bs is List
             ? bs.whereType<Map<String, dynamic>>().toList()
             : <Map<String, dynamic>>[]);
         // Show newest entries first
-        _taxi.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
         _bus.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
         _out = '';
         // Cache only in "all" status; filtered results are transient.
         if (_statusFilter == 'all') {
           try {
-            final snapshot = jsonEncode({'taxi': _taxi, 'bus': _bus});
+            final snapshot = jsonEncode({'bus': _bus});
             await sp.setString('mobility_history_all', snapshot);
           } catch (_) {}
         }
@@ -176,20 +164,13 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
                   ),
                 ],
               ),
-              if (_taxi.isNotEmpty) ...[
-                Text(L10n.of(context).homeTaxi,
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
-                const SizedBox(height: 4),
-                ..._taxi.map(_buildTaxiTile),
-                const SizedBox(height: 16),
-              ],
               if (_bus.isNotEmpty) ...[
                 Text(L10n.of(context).homeBus,
                     style: const TextStyle(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
                 ..._bus.map(_buildBusTile),
               ],
-              if (_taxi.isEmpty && _bus.isEmpty && _out.isEmpty)
+              if (_bus.isEmpty && _out.isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text(
@@ -223,27 +204,6 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
           SafeArea(child: body),
         ],
       ),
-    );
-  }
-
-  Widget _buildTaxiTile(Map<String, dynamic> r) {
-    final status = (r['status'] ?? '').toString();
-    final created = _fmtTs(r);
-    final driver = (r['driver_id'] ?? '').toString();
-    final subtitle = StringBuffer();
-    if (created.isNotEmpty) {
-      subtitle.write(created);
-    }
-    if (driver.isNotEmpty) {
-      if (subtitle.isNotEmpty) subtitle.write('\n');
-      subtitle.write('${L10n.of(context).driverLabel}: $driver');
-    }
-    return StandardListTile(
-      leading: const Icon(Icons.local_taxi_outlined),
-      title: Text(status, style: const TextStyle(fontWeight: FontWeight.w700)),
-      subtitle: subtitle.isEmpty
-          ? null
-          : Text(subtitle.toString(), style: const TextStyle(fontSize: 12)),
     );
   }
 

@@ -89,7 +89,7 @@ class _MomentsPageState extends State<MomentsPage> {
   bool _filterOfficialOnly = false;
   bool _filterOfficialRepliesOnly = false;
   bool _filterHotOfficialsOnly = false;
-  String? _topicCategory; // 'taxi', 'food', 'stays', 'wallet'
+  String? _topicCategory; // 'wallet'
   Map<String, List<Map<String, dynamic>>> _comments = {};
   final Map<String, _MomentOfficialAccount> _officialAccounts = {};
   Uint8List? _pendingImage;
@@ -5240,7 +5240,7 @@ class _MomentsPageState extends State<MomentsPage> {
                         _buildOfficialFiltersRow(l),
                       if (showAdvancedFilters && !isFriendTimeline)
                         const SizedBox(height: 8),
-                      // Topic bar – WeChat-like Moments topics (Taxi/Food/Stays/Wallet)
+                      // Topic bar – WeChat-like Moments topics (Wallet)
                       if (showAdvancedFilters && !isFriendTimeline)
                         _buildTopicBar(l),
                       _buildFeedList(),
@@ -5468,57 +5468,6 @@ class _MomentsPageState extends State<MomentsPage> {
           const SizedBox(width: 8),
           ChoiceChip(
             label: Text(
-              l.isArabic ? 'تاكسي' : 'Taxi',
-            ),
-            selected: _topicCategory == 'taxi',
-            onSelected: (sel) {
-              setState(() {
-                _topicCategory = sel ? 'taxi' : null;
-                _filterOfficialOnly = true;
-                _filterOfficialRepliesOnly = false;
-              });
-              Perf.action(
-                sel ? 'moments_topic_taxi_on' : 'moments_topic_taxi_off',
-              );
-            },
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'طعام' : 'Food',
-            ),
-            selected: _topicCategory == 'food',
-            onSelected: (sel) {
-              setState(() {
-                _topicCategory = sel ? 'food' : null;
-                _filterOfficialOnly = true;
-                _filterOfficialRepliesOnly = false;
-              });
-              Perf.action(
-                sel ? 'moments_topic_food_on' : 'moments_topic_food_off',
-              );
-            },
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'الإقامات' : 'Stays',
-            ),
-            selected: _topicCategory == 'stays',
-            onSelected: (sel) {
-              setState(() {
-                _topicCategory = sel ? 'stays' : null;
-                _filterOfficialOnly = true;
-                _filterOfficialRepliesOnly = false;
-              });
-              Perf.action(
-                sel ? 'moments_topic_stays_on' : 'moments_topic_stays_off',
-              );
-            },
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
               l.isArabic ? 'المحفظة' : 'Wallet',
             ),
             selected: _topicCategory == 'wallet',
@@ -5720,16 +5669,8 @@ class _MomentsPageState extends State<MomentsPage> {
                     child: Text(
                       () {
                         final mid = acc?.miniAppId ?? '';
-                        if (mid == 'taxi_rider') {
-                          return l.isArabic ? 'فتح تاكسي' : 'Open taxi';
-                        }
-                        if (mid == 'food') {
-                          return l.isArabic
-                              ? 'فتح خدمة الطعام'
-                              : 'Open food service';
-                        }
-                        if (mid == 'stays') {
-                          return l.isArabic ? 'فتح الإقامات' : 'Open stays';
+                        if (mid == 'bus') {
+                          return l.isArabic ? 'فتح الباص' : 'Open bus';
                         }
                         if (mid == 'payments') {
                           return l.isArabic ? 'فتح المحفظة' : 'Open wallet';

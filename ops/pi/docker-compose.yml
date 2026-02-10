@@ -20,46 +20,8 @@ services:
         uid=10001
         gid=10001
 
-        # Seed microservice volumes from the previous monolith volume.
-        # This is idempotent: it never overwrites existing destination files.
-        #
-        # - bff:   /data/core.db
-        # - chat:  /data/chat.db (seeded from core.db if no dedicated chat db exists)
-        # - pay:   /data/payments.db
-        src_core="/src/core.db"
-        src_chat="/src/chat.db"
-        src_pay="/src/payments.db"
-        src_taxi="/src/taxi.db"
-
-        dst_core="/vol/bff_data/core.db"
-        dst_chat="/vol/chat_data/chat.db"
-        dst_pay="/vol/payments_data/payments.db"
-        dst_taxi="/vol/taxi_data/taxi.db"
-
-        if [ -f "$$src_core" ] && [ ! -f "$$dst_core" ]; then
-          echo "Seeding core.db -> bff_data" >&2
-          cp "$$src_core" "$$dst_core"
-        fi
-        if [ ! -f "$$dst_chat" ]; then
-          if [ -f "$$src_chat" ]; then
-            echo "Seeding chat.db -> chat_data" >&2
-            cp "$$src_chat" "$$dst_chat"
-          elif [ -f "$$src_core" ]; then
-            echo "Seeding chat.db from core.db -> chat_data" >&2
-            cp "$$src_core" "$$dst_chat"
-          fi
-        fi
-        if [ -f "$$src_pay" ] && [ ! -f "$$dst_pay" ]; then
-          echo "Seeding payments.db -> payments_data" >&2
-          cp "$$src_pay" "$$dst_pay"
-        fi
-        if [ -f "$$src_taxi" ] && [ ! -f "$$dst_taxi" ]; then
-          echo "Seeding taxi.db -> taxi_data" >&2
-          cp "$$src_taxi" "$$dst_taxi"
-        fi
-
         # Ensure the runtime UID/GID can write service volumes.
-        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/taxi_data; do
+        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/bus_data; do
           [ -d "$$d" ] || continue
           owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
           if [ "$$owner" = "$$uid:$$gid" ]; then
@@ -69,12 +31,10 @@ services:
           chown -R "$${uid}:$${gid}" "$$d"
         done
     volumes:
-      # Read-only access to the previous monolith volume (kept for rollback/backups).
-      - monolith_data:/src:ro
       - bff_data:/vol/bff_data
       - chat_data:/vol/chat_data
       - payments_data:/vol/payments_data
-      - taxi_data:/vol/taxi_data
+      - bus_data:/vol/bus_data
 
   bff:
     image: shamell-core:pi
@@ -94,10 +54,12 @@ services:
       DB_URL: "${DB_URL:-sqlite+pysqlite:////data/core.db}"
       INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
       PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in ops/pi/.env}"
       CHAT_BASE_URL: "${CHAT_BASE_URL:-http://chat:8081}"
       PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
-      TAXI_BASE_URL: "${TAXI_BASE_URL:-http://taxi:8083}"
-      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:?set TAXI_INTERNAL_SECRET in ops/pi/.env}"
+      BUS_BASE_URL: "${BUS_BASE_URL:-http://bus:8083}"
+      BUS_INTERNAL_MODE: "off"
+      FORCE_INTERNAL_DOMAINS: "false"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
       CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-true}"
@@ -170,7 +132,7 @@ services:
         condition: service_healthy
       payments:
         condition: service_healthy
-      taxi:
+      bus:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -271,7 +233,7 @@ services:
       retries: 12
       start_period: 20s
 
-  taxi:
+  bus:
     image: shamell-core:pi
     init: true
     security_opt:
@@ -286,21 +248,19 @@ services:
       HOME: "/tmp"
       TMPDIR: "/tmp"
       XDG_CACHE_HOME: "/tmp/.cache"
-      TAXI_DB_URL: "${TAXI_DB_URL:-sqlite+pysqlite:////data/taxi.db}"
-      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:?set TAXI_INTERNAL_SECRET in ops/pi/.env}"
-      PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
-      PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      BUS_DB_URL: "${BUS_DB_URL:-sqlite+pysqlite:////data/bus.db}"
+      BUS_TICKET_SECRET: "${BUS_TICKET_SECRET:?set BUS_TICKET_SECRET in ops/pi/.env}"
+      BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in ops/pi/.env}"
+      BUS_REQUIRE_INTERNAL_SECRET: "true"
       ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
     volumes:
-      - taxi_data:/data
-    command: ["uvicorn", "apps.taxi.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
+      - bus_data:/data
+    command: ["uvicorn", "apps.bus.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
     depends_on:
       bootstrap-perms:
         condition: service_completed_successfully
-      payments:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test:
@@ -338,8 +298,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  monolith_data:
   bff_data:
   chat_data:
   payments_data:
-  taxi_data:
+  bus_data:

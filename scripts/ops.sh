@@ -9,7 +9,6 @@ Usage: scripts/ops.sh <env> <command> [args]
 
 env:
   dev    local microservices compose
-  devmono legacy local monolith compose
   pi     hetzner/edge compose (uses ops/pi/.env)
   pipg   hetzner/edge compose with Postgres (uses ops/pi/.env)
   prod   alias of pi (deprecated)
@@ -20,7 +19,7 @@ commands:
   restart       restart services
   logs          tail logs (pass service names or flags)
   ps            show status
-  bootstrap-media-perms  chown volume perms (dev/devmono/pi)
+  bootstrap-media-perms  chown volume perms (dev/pi)
   proxy-cidrs   (deprecated) suggest reverse-proxy CIDRs (Traefik-only)
   metrics-scrapers  (deprecated) show observed /metrics client IPs (Traefik-only)
   report        status + health + disk + backups
@@ -28,12 +27,12 @@ commands:
   pull          pull images
   health        call /health
   check         validate env file (pi)
-  deploy        check + up + migrate + health (pi; devmono supported)
-  migrate       run core + payments migrations (pi; optional in dev/devmono)
-  migrate-core  run core migrations only (pi; optional in dev/devmono)
-  migrate-payments run payments migrations only (pi; optional in dev/devmono)
-  backup        backup database (pi) or local service data (dev/devmono)
-  restore       restore database (pi) or local data (devmono)
+  deploy        check + up + migrate + health (pi)
+  migrate       run core + payments migrations (pi; optional in dev)
+  migrate-core  run core migrations only (pi; optional in dev)
+  migrate-payments run payments migrations only (pi; optional in dev)
+  backup        backup database (pi) or local service data (dev)
+  restore       restore database (pi)
   shell         shell into primary app container
 
 Environment variables:
@@ -43,7 +42,7 @@ Environment variables:
   BACKUP_KEEP   keep last N backups per type (0 disables pruning)
   CONFIRM_RESTORE=1  allow destructive restore
   RESTORE_DROP_SCHEMA=1  drop public schema before restore (pi)
-  ALLOW_RUNNING_RESTORE=1 allow devmono restore while monolith is running
+  ALLOW_RUNNING_RESTORE=1 allow restore while services are running
   HEALTH_URL    override health check URL
   HEALTH_HOST   optional Host header for health check
   HEALTH_RESOLVE optional curl --resolve (host:port:addr)
@@ -77,6 +76,11 @@ if [[ -z "$ENV_NAME" || -z "$CMD" ]]; then
   usage
   exit 1
 fi
+# Back-compat: legacy devmono env was removed when the monolith was deleted.
+if [[ "$ENV_NAME" == "devmono" ]]; then
+  echo "devmono has been removed; using dev (microservices)." >&2
+  ENV_NAME="dev"
+fi
 shift 2
 
 case "$ENV_NAME" in
@@ -85,12 +89,6 @@ case "$ENV_NAME" in
     DEFAULT_ENV_FILE=""
     HEALTH_URL_DEFAULT="http://localhost:8080/health"
     PRIMARY_SERVICE="bff"
-    ;;
-  devmono)
-    COMPOSE_FILE="${APP_DIR}/docker-compose.monolith.yml"
-    DEFAULT_ENV_FILE=""
-    HEALTH_URL_DEFAULT="http://localhost:8088/health"
-    PRIMARY_SERVICE="monolith"
     ;;
   pi)
     COMPOSE_FILE="${APP_DIR}/ops/pi/docker-compose.yml"
@@ -144,7 +142,7 @@ read_env() {
 }
 
 check_env() {
-  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "devmono" ]]; then
+  if [[ "$ENV_NAME" == "dev" ]]; then
     echo "${ENV_NAME} env: no env file checks."
     return 0
   fi
@@ -153,11 +151,12 @@ check_env() {
   local required=(
     INTERNAL_API_SECRET
     PAYMENTS_INTERNAL_SECRET
-    TAXI_INTERNAL_SECRET
+    BUS_INTERNAL_SECRET
     SONIC_SECRET
     TOPUP_SECRET
     ALIAS_CODE_PEPPER
     CASH_SECRET_PEPPER
+    BUS_TICKET_SECRET
   )
   local key
   for key in "${required[@]}"; do
@@ -178,7 +177,7 @@ check_env() {
       DB_URL
       CHAT_DB_URL
       PAYMENTS_DB_URL
-      TAXI_DB_URL
+      BUS_DB_URL
     )
     for key in "${pg_required[@]}"; do
       local val
@@ -190,7 +189,7 @@ check_env() {
       fi
     done
 
-    for key in DB_URL CHAT_DB_URL PAYMENTS_DB_URL TAXI_DB_URL; do
+    for key in DB_URL CHAT_DB_URL PAYMENTS_DB_URL BUS_DB_URL; do
       local url url_norm
       url="$(read_env "$key")"
       url_norm="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')"
@@ -219,6 +218,18 @@ check_env() {
   elif [[ "$origins" == *"*"* ]]; then
     echo "ALLOWED_ORIGINS must not include '*' in ${ENV_FILE_PATH}" >&2
     missing=1
+  fi
+
+  # Best practice: keep attack-surface reduction enabled in prod/staging.
+  local env_val allowlist_val
+  env_val="$(read_env ENV || true)"
+  env_val="$(printf '%s' "$env_val" | tr '[:upper:]' '[:lower:]')"
+  allowlist_val="$(read_env BFF_ROUTE_ALLOWLIST_ENABLED || true)"
+  allowlist_val="$(printf '%s' "$allowlist_val" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$env_val" == "prod" || "$env_val" == "production" || "$env_val" == "staging" ]]; then
+    if [[ "$allowlist_val" == "0" || "$allowlist_val" == "false" || "$allowlist_val" == "off" || "$allowlist_val" == "no" ]]; then
+      echo "Warning: BFF_ROUTE_ALLOWLIST_ENABLED is disabled in ${ENV_FILE_PATH} (not recommended in prod/staging)" >&2
+    fi
   fi
 
   local hosts
@@ -586,46 +597,13 @@ metrics_scrapers() {
 }
 
 bootstrap_media_perms() {
-  if [[ "$ENV_NAME" != "prod" && "$ENV_NAME" != "pi" && "$ENV_NAME" != "dev" && "$ENV_NAME" != "devmono" ]]; then
-    echo "bootstrap-media-perms is only available for dev/devmono/prod/pi env." >&2
+  if [[ "$ENV_NAME" != "prod" && "$ENV_NAME" != "pi" && "$ENV_NAME" != "dev" ]]; then
+    echo "bootstrap-media-perms is only available for dev/prod/pi env." >&2
     exit 1
   fi
 
-  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "pi" || "$ENV_NAME" == "prod" ]]; then
-    echo "Ensuring service volumes have safe ownership ..."
-    compose run --rm --no-deps bootstrap-perms
-    return 0
-  fi
-
-  if [[ "$ENV_NAME" != "devmono" ]]; then
-    echo "bootstrap-media-perms is not supported for env=${ENV_NAME}" >&2
-    exit 1
-  fi
-
-  local uid gid
-  uid="${MONOLITH_UID:-$(read_env MONOLITH_UID)}"
-  gid="${MONOLITH_GID:-$(read_env MONOLITH_GID)}"
-  uid="${uid:-10001}"
-  gid="${gid:-10001}"
-  local targets=("/data" "/data/chat_media" "/data/moments_media")
-  echo "Ensuring media volumes are owned by ${uid}:${gid} ..."
-  compose run --rm --no-deps --build --user 0:0 \
-    --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
-    monolith sh -ceu "
-    uid='${uid}'; gid='${gid}';
-    for d in ${targets[*]}; do
-      if [ ! -d \"\$d\" ]; then
-        echo \"Missing directory: \$d\" >&2
-        exit 1
-      fi
-      owner=\$(stat -c '%u:%g' \"\$d\" 2>/dev/null || true)
-      if [ \"\$owner\" = \"\${uid}:\${gid}\" ]; then
-        continue
-      fi
-      echo \"Fixing ownership: \$d -> \${uid}:\${gid} (was \$owner)\" >&2
-      chown -R \"\${uid}:\${gid}\" \"\$d\"
-    done
-  "
+  echo "Ensuring service volumes have safe ownership ..."
+  compose run --rm --no-deps bootstrap-perms
 }
 
 proxy_cidrs() {
@@ -635,19 +613,19 @@ proxy_cidrs() {
   fi
   local traefik_id
   traefik_id="$(compose ps -q traefik 2>/dev/null || true)"
-  local monolith_id
-  monolith_id="$(compose ps -q monolith 2>/dev/null || true)"
-  if [[ -z "$traefik_id" || -z "$monolith_id" ]]; then
+  local bff_id
+  bff_id="$(compose ps -q bff 2>/dev/null || true)"
+  if [[ -z "$traefik_id" || -z "$bff_id" ]]; then
     echo "Required containers not found. Run: scripts/ops.sh ${ENV_NAME} up" >&2
     exit 1
   fi
-  python3 - <<'PY' "$traefik_id" "$monolith_id"
+  python3 - <<'PY' "$traefik_id" "$bff_id"
 import json
 import subprocess
 import sys
 
 traefik_id = sys.argv[1]
-monolith_id = sys.argv[2]
+bff_id = sys.argv[2]
 
 def _inspect(cid: str) -> dict:
     out = subprocess.check_output(["docker", "inspect", cid], text=True)
@@ -661,10 +639,10 @@ def _nets(obj: dict) -> set[str]:
     return set()
 
 t = _inspect(traefik_id)
-m = _inspect(monolith_id)
+m = _inspect(bff_id)
 shared = sorted(_nets(t) & _nets(m))
 if not shared:
-    print("No shared Docker networks found between traefik and monolith.")
+    print("No shared Docker networks found between traefik and bff.")
     sys.exit(2)
 
 cidrs: list[str] = []
@@ -684,7 +662,7 @@ for net in shared:
     details.append((net, ", ".join(subnets) if subnets else "(no subnet)"))
 
 cidrs = sorted({c for c in cidrs if c})
-print("Shared Docker networks (traefik <-> monolith):")
+print("Shared Docker networks (traefik <-> bff):")
 for net, subnet in details:
     print(f"  - {net}: {subnet}")
 print()
@@ -823,27 +801,24 @@ backup() {
     local core_out="${backup_dir}/dev-core-data-${ts}.tar.gz"
     local chat_out="${backup_dir}/dev-chat-data-${ts}.tar.gz"
     local payments_out="${backup_dir}/dev-payments-data-${ts}.tar.gz"
+    local bus_out="${backup_dir}/dev-bus-data-${ts}.tar.gz"
     local media_out="${backup_dir}/dev-media-data-${ts}.tar.gz"
     compose run --rm --no-deps bff sh -c "tar -czf - -C /data ." >"$core_out"
     compose run --rm --no-deps chat sh -c "tar -czf - -C /data ." >"$chat_out"
     compose run --rm --no-deps payments sh -c "tar -czf - -C /data ." >"$payments_out"
+    compose run --rm --no-deps bus sh -c "tar -czf - -C /data ." >"$bus_out"
     compose run --rm --no-deps bff sh -c "tar -czf - -C /data chat_media moments_media" >"$media_out"
     echo "Backups written:"
     echo "  ${core_out}"
     echo "  ${chat_out}"
     echo "  ${payments_out}"
+    echo "  ${bus_out}"
     echo "  ${media_out}"
     prune_backups "$backup_dir" "dev-core-data-*.tar.gz"
     prune_backups "$backup_dir" "dev-chat-data-*.tar.gz"
     prune_backups "$backup_dir" "dev-payments-data-*.tar.gz"
+    prune_backups "$backup_dir" "dev-bus-data-*.tar.gz"
     prune_backups "$backup_dir" "dev-media-data-*.tar.gz"
-    return 0
-  fi
-  if [[ "$ENV_NAME" == "devmono" ]]; then
-    local out="${backup_dir}/devmono-monolith-data-${ts}.tar.gz"
-    compose run --rm --no-deps monolith sh -c "tar -czf - -C /data ." >"$out"
-    echo "Backup written: ${out}"
-    prune_backups "$backup_dir" "devmono-monolith-data-*.tar.gz"
     return 0
   fi
 
@@ -866,7 +841,7 @@ backup() {
   fi
 
   local out="${backup_dir}/${ENV_NAME}-service-volumes-${ts}.tar.gz"
-  compose run --rm --no-deps bootstrap-perms sh -ceu 'tar -czf - -C /vol bff_data chat_data payments_data' >"$out"
+  compose run --rm --no-deps bootstrap-perms sh -ceu 'tar -czf - -C /vol bff_data chat_data payments_data bus_data' >"$out"
   echo "Backup written: ${out}"
   prune_backups "$backup_dir" "${ENV_NAME}-service-volumes-*.tar.gz"
 }
@@ -888,28 +863,8 @@ restore() {
 
   if [[ "$ENV_NAME" == "dev" ]]; then
     echo "Dev microservices restore is intentionally disabled to avoid partial-data corruption." >&2
-    echo "Use devmono restore or restore service backups manually (core/chat/payments/media)." >&2
+    echo "Restore service backups manually (bff/chat/payments/bus/media)." >&2
     exit 1
-  fi
-
-  if [[ "$ENV_NAME" == "devmono" ]]; then
-    case "$backup_file" in
-      *.tar.gz|*.tgz)
-        ;;
-      *)
-        echo "Dev monolith restore expects a .tar.gz backup from ./scripts/ops.sh devmono backup" >&2
-        exit 1
-        ;;
-    esac
-    local running
-    running="$(compose ps -q monolith || true)"
-    if [[ -n "$running" && "${ALLOW_RUNNING_RESTORE:-0}" != "1" ]]; then
-      echo "Monolith is running. Stop it or set ALLOW_RUNNING_RESTORE=1 to proceed." >&2
-      exit 1
-    fi
-    compose run --rm --no-deps monolith sh -c "rm -rf /data/* && tar -xzf - -C /data" <"$backup_file"
-    echo "Restore complete: ${backup_file}"
-    return 0
   fi
 
   if [[ "$ENV_NAME" == "pipg" || "$ENV_NAME" == "pi-pg" || "$ENV_NAME" == "pi-postgres" ]]; then
@@ -947,9 +902,9 @@ restore() {
       exit 1
     fi
     compose run --rm --no-deps bootstrap-perms sh -ceu "
-      rm -rf /vol/bff_data/* /vol/chat_data/* /vol/payments_data/* || true
+      rm -rf /vol/bff_data/* /vol/chat_data/* /vol/payments_data/* /vol/bus_data/* || true
       tar -xzf - -C /vol
-      chown -R 10001:10001 /vol/bff_data /vol/chat_data /vol/payments_data || true
+      chown -R 10001:10001 /vol/bff_data /vol/chat_data /vol/payments_data /vol/bus_data || true
     " <"$backup_file"
     echo "Restore complete: ${backup_file}"
     return 0
@@ -982,7 +937,7 @@ report() {
 }
 
 migrate_core() {
-  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "devmono" ]]; then
+  if [[ "$ENV_NAME" == "dev" ]]; then
     echo "${ENV_NAME} uses sqlite auto-create; migrations are optional."
     return 0
   fi
@@ -992,7 +947,7 @@ migrate_core() {
 }
 
 migrate_payments() {
-  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "devmono" ]]; then
+  if [[ "$ENV_NAME" == "dev" ]]; then
     echo "${ENV_NAME} uses sqlite auto-create; migrations are optional."
     return 0
   fi
@@ -1000,7 +955,7 @@ migrate_payments() {
 }
 
 migrate() {
-  if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "devmono" ]]; then
+  if [[ "$ENV_NAME" == "dev" ]]; then
     echo "${ENV_NAME} uses sqlite auto-create; migrations are optional."
     return 0
   fi
@@ -1009,10 +964,10 @@ migrate() {
 }
 
 deploy() {
-  if [[ "$ENV_NAME" != "dev" && "$ENV_NAME" != "devmono" ]]; then
+  if [[ "$ENV_NAME" != "dev" ]]; then
     check_env
   fi
-  if [[ "$ENV_NAME" == "prod" || "$ENV_NAME" == "pi" || "$ENV_NAME" == "devmono" ]]; then
+  if [[ "$ENV_NAME" == "prod" || "$ENV_NAME" == "pi" ]]; then
     bootstrap_media_perms
   fi
   compose up -d --build
@@ -1030,7 +985,7 @@ deploy() {
 
 case "$CMD" in
   up)
-    if [[ "$ENV_NAME" == "dev" || "$ENV_NAME" == "devmono" ]]; then
+    if [[ "$ENV_NAME" == "dev" ]]; then
       bootstrap_media_perms
     fi
     compose up -d --build "$@"

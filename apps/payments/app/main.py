@@ -122,7 +122,6 @@ ALLOWED_ROLES = {
     "seller",
     "ops",
     "operator_bus",
-    "operator_taxi",
 }
 
 
@@ -929,7 +928,8 @@ class WalletResp(BaseModel):
 @router.post("/wallets/{wallet_id}/topup", response_model=WalletResp)
 def topup(wallet_id: str, req: TopupReq, request: Request, s: Session = Depends(get_session), admin_ok: bool = Depends(require_admin)):
     # Allow only when DEV flag is on or caller is admin
-    is_admin = bool(admin_ok) or (INTERNAL_API_SECRET and request.headers.get("X-Internal-Secret") == INTERNAL_API_SECRET)
+    internal = (request.headers.get("X-Internal-Secret") or "").strip()
+    is_admin = bool(admin_ok) or (INTERNAL_API_SECRET and internal and _hmac.compare_digest(internal, INTERNAL_API_SECRET))
     if not DEV_ENABLE_TOPUP and not is_admin:
         raise HTTPException(status_code=403, detail="Topup disabled")
     # Idempotency
