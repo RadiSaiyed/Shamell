@@ -143,3 +143,39 @@ def test_bff_taxi_http_calls_include_internal_secret(monkeypatch):
     assert r2.status_code == 200
     assert isinstance(captured[0]["headers"], dict)
     assert captured[0]["headers"].get("X-Internal-Secret") == "test-internal-secret"
+
+
+def test_taxi_payments_http_calls_include_internal_secret(monkeypatch):
+    """
+    Regression: Taxi must attach X-Internal-Secret when calling the internal
+    Payments service, otherwise Payments would need to be exposed publicly or
+    the integration would break in prod/staging.
+    """
+    import apps.taxi.app.main as taxi  # type: ignore[import]
+
+    monkeypatch.setattr(taxi, "PAYMENTS_BASE", "https://payments.example", raising=False)
+    monkeypatch.setattr(taxi, "PAYMENTS_INTERNAL_SECRET", "test-payments-secret", raising=False)
+
+    captured: list[dict[str, object]] = []
+
+    class _DummyResp:
+        def raise_for_status(self):  # pragma: no cover - trivial
+            return None
+
+        def json(self):  # pragma: no cover - trivial
+            return {"id": "t_test", "wallet_id": "w_test"}
+
+    def _fake_post(url, json=None, headers=None, timeout=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append({"url": url, "headers": headers or {}})
+        return _DummyResp()
+
+    monkeypatch.setattr(taxi.httpx, "post", _fake_post, raising=True)
+
+    taxi._payments_transfer("w_from", "w_to", 123, ikey="idem-x", ref="ref-x")
+    taxi._payments_create_user("+491700000777")
+
+    assert len(captured) == 2
+    for call in captured:
+        hdrs = call.get("headers") or {}
+        assert isinstance(hdrs, dict)
+        assert hdrs.get("X-Internal-Secret") == "test-payments-secret"
