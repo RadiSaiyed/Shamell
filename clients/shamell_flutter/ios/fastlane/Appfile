@@ -1,4 +1,4 @@
-app_identifier("com.example.shamell") # TODO: change to your bundle id
+app_identifier("online.shamell.app")
 apple_id("apple-id@example.com") # TODO: your Apple ID or configure API key
 
 # For API key usage uncomment:
