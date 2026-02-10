@@ -378,6 +378,57 @@ check_env() {
     fi
   fi
 
+  # LiveKit token minting endpoint: if enabled, require explicit, safe config.
+  # This endpoint returns a client-facing URL + signed access token.
+  local lk_enabled lk_enabled_norm
+  lk_enabled="$(read_env LIVEKIT_TOKEN_ENDPOINT_ENABLED)"
+  lk_enabled_norm="$(printf '%s' "${lk_enabled:-}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$lk_enabled_norm" == "true" || "$lk_enabled_norm" == "1" || "$lk_enabled_norm" == "yes" || "$lk_enabled_norm" == "on" ]]; then
+    local lk_url lk_key lk_secret lk_url_norm is_prod_like
+    lk_url="$(read_env LIVEKIT_PUBLIC_URL)"
+    lk_key="$(read_env LIVEKIT_API_KEY)"
+    lk_secret="$(read_env LIVEKIT_API_SECRET)"
+    lk_url_norm="$(printf '%s' "${lk_url:-}" | tr '[:upper:]' '[:lower:]')"
+    is_prod_like=0
+    case "$runtime_env_norm" in
+      prod|production|staging|"")
+        is_prod_like=1
+        ;;
+    esac
+
+    if [[ -z "$lk_url" ]]; then
+      echo "Missing LIVEKIT_PUBLIC_URL in ${ENV_FILE_PATH} (required when LIVEKIT_TOKEN_ENDPOINT_ENABLED=true)" >&2
+      missing=1
+    else
+      # Prevent accidental leakage of internal docker hostnames/ports to clients.
+      if [[ "$lk_url_norm" == *"livekit:7880"* || "$lk_url_norm" == ws://livekit* || "$lk_url_norm" == http://livekit* ]]; then
+        echo "LIVEKIT_PUBLIC_URL must be a client-facing URL (not internal livekit:7880) in ${ENV_FILE_PATH}" >&2
+        missing=1
+      fi
+      if [[ "$is_prod_like" == "1" ]]; then
+        if [[ "$lk_url_norm" == ws://* || "$lk_url_norm" == http://* ]]; then
+          echo "LIVEKIT_PUBLIC_URL must use wss:// or https:// in ${ENV_FILE_PATH}" >&2
+          missing=1
+        fi
+      fi
+    fi
+
+    if [[ -z "$lk_key" || "$lk_key" == change-me* ]]; then
+      echo "Missing or invalid LIVEKIT_API_KEY in ${ENV_FILE_PATH} (required when LIVEKIT_TOKEN_ENDPOINT_ENABLED=true)" >&2
+      missing=1
+    fi
+    if [[ -z "$lk_secret" || "$lk_secret" == change-me* ]]; then
+      echo "Missing or invalid LIVEKIT_API_SECRET in ${ENV_FILE_PATH} (required when LIVEKIT_TOKEN_ENDPOINT_ENABLED=true)" >&2
+      missing=1
+    fi
+    if [[ "$is_prod_like" == "1" ]]; then
+      if [[ "$lk_key" == "devkey" || "$lk_secret" == "devsecret" ]]; then
+        echo "LIVEKIT_API_KEY/SECRET must not use dev defaults in ${ENV_FILE_PATH}" >&2
+        missing=1
+      fi
+    fi
+  fi
+
   if [[ "$missing" -ne 0 ]]; then
     exit 1
   fi

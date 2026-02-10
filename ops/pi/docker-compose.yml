@@ -138,7 +138,17 @@ services:
       SECURITY_ALERT_WINDOW_SECS: "${SECURITY_ALERT_WINDOW_SECS:-300}"
       SECURITY_ALERT_COOLDOWN_SECS: "${SECURITY_ALERT_COOLDOWN_SECS:-600}"
       SECURITY_ALERT_THRESHOLDS: "${SECURITY_ALERT_THRESHOLDS:-payments_transfer_wallet_mismatch:4,alias_request_wallet_mismatch:4,alias_request_user_override_blocked:4,favorites_owner_wallet_mismatch:4,payments_request_from_wallet_mismatch:4,payments_edge_rate_limit_wallet:25,payments_edge_rate_limit_ip:40}"
+      # LiveKit (publicly reachable, but joining requires server-minted tokens)
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
+      LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+      LIVEKIT_TOKEN_ENDPOINT_ENABLED: "${LIVEKIT_TOKEN_ENDPOINT_ENABLED:-false}"
+      LIVEKIT_TOKEN_TTL_SECS: "${LIVEKIT_TOKEN_TTL_SECS:-300}"
+      LIVEKIT_TOKEN_MAX_TTL_SECS: "${LIVEKIT_TOKEN_MAX_TTL_SECS:-3600}"
+      LIVEKIT_TOKEN_RATE_WINDOW_SECS: "${LIVEKIT_TOKEN_RATE_WINDOW_SECS:-60}"
+      LIVEKIT_TOKEN_MAX_PER_PHONE: "${LIVEKIT_TOKEN_MAX_PER_PHONE:-30}"
+      LIVEKIT_TOKEN_MAX_PER_IP: "${LIVEKIT_TOKEN_MAX_PER_IP:-80}"
     volumes:
       - bff_data:/data
     ports:
@@ -151,8 +161,6 @@ services:
         condition: service_healthy
       payments:
         condition: service_healthy
-      livekit:
-        condition: service_started
     restart: unless-stopped
     healthcheck:
       test:
@@ -268,9 +276,11 @@ services:
     volumes:
       - ./livekit:/etc/livekit:ro
     ports:
-      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_HTTP_PORT:-7880}:7880"
-      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
-      - "${LIVEKIT_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+      # Serve LiveKit's HTTP/WebSocket API on localhost by default; terminate TLS in Nginx.
+      - "${LIVEKIT_HTTP_PUBLISH_ADDR:-127.0.0.1}:${LIVEKIT_HTTP_PORT:-7880}:7880"
+      # RTC ports must be publicly reachable for WebRTC media.
+      - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
     restart: unless-stopped
 
 volumes:

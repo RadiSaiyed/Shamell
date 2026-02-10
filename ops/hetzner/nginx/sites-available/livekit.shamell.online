@@ -1,0 +1,50 @@
+server {
+    if ($host = livekit.shamell.online) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+    listen 80;
+    server_name livekit.shamell.online;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name livekit.shamell.online;
+
+    ssl_certificate /etc/letsencrypt/live/livekit.shamell.online/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/livekit.shamell.online/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    include /etc/nginx/snippets/shamell_cloudflare_realip.conf;
+
+    server_tokens off;
+    client_max_body_size 10m;
+
+    add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    location / {
+        # LiveKit HTTP/WebSocket API listens on 127.0.0.1:7880 via docker-proxy.
+        proxy_pass http://127.0.0.1:7880/;
+        proxy_http_version 1.1;
+
+        # WebSocket support (LiveKit signaling).
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Keep long-lived connections stable.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+}
+

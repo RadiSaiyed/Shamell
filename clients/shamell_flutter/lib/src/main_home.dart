@@ -112,20 +112,9 @@ class _HomePageState extends State<HomePage> {
     try {
       final uri = Uri.parse('$_baseUrl/auth/devices/register');
       final headers = await _hdr(json: true);
-      // Prefer the stable chat identity id (used throughout the app for device
-      // management) so the server can revoke sessions per device reliably.
-      var did = deviceId;
-      try {
-        final sp = await SharedPreferences.getInstance();
-        final raw = sp.getString('chat.identity');
-        if (raw != null && raw.isNotEmpty) {
-          final decoded = jsonDecode(raw);
-          if (decoded is Map && decoded['id'] is String) {
-            final v = (decoded['id'] as String).trim();
-            if (v.isNotEmpty) did = v;
-          }
-        }
-      } catch (_) {}
+      // Stable per-install device id: supports server-side session revocation
+      // and keeps device lists consistent across restarts/logouts.
+      final did = await getOrCreateStableDeviceId();
       final body = jsonEncode(<String, dynamic>{
         'device_id': did,
         'device_type': kIsWeb ? 'web' : 'mobile',

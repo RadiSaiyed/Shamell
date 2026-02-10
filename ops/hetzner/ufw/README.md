@@ -54,3 +54,27 @@ On the host:
 
 From outside (non-Cloudflare), the origin should not accept direct connections
 to `80/tcp` or `443/tcp`.
+
+## LiveKit Exception (RTC Ports)
+
+LiveKit WebRTC media typically requires public reachability for:
+
+- `7881/tcp`
+- `7882/udp`
+
+If you run LiveKit on the same origin, Cloudflare-only origin lockdown cannot
+fully hide the origin IP from participants because ICE candidates will include
+the origin address.
+
+Best practice options:
+
+- run LiveKit on a separate host/IP (recommended), or
+- use a proxy that supports arbitrary TCP/UDP (e.g. Cloudflare Spectrum), or
+- explicitly allow the RTC ports on the origin firewall (accept the IP exposure).
+
+This repo keeps the default policy strict. If you intentionally want to open
+LiveKit RTC ports, use:
+
+```bash
+scripts/sync_hetzner_ufw.sh shamell --allow-livekit
+```

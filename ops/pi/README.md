@@ -38,6 +38,27 @@ These are intentionally fail-closed defaults for staging/prod:
 - `ENABLE_WALLET_WS_IN_PROD`: keep `false` unless you explicitly want the dev wallet stream exposed.
 - `METRICS_INGEST_SECRET`: when set, `/metrics` ingest requires the secret; when empty, ingest is disabled (403).
 
+## LiveKit Notes
+
+This repo assumes:
+
+- LiveKit is publicly reachable for WebRTC media, but clients must only join using **server-minted tokens**.
+- LiveKit's HTTP/WebSocket API (`7880`) should be private and served over TLS via Nginx.
+
+Practical implications:
+
+- Keep `LIVEKIT_HTTP_PUBLISH_ADDR=127.0.0.1` (default in `ops/pi/docker-compose*.yml`) and proxy `443 -> 127.0.0.1:7880` in Nginx (see `ops/hetzner/nginx/sites-available/livekit.shamell.online`).
+- WebRTC media still requires public reachability for `7881/tcp` and `7882/udp`. If you run Cloudflare-only origin lockdown, you must either:
+  - run LiveKit on a separate host/IP, or
+  - use a proxy that supports arbitrary TCP/UDP (e.g. Cloudflare Spectrum), or
+  - explicitly open these ports on the origin firewall (note: this exposes the origin IP to participants).
+
+To enable the token mint endpoint (`POST /livekit/token`):
+
+- set `LIVEKIT_TOKEN_ENDPOINT_ENABLED=true`
+- set `LIVEKIT_PUBLIC_URL` to the client-facing `wss://...` URL
+- set strong `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (non-dev values)
+
 ## Data Migration Note (Monolith -> Microservices)
 
 `docker-compose.yml` includes a `bootstrap-perms` init container that:

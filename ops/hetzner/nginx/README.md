@@ -6,6 +6,7 @@ serving:
 - `api.shamell.online`
 - `staging-api.shamell.online`
 - `online.shamell.online`
+- `livekit.shamell.online`
 - `media.shamell.online`
 - `shamell.online`
 

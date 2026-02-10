@@ -47,6 +47,7 @@ import 'core/wechat_webview_page.dart';
 import 'core/wechat_contact_info_page.dart';
 import 'core/wechat_new_message_notification_page.dart'
     as wechat_settings_notif;
+import 'core/device_id.dart';
 import 'core/wechat_shake_page.dart';
 import 'core/wechat_settings_about_page.dart';
 import 'core/wechat_settings_account_security_page.dart';

@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_ALIAS="${1:-shamell}"
+HOST_ALIAS="shamell"
+ALLOW_LIVEKIT=0
+for arg in "$@"; do
+  case "$arg" in
+    --allow-livekit)
+      ALLOW_LIVEKIT=1
+      ;;
+    *)
+      HOST_ALIAS="$arg"
+      ;;
+  esac
+done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CF_SNIPPET="${REPO_ROOT}/ops/hetzner/nginx/snippets/shamell_cloudflare_realip.conf"
 
@@ -93,6 +104,13 @@ PY
     sudo ufw allow proto tcp from \"\$cidr\" to any port 80 >/dev/null || true
     sudo ufw allow proto tcp from \"\$cidr\" to any port 443 >/dev/null || true
   done <'${tmp_remote}/cloudflare_cidrs.txt'
+
+  # Optional: LiveKit RTC ports (WebRTC media). This exposes the origin IP to
+  # participants; use only if you explicitly accept that tradeoff.
+  if [[ \"${ALLOW_LIVEKIT}\" == \"1\" ]]; then
+    sudo ufw allow proto tcp to any port 7881 >/dev/null || true
+    sudo ufw allow proto udp to any port 7882 >/dev/null || true
+  fi
 
   # Remove unsafe / confusing rules (best-effort).
   # - Generic 443 allows defeat the Cloudflare-only origin lockdown.

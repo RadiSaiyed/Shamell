@@ -15520,7 +15520,15 @@ async def livekit_token(request: Request) -> dict[str, Any]:
         if LIVEKIT_API_KEY in ("devkey", "change-me") or LIVEKIT_API_SECRET in ("devsecret", "change-me"):
             raise HTTPException(status_code=503, detail="livekit not configured")
         # Don't fall back to the internal docker URL in prod/staging; require an explicit public URL.
-        if not (os.getenv("LIVEKIT_PUBLIC_URL") or "").strip():
+        raw_public_url = (os.getenv("LIVEKIT_PUBLIC_URL") or "").strip()
+        if not raw_public_url:
+            raise HTTPException(status_code=503, detail="livekit not configured")
+        raw_public_norm = raw_public_url.lower()
+        # Require TLS outside dev/test (wss/https). ws/http risks token leakage and MITM.
+        if raw_public_norm.startswith("ws://") or raw_public_norm.startswith("http://"):
+            raise HTTPException(status_code=503, detail="livekit not configured")
+        # Never leak internal docker URLs to clients (misconfiguration safeguard).
+        if "livekit:7880" in raw_public_norm or raw_public_norm.startswith("ws://livekit") or raw_public_norm.startswith("http://livekit"):
             raise HTTPException(status_code=503, detail="livekit not configured")
 
     if not LIVEKIT_PUBLIC_URL:

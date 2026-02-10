@@ -534,12 +534,14 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _verify() async {
     setState(() => out = 'Verifying…');
     final uri = Uri.parse('${baseCtrl.text.trim()}/auth/verify');
+    final deviceId = await getOrCreateStableDeviceId();
     final resp = await http.post(uri,
         headers: await _hdr(json: true),
         body: jsonEncode({
           'phone': _normalizedPhone(),
           'code': codeCtrl.text.trim(),
           'name': nameCtrl.text.trim(),
+          'device_id': deviceId,
         }));
     // Prefer reading session ID from JSON body (for web):
     try {

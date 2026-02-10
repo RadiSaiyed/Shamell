@@ -67,7 +67,17 @@ services:
       PAYMENTS_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
       CHAT_BASE_URL: "http://chat:8081"
       PAYMENTS_BASE_URL: "http://payments:8082"
+      # LiveKit (dev defaults)
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
+      LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+      LIVEKIT_TOKEN_ENDPOINT_ENABLED: "${LIVEKIT_TOKEN_ENDPOINT_ENABLED:-false}"
+      LIVEKIT_TOKEN_TTL_SECS: "${LIVEKIT_TOKEN_TTL_SECS:-300}"
+      LIVEKIT_TOKEN_MAX_TTL_SECS: "${LIVEKIT_TOKEN_MAX_TTL_SECS:-3600}"
+      LIVEKIT_TOKEN_RATE_WINDOW_SECS: "${LIVEKIT_TOKEN_RATE_WINDOW_SECS:-60}"
+      LIVEKIT_TOKEN_MAX_PER_PHONE: "${LIVEKIT_TOKEN_MAX_PER_PHONE:-30}"
+      LIVEKIT_TOKEN_MAX_PER_IP: "${LIVEKIT_TOKEN_MAX_PER_IP:-80}"
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-off}"
       TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
@@ -88,8 +98,6 @@ services:
         condition: service_healthy
       payments:
         condition: service_healthy
-      livekit:
-        condition: service_started
     healthcheck:
       test:
         - CMD

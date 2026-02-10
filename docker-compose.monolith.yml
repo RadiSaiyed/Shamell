@@ -47,8 +47,6 @@ services:
     depends_on:
       bootstrap-perms:
         condition: service_completed_successfully
-      livekit:
-        condition: service_started
     environment:
       ENV: "dev"
       HOME: "/tmp"
@@ -65,7 +63,14 @@ services:
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
       CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-false}"
       RATE_STORE_MAX_KEYS: "${RATE_STORE_MAX_KEYS:-20000}"
+      # LiveKit (dev defaults)
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
+      LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+      LIVEKIT_TOKEN_ENDPOINT_ENABLED: "${LIVEKIT_TOKEN_ENDPOINT_ENABLED:-false}"
+      LIVEKIT_TOKEN_TTL_SECS: "${LIVEKIT_TOKEN_TTL_SECS:-300}"
+      LIVEKIT_TOKEN_MAX_TTL_SECS: "${LIVEKIT_TOKEN_MAX_TTL_SECS:-3600}"
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-off}"
       TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
