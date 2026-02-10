@@ -11328,9 +11328,26 @@ class MomentTagDB(_MomentsBase):
 
 
 _moments_engine = _sa_create_engine(_MOMENTS_DB_URL, future=True)
+_moments_inited = False
 
 
 def _moments_session() -> _sa_Session:
+    """
+    Returns a session for the Moments DB.
+
+    Similar to officials/auth persistence, we lazily ensure the schema exists
+    so test clients and ad-hoc scripts that don't run FastAPI startup events
+    still get the required tables.
+    """
+    global _moments_inited
+    if not _moments_inited:
+        try:
+            _moments_startup()  # type: ignore[name-defined]
+        except Exception:
+            logging.getLogger("shamell.moments").exception(
+                "failed to init moments DB from session helper"
+            )
+        _moments_inited = True
     return _sa_Session(_moments_engine)
 
 
@@ -14834,6 +14851,9 @@ class OfficialAccountDB(_OfficialBase):
     city: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
     address: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
     opening_hours: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
+    # Optional ownership binding for creator/admin surfaces (Channels uploads, stats dashboards).
+    # When set, non-admin callers must match this phone to manage the account.
+    owner_phone: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(64), nullable=True)
     website_url: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
     qr_payload: _sa_Mapped[str | None] = _sa_mapped_column(_sa_String(255), nullable=True)
     featured: _sa_Mapped[bool] = _sa_mapped_column(_sa_Boolean, default=False)
@@ -16430,6 +16450,34 @@ def _officials_startup() -> None:
                     pass
     except Exception:
         pass
+
+    # Ensure Official account ownership column exists even if earlier best-effort
+    # ALTERs failed (e.g. because some columns already existed). This enables
+    # least-privilege checks for creator/admin flows like Channels uploads.
+    try:
+        with _officials_engine.begin() as conn:
+            if _OFFICIALS_DB_URL.startswith("sqlite"):
+                try:
+                    conn.execute(
+                        _sa_text("ALTER TABLE official_accounts ADD COLUMN owner_phone VARCHAR(64)")
+                    )
+                except Exception:
+                    pass
+            else:
+                table_name = "official_accounts"
+                if _OFFICIALS_DB_SCHEMA:
+                    table_name = f"{_OFFICIALS_DB_SCHEMA}.{table_name}"
+                try:
+                    conn.execute(
+                        _sa_text(
+                            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS owner_phone VARCHAR(64)"
+                        )
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # Seed built-in Official accounts and their feed items using a direct
     # SQLAlchemy Session bound to _officials_engine. We deliberately avoid
     # calling _officials_session() here to prevent recursive startup calls,
@@ -16540,6 +16588,7 @@ class OfficialAccountAdminIn(BaseModel):
     city: str | None = None
     address: str | None = None
     opening_hours: str | None = None
+    owner_phone: str | None = None
     website_url: str | None = None
     qr_payload: str | None = None
     featured: bool = False
@@ -16846,6 +16895,7 @@ def admin_official_accounts_list(request: Request, kind: str | None = None) -> d
                     "city": getattr(acc, "city", None),
                     "address": getattr(acc, "address", None),
                     "opening_hours": getattr(acc, "opening_hours", None),
+                    "owner_phone": getattr(acc, "owner_phone", None),
                     "website_url": getattr(acc, "website_url", None),
                     "qr_payload": getattr(acc, "qr_payload", None),
                     "featured": getattr(acc, "featured", False),
@@ -16936,6 +16986,7 @@ def admin_official_accounts_create(request: Request, body: OfficialAccountAdminI
             city=data.city,
             address=data.address,
             opening_hours=data.opening_hours,
+            owner_phone=data.owner_phone,
             website_url=data.website_url,
             qr_payload=data.qr_payload,
             featured=data.featured,
@@ -16959,6 +17010,7 @@ def admin_official_accounts_create(request: Request, body: OfficialAccountAdminI
             "city": getattr(row, "city", None),
             "address": getattr(row, "address", None),
             "opening_hours": getattr(row, "opening_hours", None),
+            "owner_phone": getattr(row, "owner_phone", None),
             "website_url": getattr(row, "website_url", None),
             "qr_payload": getattr(row, "qr_payload", None),
             "featured": getattr(row, "featured", False),
@@ -16985,6 +17037,7 @@ def admin_official_accounts_update(account_id: str, request: Request, body: dict
         "city",
         "address",
         "opening_hours",
+        "owner_phone",
         "website_url",
         "qr_payload",
         "featured",
@@ -17015,6 +17068,7 @@ def admin_official_accounts_update(account_id: str, request: Request, body: dict
             "city": getattr(row, "city", None),
             "address": getattr(row, "address", None),
             "opening_hours": getattr(row, "opening_hours", None),
+            "owner_phone": getattr(row, "owner_phone", None),
             "website_url": getattr(row, "website_url", None),
             "qr_payload": getattr(row, "qr_payload", None),
             "featured": getattr(row, "featured", False),
@@ -17056,6 +17110,9 @@ def admin_official_account_request_approve(
             req_row = s.get(OfficialAccountRequestDB, request_id)
             if not req_row:
                 raise HTTPException(status_code=404, detail="request not found")
+            # Bind the account to the requester phone so merchant/owner consoles can
+            # enforce least-privilege access without relying on global admin roles.
+            owner_phone = (req_row.requester_phone or req_row.contact_phone or "").strip() or None
             # Ensure the target account exists or create it.
             acc_row = s.get(OfficialAccountDB, req_row.account_id)
             if not acc_row:
@@ -17075,12 +17132,21 @@ def admin_official_account_request_approve(
                     city=req_row.city,
                     address=req_row.address,
                     opening_hours=req_row.opening_hours,
+                    owner_phone=owner_phone,
                     website_url=req_row.website_url,
                     verified=True,
                     enabled=True,
                     official=False,
                 )
                 s.add(acc_row)
+            else:
+                try:
+                    existing_owner = (getattr(acc_row, "owner_phone", None) or "").strip()
+                except Exception:
+                    existing_owner = ""
+                if owner_phone and not existing_owner:
+                    acc_row.owner_phone = owner_phone  # type: ignore[assignment]
+                    s.add(acc_row)
             req_row.status = "approved"
             s.add(req_row)
             s.commit()
@@ -22643,7 +22709,7 @@ async def official_account_feed(request: Request, account_id: str, limit: int = 
 
 
 @app.get("/official_accounts/{account_id}/moments_stats", response_class=JSONResponse)
-def official_account_moments_stats(account_id: str) -> dict[str, Any]:
+def official_account_moments_stats(account_id: str, request: Request) -> dict[str, Any]:
     """
     Aggregate Moments "social impact" stats for a single Official account.
 
@@ -22651,6 +22717,40 @@ def official_account_moments_stats(account_id: str) -> dict[str, Any]:
     how many of those mention red packets in the last 30 days, plus basic
     "social impact" KPIs used in merchant UIs.
     """
+    caller_phone = _auth_phone(request)
+    if not caller_phone:
+        raise HTTPException(status_code=401, detail="auth required")
+
+    account_id = (account_id or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id required")
+
+    # Authorization: analytics are a creator/owner surface, not public.
+    is_admin = caller_phone in BFF_ADMINS or _is_admin(caller_phone)
+    if not is_admin:
+        try:
+            with _officials_session() as s:
+                acc = s.get(OfficialAccountDB, account_id)
+                if not acc or not acc.enabled:
+                    raise HTTPException(status_code=404, detail="unknown official account")
+                try:
+                    acc_owner = (getattr(acc, "owner_phone", None) or "").strip()
+                except Exception:
+                    acc_owner = ""
+                if not acc_owner or acc_owner != caller_phone:
+                    _audit_from_request(
+                        request,
+                        "official_moments_stats_forbidden",
+                        account_id=account_id,
+                        owner_phone=acc_owner or None,
+                    )
+                    raise HTTPException(status_code=403, detail="official owner required")
+        except HTTPException:
+            raise
+        except Exception:
+            # Fail closed: treat ownership lookup failures as temporary unavailability.
+            raise HTTPException(status_code=503, detail="officials not available")
+
     try:
         total = 0
         shares_30 = 0
@@ -23812,6 +23912,21 @@ def channels_upload(request: Request, body: ChannelUploadIn) -> dict[str, Any]:
             acc = s.get(OfficialAccountDB, acc_id)
             if not acc or not acc.enabled:
                 raise HTTPException(status_code=404, detail="unknown official account")
+            # Creator surface: only the bound owner phone (or admin) may publish
+            # clips/live entries to an Official account.
+            try:
+                acc_owner = (getattr(acc, "owner_phone", None) or "").strip()
+            except Exception:
+                acc_owner = ""
+            is_admin = phone in BFF_ADMINS or _is_admin(phone)
+            if not is_admin and (not acc_owner or acc_owner != phone):
+                _audit_from_request(
+                    request,
+                    "channels_upload_forbidden",
+                    account_id=acc_id,
+                    owner_phone=acc_owner or None,
+                )
+                raise HTTPException(status_code=403, detail="official owner required")
             slug = _uuid.uuid4().hex
             now = datetime.now(timezone.utc)
             deeplink_json = (
@@ -23884,9 +23999,47 @@ def channels_live_stop(request: Request, item_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="item_id required")
     try:
         with _officials_session() as s:
-            row = s.get(OfficialFeedItemDB, clean_id)
+            row = None
+            # item_id is typically an integer string from /channels/feed, but some
+            # older clients may pass a slug. Support both.
+            try:
+                fid = int(clean_id)
+            except Exception:
+                fid = None
+            if fid is not None:
+                row = s.get(OfficialFeedItemDB, fid)
+            if row is None:
+                row = (
+                    s.execute(
+                        _sa_select(OfficialFeedItemDB).where(
+                            OfficialFeedItemDB.slug == clean_id
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
             if row is None:
                 raise HTTPException(status_code=404, detail="unknown feed item")
+
+            # Authorization: only the Official owner (or admin) may end a live session.
+            acc_id = str(getattr(row, "account_id", "") or "").strip()
+            acc = s.get(OfficialAccountDB, acc_id) if acc_id else None
+            if not acc or not acc.enabled:
+                raise HTTPException(status_code=404, detail="unknown official account")
+            try:
+                acc_owner = (getattr(acc, "owner_phone", None) or "").strip()
+            except Exception:
+                acc_owner = ""
+            is_admin = phone in BFF_ADMINS or _is_admin(phone)
+            if not is_admin and (not acc_owner or acc_owner != phone):
+                _audit_from_request(
+                    request,
+                    "channels_live_stop_forbidden",
+                    account_id=acc_id or None,
+                    owner_phone=acc_owner or None,
+                    item_id=clean_id,
+                )
+                raise HTTPException(status_code=403, detail="official owner required")
             try:
                 current_type = (row.type or "").strip().lower()
             except Exception:

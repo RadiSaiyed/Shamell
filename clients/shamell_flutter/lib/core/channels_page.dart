@@ -1224,7 +1224,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                 ),
               ),
             ),
-          if ((widget.officialAccountId ?? '').trim().isNotEmpty)
+          if (widget.forOwnerConsole &&
+              (widget.officialAccountId ?? '').trim().isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Row(
