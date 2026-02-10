@@ -34,6 +34,4 @@ def test_admin_ids_for_phone_shape_does_not_crash(client, monkeypatch):
     assert data.get("phone") == target
     assert "roles" in data
     assert "bus_operator_ids" in data
-    assert "stays_operator_ids" in data
-    assert data["stays_operator_ids"] == []
-
+    assert "stays_operator_ids" not in data

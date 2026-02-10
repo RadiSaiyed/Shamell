@@ -6477,7 +6477,6 @@ def admin_ids_for_phone(request: Request, phone: str):
     wallet_id: str | None = None
     roles: list[str] = []
     bus_operator_ids: list[str] = []
-    stays_operator_ids: list[str] = []
 
     # Effective roles (from Payments or local allowlists)
     try:
@@ -6556,9 +6555,6 @@ def admin_ids_for_phone(request: Request, phone: str):
     except Exception:
         bus_operator_ids = bus_operator_ids or []
 
-    # Legacy vertical removed: keep field for backward compatibility.
-    stays_operator_ids = []
-
     # Admin / Superadmin IDs: reuse payments user_id when role is present
     is_admin = _hasAdminRole(roles) if roles else False
     is_superadmin = _hasSuperadminRole(roles) if roles else False
@@ -6571,7 +6567,6 @@ def admin_ids_for_phone(request: Request, phone: str):
         "wallet_id": wallet_id,
         "roles": roles,
         "bus_operator_ids": bus_operator_ids,
-        "stays_operator_ids": stays_operator_ids,
         "admin_id": admin_id,
         "superadmin_id": superadmin_id,
         "is_admin": is_admin,
@@ -15907,7 +15902,7 @@ _OFFICIAL_ACCOUNTS: dict[str, OfficialAccountOut] = {
         chat_peer_id="shamell_pay",
         category="payments",
         city="Damascus",
-        website_url="https://pay.shamell.app",
+        website_url="https://online.shamell.online",
         menu_items=[
             {
                 "id": "open_wallet",

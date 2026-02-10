@@ -26,10 +26,8 @@ venv/
 ops/dev/logs/
 ops/dev/pids/
 ops/gcp/logs/
-NonWeChat/ops/logs/
 
 # Secrets and local ops overlays
-NonWeChat/ops/secrets/
 ops/**/.env
 ops/**/.env.*
 
@@ -39,8 +37,3 @@ docs/
 backups/
 ops/reports/
 tools/
-
-# Exclude most of NonWeChat, but keep runtime domain apps imported as `apps.*`.
-NonWeChat/*
-!NonWeChat/apps/
-!NonWeChat/apps/**

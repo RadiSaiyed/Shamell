@@ -46,7 +46,7 @@ jobs:
       - name: Bandit
         run: |
           if find . -type f -name '*.py' | grep -q .; then
-            python -m bandit -q -r apps libs/shamell_shared/python/shamell_shared scripts -lll -x './.git,./.venv,./venv,./node_modules,./NonWeChat'
+            python -m bandit -q -r apps libs/shamell_shared/python/shamell_shared scripts -lll -x './.git,./.venv,./venv,./node_modules'
           else
             echo "No Python sources found; skipping bandit."
           fi
@@ -147,6 +147,10 @@ jobs:
         run: |
           python -m compileall -q apps libs tests
 
+      - name: Guard legacy artifacts are absent
+        run: |
+          python scripts/check_no_legacy_artifacts.py
+
       - name: Guard internal port exposure
         run: |
           python scripts/check_internal_port_exposure.py
@@ -154,7 +158,6 @@ jobs:
       - name: Run pytest
         env:
           ENV: test
-          MONOLITH_MODE: "0"
           PYTHONPATH: .
         run: |
           pytest -q
