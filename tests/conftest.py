@@ -5,8 +5,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("ENV", "test")
-# Monolith has been removed; tests run the BFF directly.
-os.environ.setdefault("MONOLITH_MODE", "0")
 
 
 @pytest.fixture(scope="session")

@@ -50,7 +50,7 @@ class HomeRouteGrid extends StatelessWidget {
     final l = L10n.of(context);
     // Category tiles to keep homescreen compact (flat, high‑contrast grid)
     // Flat list of high-level hubs. Each hub opens a compact sub-grid that
-    // groups related domains (finance, mobility, logistics, commerce, etc.).
+    // groups related domains (finance, mobility, social, ops).
     // Payments stays as a dedicated finance hub.
     final cats = <_SatSpec>[
       _SatSpec(

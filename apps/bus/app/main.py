@@ -14,7 +14,7 @@ import hashlib
 import hmac
 
 try:
-    # Optional internal Payments integration (monolith mode). We keep this
+    # Optional internal Payments integration (internal mode). We keep this
     # import best-effort so that the standalone bus service does not depend
     # on the payments module being importable.
     from apps.payments.app.main import (  # type: ignore[import]
@@ -61,7 +61,7 @@ def _use_pay_internal() -> bool:
     Lightweight toggle for internal Payments usage from the Bus domain.
     We only treat internal mode as enabled when PAY_INTERNAL_MODE or
     PAYMENTS_INTERNAL_MODE is explicitly set to "on" (e.g. in the
-    monolith), so that standalone bus deployments and tests keep their
+    internal single-process stack), so that standalone bus deployments and tests keep their
     existing "offline" behaviour unless a PAYMENTS_BASE_URL is provided.
     """
     mode = (os.getenv("PAYMENTS_INTERNAL_MODE") or os.getenv("PAY_INTERNAL_MODE") or "").lower()
@@ -807,7 +807,7 @@ def quote(trip_id: str, seats: int = 1, s: Session = Depends(get_session)):
 
 
 def _payments_transfer(from_wallet: str, to_wallet: str, amount_cents: int, ikey: str, ref: Optional[str] = None) -> dict:
-    # Prefer internal Payments when explicitly enabled (monolith mode).
+    # Prefer internal Payments when explicitly enabled (internal mode).
     if _use_pay_internal():
         if not (_PAY_INTERNAL_AVAILABLE and _PaySession and _pay_engine and _pay_transfer and _PayTransferReq):
             raise RuntimeError("payments internal not available")

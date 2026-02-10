@@ -428,7 +428,7 @@ class _LoginPageState extends State<LoginPage> {
       if (b != null && b.isNotEmpty) {
         final v = b.trim();
         // Ignore legacy dev defaults so the new
-        // monolith port (8080) is used automatically.
+        // default BFF port (8080) is used automatically.
         if (!(v.contains('localhost:5003') || v.contains('127.0.0.1:5003'))) {
           baseCtrl.text = v;
         }

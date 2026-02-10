@@ -103,7 +103,7 @@ def test_admin_info_requires_admin_and_returns_basic_structure(client, user_auth
     assert resp2.status_code == 200
     data = resp2.json()
     assert "env" in data
-    assert "monolith" in data
+    assert "internal_mode" in data
     assert "domains" in data
     assert isinstance(data["domains"], dict)
 

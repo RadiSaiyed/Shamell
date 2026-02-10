@@ -10,7 +10,7 @@ ITERATIONS ?= 100
 help:
 	@echo "Targets:"
 	@echo "  venv      Create/refresh venv at $(VENV) and install deps"
-	@echo "  test      Run pytest (ENV=test, MONOLITH_MODE=0)"
+	@echo "  test      Run pytest (ENV=test)"
 	@echo "  compile   Byte-compile all Python sources"
 	@echo "  iterate   Run scripts/iterate_100.sh (ITERATIONS=$(ITERATIONS))"
 
@@ -22,7 +22,7 @@ venv:
 	"$(PIP)" install pytest
 
 test: venv
-	ENV=test MONOLITH_MODE=0 PYTHONPATH=. "$(PY)" -m pytest -q
+	ENV=test PYTHONPATH=. "$(PY)" -m pytest -q
 
 compile: venv
 	"$(PY)" -m compileall -q apps libs tests

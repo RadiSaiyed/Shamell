@@ -76,7 +76,7 @@ if [[ -z "$ENV_NAME" || -z "$CMD" ]]; then
   usage
   exit 1
 fi
-# Back-compat: legacy devmono env was removed when the monolith was deleted.
+# Back-compat: legacy devmono env was removed; use dev (microservices).
 if [[ "$ENV_NAME" == "devmono" ]]; then
   echo "devmono has been removed; using dev (microservices)." >&2
   ENV_NAME="dev"

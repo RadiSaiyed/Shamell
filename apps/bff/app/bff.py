@@ -309,7 +309,7 @@ def _validate_runtime_config() -> None:
     if not allowed_origins:
         warnings.append("ALLOWED_ORIGINS is empty; browser clients may be unable to call the API")
 
-    # Microservices-in-prod guardrails: forbid internal (monolith-style) domain modes.
+    # Microservices-in-prod guardrails: forbid internal (single-process) domain modes.
     if _env_or("FORCE_INTERNAL_DOMAINS", "false").lower() in ("1", "true", "yes", "on"):
         errors.append("FORCE_INTERNAL_DOMAINS must be disabled in prod/staging")
 
@@ -421,7 +421,7 @@ class _AuditInMemoryHandler(logging.Handler):
 _audit_logger.addHandler(_AuditInMemoryHandler())
 _audit_logger.setLevel(logging.INFO)
 
-# Simple background stats (monolith heartbeat etc.)
+# Simple background stats (internal-mode heartbeat etc.)
 _BG_STATS: dict[str, Any] = {"last_tick_ms": None}
 
 # Small in-memory caches for frequently used lists
@@ -710,8 +710,6 @@ def admin_stats(request: Request, limit: int = 200):
 
     # Guardrail counts from audit log (best-effort)
     guardrail_counts: dict[str, int] = {}
-    building_counts: dict[str, int] = {}
-    freight_guardrail_counts: dict[str, int] = {}
     try:
         # consider only recent audit events
         tail = _AUDIT_EVENTS[-limit:]
@@ -721,23 +719,14 @@ def admin_stats(request: Request, limit: int = 200):
                 continue
             if "guardrail" in action:
                 guardrail_counts[action] = guardrail_counts.get(action, 0) + 1
-                if action.startswith("freight_"):
-                    freight_guardrail_counts[action] = freight_guardrail_counts.get(action, 0) + 1
-            if action.startswith("building_order_"):
-                key = action
-                building_counts[key] = building_counts.get(key, 0) + 1
     except Exception:
         guardrail_counts = {}
-        building_counts = {}
-        freight_guardrail_counts = {}
 
     return {
         "samples": samples_out,
         "actions": action_counts,
         "total_events": len(items),
         "guardrails": guardrail_counts,
-        "freight_guardrails": freight_guardrail_counts,
-        "building_orders": building_counts,
     }
 
 
@@ -750,7 +739,7 @@ def admin_finance_stats(request: Request, from_iso: str | None = None, to_iso: s
     """
     _require_admin_v2(request)
 
-    # For monolithic deployments we rely on internal calls.
+    # For internal-mode deployments we rely on internal calls.
     if not _use_pay_internal():
         raise HTTPException(status_code=500, detail="payments internal not available")
 
@@ -896,7 +885,6 @@ def admin_info(request: Request):
     """
     _require_admin_v2(request)
     env = _env_or("ENV", "dev")
-    monolith = bool(_env_or("MONOLITH_MODE", "0") not in ("0", "false", "False"))
     domains: dict[str, dict[str, Any]] = {
         "payments": {"internal": bool(_use_pay_internal()), "base_url": PAYMENTS_BASE},
         "bus": {"internal": bool(_use_bus_internal()), "base_url": BUS_BASE},
@@ -906,10 +894,11 @@ def admin_info(request: Request):
             "public_url": LIVEKIT_PUBLIC_URL or None,
         },
     }
+    internal_mode = any(bool(d.get("internal")) for d in domains.values())
 
     return {
         "env": env,
-        "monolith": monolith,
+        "internal_mode": internal_mode,
         "security_headers": SECURITY_HEADERS_ENABLED,
         "domains": domains,
     }
@@ -963,7 +952,6 @@ async def ws_wallet_events(websocket: WebSocket, wallet_id: str):
 # Upstream base URLs (prefer custom domains but allow service URLs)
 PAYMENTS_BASE = _env_or("PAYMENTS_BASE_URL", "")
 ESCROW_WALLET_ID = _env_or("ESCROW_WALLET_ID", "")
-STICKERS_MERCHANT_WALLET_ID = _env_or("STICKERS_MERCHANT_WALLET_ID", "")
 DEFAULT_CURRENCY = _env_or("DEFAULT_CURRENCY", "SYP")
 BUS_BASE = _env_or("BUS_BASE_URL", "")
 CHAT_BASE = _env_or("CHAT_BASE_URL", "")
@@ -3546,7 +3534,7 @@ async def auth_verify(req: Request):
     if not _check_code(phone, code):
         raise HTTPException(status_code=400, detail="invalid code")
     # Ensure a payments wallet exists for this phone (idempotent).
-    # Prefer internal Payments wiring in monolith mode; fallback to HTTP
+    # Prefer internal Payments wiring in internal mode; fallback to HTTP
     # only when explicitly configured.
     wallet_id: str | None = None
     try:
@@ -3594,7 +3582,7 @@ async def me_wallet(request: Request):
     phone = _auth_phone(request)
     if not phone:
         raise HTTPException(status_code=401, detail="unauthorized")
-    # Prefer internal Payments wiring in monolith mode; fallback to HTTP only
+    # Prefer internal Payments wiring in internal mode; fallback to HTTP only
     # when explicitly configured.
     try:
         wallet_id: str | None = None
@@ -4346,7 +4334,7 @@ def _chat_url(path: str) -> str:
     return CHAT_BASE.rstrip("/") + path
 
 
-# --- Chat internal service (monolith mode) ---
+# --- Chat internal service (internal mode) ---
 _CHAT_INTERNAL_AVAILABLE = False
 try:
     from sqlalchemy.orm import Session as _ChatSession  # type: ignore[import]
@@ -4432,7 +4420,7 @@ def _chat_internal_session():
     if not _CHAT_INTERNAL_AVAILABLE or _ChatSession is None or _chat_engine is None:  # type: ignore[truthy-function]
         raise RuntimeError("Chat internal service not available")
     # Lazy bootstrap: avoid creating Chat tables in the BFF DB unless we are
-    # actually running in internal mode (monolith-style).
+    # actually running in internal mode (single-process).
     if not _CHAT_INTERNAL_BOOTSTRAPPED:
         try:
             if _use_chat_internal() and _chat_main is not None and hasattr(_chat_main, "_startup"):
@@ -5626,7 +5614,7 @@ def _normalize_amount(body: Any) -> Any:
             body["amount_cents"] = _to_cents(body.get("amount_syp"))
     return body
 
-# --- Payments internal service (monolith mode) ---
+# --- Payments internal service (internal mode) ---
 _PAY_INTERNAL_AVAILABLE = False
 try:
     from sqlalchemy.orm import Session as _PaySession  # type: ignore[import]
@@ -5792,7 +5780,7 @@ def _bus_url(path: str) -> str:
     return BUS_BASE.rstrip("/") + path
 
 
-# --- Bus internal service (monolith mode) ---
+# --- Bus internal service (internal mode) ---
 _BUS_INTERNAL_AVAILABLE = False
 try:
     from sqlalchemy.orm import Session as _BusSession  # type: ignore[import]
@@ -6080,10 +6068,10 @@ def qr_png(data: str, box_size: int = 6, border: int = 2):
 @app.get("/bus/health")
 def bus_health():
     """
-    Bus health: prefer the internal Bus service when running in monolith
+    Bus health: prefer the internal Bus service when running in internal mode
     mode; otherwise proxy to an external BUS_BASE_URL if configured.
     """
-    # Internal Bus (monolith mode)
+    # Internal Bus (internal mode)
     if _use_bus_internal():
         if not _BUS_INTERNAL_AVAILABLE:
             raise HTTPException(status_code=500, detail="bus internal not available")
@@ -6329,7 +6317,7 @@ def topup_print(request: Request, batch_id: str):
     """
     Printable QR sheet for a topup batch.
 
-    In monolith/internal mode this uses the Payments domain directly;
+    In internal mode this uses the Payments domain directly;
     otherwise it falls back to the external PAYMENTS_BASE_URL.
     """
     phone = _auth_phone(request)
@@ -8421,7 +8409,7 @@ async def payments_topup(wallet_id: str, req: Request):
     # Normalize amount payload once so both internal + HTTP paths share logic
     body = _normalize_amount(body)
     try:
-        # Prefer internal Payments integration in monolith mode to avoid
+        # Prefer internal Payments integration in internal mode to avoid
         # HTTP loops back into the same process.
         if _use_pay_internal():
             if not _PAY_INTERNAL_AVAILABLE:
@@ -15859,27 +15847,47 @@ def _sticker_packs_config() -> list[dict[str, Any]]:
             "stickers": ["😀", "😂", "🥲", "😅", "😍", "😎", "😭", "😡"],
             "price_cents": 0,
             "currency": DEFAULT_CURRENCY,
-            "tags": ["free", "starter"],
+            "tags": ["free", "classic", "emoji"],
             "recommended": True,
-        },
-        {
-            "id": "food_lovers",
-            "name_en": "Food lovers",
-            "name_ar": "محبو الطعام",
-            "stickers": ["🍕", "🍔", "🍟", "🍣", "🍰", "☕", "🥙", "🥗"],
-            "price_cents": 1500,
-            "currency": DEFAULT_CURRENCY,
-            "tags": ["paid", "food"],
-            "recommended": False,
         },
         {
             "id": "celebration",
             "name_en": "Celebrations",
             "name_ar": "الاحتفالات",
             "stickers": ["🎉", "🎂", "🎁", "🕌", "🕋", "🕯️", "🪅", "🥳"],
-            "price_cents": 2000,
+            "price_cents": 0,
             "currency": DEFAULT_CURRENCY,
-            "tags": ["paid", "events"],
+            "tags": ["free", "celebration", "events"],
+            "recommended": False,
+        },
+        {
+            "id": "shamell_payments",
+            "name_en": "Shamell Pay",
+            "name_ar": "شامل باي",
+            "stickers": ["💸", "💳", "📲", "🏧", "🧾", "✅"],
+            "price_cents": 0,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["free", "shamell", "pay", "wallet"],
+            "recommended": True,
+        },
+        {
+            "id": "shamell_services",
+            "name_en": "Shamell essentials",
+            "name_ar": "أساسيات شامل",
+            "stickers": ["🚌", "💳", "📲", "✅", "🔔", "🧾"],
+            "price_cents": 0,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["free", "shamell", "essentials"],
+            "recommended": True,
+        },
+        {
+            "id": "daily_reactions",
+            "name_en": "Daily reactions",
+            "name_ar": "تفاعلات يومية",
+            "stickers": ["🤝", "🙏", "🔥", "✅", "❌", "⏳", "⭐", "❤️"],
+            "price_cents": 0,
+            "currency": DEFAULT_CURRENCY,
+            "tags": ["free", "reactions", "emoji"],
             "recommended": False,
         },
     ]
@@ -23324,10 +23332,10 @@ def channels_item_moments_stats(item_id: str) -> dict[str, Any]:
 @app.get("/stickers/my", response_class=JSONResponse)
 def stickers_my(request: Request) -> dict[str, Any]:
     """
-    Returns the IDs of sticker packs purchased by the current user.
+    Returns the IDs of sticker packs owned by the current user.
 
-    This is used by the Sticker‑Store to show which paid packs
-    are already owned (WeChat‑like \"Owned\" state).
+    This supports cross-device sync so the Sticker‑Store can show a
+    WeChat‑like \"Owned\" state.
     """
     phone = _auth_phone(request)
     if not phone:
@@ -23352,11 +23360,10 @@ def stickers_my(request: Request) -> dict[str, Any]:
 @app.post("/stickers/purchase", response_class=JSONResponse)
 async def stickers_purchase(request: Request) -> dict[str, Any]:
     """
-    Purchase a sticker pack using the user's wallet.
+    Mark a sticker pack as owned for the current user (idempotent).
 
-    For paid packs the server charges from_wallet_id -> STICKERS_MERCHANT_WALLET_ID
-    via the Payments service (reusing the guarded transfer helper) and records
-    the purchase idempotently per user + pack.
+    All packs are currently free; the endpoint only records ownership so the
+    client can sync \"Owned\" across devices.
     """
     phone = _auth_phone(request)
     if not phone:
@@ -23368,7 +23375,6 @@ async def stickers_purchase(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         body = {}
     pack_id = (body.get("pack_id") or "").strip()
-    from_wallet_id = (body.get("from_wallet_id") or "").strip()
     if not pack_id:
         raise HTTPException(status_code=400, detail="pack_id required")
 
@@ -23394,7 +23400,7 @@ async def stickers_purchase(request: Request) -> dict[str, Any]:
 
     try:
         with _stickers_session() as s:
-            # Idempotent per user/pack: if we already have a record, do not charge again.
+            # Idempotent per user/pack: if we already have a record, do not duplicate.
             existing = (
                 s.execute(
                     _sa_select(StickerPurchaseDB).where(
@@ -23413,26 +23419,6 @@ async def stickers_purchase(request: Request) -> dict[str, Any]:
                     "price_cents": existing.amount_cents,
                     "currency": existing.currency,
                 }
-
-            if price_cents > 0:
-                if not STICKERS_MERCHANT_WALLET_ID:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="STICKERS_MERCHANT_WALLET_ID not configured",
-                    )
-                if not from_wallet_id:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="from_wallet_id required for paid packs",
-                    )
-                ref = f"stickers pack {pack_id}"
-                _building_transfer(
-                    request=request,
-                    from_wallet_id=from_wallet_id,
-                    to_wallet_id=STICKERS_MERCHANT_WALLET_ID,
-                    amount_cents=price_cents,
-                    reference=ref,
-                )
 
             rec = StickerPurchaseDB(
                 user_phone=phone,
@@ -23466,7 +23452,7 @@ def stickers_packs(request: Request) -> dict[str, Any]:
 
     When the user is authenticated, each pack includes an
     \"owned\" flag based on StickerPurchaseDB so the client
-    can show a WeChat‑like \"Owned\" state for paid packs.
+    can show a WeChat‑like \"Owned\" state.
     """
     try:
         packs = _sticker_packs_config()
@@ -24171,16 +24157,11 @@ async def global_search(
                                     row.app_id or "",
                                 ]
                             ).lower()
-                            if any(k in hay for k in ["bus", "ride", "transport", "mobility"]):
+                            if any(
+                                k in hay
+                                for k in ["bus", "ride", "transport", "mobility"]
+                            ):
                                 category_key = "transport"
-                            elif any(
-                                k in hay for k in ["food", "restaurant", "delivery"]
-                            ):
-                                category_key = "food"
-                            elif any(
-                                k in hay for k in ["stay", "hotel", "travel"]
-                            ):
-                                category_key = "travel"
                             elif any(
                                 k in hay
                                 for k in ["wallet", "pay ", "payment", "payments"]

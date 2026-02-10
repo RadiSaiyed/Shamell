@@ -107,7 +107,7 @@ services:
       LIVEKIT_TOKEN_MAX_PER_PHONE: "${LIVEKIT_TOKEN_MAX_PER_PHONE:-30}"
       LIVEKIT_TOKEN_MAX_PER_IP: "${LIVEKIT_TOKEN_MAX_PER_IP:-80}"
     ports:
-      - "${MONOLITH_PUBLISH_ADDR:-127.0.0.1}:${MONOLITH_PUBLISH_PORT:-8080}:8080"
+      - "${BFF_PUBLISH_ADDR:-127.0.0.1}:${BFF_PUBLISH_PORT:-8080}:8080"
     command: ["uvicorn", "apps.bff.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
       db:

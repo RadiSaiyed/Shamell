@@ -29,7 +29,7 @@ def test_bus_booking_endpoints_require_auth(client):
 
 
 def test_bus_booking_status_enforces_wallet_ownership(client, monkeypatch):
-    # Force external-mode path so httpx stubs are exercised (monolith defaults to internal).
+    # Force external-mode path so httpx stubs are exercised (internal mode defaults to internal).
     monkeypatch.setattr(bff, "_use_bus_internal", lambda: False, raising=False)
     monkeypatch.setattr(bff, "BUS_BASE", "http://bus.local", raising=False)
     monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", lambda phone: "w-caller", raising=False)
@@ -46,7 +46,7 @@ def test_bus_booking_status_enforces_wallet_ownership(client, monkeypatch):
 
 
 def test_bus_booking_tickets_enforces_wallet_ownership(client, monkeypatch):
-    # Force external-mode path so httpx stubs are exercised (monolith defaults to internal).
+    # Force external-mode path so httpx stubs are exercised (internal mode defaults to internal).
     monkeypatch.setattr(bff, "_use_bus_internal", lambda: False, raising=False)
     monkeypatch.setattr(bff, "BUS_BASE", "http://bus.local", raising=False)
     monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", lambda phone: "w-caller", raising=False)
@@ -65,7 +65,7 @@ def test_bus_booking_tickets_enforces_wallet_ownership(client, monkeypatch):
 
 
 def test_bus_booking_search_blocks_cross_wallet_queries(client, monkeypatch):
-    # Force external-mode path so httpx stubs are exercised (monolith defaults to internal).
+    # Force external-mode path so httpx stubs are exercised (internal mode defaults to internal).
     monkeypatch.setattr(bff, "_use_bus_internal", lambda: False, raising=False)
     monkeypatch.setattr(bff, "BUS_BASE", "http://bus.local", raising=False)
     monkeypatch.setattr(bff, "_resolve_wallet_id_for_phone", lambda phone: "w-caller", raising=False)
