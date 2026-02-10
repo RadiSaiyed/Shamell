@@ -2,11 +2,11 @@
 
 This folder contains the production/staging **microservices** compose file for Pi/edge deployments:
 
-- `docker-compose.yml` (BFF + Chat + Payments + LiveKit)
+- `docker-compose.yml` (BFF + Chat + Payments + Taxi + LiveKit)
 
 An optional Postgres-backed variant is available for production-hardening and multi-instance readiness:
 
-- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + LiveKit + `migrate-sqlite-to-postgres`)
+- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + Taxi + LiveKit + `migrate-sqlite-to-postgres`)
 
 For rollback and reference, the legacy monolith stack is preserved as:
 
@@ -74,7 +74,7 @@ This enables a low-risk cutover while keeping the old monolith volume intact for
 `docker-compose.postgres.yml` includes:
 
 - a `db` service (Postgres 16)
-- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`) and inserts rows into Postgres
+- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`, `taxi_data`) and inserts rows into Postgres
 
 Best practice rollout is staging-first, with a full SQLite volume backup immediately before cutover.
 

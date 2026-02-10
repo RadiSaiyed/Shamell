@@ -153,6 +153,7 @@ check_env() {
   local required=(
     INTERNAL_API_SECRET
     PAYMENTS_INTERNAL_SECRET
+    TAXI_INTERNAL_SECRET
     SONIC_SECRET
     TOPUP_SECRET
     ALIAS_CODE_PEPPER
@@ -177,6 +178,7 @@ check_env() {
       DB_URL
       CHAT_DB_URL
       PAYMENTS_DB_URL
+      TAXI_DB_URL
     )
     for key in "${pg_required[@]}"; do
       local val
@@ -188,7 +190,7 @@ check_env() {
       fi
     done
 
-    for key in DB_URL CHAT_DB_URL PAYMENTS_DB_URL; do
+    for key in DB_URL CHAT_DB_URL PAYMENTS_DB_URL TAXI_DB_URL; do
       local url url_norm
       url="$(read_env "$key")"
       url_norm="$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')"

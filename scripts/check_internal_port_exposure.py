@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-TARGET_CONTAINER_PORTS = {"8081", "8082"}
+TARGET_CONTAINER_PORTS = {"8081", "8082", "8083"}
 LOCAL_HOST_EXPRESSIONS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 

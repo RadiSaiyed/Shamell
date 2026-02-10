@@ -233,10 +233,12 @@ def main() -> int:
     core_sqlite = os.getenv("MIGRATE_SQLITE_CORE_PATH", "")
     chat_sqlite = os.getenv("MIGRATE_SQLITE_CHAT_PATH", "")
     pay_sqlite = os.getenv("MIGRATE_SQLITE_PAYMENTS_PATH", "")
+    taxi_sqlite = os.getenv("MIGRATE_SQLITE_TAXI_PATH", "")
 
     core_pg = os.getenv("MIGRATE_PG_CORE_URL") or os.getenv("DB_URL") or ""
     chat_pg = os.getenv("MIGRATE_PG_CHAT_URL") or os.getenv("CHAT_DB_URL") or ""
     pay_pg = os.getenv("MIGRATE_PG_PAYMENTS_URL") or os.getenv("PAYMENTS_DB_URL") or ""
+    taxi_pg = os.getenv("MIGRATE_PG_TAXI_URL") or os.getenv("TAXI_DB_URL") or ""
 
     if core_sqlite and core_pg:
         pairs.append(_DbPair(label="core", sqlite_path=core_sqlite, pg_url=core_pg))
@@ -244,6 +246,8 @@ def main() -> int:
         pairs.append(_DbPair(label="chat", sqlite_path=chat_sqlite, pg_url=chat_pg))
     if pay_sqlite and pay_pg:
         pairs.append(_DbPair(label="payments", sqlite_path=pay_sqlite, pg_url=pay_pg))
+    if taxi_sqlite and taxi_pg:
+        pairs.append(_DbPair(label="taxi", sqlite_path=taxi_sqlite, pg_url=taxi_pg))
 
     if not pairs:
         _log("[error] no migration pairs configured (missing env vars)")
@@ -257,4 +261,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

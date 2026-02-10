@@ -27,4 +27,4 @@ create_db() {
 create_db "${POSTGRES_DB_CORE:-shamell_core}"
 create_db "${POSTGRES_DB_CHAT:-shamell_chat}"
 create_db "${POSTGRES_DB_PAYMENTS:-shamell_payments}"
-
+create_db "${POSTGRES_DB_TAXI:-shamell_taxi}"

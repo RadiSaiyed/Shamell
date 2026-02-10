@@ -898,6 +898,7 @@ JOBS_BASE = _env_or("JOBS_BASE_URL", "")
 LIVESTOCK_BASE = _env_or("LIVESTOCK_BASE_URL", "")
 PAYMENTS_INTERNAL_SECRET = os.getenv("PAYMENTS_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET")
 INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
+TAXI_INTERNAL_SECRET = os.getenv("TAXI_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET")
 GMAPS_API_KEY = os.getenv("GMAPS_API_KEY", "")
 ORS_BASE = _env_or("ORS_BASE_URL", "")
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
@@ -11556,7 +11557,7 @@ def _taxi_url(path: str) -> str:
     return TAXI_BASE.rstrip("/") + path
 
 def _taxi_headers() -> dict:
-    return ({"X-Internal-Secret": INTERNAL_API_SECRET} if INTERNAL_API_SECRET else {})
+    return ({"X-Internal-Secret": TAXI_INTERNAL_SECRET} if TAXI_INTERNAL_SECRET else {})
 
 TAXI_QR_TOPUP_PEPPER = os.getenv("TAXI_QR_TOPUP_PEPPER", "")
 
@@ -22685,7 +22686,7 @@ async def taxi_quote(req: Request):
                 inject_internal=False,
                 req=req_model,
             )
-        r = httpx.post(_taxi_url("/rides/quote"), json=body, timeout=10)
+        r = httpx.post(_taxi_url("/rides/quote"), json=body, headers=_taxi_headers(), timeout=10)
         return r.json() if r.headers.get("content-type",""
         ).startswith("application/json") else {"raw": r.text, "status_code": r.status_code}
     except httpx.HTTPStatusError as e:
@@ -22756,7 +22757,9 @@ async def taxi_book_pay(req: Request):
                 req=req_model,
                 idempotency_key=ikey,
             )
-        r = httpx.post(_taxi_url("/rides/book_pay"), json=body, headers=headers, timeout=15)
+        # Defense-in-depth: never allow caller-provided headers to override the internal secret.
+        merged_headers = {**headers, **_taxi_headers()}
+        r = httpx.post(_taxi_url("/rides/book_pay"), json=body, headers=merged_headers, timeout=15)
         return r.json() if r.headers.get("content-type",""
         ).startswith("application/json") else {"raw": r.text, "status_code": r.status_code}
     except httpx.HTTPStatusError as e:

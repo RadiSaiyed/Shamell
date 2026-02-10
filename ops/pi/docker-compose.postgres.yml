@@ -11,6 +11,7 @@ services:
       POSTGRES_DB_CORE: "${POSTGRES_DB_CORE:-shamell_core}"
       POSTGRES_DB_CHAT: "${POSTGRES_DB_CHAT:-shamell_chat}"
       POSTGRES_DB_PAYMENTS: "${POSTGRES_DB_PAYMENTS:-shamell_payments}"
+      POSTGRES_DB_TAXI: "${POSTGRES_DB_TAXI:-shamell_taxi}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
@@ -41,6 +42,8 @@ services:
       PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
       CHAT_BASE_URL: "${CHAT_BASE_URL:-http://chat:8081}"
       PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
+      TAXI_BASE_URL: "${TAXI_BASE_URL:-http://taxi:8083}"
+      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:?set TAXI_INTERNAL_SECRET in ops/pi/.env}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
       CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-true}"
@@ -110,6 +113,8 @@ services:
       chat:
         condition: service_healthy
       payments:
+        condition: service_healthy
+      taxi:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -205,6 +210,46 @@ services:
       retries: 12
       start_period: 20s
 
+  taxi:
+    image: shamell-core:pi
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: "${ENV:-prod}"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      TAXI_DB_URL: "${TAXI_DB_URL:?set TAXI_DB_URL (postgres) in ops/pi/.env}"
+      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:?set TAXI_INTERNAL_SECRET in ops/pi/.env}"
+      PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
+      PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    command: ["uvicorn", "apps.taxi.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
+    depends_on:
+      db:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
   migrate-sqlite-to-postgres:
     image: shamell-core:pi
     init: true
@@ -216,15 +261,18 @@ services:
       MIGRATE_SQLITE_CORE_PATH: "${MIGRATE_SQLITE_CORE_PATH:-/src/bff_data/core.db}"
       MIGRATE_SQLITE_CHAT_PATH: "${MIGRATE_SQLITE_CHAT_PATH:-/src/chat_data/chat.db}"
       MIGRATE_SQLITE_PAYMENTS_PATH: "${MIGRATE_SQLITE_PAYMENTS_PATH:-/src/payments_data/payments.db}"
+      MIGRATE_SQLITE_TAXI_PATH: "${MIGRATE_SQLITE_TAXI_PATH:-/src/taxi_data/taxi.db}"
       # Target Postgres URLs
       MIGRATE_PG_CORE_URL: "${DB_URL:?set DB_URL (postgres) in ops/pi/.env}"
       MIGRATE_PG_CHAT_URL: "${CHAT_DB_URL:?set CHAT_DB_URL (postgres) in ops/pi/.env}"
       MIGRATE_PG_PAYMENTS_URL: "${PAYMENTS_DB_URL:?set PAYMENTS_DB_URL (postgres) in ops/pi/.env}"
+      MIGRATE_PG_TAXI_URL: "${TAXI_DB_URL:?set TAXI_DB_URL (postgres) in ops/pi/.env}"
     command: ["python", "-m", "apps.ops.migrate_sqlite_to_postgres"]
     volumes:
       - bff_data:/src/bff_data:ro
       - chat_data:/src/chat_data:ro
       - payments_data:/src/payments_data:ro
+      - taxi_data:/src/taxi_data:ro
     restart: "no"
 
   livekit:
@@ -257,3 +305,4 @@ volumes:
   bff_data:
   chat_data:
   payments_data:
+  taxi_data:

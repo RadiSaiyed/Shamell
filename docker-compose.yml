@@ -23,7 +23,7 @@ services:
       - |
         uid=10001
         gid=10001
-        for d in /vol/bff_data /vol/chat_data /vol/payments_data; do
+        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/taxi_data; do
           [ -d "$$d" ] || continue
           owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
           if [ "$$owner" = "$$uid:$$gid" ]; then
@@ -36,6 +36,7 @@ services:
       - bff_data:/vol/bff_data
       - chat_data:/vol/chat_data
       - payments_data:/vol/payments_data
+      - taxi_data:/vol/taxi_data
 
   bff:
     build: *core_build
@@ -67,6 +68,8 @@ services:
       PAYMENTS_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
       CHAT_BASE_URL: "http://chat:8081"
       PAYMENTS_BASE_URL: "http://payments:8082"
+      TAXI_BASE_URL: "http://taxi:8083"
+      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:-}"
       # LiveKit (dev defaults)
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
       LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
@@ -97,6 +100,8 @@ services:
       chat:
         condition: service_healthy
       payments:
+        condition: service_healthy
+      taxi:
         condition: service_healthy
     healthcheck:
       test:
@@ -196,6 +201,49 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  taxi:
+    image: shamell-core:dev
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+      payments:
+        condition: service_healthy
+    environment:
+      ENV: "dev"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      TAXI_DB_URL: "sqlite+pysqlite:////data/taxi.db"
+      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
+      TAXI_INTERNAL_SECRET: "${TAXI_INTERNAL_SECRET:-}"
+      # Taxi calls Payments as an internal client.
+      PAYMENTS_BASE_URL: "http://payments:8082"
+      PAYMENTS_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    volumes:
+      - taxi_data:/data
+    command: ["uvicorn", "apps.taxi.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   livekit:
     image: livekit/livekit-server:v1.5.2
     init: true
@@ -221,3 +269,4 @@ volumes:
   bff_data:
   chat_data:
   payments_data:
+  taxi_data:

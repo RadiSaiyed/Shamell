@@ -22,26 +22,45 @@ def _env_or(key: str, default: str) -> str:
     return v if v is not None else default
 
 
-app = FastAPI(title="Taxi API", version="0.1.0")
+_ENV_LOWER = _env_or("ENV", "dev").lower()
+# Never expose interactive API docs by default in prod/staging.
+_ENABLE_DOCS = _ENV_LOWER in ("dev", "test") or os.getenv("ENABLE_API_DOCS_IN_PROD", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+app = FastAPI(
+    title="Taxi API",
+    version="0.1.0",
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
+)
 setup_json_logging()
 app.add_middleware(RequestIDMiddleware)
-configure_cors(app, os.getenv("ALLOWED_ORIGINS", "*"))
+configure_cors(app, os.getenv("ALLOWED_ORIGINS"))
 add_standard_health(app)
 
-router = APIRouter()
-
 # Internal write-guard: require X-Internal-Secret when configured.
-INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
+TAXI_INTERNAL_SECRET = (os.getenv("TAXI_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET") or "").strip()
 
 def _require_internal(request: Optional[Request] = None):
-    if not INTERNAL_API_SECRET:
+    if not TAXI_INTERNAL_SECRET:
         return
     try:
         hdr = request.headers.get("X-Internal-Secret") if request and hasattr(request, 'headers') else None
     except Exception:
         hdr = None
-    if hdr != INTERNAL_API_SECRET:
+    if hdr != TAXI_INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="forbidden")
+
+def _require_internal_dep(request: Request) -> None:
+    _require_internal(request)
+
+
+router = APIRouter(dependencies=[Depends(_require_internal_dep)])
 
 
 # Default to local SQLite; in production (e.g. Cloud SQL Postgres) set
@@ -50,6 +69,7 @@ def _require_internal(request: Optional[Request] = None):
 DB_URL = _env_or("TAXI_DB_URL", _env_or("DB_URL", "sqlite+pysqlite:////tmp/taxi.db"))
 DB_SCHEMA = os.getenv("DB_SCHEMA") if not DB_URL.startswith("sqlite") else None
 PAYMENTS_BASE = _env_or("PAYMENTS_BASE_URL", "")
+PAYMENTS_INTERNAL_SECRET = (os.getenv("PAYMENTS_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET") or "").strip()
 OSRM_BASE = _env_or("OSRM_BASE_URL", "")
 TOMTOM_BASE = _env_or("TOMTOM_BASE_URL", "https://api.tomtom.com")
 TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY", "")
@@ -1323,6 +1343,17 @@ def export_topup_qr_logs(limit: int = 1000, status: str = "", request: Request =
     q = q.order_by(TaxiTopupQrLog.created_at.desc()).limit(max(1, min(limit, 5000)))
     rows = s.execute(q).scalars().all()
 
+    def _csv_safe_cell(value: object) -> str:
+        """
+        Prevent CSV/Excel formula injection when exporting user-controlled values.
+        """
+        s = "" if value is None else str(value)
+        stripped = s.lstrip()
+        if stripped and stripped[0] in ("=", "+", "-", "@"):
+            # Leading apostrophe forces "text" in spreadsheet apps.
+            return "'" + s
+        return s
+
     buf = StringIO()
     w = csv.writer(buf)
     w.writerow([
@@ -1352,15 +1383,15 @@ def export_topup_qr_logs(limit: int = 1000, status: str = "", request: Request =
         w.writerow([
             r.id,
             r.driver_id,
-            r.driver_phone or "",
+            _csv_safe_cell(r.driver_phone or ""),
             amount_cents,
             f"{amount_syp:.2f}",
-            r.created_by or "",
+            _csv_safe_cell(r.created_by or ""),
             created_at,
             "true" if r.redeemed else "false",
             redeemed_at,
-            r.redeemed_by or "",
-            r.payload,
+            _csv_safe_cell(r.redeemed_by or ""),
+            _csv_safe_cell(r.payload),
         ])
     csv_data = buf.getvalue()
     headers = {"Content-Disposition": "attachment; filename=taxi_topup_qr_logs.csv"}
@@ -1382,6 +1413,8 @@ def _payments_transfer(from_wallet: str, to_wallet: str, amount_cents: int, ikey
         raise RuntimeError("PAYMENTS_BASE_URL not configured")
     url = PAYMENTS_BASE.rstrip('/') + '/transfer'
     headers = {"Content-Type": "application/json", "Idempotency-Key": ikey, "X-Merchant": "taxi"}
+    if PAYMENTS_INTERNAL_SECRET:
+        headers["X-Internal-Secret"] = PAYMENTS_INTERNAL_SECRET
     if ref:
         headers["X-Ref"] = ref
     payload = {"from_wallet_id": from_wallet, "to_wallet_id": to_wallet, "amount_cents": amount_cents}
@@ -1394,7 +1427,10 @@ def _payments_create_user(phone: str) -> Optional[str]:
     if not PAYMENTS_BASE:
         return None
     url = PAYMENTS_BASE.rstrip('/') + '/users'
-    r = httpx.post(url, json={"phone": phone}, timeout=10)
+    headers = {"Content-Type": "application/json"}
+    if PAYMENTS_INTERNAL_SECRET:
+        headers["X-Internal-Secret"] = PAYMENTS_INTERNAL_SECRET
+    r = httpx.post(url, json={"phone": phone}, headers=headers, timeout=10)
     r.raise_for_status()
     j = r.json()
     return j.get("wallet_id")
