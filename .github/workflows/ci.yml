@@ -34,18 +34,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - name: Detect Rust workspace
+        id: detect_rust
+        run: |
+          if [[ -f Cargo.toml ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Initialize CodeQL (Rust)
+        if: steps.detect_rust.outputs.present == 'true'
         uses: github/codeql-action/init@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
         with:
           languages: rust
 
       - name: Autobuild
+        if: steps.detect_rust.outputs.present == 'true'
         uses: github/codeql-action/autobuild@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
 
       - name: Perform CodeQL Analysis
+        if: steps.detect_rust.outputs.present == 'true'
         uses: github/codeql-action/analyze@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
         with:
           category: "/language:rust"
+
+      - name: Skip note (no Cargo.toml)
+        if: steps.detect_rust.outputs.present != 'true'
+        run: echo "No Cargo.toml found; skipping Rust CodeQL analysis for this branch."
 
   dependency-review:
     if: github.event_name == 'pull_request'
@@ -106,41 +122,65 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - name: Detect Rust workspace
+        id: detect_rust
+        run: |
+          if [[ -f Cargo.toml ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Rust
+        if: steps.detect_rust.outputs.present == 'true'
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
           components: rustfmt, clippy
 
       - name: Rust cache
+        if: steps.detect_rust.outputs.present == 'true'
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
 
       - name: Make scripts executable
+        if: steps.detect_rust.outputs.present == 'true'
         run: chmod +x scripts/*.sh
 
       - name: cargo fmt
+        if: steps.detect_rust.outputs.present == 'true'
         run: cargo fmt --check
 
       - name: cargo clippy
+        if: steps.detect_rust.outputs.present == 'true'
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test
+        if: steps.detect_rust.outputs.present == 'true'
         run: cargo test
 
       - name: Install cargo-audit
+        if: steps.detect_rust.outputs.present == 'true'
         run: cargo install cargo-audit --locked --version 0.22.1
 
       - name: cargo audit
+        if: steps.detect_rust.outputs.present == 'true'
         run: cargo audit -D warnings
 
       - name: Guard legacy artifacts are absent
+        if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_no_legacy_artifacts.sh
 
       - name: Guard internal port exposure
+        if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_internal_port_exposure.sh
 
       - name: Guard Nginx edge hardening
+        if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_nginx_edge_hardening.sh
+
+      - name: Skip note (no Cargo.toml)
+        if: steps.detect_rust.outputs.present != 'true'
+        run: echo "No Cargo.toml found; skipping Rust CI job for this branch."
 
   flutter:
     runs-on: ubuntu-latest
