@@ -29,20 +29,6 @@ const List<StickerPack> kStickerPacks = [
     tags: ['classic', 'emoji'],
   ),
   StickerPack(
-    id: 'shamell_taxi',
-    nameEn: 'Shamell Taxi',
-    nameAr: 'شامل تاكسي',
-    stickers: ['🚕', '🛣️', '📍', '⏱️', '💳', '⭐'],
-    tags: ['shamell', 'taxi', 'transport'],
-  ),
-  StickerPack(
-    id: 'food_lovers',
-    nameEn: 'Food lovers',
-    nameAr: 'محبو الطعام',
-    stickers: ['🍕', '🍔', '🍟', '🍣', '🍰', '☕', '🥙', '🥗'],
-    tags: ['food'],
-  ),
-  StickerPack(
     id: 'celebration',
     nameEn: 'Celebrations',
     nameAr: 'الاحتفالات',
@@ -57,18 +43,11 @@ const List<StickerPack> kStickerPacks = [
     tags: ['shamell', 'pay', 'wallet'],
   ),
   StickerPack(
-    id: 'shamell_travel',
-    nameEn: 'Travel & stays',
-    nameAr: 'السفر والإقامات',
-    stickers: ['✈️', '🏨', '🏝️', '🧳', '🗺️', '🚆'],
-    tags: ['travel', 'stays'],
-  ),
-  StickerPack(
     id: 'shamell_services',
-    nameEn: 'Shamell services',
-    nameAr: 'خدمات مرسال',
-    stickers: ['🚕', '🍔', '📦', '⚕️', '🏠', '🛒'],
-    tags: ['shamell', 'services', 'miniapps'],
+    nameEn: 'Shamell essentials',
+    nameAr: 'أساسيات شامل',
+    stickers: ['🚌', '💳', '📲', '✅', '🔔', '🧾'],
+    tags: ['shamell', 'essentials'],
   ),
   StickerPack(
     id: 'daily_reactions',

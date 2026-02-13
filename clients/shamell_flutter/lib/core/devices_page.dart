@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
+import 'device_id.dart';
 import '../main.dart' show LoginPage;
 
 class DevicesPage extends StatefulWidget {
@@ -44,16 +45,9 @@ class _DevicesPageState extends State<DevicesPage> {
 
   Future<void> _loadCurrentDeviceId() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('chat.identity');
-      if (raw == null || raw.isEmpty) return;
-      final decoded = jsonDecode(raw);
-      if (decoded is Map && decoded['id'] is String) {
-        if (!mounted) return;
-        setState(() {
-          _currentDeviceId = decoded['id'] as String;
-        });
-      }
+      final id = await loadStableDeviceId() ?? await getOrCreateStableDeviceId();
+      if (!mounted) return;
+      setState(() => _currentDeviceId = id);
     } catch (_) {}
   }
 
@@ -91,6 +85,34 @@ class _DevicesPageState extends State<DevicesPage> {
         _loading = false;
       });
     }
+  }
+
+  Uri _webDesktopUrl() {
+    final base = widget.baseUrl.trim();
+    final u = Uri.tryParse(base);
+    if (u == null) return Uri.parse(base);
+    final host = u.host.toLowerCase();
+    // Local dev: keep the demo endpoint for quick testing.
+    if (host == 'localhost' || host == '127.0.0.1') {
+      return u.replace(path: '/auth/device_login_demo', queryParameters: {});
+    }
+    // Production/staging: derive the web origin from the API hostname.
+    if (host.startsWith('api.')) {
+      return Uri(
+        scheme: 'https',
+        host: 'online.${host.substring(4)}',
+        path: '/',
+      );
+    }
+    if (host.startsWith('staging-api.')) {
+      return Uri(
+        scheme: 'https',
+        host: 'online.${host.substring('staging-api.'.length)}',
+        path: '/',
+      );
+    }
+    // Fallback: open the origin (best-effort).
+    return u.replace(path: '/', queryParameters: {});
   }
 
   Future<void> _logoutThisDevice() async {
@@ -358,8 +380,7 @@ class _DevicesPageState extends State<DevicesPage> {
                       : 'Open Mirsaal Web / Desktop',
                 ),
                 onPressed: () async {
-                  final url =
-                      Uri.parse('${widget.baseUrl}/auth/device_login_demo');
+                  final url = _webDesktopUrl();
                   if (!await launchUrl(url,
                       mode: LaunchMode.externalApplication)) {
                     if (!mounted) return;

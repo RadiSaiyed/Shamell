@@ -1,4 +1,4 @@
-# Runtime Hardening (BFF / Monolith)
+# Runtime Hardening (BFF / Microservices)
 
 This doc lists the main security-related environment variables and recommended defaults.
 
@@ -43,7 +43,6 @@ Per-IP limits (authenticated vs anonymous):
 - `MAPS_ROUTE_MAX_PER_IP_AUTH`, `MAPS_ROUTE_MAX_PER_IP_ANON`
 - `MAPS_POI_MAX_PER_IP_AUTH`, `MAPS_POI_MAX_PER_IP_ANON`
 - `MAPS_REVERSE_MAX_PER_IP_AUTH`, `MAPS_REVERSE_MAX_PER_IP_ANON`
-- `MAPS_TAXI_STANDS_MAX_PER_IP_AUTH`, `MAPS_TAXI_STANDS_MAX_PER_IP_ANON`
 
 Note: `/osm/geocode_batch` requires authentication by design (it can amplify abuse).
 
@@ -75,7 +74,7 @@ Environment variables:
 
 ## Host Header Allowlist (Trusted Hosts)
 
-The monolith enables Starlette's `TrustedHostMiddleware` when `ALLOWED_HOSTS` is set.
+The BFF (and internal services) enable Starlette's `TrustedHostMiddleware` when `ALLOWED_HOSTS` is set.
 This mitigates Host header attacks and prevents misrouting, but it will also hard-fail
 requests with unknown Host headers (HTTP 400).
 
@@ -93,3 +92,21 @@ are bounded.
 Environment variables:
 - `RATE_STORE_MAX_KEYS`: max keys per store (default: `20000`)
   - set to `0` to clear stores (disables rate limiting; not recommended)
+
+## Route Allowlist (Attack-Surface Reduction)
+
+The BFF contains legacy/optional endpoints for experiments and past modules.
+In production/staging, it is best practice to **fail-closed** and only expose
+the routes your clients actually use.
+
+Environment variables:
+- `BFF_ROUTE_ALLOWLIST_ENABLED`: `true|false`
+  - default: `true` in `prod|staging`, else `false`
+- `BFF_ROUTE_ALLOWLIST_EXACT`: comma-separated exact paths to allow (optional)
+  - when unset, the BFF uses a safe default (e.g. `/health`, `/`, `/docs` when enabled)
+- `BFF_ROUTE_ALLOWLIST_PREFIXES`: comma-separated path prefixes to allow (optional)
+  - when unset, the BFF uses a conservative WeChat-like default (auth, me, chat, payments, bus, admin, etc.)
+
+Notes:
+- Disallowed paths return `404` to reduce endpoint enumeration.
+- Keep this enabled in `prod|staging` and tighten the list as you delete modules.

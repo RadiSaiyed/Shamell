@@ -106,7 +106,7 @@ class StandardListTile extends StatelessWidget {
 
 /// Shared scaffold that applies the unified Shamell layout shell:
 /// gradient background + full-screen GlassPanel card, as used in
-/// Taxi Rider and other modernised flows.
+/// Mobility and other modernised flows.
 class DomainPageScaffold extends StatelessWidget {
   final Widget background;
   final String title;

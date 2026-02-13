@@ -23,49 +23,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Gitleaks fallback
-        run: echo "Gitleaks step completed."
-
-  security-python:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: Install tooling
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install bandit pip-audit
-
-      - name: Bandit
-        run: |
-          if find . -type f -name '*.py' | grep -q .; then
-            python -m bandit -q -r apps libs/shamell_shared/python/shamell_shared scripts -lll -x './.git,./.venv,./venv,./node_modules,./NonWeChat'
-          else
-            echo "No Python sources found; skipping bandit."
-          fi
-
-      - name: pip-audit
-        run: |
-          REQ_FILES=$(find . -type f \( -name 'requirements.txt' -o -name 'requirements-*.txt' \))
-          if [ -n "$REQ_FILES" ]; then
-            for f in $REQ_FILES; do
-              echo "Auditing $f"
-              python -m pip_audit -r "$f" --progress-spinner off
-            done
-          else
-            echo "No requirements files found; skipping pip-audit."
-          fi
-
   codeql:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: read
@@ -74,18 +34,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - name: Initialize CodeQL (Python)
+      - name: Detect Rust workspace
+        id: detect_rust
+        run: |
+          if [[ -f Cargo.toml ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Initialize CodeQL (Rust)
+        if: steps.detect_rust.outputs.present == 'true'
         uses: github/codeql-action/init@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
         with:
-          languages: python
+          languages: rust
 
       - name: Autobuild
+        if: steps.detect_rust.outputs.present == 'true'
         uses: github/codeql-action/autobuild@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
 
       - name: Perform CodeQL Analysis
+        if: steps.detect_rust.outputs.present == 'true'
         uses: github/codeql-action/analyze@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
         with:
-          category: "/language:python"
+          category: "/language:rust"
+
+      - name: Skip note (no Cargo.toml)
+        if: steps.detect_rust.outputs.present != 'true'
+        run: echo "No Cargo.toml found; skipping Rust CodeQL analysis for this branch."
 
   dependency-review:
     if: github.event_name == 'pull_request'
@@ -102,85 +78,109 @@ jobs:
         with:
           fail-on-severity: high
 
-      - name: Dependency Review Fallback
-        run: |
-          echo "Dependency review executed (or skipped if unsupported by repository settings)."
-
-  lint-test:
+  actionlint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: YAML lint
+      - name: Run actionlint
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install yamllint
-          yamllint -d "{extends: default, rules: {document-start: disable, truthy: disable, comments: disable, line-length: disable}}" .github/workflows
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/repo" \
+            -w /repo \
+            rhysd/actionlint:1.7.8
 
-  python-tests:
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Run shellcheck on repository scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t shell_files < <(git ls-files '*.sh')
+          if [[ "${#shell_files[@]}" -eq 0 ]]; then
+            echo "No shell scripts found."
+            exit 0
+          fi
+          shellcheck --shell=bash --severity=warning "${shell_files[@]}"
+
+  rust:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - name: Detect Rust workspace
+        id: detect_rust
+        run: |
+          if [[ -f Cargo.toml ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Rust
+        if: steps.detect_rust.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          python-version: "3.11"
+          toolchain: stable
+          components: rustfmt, clippy
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r apps/monolith/requirements.txt
-          pip install -e libs/shamell_shared/python
-          pip install pytest
+      - name: Rust cache
+        if: steps.detect_rust.outputs.present == 'true'
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
 
-      - name: Compile sources
-        run: |
-          python -m compileall -q apps libs NonWeChat
+      - name: Make scripts executable
+        if: steps.detect_rust.outputs.present == 'true'
+        run: chmod +x scripts/*.sh
 
-      - name: Run pytest
-        env:
-          ENV: test
-          MONOLITH_MODE: "1"
-          PYTHONPATH: .
-        run: |
-          pytest -q
+      - name: cargo fmt
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo fmt --check
 
-  semgrep-authz-idor:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - name: cargo clippy
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
+      - name: cargo test
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo test
 
-      - name: Install Semgrep
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install semgrep
+      - name: Install cargo-audit
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo install cargo-audit --locked --version 0.22.1
 
-      - name: Run custom AuthZ/IDOR rules
-        run: |
-          semgrep \
-            --config .semgrep/rules/authz-idor.yml \
-            --error \
-            --exclude .git \
-            --exclude .github \
-            --exclude .semgrep \
-            apps/bff apps/chat apps/monolith
+      - name: cargo audit
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo audit -D warnings
+
+      - name: Guard legacy artifacts are absent
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_legacy_artifacts.sh
+
+      - name: Guard internal port exposure
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_internal_port_exposure.sh
+
+      - name: Guard Nginx edge hardening
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_nginx_edge_hardening.sh
+
+      - name: Skip note (no Cargo.toml)
+        if: steps.detect_rust.outputs.present != 'true'
+        run: echo "No Cargo.toml found; skipping Rust CI job for this branch."
 
   flutter:
     runs-on: ubuntu-latest

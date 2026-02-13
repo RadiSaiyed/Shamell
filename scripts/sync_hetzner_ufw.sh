@@ -1,7 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_ALIAS="${1:-shamell}"
+HOST_ALIAS="shamell"
+ALLOW_LIVEKIT=0
+DIRECT_WEB=0
+for arg in "$@"; do
+  case "$arg" in
+    --allow-livekit)
+      ALLOW_LIVEKIT=1
+      ;;
+    --direct-web)
+      DIRECT_WEB=1
+      ;;
+    *)
+      HOST_ALIAS="$arg"
+      ;;
+  esac
+done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CF_SNIPPET="${REPO_ROOT}/ops/hetzner/nginx/snippets/shamell_cloudflare_realip.conf"
 
@@ -85,14 +100,28 @@ PY
     echo 'WARNING: SSH client IP is not in 100.64.0.0/10 (Tailscale). Skipping SSH rule changes.' >&2
   fi
 
-  # HTTP/HTTPS: allow only Cloudflare ranges to hit the origin.
-  # Port 80 is useful for HTTP->HTTPS redirects and ACME HTTP-01 renewals when
-  # the DNS record is proxied through Cloudflare.
-  while IFS= read -r cidr; do
-    [[ -z \"\$cidr\" ]] && continue
-    sudo ufw allow proto tcp from \"\$cidr\" to any port 80 >/dev/null || true
-    sudo ufw allow proto tcp from \"\$cidr\" to any port 443 >/dev/null || true
-  done <'${tmp_remote}/cloudflare_cidrs.txt'
+  # HTTP/HTTPS:
+  # - default: allow only Cloudflare ranges to hit the origin
+  # - --direct-web: allow the public internet (required for DNS-only records, e.g. LiveKit)
+  if [[ \"${DIRECT_WEB}\" == \"1\" ]]; then
+    sudo ufw allow proto tcp to any port 80 >/dev/null || true
+    sudo ufw allow proto tcp to any port 443 >/dev/null || true
+  else
+    # Port 80 is useful for HTTP->HTTPS redirects and ACME HTTP-01 renewals when
+    # the DNS record is proxied through Cloudflare.
+    while IFS= read -r cidr; do
+      [[ -z \"\$cidr\" ]] && continue
+      sudo ufw allow proto tcp from \"\$cidr\" to any port 80 >/dev/null || true
+      sudo ufw allow proto tcp from \"\$cidr\" to any port 443 >/dev/null || true
+    done <'${tmp_remote}/cloudflare_cidrs.txt'
+  fi
+
+  # Optional: LiveKit RTC ports (WebRTC media). This exposes the origin IP to
+  # participants; use only if you explicitly accept that tradeoff.
+  if [[ \"${ALLOW_LIVEKIT}\" == \"1\" ]]; then
+    sudo ufw allow proto tcp to any port 7881 >/dev/null || true
+    sudo ufw allow proto udp to any port 7882 >/dev/null || true
+  fi
 
   # Remove unsafe / confusing rules (best-effort).
   # - Generic 443 allows defeat the Cloudflare-only origin lockdown.
@@ -103,16 +132,21 @@ PY
     tailscale_ip=\"\$(ip -brief address show dev tailscale0 | awk '{print \$3}' | head -n1 | cut -d/ -f1)\"
   fi
 
+  delete_web=1
+  if [[ \"${DIRECT_WEB}\" == \"1\" ]]; then
+    delete_web=0
+  fi
+
   nums_to_delete=''
   if [[ \"\$is_tailscale_client\" == \"1\" ]]; then
-    nums_to_delete=\"\$(sudo ufw status numbered | awk -v ts_ip=\"\$tailscale_ip\" '
+    nums_to_delete=\"\$(sudo ufw status numbered | awk -v ts_ip=\"\$tailscale_ip\" -v delete_web=\"\$delete_web\" '
       /^\\[/ {
         num=\$2; gsub(/[^0-9]/, \"\", num)
         line=\$0
         sub(/^\\[[^]]+\\][[:space:]]*/, \"\", line)
         # 1) delete any generic allow of 80/443 from Anywhere
-        if (line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
-        if (line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        if (delete_web == 1 && line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        if (delete_web == 1 && line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
         # 2) delete generic deny rules for 80/443 from Anywhere (ordering hazard; default policy is deny)
         if (line ~ /^80\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
         if (line ~ /^443\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
@@ -125,14 +159,14 @@ PY
       }
     ' | sort -rn | uniq)\"
   else
-    nums_to_delete=\"\$(sudo ufw status numbered | awk '
+    nums_to_delete=\"\$(sudo ufw status numbered | awk -v delete_web=\"\$delete_web\" '
       /^\\[/ {
         num=\$2; gsub(/[^0-9]/, \"\", num)
         line=\$0
         sub(/^\\[[^]]+\\][[:space:]]*/, \"\", line)
         # 1) delete any generic allow of 80/443 from Anywhere
-        if (line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
-        if (line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        if (delete_web == 1 && line ~ /^80\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
+        if (delete_web == 1 && line ~ /^443\\/tcp/ && line ~ /ALLOW IN/ && line ~ /Anywhere/) print num
         # 2) delete generic deny rules for 80/443 from Anywhere (ordering hazard; default policy is deny)
         if (line ~ /^80\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num
         if (line ~ /^443\\/tcp/ && line ~ /DENY IN/ && line ~ /Anywhere/) print num

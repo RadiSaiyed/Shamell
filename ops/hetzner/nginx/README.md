@@ -6,6 +6,7 @@ serving:
 - `api.shamell.online`
 - `staging-api.shamell.online`
 - `online.shamell.online`
+- `livekit.shamell.online`
 - `media.shamell.online`
 - `shamell.online`
 
@@ -39,7 +40,7 @@ The script:
 
 ## Security notes
 
-- Keep upstream targets pinned to `127.0.0.1:8080` for monolith traffic.
+- Keep upstream targets pinned to `127.0.0.1:8080` for BFF traffic.
 - Do not loosen admin route allowlists without explicit approval.
 - Keep TLS certificate paths managed by Certbot on-host.
 - If using Cloudflare in front of the origin, keep the Real-IP snippet in sync

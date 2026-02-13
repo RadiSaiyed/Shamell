@@ -1,0 +1,28 @@
+x-core: &livekit_hardening
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp
+  restart: unless-stopped
+
+services:
+  livekit:
+    <<: *livekit_hardening
+    image: livekit/livekit-server:v1.5.2
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    environment:
+      # Never allow dev defaults: if keys are unset, fail fast.
+      LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in ops/livekit/.env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in ops/livekit/.env}${LIVEKIT_KEYS_EXTRA:-}}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    ports:
+      # Serve LiveKit's HTTP/WebSocket API on localhost by default; terminate TLS in Nginx.
+      - "${LIVEKIT_HTTP_PUBLISH_ADDR:-127.0.0.1}:${LIVEKIT_HTTP_PORT:-7880}:7880"
+      # RTC ports must be publicly reachable for WebRTC media.
+      - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+

@@ -2,11 +2,11 @@
 
 This folder contains the production/staging **microservices** compose file for Pi/edge deployments:
 
-- `docker-compose.yml` (BFF + Chat + Payments + LiveKit)
+- `docker-compose.yml` (BFF + Chat + Payments + Bus + LiveKit)
 
-For rollback and reference, the legacy monolith stack is preserved as:
+An optional Postgres-backed variant is available for production-hardening and multi-instance readiness:
 
-- `docker-compose.monolith.yml` (Monolith + LiveKit)
+- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + Bus + LiveKit + `migrate-sqlite-to-postgres`)
 
 Security baseline env templates are provided for staged rollout:
 
@@ -34,15 +34,40 @@ These are intentionally fail-closed defaults for staging/prod:
 - `ENABLE_WALLET_WS_IN_PROD`: keep `false` unless you explicitly want the dev wallet stream exposed.
 - `METRICS_INGEST_SECRET`: when set, `/metrics` ingest requires the secret; when empty, ingest is disabled (403).
 
-## Data Migration Note (Monolith -> Microservices)
+## LiveKit Notes
 
-`docker-compose.yml` includes a `bootstrap-perms` init container that:
+This repo assumes:
 
-- seeds the new service volumes from the previous monolith volume (`monolith_data`) on first run
-- never overwrites existing destination DB files (idempotent)
-- fixes volume ownership to the non-root runtime UID/GID (10001:10001)
+- LiveKit is publicly reachable for WebRTC media, but clients must only join using **server-minted tokens**.
+- LiveKit's HTTP/WebSocket API (`7880`) should be private and served over TLS via Nginx.
 
-This enables a low-risk cutover while keeping the old monolith volume intact for rollback/backups.
+Practical implications:
+
+- Keep `LIVEKIT_HTTP_PUBLISH_ADDR=127.0.0.1` (default in `ops/pi/docker-compose*.yml`) and proxy `443 -> 127.0.0.1:7880` in Nginx (see `ops/hetzner/nginx/sites-available/livekit.shamell.online`).
+- WebRTC media still requires public reachability for `7881/tcp` and `7882/udp`. If you run Cloudflare-only origin lockdown, you must either:
+  - run LiveKit on a separate host/IP, or
+  - use a proxy that supports arbitrary TCP/UDP (e.g. Cloudflare Spectrum), or
+  - explicitly open these ports on the origin firewall (note: this exposes the origin IP to participants).
+
+To enable the token mint endpoint (`POST /livekit/token`):
+
+- set `LIVEKIT_TOKEN_ENDPOINT_ENABLED=true`
+- set `LIVEKIT_PUBLIC_URL` to the client-facing `wss://...` URL
+- set strong `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (non-dev values)
+
+## Volume Ownership Note
+
+`docker-compose.yml` includes a `bootstrap-perms` init container that fixes volume ownership
+to the non-root runtime UID/GID (10001:10001) for the service volumes.
+
+## Postgres Migration Note (SQLite -> Postgres)
+
+`docker-compose.postgres.yml` includes:
+
+- a `db` service (Postgres 16)
+- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`) and inserts rows into Postgres
+
+Best practice rollout is staging-first, with a full SQLite volume backup immediately before cutover.
 
 ## Recommended Rollout
 

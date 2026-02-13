@@ -5,7 +5,7 @@ Dieses Dokument fasst zusammen, wie WeChat‑ähnliche Red‑Packet‑Kampagnen 
 ## 1. Begriffe & Bausteine
 
 - **Official Account**  
-  Service-/Merchant‑Profil (z.B. `shamell_taxi`) mit Feed, Chat, Locations und Mini‑App‑Verknüpfung.
+  Service-/Merchant‑Profil (z.B. `shamell_bus`) mit Feed, Chat, Locations und Mini‑App‑Verknüpfung.
 
 - **Red‑Packet Campaign**  
   Ein benannter Kampagnen‑Slug pro Official, z.B. `redpacket_newyear`, gespeichert in `RedPacketCampaignDB` in der Official‑DB.
@@ -30,9 +30,9 @@ Dieses Dokument fasst zusammen, wie WeChat‑ähnliche Red‑Packet‑Kampagnen 
    - Spalten: `ID`, `Name`, `Kind`, `Mini-App`, `Stadt`, `Kategorie`.
 3. Falls nicht:
    - Im Block „Neuen Official Account anlegen“ einen neuen Eintrag erstellen:
-     - `ID` (z.B. `shamell_taxi`),
+     - `ID` (z.B. `shamell_bus`),
      - `Kind`: `service` oder `merchant`,
-     - `Mini-App ID`: z.B. `payments`, `taxi_rider`, `food`,
+     - `Mini-App ID`: z.B. `payments`, `bus`,
      - `Stadt`, `Kategorie`, `Beschreibung` ausfüllen.
    - Sicherstellen, dass `Enabled` und ggf. `Official` angehakt sind.
 

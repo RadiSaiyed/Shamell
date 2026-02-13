@@ -27,13 +27,24 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     location / {
-        # Monolith listens on 127.0.0.1:8080 via docker-proxy.
+        # BFF listens on 127.0.0.1:8080 via docker-proxy.
         proxy_pass http://127.0.0.1:8080/;
         proxy_http_version 1.1;
+
+        # Never forward internal auth headers from the public Internet.
+        # The BFF adds these for service-to-service calls on the private network.
+        proxy_set_header X-Internal-Secret "";
+
+        # WebSocket/SSE support (BFF + Chat WS via BFF).
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
 
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Keep long-lived connections (WebSockets/SSE) stable.
+        proxy_read_timeout 3600s;
     }
 }

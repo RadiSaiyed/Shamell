@@ -35,7 +35,6 @@ class _HomePageState extends State<HomePage> {
   bool _showSuperadmin = false;
   List<String> _roles = const [];
   List<String> _operatorDomains = const [];
-  bool _taxiOnly = false; // Show all apps by default
   AppMode _appMode = currentAppMode;
   List<String> _recentModules = const [];
   List<String> _pinnedMiniApps = const [];
@@ -61,10 +60,6 @@ class _HomePageState extends State<HomePage> {
   int? _busTripsToday;
   int? _busBookingsToday;
   int? _busRevenueTodayCents;
-  // Taxi admin summary for quick dashboard
-  int? _taxiRidesToday;
-  int? _taxiCompletedToday;
-  int? _taxiRevenueTodayCents;
   CallSignalingClient? _callClient;
   StreamSubscription<Map<String, dynamic>>? _callSub;
   bool _hasUnreadMoments = false;
@@ -112,8 +107,11 @@ class _HomePageState extends State<HomePage> {
     try {
       final uri = Uri.parse('$_baseUrl/auth/devices/register');
       final headers = await _hdr(json: true);
+      // Stable per-install device id: supports server-side session revocation
+      // and keeps device lists consistent across restarts/logouts.
+      final did = await getOrCreateStableDeviceId();
       final body = jsonEncode(<String, dynamic>{
-        'device_id': deviceId,
+        'device_id': did,
         'device_type': kIsWeb ? 'web' : 'mobile',
         'platform': Theme.of(context).platform.name,
       });
@@ -1956,19 +1954,10 @@ class _HomePageState extends State<HomePage> {
             lower.contains('payment')) {
           return Icons.account_balance_wallet_outlined;
         }
-        if (lower.contains('taxi') || lower.contains('ride')) {
-          return Icons.local_taxi_outlined;
-        }
-        if (lower.contains('bus')) {
+        if (lower.contains('bus') ||
+            lower.contains('ride') ||
+            lower.contains('mobility')) {
           return Icons.directions_bus_filled_outlined;
-        }
-        if (lower.contains('food') || lower.contains('restaurant')) {
-          return Icons.restaurant_outlined;
-        }
-        if (lower.contains('stay') ||
-            lower.contains('hotel') ||
-            lower.contains('travel')) {
-          return Icons.hotel_outlined;
         }
         return Icons.widgets_outlined;
       }
@@ -1980,28 +1969,15 @@ class _HomePageState extends State<HomePage> {
             lower.contains('payment')) {
           return Tokens.colorPayments;
         }
-        if (lower.contains('taxi') || lower.contains('ride')) {
-          return Tokens.colorTaxi;
-        }
-        if (lower.contains('bus')) {
+        if (lower.contains('bus') ||
+            lower.contains('ride') ||
+            lower.contains('mobility')) {
           return Tokens.colorBus;
-        }
-        if (lower.contains('food') || lower.contains('restaurant')) {
-          return Tokens.colorFood;
-        }
-        if (lower.contains('stay') ||
-            lower.contains('hotel') ||
-            lower.contains('travel')) {
-          return Tokens.colorHotelsStays;
         }
         return const Color(0xFF64748B);
       }
 
       Color miniPreviewFgFor(String id) {
-        final lower = id.toLowerCase();
-        if (lower.contains('taxi') || lower.contains('ride')) {
-          return const Color(0xFF111111);
-        }
         return Colors.white;
       }
 
@@ -2303,36 +2279,18 @@ class _HomePageState extends State<HomePage> {
                 final allowSwitch = isSuper;
                 return Row(
                   children: [
-                    _RoleChip(
-                      mode: AppMode.user,
-                      current: _appMode,
-                      onTap: () => _changeAppMode(AppMode.user),
-                      enabled: allowSwitch || _appMode == AppMode.user,
-                    ),
-                    const SizedBox(width: 8),
-                    _DriverChip(
-                      onTap: () {
-                        final baseUri = Uri.tryParse(_baseUrl);
-                        final uri = baseUri?.resolve('/taxi/driver') ??
-                            Uri.parse(
-                                '${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/taxi/driver');
-                        _navPush(
-                          WeChatWebViewPage(
-                            initialUri: uri,
-                            baseUri: baseUri,
-                            initialTitle:
-                                l.isArabic ? 'سائق التاكسي' : 'Taxi driver',
-                          ),
-                        );
-                      },
-                      enabled: allowSwitch,
-                    ),
-                    const SizedBox(width: 8),
-                    _RoleChip(
-                      mode: AppMode.operator,
-                      current: _appMode,
-                      onTap: () => _changeAppMode(AppMode.operator),
-                      enabled: allowSwitch && hasOps,
+	                  _RoleChip(
+	                    mode: AppMode.user,
+	                    current: _appMode,
+	                    onTap: () => _changeAppMode(AppMode.user),
+	                    enabled: allowSwitch || _appMode == AppMode.user,
+	                  ),
+	                  const SizedBox(width: 8),
+	                  _RoleChip(
+	                    mode: AppMode.operator,
+	                    current: _appMode,
+	                    onTap: () => _changeAppMode(AppMode.operator),
+	                    enabled: allowSwitch && hasOps,
                     ),
                     const SizedBox(width: 8),
                     _RoleChip(
@@ -2352,52 +2310,12 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 );
-              }),
-            ),
-          if (!kEnduserOnly &&
-              (_appMode == AppMode.operator || _appMode == AppMode.admin) &&
-              _taxiRidesToday != null &&
-              _taxiRevenueTodayCents != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: GlassPanel(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.local_taxi_outlined),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            L10n.of(context).taxiTodayTitle,
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '${_taxiRidesToday ?? 0} ${L10n.of(context).ridesLabel} · ${_taxiCompletedToday ?? 0} ${L10n.of(context).completedLabel} · ${fmtCents(_taxiRevenueTodayCents!)} SYP',
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Open Taxi Admin',
-                      icon: const Icon(Icons.open_in_new),
-                      onPressed: () {
-                        launchWithSession(Uri.parse('$_baseUrl/taxi/admin'));
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          if (discoverTopTiles.isNotEmpty)
-            WeChatSection(
-              margin: const EdgeInsets.only(top: 8),
-              children: discoverTopTiles,
+	              }),
+	            ),
+	          if (discoverTopTiles.isNotEmpty)
+	            WeChatSection(
+	              margin: const EdgeInsets.only(top: 8),
+	              children: discoverTopTiles,
             ),
           if (discoverToolsTiles.isNotEmpty)
             WeChatSection(
@@ -2478,36 +2396,18 @@ class _HomePageState extends State<HomePage> {
               final allowSwitch = isSuper;
               return Row(
                 children: [
-                  _RoleChip(
-                    mode: AppMode.user,
-                    current: _appMode,
-                    onTap: () => _changeAppMode(AppMode.user),
-                    enabled: allowSwitch || _appMode == AppMode.user,
-                  ),
-                  const SizedBox(width: 8),
-                  _DriverChip(
-                    onTap: () {
-                      final baseUri = Uri.tryParse(_baseUrl);
-                      final uri = baseUri?.resolve('/taxi/driver') ??
-                          Uri.parse(
-                              '${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/taxi/driver');
-                      _navPush(
-                        WeChatWebViewPage(
-                          initialUri: uri,
-                          baseUri: baseUri,
-                          initialTitle:
-                              l.isArabic ? 'سائق التاكسي' : 'Taxi driver',
-                        ),
-                      );
-                    },
-                    enabled: allowSwitch,
-                  ),
-                  const SizedBox(width: 8),
-                  _RoleChip(
-                    mode: AppMode.operator,
-                    current: _appMode,
-                    onTap: () => _changeAppMode(AppMode.operator),
-                    enabled: allowSwitch && hasOps,
+	                  _RoleChip(
+	                    mode: AppMode.user,
+	                    current: _appMode,
+	                    onTap: () => _changeAppMode(AppMode.user),
+	                    enabled: allowSwitch || _appMode == AppMode.user,
+	                  ),
+	                  const SizedBox(width: 8),
+	                  _RoleChip(
+	                    mode: AppMode.operator,
+	                    current: _appMode,
+	                    onTap: () => _changeAppMode(AppMode.operator),
+	                    enabled: allowSwitch && hasOps,
                   ),
                   const SizedBox(width: 8),
                   _RoleChip(
@@ -2527,50 +2427,12 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               );
-            }),
-          ),
-        if (!kEnduserOnly &&
-            (_appMode == AppMode.operator || _appMode == AppMode.admin) &&
-            _taxiRidesToday != null &&
-            _taxiRevenueTodayCents != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: GlassPanel(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  const Icon(Icons.local_taxi_outlined),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(L10n.of(context).taxiTodayTitle,
-                            style:
-                                const TextStyle(fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${_taxiRidesToday ?? 0} ${L10n.of(context).ridesLabel} · ${_taxiCompletedToday ?? 0} ${L10n.of(context).completedLabel} · ${fmtCents(_taxiRevenueTodayCents!)} SYP',
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Open Taxi Admin',
-                    icon: const Icon(Icons.open_in_new),
-                    onPressed: () {
-                      launchWithSession(Uri.parse('$_baseUrl/taxi/admin'));
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-        // WeChat-like primary Discover list: Moments, Scan, People Nearby,
-        // Mini-programs, Official accounts.
-        WeChatSection(
-          margin: const EdgeInsets.only(top: 8),
+	            }),
+	          ),
+	        // WeChat-like primary Discover list: Moments, Scan, People Nearby,
+	        // Mini-programs, Official accounts.
+	        WeChatSection(
+	          margin: const EdgeInsets.only(top: 8),
           children: [
             ListTile(
               dense: true,
@@ -3137,12 +2999,12 @@ class _HomePageState extends State<HomePage> {
                           ),
                         );
                       },
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.local_taxi_outlined,
-                      label: l.isArabic ? 'تاكسي بضغطة زر' : 'Taxi in one tap',
-                      onTap: () => _openMod('taxi_rider'),
-                    ),
+	                    ),
+	                    _buildDiscoverPromoChip(
+	                      icon: Icons.directions_bus_filled_outlined,
+	                      label: l.isArabic ? 'الباص بضغطة زر' : 'Bus in one tap',
+	                      onTap: () => _openMod('bus'),
+	                    ),
                     if (_walletId.isNotEmpty)
                       _buildDiscoverPromoChip(
                         icon: Icons
@@ -3150,11 +3012,6 @@ class _HomePageState extends State<HomePage> {
                         label: l.isArabic ? 'امسح للدفع' : 'Scan & pay',
                         onTap: _quickScanPay,
                       ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.restaurant_outlined,
-                      label: l.isArabic ? 'اكتشف المطاعم' : 'Discover food',
-                      onTap: () => _openMod('food'),
-                    ),
                     _buildDiscoverPromoChip(
                       icon: Icons.verified_outlined,
                       label: _officialStripCityLabel != null &&
@@ -4654,12 +4511,12 @@ class _HomePageState extends State<HomePage> {
                 }
                 return 'Pinned mini‑apps/programs: $pinned · Recently used: $recent';
               }
-              return l.isArabic
-                  ? 'استعرض تطبيقات وخدمات مثل Taxi و Food و Wallet'
-                  : 'Browse mini‑apps and mini‑programs like Taxi, Food and Wallet';
-            }()),
-            onTap: _openMiniProgramsDiscover,
-          ),
+		              return l.isArabic
+		                  ? 'استعرض تطبيقات وخدمات مثل الباص والمحفظة'
+		                  : 'Browse mini‑apps and mini‑programs like Bus and Wallet';
+		            }()),
+	            onTap: _openMiniProgramsDiscover,
+	          ),
           if (_miniProgramsCount > 0 || _showOps) ...[
             const SizedBox(height: 12),
             Text(
@@ -4995,18 +4852,18 @@ class _HomePageState extends State<HomePage> {
                   },
                 ),
                 const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.receipt_long_outlined),
-                  title: Text(l.isArabic ? 'طلباتي' : 'My orders'),
-                  subtitle: Text(
-                    l.isArabic
-                        ? 'كل رحلات التاكسي والحافلات وطلبات الطعام والإقامات في مكان واحد'
-                        : 'All taxi, bus, food and stays orders in one place',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    _navPush(OrderCenterPage(_baseUrl));
-                  },
+	                ListTile(
+	                  leading: const Icon(Icons.receipt_long_outlined),
+	                  title: Text(l.isArabic ? 'رحلاتي' : 'My trips'),
+		                  subtitle: Text(
+		                    l.isArabic
+		                        ? 'كل رحلات وحجوزات الباص في مكان واحد'
+		                        : 'All bus trips and bookings in one place',
+		                  ),
+	                  trailing: const Icon(Icons.chevron_right),
+	                  onTap: () {
+	                    _navPush(OrderCenterPage(_baseUrl));
+	                  },
                 ),
                 if (_walletId.isNotEmpty) const Divider(height: 1),
                 if (_walletId.isNotEmpty)
@@ -5239,34 +5096,12 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
-    final shortcuts = <Widget>[];
+	    final shortcuts = <Widget>[];
 
-    if (_operatorDomains.contains('taxi')) {
-      shortcuts.add(
-        tile(
-          icon: Icons.local_taxi,
-          label: l.homeTaxiOperator,
-          tint: Tokens.colorTaxi,
-          onTap: () {
-            final baseUri = Uri.tryParse(_baseUrl);
-            final uri = baseUri?.resolve('/taxi/admin') ??
-                Uri.parse(
-                    '${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/taxi/admin');
-            _navPush(
-              WeChatWebViewPage(
-                initialUri: uri,
-                baseUri: baseUri,
-                initialTitle: l.isArabic ? 'مشغل التاكسي' : 'Taxi operator',
-              ),
-            );
-          },
-        ),
-      );
-    }
-    if (_operatorDomains.contains('bus')) {
-      shortcuts.add(
-        tile(
-          icon: Icons.directions_bus_filled_outlined,
+	    if (_operatorDomains.contains('bus')) {
+	      shortcuts.add(
+	        tile(
+	          icon: Icons.directions_bus_filled_outlined,
           label: l.isArabic ? 'مشغل الباص' : 'Bus operator',
           tint: Tokens.colorBus,
           onTap: () {
@@ -5285,27 +5120,6 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
-    // Equipment / logistics ops shortcut.
-    shortcuts.add(
-      tile(
-        icon: Icons.engineering,
-        label: l.isArabic ? 'معدات' : 'Equipment ops',
-        tint: Tokens.colorBuildingMaterials,
-        onTap: () {
-          final baseUri = Uri.tryParse(_baseUrl);
-          final uri = baseUri?.resolve('/equipment') ??
-              Uri.parse('${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/equipment');
-          _navPush(
-            WeChatWebViewPage(
-              initialUri: uri,
-              baseUri: baseUri,
-              initialTitle: l.isArabic ? 'المعدات' : 'Equipment',
-            ),
-          );
-        },
-      ),
-    );
-
     // Risk / exports / parametrics – admin web consoles.
     if (_hasAdminRole(_roles) || _hasSuperadminRole(_roles)) {
       shortcuts.add(
@@ -5704,7 +5518,6 @@ class _HomePageState extends State<HomePage> {
       _appMode = effectiveMode;
       _showOps = kEnduserOnly ? false : showOps;
       _showSuperadmin = kEnduserOnly ? false : showSuper;
-      _taxiOnly = _computeTaxiOnly(effectiveMode, storedOpDomains);
       _recentModules = sp.getStringList('recent_modules') ?? const [];
       _pinnedMiniApps = sp.getStringList('pinned_miniapps') ?? const [];
       _pinnedMiniProgramsOrder =
@@ -5755,7 +5568,6 @@ class _HomePageState extends State<HomePage> {
     if (!kEnduserOnly &&
         (_appMode == AppMode.operator || _appMode == AppMode.admin)) {
       unawaited(_loadBusSummary());
-      unawaited(_loadTaxiSummary());
     }
   }
 
@@ -5798,16 +5610,15 @@ class _HomePageState extends State<HomePage> {
       final baseShowOps = _computeShowOps(rolesFromOverview, appMode);
       final showSuper = isSuperFlag || phone == kSuperadminPhone;
       final showOps = baseShowOps || showSuper;
-      if (mounted) {
-        setState(() {
-          _roles = rolesFromOverview;
-          _operatorDomains = opDomainsFromOverview;
-          _showOps = showOps;
-          _showSuperadmin = showSuper;
-          _taxiOnly = _computeTaxiOnly(appMode, opDomainsFromOverview);
-        });
-      }
-    } else {
+	      if (mounted) {
+	        setState(() {
+	          _roles = rolesFromOverview;
+	          _operatorDomains = opDomainsFromOverview;
+	          _showOps = showOps;
+	          _showSuperadmin = showSuper;
+	        });
+	      }
+	    } else {
       // Even without explicit roles, a flagged Superadmin should see Ops/Superadmin UI.
       final showSuper = isSuperFlag || phone == kSuperadminPhone;
       final showOps = showSuper;
@@ -5817,12 +5628,12 @@ class _HomePageState extends State<HomePage> {
           _showSuperadmin = showSuper;
         });
       }
-    }
-    // Optional: hydrate initial Bus/Taxi KPIs from the snapshot
-    try {
-      final bs = j['bus_admin_summary'];
-      if (bs is Map<String, dynamic>) {
-        final trips = bs['trips_today'] ?? 0;
+	    }
+	    // Optional: hydrate initial KPIs from the snapshot
+	    try {
+	      final bs = j['bus_admin_summary'];
+	      if (bs is Map<String, dynamic>) {
+	        final trips = bs['trips_today'] ?? 0;
         final bookings = bs['bookings_today'] ?? 0;
         final revenueC = bs['revenue_cents_today'] ?? 0;
         final revInt =
@@ -5837,30 +5648,9 @@ class _HomePageState extends State<HomePage> {
             _busRevenueTodayCents = revInt;
           });
         }
-      }
-    } catch (_) {}
-    try {
-      final ts = j['taxi_admin_summary'];
-      if (ts is Map<String, dynamic>) {
-        final ridesToday = ts['rides_today'] ?? 0;
-        final completed = ts['rides_completed_today'] ?? 0;
-        final fareC = ts['total_fare_cents_today'] ?? 0;
-        final fareInt =
-            fareC is int ? fareC : int.tryParse(fareC.toString()) ?? 0;
-        if (mounted) {
-          setState(() {
-            _taxiRidesToday = ridesToday is int
-                ? ridesToday
-                : int.tryParse(ridesToday.toString()) ?? 0;
-            _taxiCompletedToday = completed is int
-                ? completed
-                : int.tryParse(completed.toString()) ?? 0;
-            _taxiRevenueTodayCents = fareInt;
-          });
-        }
-      }
-    } catch (_) {}
-  }
+	      }
+	    } catch (_) {}
+	  }
 
   @override
   void dispose() {
@@ -5939,113 +5729,33 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {}
   }
 
-  Future<void> _loadTaxiSummary() async {
-    try {
-      final uri = Uri.parse('$_baseUrl/taxi/admin/summary_cached');
-      final r = await http.get(uri, headers: await _hdr());
-      if (r.statusCode == 200) {
-        final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final ridesToday = j['rides_today'] ?? 0;
-        final completed = j['rides_completed_today'] ?? 0;
-        final fareC = j['total_fare_cents_today'] ?? 0;
-        final fareInt =
-            fareC is int ? fareC : int.tryParse(fareC.toString()) ?? 0;
-        if (mounted) {
-          setState(() {
-            _taxiRidesToday = ridesToday is int
-                ? ridesToday
-                : int.tryParse(ridesToday.toString()) ?? 0;
-            _taxiCompletedToday = completed is int
-                ? completed
-                : int.tryParse(completed.toString()) ?? 0;
-            _taxiRevenueTodayCents = fareInt;
-          });
-        }
-      }
-    } catch (_) {}
-  }
-
   Widget _buildHomeRoute() {
-    void openBusAdmin() {
-      final baseUri = Uri.tryParse(_baseUrl);
-      final uri = baseUri?.resolve('/bus/admin') ??
-          Uri.parse('${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/bus/admin');
-      _navPush(
-        WeChatWebViewPage(
-          initialUri: uri,
-          baseUri: baseUri,
-          initialTitle: L10n.of(context).isArabic ? 'إدارة الباص' : 'Bus admin',
-        ),
-      );
-    }
-
-    void openMerchantPos() {
-      final baseUri = Uri.tryParse(_baseUrl);
-      final uri = baseUri?.resolve('/merchant') ??
-          Uri.parse('${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/merchant');
-      _navPush(
-        WeChatWebViewPage(
-          initialUri: uri,
-          baseUri: baseUri,
-          initialTitle: L10n.of(context).homeMerchantPos,
-        ),
-      );
-    }
-
-    final actions = HomeActions(
-      onScanPay: _quickScanPay,
-      onTopup: _quickTopup,
-      onSonic: () => _navPush(SonicPayPage(_baseUrl)),
-      onP2P: _quickP2P,
-      onMobility: () => _navPush(JourneyPage(_baseUrl)),
-      onTaxiRider: () => _openMod('taxi_rider'),
-      onTaxiDriver: () => _openMod('taxi_driver'),
-      onTaxiOperator: () => _openMod('taxi_operator'),
-      onBusOperator: openBusAdmin,
-      onBusControl: openBusAdmin,
-      onOps: () => _navPush(OpsPage(_baseUrl)),
-      onFood: () => _openMod('food'),
+	    final actions = HomeActions(
+	      onScanPay: _quickScanPay,
+	      onTopup: _quickTopup,
+	      onSonic: () => _navPush(SonicPayPage(_baseUrl)),
+	      onP2P: _quickP2P,
+	      onMobility: () => _navPush(JourneyPage(_baseUrl)),
+	      onOps: () => _navPush(OpsPage(_baseUrl)),
       onBills: () => _navPush(BillsPage(_baseUrl, _walletId, deviceId)),
       onWallet: () =>
           _navPush(HistoryPage(baseUrl: _baseUrl, walletId: _walletId)),
       onHistory: () =>
           _navPush(HistoryPage(baseUrl: _baseUrl, walletId: _walletId)),
-      onStays: () => _openMod('stays'),
-      onStaysHotel: () => _openMod('stays'),
-      onStaysPro: () => _openMod('stays'),
-      onCarmarket: () => _openMod('carmarket'),
-      onCarrental: () => _openMod('carrental'),
-      onEquipment: () => _openMod('equipment'),
-      onRealestate: () => _openMod('realestate'),
-      onCourier: () => _openMod('courier'),
-      onFreight: () => _openMod('freight'),
       onBus: () => _openMod('bus'),
       onChat: () => _openMod('chat'),
-      onDoctors: () => _openMod('doctors'),
-      onFlights: () => _openMod('flights'),
-      onJobs: () => _openMod('jobs'),
-      onAgriculture: () => _openMod('agriculture'),
-      onLivestock: () => _openMod('livestock'),
-      onCommerce: () => _openMod('commerce'),
-      onMerchantPOS: openMerchantPos,
-      onTira: () => _openMod('courier'),
       // Inventory view
       onVouchers: () => _navPush(CashMandatePage(_baseUrl)),
       onRequests: () =>
           _navPush(RequestsPage(baseUrl: _baseUrl, walletId: _walletId)),
-      onFoodOrders: () => _openMod('food'),
-      onBuildingMaterials: () =>
-          _navPush(BuildingCubotooPage(baseUrl: _baseUrl)),
     );
-    final child = HomeRouteGrid(
-      actions: actions,
-      showOps: _showOps,
-      showSuperadmin: _showSuperadmin,
-      taxiOnly: _taxiOnly,
-      operatorDomains: _operatorDomains,
-    );
-    return AnimatedSwitcher(duration: Tokens.motionBase, child: child);
-  }
+	    final child = HomeRouteGrid(
+	      actions: actions,
+	      showOps: _showOps,
+	      showSuperadmin: _showSuperadmin,
+	    );
+	    return AnimatedSwitcher(duration: Tokens.motionBase, child: child);
+	  }
 
   AppLinks? _appLinks;
   StreamSubscription<Uri>? _linksSub;
@@ -7038,7 +6748,6 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     setState(() {
       _appMode = mode;
-      _taxiOnly = _computeTaxiOnly(_appMode, _operatorDomains);
       _showOps = _computeShowOps(_roles, _appMode);
     });
   }

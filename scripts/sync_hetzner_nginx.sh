@@ -46,6 +46,9 @@ ssh -tt "$HOST_ALIAS" "
   if [[ -f '$tmp_remote/staging-api.shamell.online' ]]; then
     sudo install -m 0644 '$tmp_remote/staging-api.shamell.online' /etc/nginx/sites-available/staging-api.shamell.online
   fi
+  if [[ -f '$tmp_remote/livekit.shamell.online' ]]; then
+    sudo install -m 0644 '$tmp_remote/livekit.shamell.online' /etc/nginx/sites-available/livekit.shamell.online
+  fi
   sudo install -m 0644 '$tmp_remote/media.shamell.online' /etc/nginx/sites-available/media.shamell.online
   sudo install -m 0644 '$tmp_remote/online.shamell.online' /etc/nginx/sites-available/online.shamell.online
   sudo install -m 0644 '$tmp_remote/shamell.online' /etc/nginx/sites-available/shamell.online
@@ -53,6 +56,9 @@ ssh -tt "$HOST_ALIAS" "
   sudo ln -sfn /etc/nginx/sites-available/api.shamell.online /etc/nginx/sites-enabled/api.shamell.online
   if [[ -f /etc/nginx/sites-available/staging-api.shamell.online ]]; then
     sudo ln -sfn /etc/nginx/sites-available/staging-api.shamell.online /etc/nginx/sites-enabled/staging-api.shamell.online
+  fi
+  if [[ -f /etc/nginx/sites-available/livekit.shamell.online ]]; then
+    sudo ln -sfn /etc/nginx/sites-available/livekit.shamell.online /etc/nginx/sites-enabled/livekit.shamell.online
   fi
   sudo ln -sfn /etc/nginx/sites-available/media.shamell.online /etc/nginx/sites-enabled/media.shamell.online
   sudo ln -sfn /etc/nginx/sites-available/online.shamell.online /etc/nginx/sites-enabled/online.shamell.online

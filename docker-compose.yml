@@ -1,6 +1,6 @@
 x-core-build: &core_build
   context: .
-  dockerfile: apps/monolith/Dockerfile
+  dockerfile: apps/core/Dockerfile
 
 services:
   bootstrap-perms:
@@ -23,7 +23,7 @@ services:
       - |
         uid=10001
         gid=10001
-        for d in /vol/bff_data /vol/chat_data /vol/payments_data; do
+        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/bus_data; do
           [ -d "$$d" ] || continue
           owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
           if [ "$$owner" = "$$uid:$$gid" ]; then
@@ -36,6 +36,7 @@ services:
       - bff_data:/vol/bff_data
       - chat_data:/vol/chat_data
       - payments_data:/vol/payments_data
+      - bus_data:/vol/bus_data
 
   bff:
     build: *core_build
@@ -65,9 +66,23 @@ services:
       OFFICIALS_DB_URL: "sqlite+pysqlite:////data/officials.db"
       INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
       PAYMENTS_INTERNAL_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in .env}"
+      BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in .env}"
       CHAT_BASE_URL: "http://chat:8081"
       PAYMENTS_BASE_URL: "http://payments:8082"
+      BUS_BASE_URL: "http://bus:8083"
+      BUS_INTERNAL_MODE: "off"
+      FORCE_INTERNAL_DOMAINS: "false"
+      # LiveKit (dev defaults)
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
+      LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+      LIVEKIT_TOKEN_ENDPOINT_ENABLED: "${LIVEKIT_TOKEN_ENDPOINT_ENABLED:-false}"
+      LIVEKIT_TOKEN_TTL_SECS: "${LIVEKIT_TOKEN_TTL_SECS:-300}"
+      LIVEKIT_TOKEN_MAX_TTL_SECS: "${LIVEKIT_TOKEN_MAX_TTL_SECS:-3600}"
+      LIVEKIT_TOKEN_RATE_WINDOW_SECS: "${LIVEKIT_TOKEN_RATE_WINDOW_SECS:-60}"
+      LIVEKIT_TOKEN_MAX_PER_PHONE: "${LIVEKIT_TOKEN_MAX_PER_PHONE:-30}"
+      LIVEKIT_TOKEN_MAX_PER_IP: "${LIVEKIT_TOKEN_MAX_PER_IP:-80}"
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-off}"
       TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
@@ -88,8 +103,8 @@ services:
         condition: service_healthy
       payments:
         condition: service_healthy
-      livekit:
-        condition: service_started
+      bus:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -188,6 +203,45 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  bus:
+    image: shamell-core:dev
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      bootstrap-perms:
+        condition: service_completed_successfully
+    environment:
+      ENV: "dev"
+      HOME: "/tmp"
+      TMPDIR: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      BUS_DB_URL: "sqlite+pysqlite:////data/bus.db"
+      BUS_TICKET_SECRET: "${BUS_TICKET_SECRET:-dev-bus-ticket-secret}"
+      BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in .env}"
+      BUS_REQUIRE_INTERNAL_SECRET: "true"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
+    volumes:
+      - bus_data:/data
+    command: ["uvicorn", "apps.bus.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=3).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   livekit:
     image: livekit/livekit-server:v1.5.2
     init: true
@@ -213,3 +267,4 @@ volumes:
   bff_data:
   chat_data:
   payments_data:
+  bus_data:

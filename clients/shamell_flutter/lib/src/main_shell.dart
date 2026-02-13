@@ -428,7 +428,7 @@ class _LoginPageState extends State<LoginPage> {
       if (b != null && b.isNotEmpty) {
         final v = b.trim();
         // Ignore legacy dev defaults so the new
-        // monolith port (8080) is used automatically.
+        // default BFF port (8080) is used automatically.
         if (!(v.contains('localhost:5003') || v.contains('127.0.0.1:5003'))) {
           baseCtrl.text = v;
         }
@@ -534,12 +534,14 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _verify() async {
     setState(() => out = 'Verifying…');
     final uri = Uri.parse('${baseCtrl.text.trim()}/auth/verify');
+    final deviceId = await getOrCreateStableDeviceId();
     final resp = await http.post(uri,
         headers: await _hdr(json: true),
         body: jsonEncode({
           'phone': _normalizedPhone(),
           'code': codeCtrl.text.trim(),
           'name': nameCtrl.text.trim(),
+          'device_id': deviceId,
         }));
     // Prefer reading session ID from JSON body (for web):
     try {
@@ -705,12 +707,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) {
-          final baseUri = Uri.tryParse(base);
-          final uri = baseUri?.resolve('/taxi/driver') ??
-              Uri.parse('${base.replaceAll(RegExp(r'/+$'), '')}/taxi/driver');
-          return WeChatWebViewPage(initialUri: uri, baseUri: baseUri);
-        }),
+        MaterialPageRoute(builder: (_) => OperatorDashboardPage(base)),
       );
       return;
     }

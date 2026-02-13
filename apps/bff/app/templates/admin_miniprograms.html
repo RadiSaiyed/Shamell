@@ -1,0 +1,306 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shamell · Mini-Programs</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; max-width: 960px; color: #0f172a; background:#ffffff; }
+      h1 { margin-bottom: 4px; }
+      h2 { margin-top: 24px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+      th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 13px; text-align: left; vertical-align: top; }
+      th { background: #f9fafb; font-weight: 600; }
+      input, textarea { font-size: 13px; padding: 4px 6px; margin: 2px 0; width: 100%; box-sizing: border-box; }
+      textarea { min-height: 64px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      button { font-size: 13px; padding: 4px 8px; margin: 0 2px; cursor: pointer; }
+      .muted { color:#6b7280; font-size:12px; }
+      .pill { display:inline-block; padding:2px 6px; border-radius:999px; font-size:11px; }
+      .pill-active { background:#dcfce7; color:#15803d; }
+      .pill-draft { background:#e5e7eb; color:#374151; }
+      .pill-owner { background:#e0f2fe; color:#1d4ed8; }
+      .pill-review-draft { background:#f3f4f6; color:#374151; }
+      .pill-review-submitted { background:#fffbeb; color:#92400e; }
+      .pill-review-approved { background:#dcfce7; color:#166534; }
+      .pill-review-rejected { background:#fee2e2; color:#b91c1c; }
+      .pill-review-suspended { background:#fef9c3; color:#854d0e; }
+      .flex { display:flex; gap:8px; flex-wrap:wrap; }
+      .flex > div { flex:1 1 220px; min-width:200px; }
+      code { font-size:12px; background:#f3f4f6; padding:2px 4px; border-radius:4px; }
+      #flash { margin: 4px 0 8px; }
+      #flash.error { color:#b91c1c; }
+      #flash.success { color:#166534; }
+    </style>
+  </head>
+  <body>
+    <h1>Mini-Programs</h1>
+    <p class="muted">
+      WeChat-ähnliche Mini-Programme, die in der Shamell-Shell laufen.<br/>
+      Diese Konsole zeigt den Katalog aus <code>/mini_programs</code> und erlaubt das Anlegen neuer Einträge.
+    </p>
+    <p class="muted">
+      <a href="/admin/miniapps">Mini-Apps-Konsole</a>
+      · <a href="/admin/officials">Official-Accounts-Konsole</a>
+      · <a href="/admin/mini_programs/analytics">Mini‑Programs‑Analytics</a>
+    </p>
+
+    <div id="flash" class="muted"></div>
+
+    <h2>Registrierte Mini-Programs</h2>
+    <table id="programs-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Owner</th>
+          <th>Status</th>
+          <th>Review</th>
+          <th>Scopes</th>
+          <th>Released</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="programs-body">
+        <tr><td colspan="7">Lade Daten…</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Neues Mini-Program registrieren</h2>
+    <div class="flex">
+      <div>
+        <label>App-ID<br/>
+          <input id="mp_app_id" placeholder="z.B. demo_program" />
+        </label>
+      </div>
+      <div>
+        <label>Titel (EN)<br/>
+          <input id="mp_title_en" placeholder="Display title (EN)" />
+        </label>
+      </div>
+      <div>
+        <label>Titel (AR, optional)<br/>
+          <input id="mp_title_ar" placeholder="Display title (AR)" />
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Beschreibung (EN, optional)<br/>
+          <textarea id="mp_desc_en" placeholder="Kurzbeschreibung (EN)"></textarea>
+        </label>
+      </div>
+      <div>
+        <label>Beschreibung (AR, optional)<br/>
+          <textarea id="mp_desc_ar" placeholder="Kurzbeschreibung (AR)"></textarea>
+        </label>
+      </div>
+    </div>
+    <div class="flex">
+      <div>
+        <label>Owner-Name (optional)<br/>
+          <input id="mp_owner_name" placeholder="z.B. Partner oder Marke" />
+        </label>
+      </div>
+      <div>
+        <label>Owner-Kontakt (optional)<br/>
+          <input id="mp_owner_contact" placeholder="Kontakt/E-Mail" />
+        </label>
+      </div>
+    </div>
+    <div>
+      <label>Actions (JSON-Array, optional)<br/>
+        <textarea id="mp_actions_json" placeholder='[
+	  {"id":"open_wallet","label_en":"Open Wallet","label_ar":"فتح المحفظة","kind":"open_mod","mod_id":"payments"},
+  {"id":"close","label_en":"Close","label_ar":"إغلاق","kind":"close"}
+]'></textarea>
+      </label>
+      <p class="muted">
+        Felder: <code>id</code>, <code>label_en</code>, <code>label_ar</code>, <code>kind</code> (open_mod | open_url | close),
+        optional <code>mod_id</code> bzw. <code>url</code>.
+      </p>
+    </div>
+    <p>
+      <button onclick="createMiniProgram()">Mini-Program registrieren</button>
+    </p>
+
+    <script>
+      async function loadMiniPrograms() {
+        const bodyEl = document.getElementById('programs-body');
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        try {
+          const r = await fetch('/mini_programs');
+          if (!r.ok) {
+            bodyEl.innerHTML = '<tr><td colspan="7">Fehler beim Laden: ' + r.status + '</td></tr>';
+            return;
+          }
+          const data = await r.json();
+          const items = data.programs || [];
+          if (!items.length) {
+            bodyEl.innerHTML = '<tr><td colspan="7">Noch keine Mini-Programs registriert.</td></tr>';
+            return;
+          }
+          bodyEl.innerHTML = '';
+          for (const prog of items) {
+            const tr = document.createElement('tr');
+            const status = (prog.status || '').toLowerCase();
+            const reviewStatus = (prog.review_status || 'draft').toString();
+            const scopes = Array.isArray(prog.scopes) ? prog.scopes : [];
+            let statusHtml = '';
+            if (status === 'active') {
+              statusHtml = '<span class="pill pill-active">active</span>';
+            } else {
+              statusHtml = '<span class="pill pill-draft">' + (status || 'draft') + '</span>';
+            }
+            let reviewClass = 'pill-review-draft';
+            const rs = reviewStatus.toLowerCase();
+            if (rs === 'submitted') reviewClass = 'pill-review-submitted';
+            else if (rs === 'approved') reviewClass = 'pill-review-approved';
+            else if (rs === 'rejected') reviewClass = 'pill-review-rejected';
+            else if (rs === 'suspended') reviewClass = 'pill-review-suspended';
+            const reviewHtml = '<span class="pill ' + reviewClass + '">' + reviewStatus + '</span>';
+            let scopesHtml = '<span class="muted">–</span>';
+            if (scopes.length) {
+              scopesHtml = scopes.map(s => '<code>' + String(s) + '</code>').join(' ');
+            }
+            const ownerBits = [];
+            if (prog.owner_name) ownerBits.push(prog.owner_name);
+            if (prog.owner_contact) ownerBits.push('<span class="muted">' + prog.owner_contact + '</span>');
+            const ownerHtml = ownerBits.length
+              ? '<span class="pill pill-owner">' + ownerBits.join(' · ') + '</span>'
+              : '<span class="muted">–</span>';
+            const relVer = prog.released_version || '';
+            const relChan = prog.released_channel || '';
+            const relHtml = relVer
+              ? '<code>' + relVer + '</code>' + (relChan ? ' <span class="muted">(' + relChan + ')</span>' : '')
+              : '<span class="muted">–</span>';
+            const appIdSafe = prog.app_id || '';
+            tr.innerHTML = `
+              <td><code>${appIdSafe}</code></td>
+              <td>${prog.title_en || ''}<br/><span class="muted">${prog.title_ar || ''}</span></td>
+              <td>${ownerHtml}</td>
+              <td>${statusHtml}</td>
+              <td>${reviewHtml}</td>
+              <td>${scopesHtml}</td>
+              <td>${relHtml}</td>
+              <td>
+                <a href="/mini_programs/${encodeURIComponent(appIdSafe)}" target="_blank">JSON</a><br/>
+                <button type="button" onclick="updateMiniProgramStatus('${appIdSafe}','active','approved')">Approve &amp; activate</button>
+                <button type="button" onclick="updateMiniProgramStatus('${appIdSafe}','disabled','rejected')">Reject</button>
+              </td>
+            `;
+            bodyEl.appendChild(tr);
+          }
+        } catch (e) {
+          bodyEl.innerHTML = '<tr><td colspan="7">Fehler: ' + e + '</td></tr>';
+        }
+      }
+
+      async function updateMiniProgramStatus(appId, status, reviewStatus) {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        flash.className = 'muted';
+        if (!appId) {
+          flash.textContent = 'App-ID fehlt.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {};
+        if (status) payload.status = status;
+        if (reviewStatus) payload.review_status = reviewStatus;
+        try {
+          const r = await fetch('/admin/mini_programs/' + encodeURIComponent(appId), {
+            method: 'PATCH',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler beim Aktualisieren: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Mini-Program aktualisiert.';
+            flash.className = 'success';
+            loadMiniPrograms();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      async function createMiniProgram() {
+        const flash = document.getElementById('flash');
+        flash.textContent = '';
+        flash.className = 'muted';
+        const app_id = document.getElementById('mp_app_id').value.trim();
+        const title_en = document.getElementById('mp_title_en').value.trim();
+        const title_ar = document.getElementById('mp_title_ar').value.trim();
+        const desc_en = document.getElementById('mp_desc_en').value.trim();
+        const desc_ar = document.getElementById('mp_desc_ar').value.trim();
+        const owner_name = document.getElementById('mp_owner_name').value.trim();
+        const owner_contact = document.getElementById('mp_owner_contact').value.trim();
+        const actionsRaw = document.getElementById('mp_actions_json').value.trim();
+        if (!app_id || !title_en) {
+          flash.textContent = 'App-ID und Titel (EN) sind Pflicht.';
+          flash.className = 'error';
+          return;
+        }
+        const payload = {
+          app_id,
+          title_en,
+          title_ar: title_ar || null,
+          description_en: desc_en || null,
+          description_ar: desc_ar || null,
+          owner_name: owner_name || null,
+          owner_contact: owner_contact || null,
+        };
+        if (actionsRaw) {
+          try {
+            const parsed = JSON.parse(actionsRaw);
+            if (Array.isArray(parsed)) {
+              payload.actions = parsed;
+            } else {
+              flash.textContent = 'Actions JSON muss ein Array sein.';
+              flash.className = 'error';
+              return;
+            }
+          } catch (e) {
+            flash.textContent = 'Fehler im Actions JSON: ' + e;
+            flash.className = 'error';
+            return;
+          }
+        }
+        try {
+          const r = await fetch('/mini_programs', {
+            method: 'POST',
+            headers: {'content-type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            flash.textContent = 'Fehler: ' + r.status + ' ' + txt;
+            flash.className = 'error';
+          } else {
+            flash.textContent = 'Mini-Program registriert.';
+            flash.className = 'success';
+            document.getElementById('mp_app_id').value = '';
+            document.getElementById('mp_title_en').value = '';
+            document.getElementById('mp_title_ar').value = '';
+            document.getElementById('mp_desc_en').value = '';
+            document.getElementById('mp_desc_ar').value = '';
+            document.getElementById('mp_owner_name').value = '';
+            document.getElementById('mp_owner_contact').value = '';
+            // Actions-Template bewusst nicht leeren, damit es als Vorlage dient.
+            loadMiniPrograms();
+          }
+        } catch (e) {
+          flash.textContent = 'Fehler: ' + e;
+          flash.className = 'error';
+        }
+      }
+
+      loadMiniPrograms();
+    </script>
+  </body>
+</html>

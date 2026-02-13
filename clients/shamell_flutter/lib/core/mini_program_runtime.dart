@@ -516,23 +516,12 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         appIcon = Icons.account_balance_wallet_outlined;
         appBg = Tokens.colorPayments;
         appFg = Colors.white;
-      } else if (idLower.contains('taxi') || idLower.contains('ride')) {
-        appIcon = Icons.local_taxi_outlined;
-        appBg = Tokens.colorTaxi;
-        appFg = const Color(0xFF111111);
-      } else if (idLower.contains('bus')) {
+      } else if (idLower.contains('bus') ||
+          idLower.contains('ride') ||
+          idLower.contains('mobility') ||
+          idLower.contains('transport')) {
         appIcon = Icons.directions_bus_filled_outlined;
         appBg = Tokens.colorBus;
-        appFg = Colors.white;
-      } else if (idLower.contains('food') || idLower.contains('restaurant')) {
-        appIcon = Icons.restaurant_outlined;
-        appBg = Tokens.colorFood;
-        appFg = Colors.white;
-      } else if (idLower.contains('stay') ||
-          idLower.contains('hotel') ||
-          idLower.contains('travel')) {
-        appIcon = Icons.hotel_outlined;
-        appBg = Tokens.colorHotelsStays;
         appFg = Colors.white;
       }
 
@@ -1693,14 +1682,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         case 'wallet':
         case 'payments':
           return 'المحفظة والمدفوعات';
-        case 'taxi':
         case 'transport':
-          return 'تاكسي والنقل';
-        case 'food':
-          return 'خدمة الطعام';
-        case 'stays':
-        case 'travel':
-          return 'الإقامات والسفر';
+          return 'التنقل والنقل';
         case 'notifications':
           return 'الإشعارات';
         case 'moments':
@@ -1715,14 +1698,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         case 'wallet':
         case 'payments':
           return 'Wallet & payments';
-        case 'taxi':
         case 'transport':
-          return 'Taxi & transport';
-        case 'food':
-          return 'Food service';
-        case 'stays':
-        case 'travel':
-          return 'Stays & travel';
+          return 'Transport';
         case 'notifications':
           return 'Notifications';
         case 'moments':
@@ -1736,14 +1713,11 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   String _serviceHashtag({required bool isArabic}) {
     final id = widget.id.toLowerCase();
     // Heuristics based on Mini‑Program id and common service ids.
-    if (id.contains('taxi') || id.contains('ride')) {
-      return isArabic ? '#تاكسي' : '#Taxi';
-    }
-    if (id.contains('food') || id.contains('restaurant')) {
-      return isArabic ? '#خدمة_طعام' : '#Food';
-    }
-    if (id.contains('stay') || id.contains('hotel')) {
-      return isArabic ? '#الإقامات' : '#Stays';
+    if (id.contains('bus') ||
+        id.contains('ride') ||
+        id.contains('transport') ||
+        id.contains('mobility')) {
+      return isArabic ? '#النقل' : '#Transport';
     }
     if (id.contains('wallet') ||
         id.contains('pay') ||

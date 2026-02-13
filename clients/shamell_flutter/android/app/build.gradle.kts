@@ -7,6 +7,8 @@ plugins {
 
 // Expose the TomTom API key defined in gradle.properties
 val tomtomApiKey: String by project
+// Optional: Google Maps Android API key (if used by plugins/components).
+val googleMapsApiKey: String by project
 
 android {
     namespace = "online.shamell.app"
@@ -49,6 +51,9 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Provide AndroidManifest.xml placeholders.
+        manifestPlaceholders["GOOGLE_MAPS_API_KEY"] =
+            if (googleMapsApiKey.startsWith("CHANGE_ME")) "" else googleMapsApiKey
     }
 
     buildFeatures {
