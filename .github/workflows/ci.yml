@@ -178,6 +178,10 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_nginx_edge_hardening.sh
 
+      - name: Guard deploy env invariants
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_deploy_env_invariants.sh
+
       - name: Skip note (no Cargo.toml)
         if: steps.detect_rust.outputs.present != 'true'
         run: echo "No Cargo.toml found; skipping Rust CI job for this branch."
@@ -201,3 +205,54 @@ jobs:
       - name: Flutter smoke test
         working-directory: clients/shamell_flutter
         run: flutter test test/ratchet_kdf_test.dart
+
+  flutter-macos-smoke:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
+        with:
+          channel: stable
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Flutter pub get
+        working-directory: clients/shamell_flutter
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: clients/shamell_flutter
+        run: flutter analyze
+
+      - name: Build macOS debug app
+        working-directory: clients/shamell_flutter
+        run: flutter build macos --debug
+
+      - name: Runtime smoke log guard
+        working-directory: clients/shamell_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="$(mktemp)"
+          flutter run -d macos --debug -t lib/main.dart >"$log_file" 2>&1 &
+          run_pid=$!
+          sleep 45
+          if kill -0 "$run_pid" 2>/dev/null; then
+            kill "$run_pid" || true
+          fi
+          wait "$run_pid" || true
+          echo "---- flutter run log (tail) ----"
+          tail -n 200 "$log_file" || true
+          if ! grep -q "HOME_PAGE_BUILD: Shamell" "$log_file"; then
+            echo "Missing app startup marker in macOS smoke run."
+            exit 1
+          fi
+          if grep -E "OSStatus error 13|Could not locate configuration file: 'GoogleService-Info\\.plist'" "$log_file"; then
+            echo "Detected forbidden runtime errors in macOS smoke run."
+            exit 1
+          fi
