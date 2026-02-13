@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -21,8 +22,9 @@ import 'channels_page.dart' show ChannelsPage;
 import 'redpacket_campaigns_page.dart';
 import 'app_shell_widgets.dart' show AppBG;
 import 'mini_program_runtime.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 import 'perf.dart';
+import 'http_error.dart';
 
 class OfficialAccountsPage extends StatefulWidget {
   final String baseUrl;
@@ -83,8 +85,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         h['sa_cookie'] = cookie;
       }
@@ -143,12 +144,16 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         await _preloadNotificationModes(result);
       } else {
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     } finally {
       if (mounted) {
@@ -215,12 +220,19 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         await _preloadNotificationModes(result);
       } else {
         setState(() {
-          _discoverError = '${r.statusCode}: ${r.body}';
+          _discoverError = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _discoverError = e.toString();
+        _discoverError = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
       });
     } finally {
       if (mounted) {
@@ -512,7 +524,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final isDiscover = _tabIndex == 1;
     final baseList = isDiscover ? _allAccounts : _accounts;
     final filtered = _filtered(baseList);
@@ -572,7 +584,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     }
 
     // When a search query is active and we have results from /search,
-    // use them as the primary Discover list to get WeChat-like ranking.
+    // use them as the primary Discover list to get Shamell-like ranking.
     final bool useSearch =
         _search.trim().isNotEmpty && _searchResults.isNotEmpty;
     final listForUi = useSearch ? _searchResults : filtered;
@@ -595,7 +607,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   decoration: BoxDecoration(
                     color: isDark
                         ? theme.colorScheme.surfaceContainerHighest
-                        : WeChatPalette.searchFill,
+                        : ShamellPalette.searchFill,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
@@ -657,7 +669,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   ),
                 ),
               ),
-              WeChatSearchBar(
+              ShamellSearchBar(
                 hintText: l.isArabic
                     ? 'ابحث في الحسابات الرسمية'
                     : 'Search official accounts',
@@ -1497,7 +1509,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   IconButton(
                     tooltip: () {
                       final id = (a.miniAppId ?? '').trim();
-                      if (id == 'bus') return l.isArabic ? 'فتح الباص' : 'Open bus';
+                      if (id == 'bus')
+                        return l.isArabic ? 'فتح الباص' : 'Open bus';
                       if (id == 'payments') {
                         return l.isArabic ? 'فتح المحفظة' : 'Open wallet';
                       }
@@ -1753,8 +1766,7 @@ class _OfficialAccountDeepLinkPageState
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         h['sa_cookie'] = cookie;
       }
@@ -1808,14 +1820,18 @@ class _OfficialAccountDeepLinkPageState
       } else {
         if (!mounted) return;
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
           _loading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -1888,8 +1904,7 @@ class _OfficialFeedItemDeepLinkPageState
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         h['sa_cookie'] = cookie;
       }
@@ -1966,21 +1981,29 @@ class _OfficialFeedItemDeepLinkPageState
         } else {
           if (!mounted) return;
           setState(() {
-            _error = '${fr.statusCode}: ${fr.body}';
+            _error = sanitizeHttpError(
+              statusCode: fr.statusCode,
+              rawBody: fr.body,
+              isArabic: L10n.of(context).isArabic,
+            );
             _loading = false;
           });
         }
       } else {
         if (!mounted) return;
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
           _loading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -2392,8 +2415,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         h['sa_cookie'] = cookie;
       }
@@ -2514,7 +2536,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           _campaignDefaultAmountCents = defAmt;
           _campaignDefaultCount = defCount;
         });
-        // Load Channels clips for this Official (WeChat‑style cross‑view).
+        // Load Channels clips for this Official (Shamell‑style cross‑view).
         // ignore: discarded_futures
         _loadChannelClips();
         // Load latest Moments posts for this Official so we can show a
@@ -2541,12 +2563,16 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         }
       } else {
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     } finally {
       if (mounted) {
@@ -3269,7 +3295,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -3416,7 +3442,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final acc = widget.account;
     final items = _items;
     final articleItems =
@@ -5214,7 +5240,7 @@ Widget _buildServiceMenu(
         IconData icon;
         String fallbackLabel;
         VoidCallback onTap;
-		        switch (mid) {
+        switch (mid) {
           case 'payments':
           case 'alias':
           case 'merchant':
@@ -5240,15 +5266,15 @@ Widget _buildServiceMenu(
               } catch (_) {}
             };
             break;
-		          case 'bus':
-		            icon = Icons.directions_bus_filled_outlined;
-		            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
-		            onTap = () => openMod(mid);
-		            break;
-	          default:
-	            icon = Icons.open_in_new;
-	            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
-	            onTap = () => openMod(mid);
+          case 'bus':
+            icon = Icons.directions_bus_filled_outlined;
+            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
+            onTap = () => openMod(mid);
+            break;
+          default:
+            icon = Icons.open_in_new;
+            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
+            onTap = () => openMod(mid);
             break;
         }
         final label = item.label(l, fallbackLabel);
@@ -5283,20 +5309,20 @@ Widget _buildServiceMenu(
   }
 
   // Fallback for older BFFs without menu_items.
-		  if (actions.isEmpty) {
-		    switch (id) {
+  if (actions.isEmpty) {
+    switch (id) {
       case 'payments':
       case 'alias':
       case 'merchant':
         addPayments();
         break;
-		      case 'bus':
-		        addBus();
-		        break;
-	      default:
-	        break;
-	    }
-	  }
+      case 'bus':
+        addBus();
+        break;
+      default:
+        break;
+    }
+  }
 
   if (actions.isEmpty) {
     return const SizedBox.shrink();

@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'http_error.dart';
 import 'l10n.dart';
 
 class OfficialAccountRegisterPage extends StatefulWidget {
@@ -76,8 +78,7 @@ class _OfficialAccountRegisterPageState
   Future<Map<String, String>> _hdr() async {
     final headers = <String, String>{'content-type': 'application/json'};
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -163,14 +164,11 @@ class _OfficialAccountRegisterPageState
         body: jsonEncode(payload),
       );
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        String msg =
-            resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
-        try {
-          final decoded = jsonDecode(resp.body);
-          if (decoded is Map && decoded['detail'] != null) {
-            msg = decoded['detail'].toString();
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        );
         if (!mounted) return;
         setState(() {
           _submitting = false;
@@ -196,7 +194,7 @@ class _OfficialAccountRegisterPageState
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _error = e.toString();
+        _error = l.isArabic ? 'تعذّر إرسال الطلب.' : 'Could not submit request.';
       });
     }
   }
@@ -239,8 +237,8 @@ class _OfficialAccountRegisterPageState
             children: [
               Text(
                 isArabic
-                    ? 'أنشئ حساباً رسمياً لخدمتك أو متجرك على نمط WeChat. يبدأ الطلب كمعلومة قيد المراجعة من فريق Shamell.'
-                    : 'Create a WeChat‑style Official account for your service or shop. The request starts under review by the Shamell team.',
+                    ? 'أنشئ حساباً رسمياً لخدمتك أو متجرك على نمط Shamell. يبدأ الطلب كمعلومة قيد المراجعة من فريق Shamell.'
+                    : 'Create a Shamell‑style Official account for your service or shop. The request starts under review by the Shamell team.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .80),
                 ),

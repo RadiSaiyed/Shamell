@@ -1,11 +1,12 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'http_error.dart';
 
 class OfficialServiceInboxPage extends StatefulWidget {
   final String baseUrl;
@@ -41,8 +42,7 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
       headers['content-type'] = 'application/json';
     }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -67,7 +67,11 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = r.body.isNotEmpty ? r.body : 'HTTP ${r.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -92,7 +96,7 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -245,9 +249,11 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                         r.statusCode >= 300) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = r.body.isNotEmpty
-                                            ? r.body
-                                            : 'HTTP ${r.statusCode}';
+                                        error = sanitizeHttpError(
+                                          statusCode: r.statusCode,
+                                          rawBody: r.body,
+                                          isArabic: l.isArabic,
+                                        );
                                       });
                                       return;
                                     }
@@ -265,7 +271,7 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                   } catch (e) {
                                     setStateSB(() {
                                       submitting = false;
-                                      error = e.toString();
+                                      error = sanitizeExceptionForUi(error: e);
                                     });
                                   }
                                 },
@@ -295,7 +301,7 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
     if (peerId.isEmpty) return;
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(
+        builder: (_) => ShamellChatPage(
           baseUrl: widget.baseUrl,
           initialPeerId: peerId,
         ),

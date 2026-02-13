@@ -1,19 +1,19 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'mini_program_runtime.dart';
 import 'mini_programs_my_page_insights.dart';
 import 'moments_page.dart';
+import 'http_error.dart';
 
 Future<Map<String, String>> _hdrMiniPrograms() async {
   final headers = <String, String>{};
   try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
+    final cookie = await getSessionCookie() ?? '';
     if (cookie.isNotEmpty) {
       headers['sa_cookie'] = cookie;
     }
@@ -67,7 +67,11 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: resp.statusCode,
+            rawBody: resp.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -145,7 +149,7 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -962,8 +966,8 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                   const SizedBox(height: 12),
                   Text(
                     isAr
-                        ? 'الأرقام تقريبية وتعكس الفتحات والتقييمات ومشاركات Mini‑Program في اللحظات، مع إبراز آخر ٣٠ يوماً كما في تحليلات WeChat. استخدم الوسوم مثل #ShamellMiniApp و #mp_<app_id> لبناء مواضيع خاصة ببرنامجك المصغّر.'
-                        : 'Numbers are approximate and reflect opens, ratings and Mini‑Program links shared in Moments, with an emphasis on the last 30 days similar to WeChat analytics. Use hashtags like #ShamellMiniApp and #mp_<app_id> to build Mini‑program topic feeds for your app.',
+                        ? 'الأرقام تقريبية وتعكس الفتحات والتقييمات ومشاركات Mini‑Program في اللحظات، مع إبراز آخر ٣٠ يوماً كما في تحليلات Shamell. استخدم الوسوم مثل #ShamellMiniApp و #mp_<app_id> لبناء مواضيع خاصة ببرنامجك المصغّر.'
+                        : 'Numbers are approximate and reflect opens, ratings and Mini‑Program links shared in Moments, with an emphasis on the last 30 days similar to Shamell analytics. Use hashtags like #ShamellMiniApp and #mp_<app_id> to build Mini‑program topic feeds for your app.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),
@@ -1138,16 +1142,11 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                       );
                                       if (resp.statusCode < 200 ||
                                           resp.statusCode >= 300) {
-                                        String msg = resp.body.isNotEmpty
-                                            ? resp.body
-                                            : 'HTTP ${resp.statusCode}';
-                                        try {
-                                          final decoded = jsonDecode(resp.body);
-                                          if (decoded is Map &&
-                                              decoded['detail'] != null) {
-                                            msg = decoded['detail'].toString();
-                                          }
-                                        } catch (_) {}
+                                        final msg = sanitizeHttpError(
+                                          statusCode: resp.statusCode,
+                                          rawBody: resp.body,
+                                          isArabic: isAr,
+                                        );
                                         setModalState(() {
                                           submitting = false;
                                           error = msg;
@@ -1172,7 +1171,7 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                     } catch (e) {
                                       setModalState(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1212,16 +1211,11 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                   );
                                   if (resp.statusCode < 200 ||
                                       resp.statusCode >= 300) {
-                                    String msg = resp.body.isNotEmpty
-                                        ? resp.body
-                                        : 'HTTP ${resp.statusCode}';
-                                    try {
-                                      final decoded = jsonDecode(resp.body);
-                                      if (decoded is Map &&
-                                          decoded['detail'] != null) {
-                                        msg = decoded['detail'].toString();
-                                      }
-                                    } catch (_) {}
+                                    final msg = sanitizeHttpError(
+                                      statusCode: resp.statusCode,
+                                      rawBody: resp.body,
+                                      isArabic: isAr,
+                                    );
                                     if (!mounted) return;
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
@@ -1247,7 +1241,12 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                   if (!mounted) return;
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content: Text(e.toString()),
+                                      content: Text(
+                                        sanitizeExceptionForUi(
+                                          error: e,
+                                          isArabic: isAr,
+                                        ),
+                                      ),
                                     ),
                                   );
                                 }
@@ -1274,14 +1273,11 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
       );
       final resp = await http.post(uri, headers: await _hdrMiniPrograms());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        String msg =
-            resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
-        try {
-          final decoded = jsonDecode(resp.body);
-          if (decoded is Map && decoded['detail'] != null) {
-            msg = decoded['detail'].toString();
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(msg)),
@@ -1302,7 +1298,11 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString())),
+        SnackBar(
+          content: Text(
+            sanitizeExceptionForUi(error: e, isArabic: l.isArabic),
+          ),
+        ),
       );
     }
   }

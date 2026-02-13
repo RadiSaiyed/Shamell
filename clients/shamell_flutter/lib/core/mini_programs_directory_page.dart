@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
+import 'http_error.dart';
 import 'l10n.dart';
 import 'mini_program_runtime.dart';
 
@@ -119,6 +120,7 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
   }
 
   Future<void> _load() async {
+    final isArabic = L10n.of(context).isArabic;
     setState(() {
       _loading = true;
       _error = null;
@@ -129,7 +131,11 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
       final resp = await http.get(uri);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         setState(() {
-          _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: resp.statusCode,
+            rawBody: resp.body,
+            isArabic: isArabic,
+          );
           _loading = false;
         });
         return;
@@ -161,7 +167,9 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = isArabic
+            ? 'تعذّر تحميل البرامج المصغّرة.'
+            : 'Could not load mini‑programs.';
         _loading = false;
       });
     }

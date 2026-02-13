@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -55,8 +57,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
       headers['content-type'] = 'application/json';
     }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -198,7 +199,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -381,8 +382,8 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                   ),
                   subtitle: Text(
                     l.isArabic
-                        ? 'عرض جلسات خدمة العملاء المفتوحة والرد عبر Mirsaal.'
-                        : 'View open customer-service sessions and reply via Mirsaal chats.',
+                        ? 'عرض جلسات خدمة العملاء المفتوحة والرد عبر Shamell.'
+                        : 'View open customer-service sessions and reply via Shamell chats.',
                   ),
                   onTap: () {
                     Navigator.of(context).push(
@@ -424,8 +425,8 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                   const SizedBox(height: 8),
                   Text(
                     l.isArabic
-                        ? 'يمكن للعملاء مسح هذا الرمز لمتابعة الحساب وفتح الدردشة أو الخدمات، مثل WeChat Official Accounts.'
-                        : 'Customers can scan this code to follow, chat and open services, similar to WeChat Official Accounts.',
+                        ? 'يمكن للعملاء مسح هذا الرمز لمتابعة الحساب وفتح الدردشة أو الخدمات، مثل Shamell Official Accounts.'
+                        : 'Customers can scan this code to follow, chat and open services, similar to Shamell Official Accounts.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .70),
                     ),
@@ -774,8 +775,8 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                 const SizedBox(height: 8),
                 Text(
                   l.isArabic
-                      ? 'يمكنك إعداد رسالة ترحيب يتم عرضها تلقائياً عند فتح الدردشة مع الحساب الرسمي (أسلوب شبيه بـ WeChat).'
-                      : 'Configure a welcome message that is shown automatically when a chat with this Official account is opened (WeChat‑style).',
+                      ? 'يمكنك إعداد رسالة ترحيب يتم عرضها تلقائياً عند فتح الدردشة مع الحساب الرسمي (أسلوب شبيه بـ Shamell).'
+                      : 'Configure a welcome message that is shown automatically when a chat with this Official account is opened (Shamell‑style).',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurface.withValues(alpha: .70),
                   ),
@@ -1186,7 +1187,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       if (!mounted) return;
                                       setModalState(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1424,7 +1425,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       if (!mounted) return;
                                       setModalState(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1671,7 +1672,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       if (!mounted) return;
                                       setModalState(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },

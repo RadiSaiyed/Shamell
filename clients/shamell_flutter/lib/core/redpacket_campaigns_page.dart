@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -84,7 +85,7 @@ class _RedpacketCampaignsPageState extends State<RedpacketCampaignsPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -408,8 +409,8 @@ class _RedpacketCampaignsPageState extends State<RedpacketCampaignsPage> {
                   const SizedBox(height: 12),
                   Text(
                     isAr
-                        ? 'تعرض هذه النظرة العامة تأثير الحملة على نمط WeChat: ارتباط بين مشاركات اللحظات وحزم الحمراء الصادرة والمطالبة بها.'
-                        : 'This overview shows the WeChat‑style impact of your campaign, combining Moments shares with issued and claimed red‑packets.',
+                        ? 'تعرض هذه النظرة العامة تأثير الحملة على نمط Shamell: ارتباط بين مشاركات اللحظات وحزم الحمراء الصادرة والمطالبة بها.'
+                        : 'This overview shows the Shamell‑style impact of your campaign, combining Moments shares with issued and claimed red‑packets.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),
@@ -735,8 +736,8 @@ class _RedpacketCampaignsPageState extends State<RedpacketCampaignsPage> {
               const SizedBox(height: 8),
               Text(
                 l.isArabic
-                    ? 'هذه الإحصاءات تظهر تأثير كل الحملات معاً (أسلوب شبيه بـ WeChat)، استناداً إلى بيانات اللحظات والدفع المتاحة.'
-                    : 'These KPIs summarise the combined impact of all campaigns (WeChat‑style), based on available Moments and payments data.',
+                    ? 'هذه الإحصاءات تظهر تأثير كل الحملات معاً (أسلوب شبيه بـ Shamell)، استناداً إلى بيانات اللحظات والدفع المتاحة.'
+                    : 'These KPIs summarise the combined impact of all campaigns (Shamell‑style), based on available Moments and payments data.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .70),
                 ),

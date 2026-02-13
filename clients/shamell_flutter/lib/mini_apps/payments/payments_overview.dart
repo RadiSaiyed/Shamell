@@ -14,6 +14,8 @@ import 'payments_receive_pay.dart';
 import 'payments_send.dart' show PayActionButton, GroupPayPage;
 import 'payments_requests.dart';
 import '../../core/moments_page.dart' show MomentsPage;
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'package:shamell_flutter/core/http_error.dart';
 
 class PaymentOverviewTab extends StatefulWidget {
   final String baseUrl;
@@ -461,8 +463,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
               const SizedBox(height: 8),
               Text(
                 l.isArabic
-                    ? 'شحن الرصيد أو إنشاء رمز سحب نقدي، مشابه لتجربة WeChat Pay.'
-                    : 'Top up your balance or create a cash‑out code, similar to WeChat Pay.',
+                    ? 'شحن الرصيد أو إنشاء رمز سحب نقدي، مشابه لتجربة Shamell Pay.'
+                    : 'Top up your balance or create a cash‑out code, similar to Shamell Pay.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .70),
                 ),
@@ -1156,7 +1158,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                             onPressed: submitting
                                 ? null
                                 : () => Navigator.of(ctx2).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -1190,7 +1192,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1343,7 +1345,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                               onPressed: submitting
                                   ? null
                                   : () => Navigator.of(ctx2).pop(),
-                              child: Text(l.mirsaalDialogCancel),
+                              child: Text(l.shamellDialogCancel),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1394,7 +1396,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                       } catch (e) {
                                         setStateSB(() {
                                           submitting = false;
-                                          error = e.toString();
+                                          error = sanitizeExceptionForUi(error: e);
                                         });
                                       }
                                     },
@@ -1556,7 +1558,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                         Expanded(
                           child: TextButton(
                             onPressed: () => Navigator.of(ctx2).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -1871,7 +1873,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                             onPressed: submitting
                                 ? null
                                 : () => Navigator.of(ctx2).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -1913,7 +1915,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -2152,8 +2154,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
 }
 
 Future<String?> _getCookiePO() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+  return await getSessionCookie();
 }
 
 Future<Map<String, String>> _hdrPO({bool json = false}) async {

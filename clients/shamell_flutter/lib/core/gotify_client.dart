@@ -26,7 +26,7 @@ class GotifyClient {
         _connecting = false;
         return;
       }
-      debugPrint('Gotify: connecting to $url');
+      debugPrint('Gotify: connecting');
       final ch = WebSocketChannel.connect(Uri.parse(url));
       _channel = ch;
       ch.stream.listen(
@@ -64,10 +64,15 @@ class GotifyClient {
       if (token.isEmpty) return null;
       var u = base;
       if (u.endsWith('/')) u = u.substring(0, u.length - 1);
-      // Prefer wss:// for https:// base; else fall back to ws://
+      // Prefer wss:// for https:// base; else fall back to ws:// on loopback.
       if (u.startsWith('https://')) {
         u = 'wss://' + u.substring('https://'.length);
       } else if (u.startsWith('http://')) {
+        final parsed = Uri.tryParse(u);
+        final host = (parsed?.host ?? '').toLowerCase();
+        final isLoopback =
+            host == 'localhost' || host == '127.0.0.1' || host == '::1';
+        if (!isLoopback) return null;
         u = 'ws://' + u.substring('http://'.length);
       }
       return '$u/stream?token=$token';
@@ -83,7 +88,8 @@ class GotifyClient {
         final title = (j['title'] ?? '').toString();
         final message = (j['message'] ?? '').toString();
         final priority = j['priority'];
-        debugPrint('Gotify message: $title / $message (prio=$priority)');
+        debugPrint(
+            'Gotify message received (prio=$priority, title_len=${title.length}, body_len=${message.length})');
         String? deepLink;
         try {
           final extras = j['extras'];

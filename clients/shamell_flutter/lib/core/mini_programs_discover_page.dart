@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,7 +13,8 @@ import 'l10n.dart';
 import 'mini_apps_config.dart';
 import 'mini_program_runtime.dart';
 import 'mini_programs_my_page.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
+import 'http_error.dart';
 
 class _IconSpec {
   final IconData icon;
@@ -560,8 +562,8 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
 
     final arrow = ClipPath(
       clipper: showAbove
-          ? _WeChatPopoverDownArrowClipper()
-          : _WeChatPopoverUpArrowClipper(),
+          ? _ShamellPopoverDownArrowClipper()
+          : _ShamellPopoverUpArrowClipper(),
       child: const ColoredBox(
         color: bg,
         child: SizedBox(width: arrowW, height: arrowH),
@@ -844,8 +846,8 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
     const allowedIds = <String>{'bus'};
     final merged = <Map<String, dynamic>>[
       for (final p in remote)
-        if (allowedIds.contains(
-            (p['app_id'] ?? '').toString().trim().toLowerCase()))
+        if (allowedIds
+            .contains((p['app_id'] ?? '').toString().trim().toLowerCase()))
           Map<String, dynamic>.from(p),
     ];
     final existing = <String>{};
@@ -863,26 +865,26 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
     return merged;
   }
 
-	  _IconSpec _iconSpecFor(String appId) {
-	    final id = appId.trim().toLowerCase();
-		    if (id.contains('pay') || id.contains('wallet') || id.contains('payment')) {
-		      return const _IconSpec(
-		        Icons.account_balance_wallet_outlined,
-		        Tokens.colorPayments,
-		        Colors.white,
-		      );
-		    }
-		    if (id.contains('bus') || id.contains('ride') || id.contains('mobility')) {
-		      return const _IconSpec(
-		        Icons.directions_bus_filled_outlined,
-		        Tokens.colorBus,
-		        Colors.white,
-		      );
-		    }
-	    return const _IconSpec(
-	      Icons.widgets_outlined,
-	      Color(0xFF64748B),
-	      Colors.white,
+  _IconSpec _iconSpecFor(String appId) {
+    final id = appId.trim().toLowerCase();
+    if (id.contains('pay') || id.contains('wallet') || id.contains('payment')) {
+      return const _IconSpec(
+        Icons.account_balance_wallet_outlined,
+        Tokens.colorPayments,
+        Colors.white,
+      );
+    }
+    if (id.contains('bus') || id.contains('ride') || id.contains('mobility')) {
+      return const _IconSpec(
+        Icons.directions_bus_filled_outlined,
+        Tokens.colorBus,
+        Colors.white,
+      );
+    }
+    return const _IconSpec(
+      Icons.widgets_outlined,
+      Color(0xFF64748B),
+      Colors.white,
     );
   }
 
@@ -979,8 +981,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
   Future<Map<String, String>> _authHeaders() async {
     final headers = <String, String>{};
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -1017,7 +1018,11 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
         // ignore: discarded_futures
         _updateTopProgramsBadge(top);
         setState(() {
-          _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: resp.statusCode,
+            rawBody: resp.body,
+            isArabic: L10n.of(context).isArabic,
+          );
           _loading = false;
           _programs = merged;
           _topPrograms = top;
@@ -1060,7 +1065,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
       // ignore: discarded_futures
       _updateTopProgramsBadge(top);
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
         _programs = merged;
         _topPrograms = top;
@@ -1206,7 +1211,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
     final isDark = theme.brightness == Brightness.dark;
     final Color bgColor = isDark
         ? theme.colorScheme.surface.withValues(alpha: .96)
-        : WeChatPalette.background;
+        : ShamellPalette.background;
 
     final filtered = _filteredPrograms();
     final isArabic = l.isArabic;
@@ -1324,7 +1329,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                     return Row(
                       children: [
                         Expanded(
-                          child: WeChatSearchBar(
+                          child: ShamellSearchBar(
                             controller: _searchCtrl,
                             focusNode: _searchFocus,
                             autofocus: _autoFocusedSearch,
@@ -1345,7 +1350,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                               padding: EdgeInsets.zero,
                               minimumSize: const Size(0, 36),
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              foregroundColor: WeChatPalette.green,
+                              foregroundColor: ShamellPalette.green,
                             ),
                             onPressed: () {
                               _searchCtrl.clear();
@@ -1358,7 +1363,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                               isArabic ? 'إلغاء' : 'Cancel',
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 fontWeight: FontWeight.w600,
-                                color: WeChatPalette.green,
+                                color: ShamellPalette.green,
                               ),
                             ),
                           ),
@@ -1371,7 +1376,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
             ),
             if (showHubSections && !_showAllDirectory)
               SliverToBoxAdapter(
-                child: WeChatSection(
+                child: ShamellSection(
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
@@ -1382,7 +1387,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
               ),
             if (showHubSections && !_showAllDirectory)
               SliverToBoxAdapter(
-                child: WeChatSection(
+                child: ShamellSection(
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
@@ -1400,13 +1405,13 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
               ),
             if (showHubSections && !_showAllDirectory)
               SliverToBoxAdapter(
-                child: WeChatSection(
+                child: ShamellSection(
                   children: [
                     ListTile(
                       dense: true,
-                      leading: const WeChatLeadingIcon(
+                      leading: const ShamellLeadingIcon(
                         icon: Icons.apps_outlined,
-                        background: WeChatPalette.green,
+                        background: ShamellPalette.green,
                       ),
                       title: Text(l.miniAppsAllTitle),
                       trailing: Row(
@@ -1426,7 +1431,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
               ),
             if (showDirectory && _showAllDirectory && _topPrograms.isNotEmpty)
               SliverToBoxAdapter(
-                child: WeChatSection(
+                child: ShamellSection(
                   children: [
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
@@ -1563,7 +1568,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                             onLongPress: appId.isEmpty
                                 ? null
                                 : () => _togglePinned(appId),
-                            leading: WeChatLeadingIcon(
+                            leading: ShamellLeadingIcon(
                               icon: spec.icon,
                               background: spec.bg,
                               foreground: spec.fg,
@@ -1725,18 +1730,18 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                 '${descAr.toLowerCase()} '
                 '${appIdRaw.toLowerCase()}'
             .trim();
-	        bool matches = false;
-		        switch (_categoryFilter) {
-		          case 'transport':
-		            matches = hay.contains('bus') ||
-		                hay.contains('ride') ||
-		                hay.contains('transport') ||
-		                hay.contains('mobility');
-		            break;
-	          case 'wallet':
-	            matches = hay.contains('wallet') ||
-	                hay.contains('pay') ||
-	                hay.contains('payment') ||
+        bool matches = false;
+        switch (_categoryFilter) {
+          case 'transport':
+            matches = hay.contains('bus') ||
+                hay.contains('ride') ||
+                hay.contains('transport') ||
+                hay.contains('mobility');
+            break;
+          case 'wallet':
+            matches = hay.contains('wallet') ||
+                hay.contains('pay') ||
+                hay.contains('payment') ||
                 hay.contains('payments');
             break;
           default:
@@ -1784,29 +1789,29 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
               '${appId.toLowerCase()}'
           .trim();
       if (haystack.isEmpty) continue;
-		      if (haystack.contains('bus') ||
-		          haystack.contains('ride') ||
-		          haystack.contains('transport') ||
-		          haystack.contains('mobility')) {
-		        cats.add('transport');
-	      } else if (haystack.contains('wallet') ||
-	          haystack.contains('pay') ||
-	          haystack.contains('payment') ||
-	          haystack.contains('payments')) {
+      if (haystack.contains('bus') ||
+          haystack.contains('ride') ||
+          haystack.contains('transport') ||
+          haystack.contains('mobility')) {
+        cats.add('transport');
+      } else if (haystack.contains('wallet') ||
+          haystack.contains('pay') ||
+          haystack.contains('payment') ||
+          haystack.contains('payments')) {
         cats.add('wallet');
       }
     }
     if (cats.isEmpty) {
       return const SizedBox.shrink();
     }
-		    String labelFor(String key) {
-		      switch (key) {
-		        case 'transport':
-		          return isArabic ? 'التنقل والنقل' : 'Transport';
-		        case 'wallet':
-	          return isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
-	        default:
-	          return key;
+    String labelFor(String key) {
+      switch (key) {
+        case 'transport':
+          return isArabic ? 'التنقل والنقل' : 'Transport';
+        case 'wallet':
+          return isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
+        default:
+          return key;
       }
     }
 
@@ -1905,18 +1910,18 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
                 '${descAr.toLowerCase()} '
                 '${appIdRaw.toLowerCase()}'
             .trim();
-	        bool matches = false;
-		        switch (_categoryFilter) {
-		          case 'transport':
-		            matches = hay.contains('bus') ||
-		                hay.contains('ride') ||
-		                hay.contains('transport') ||
-		                hay.contains('mobility');
-		            break;
-	          case 'wallet':
-	            matches = hay.contains('wallet') ||
-	                hay.contains('pay') ||
-	                hay.contains('payment') ||
+        bool matches = false;
+        switch (_categoryFilter) {
+          case 'transport':
+            matches = hay.contains('bus') ||
+                hay.contains('ride') ||
+                hay.contains('transport') ||
+                hay.contains('mobility');
+            break;
+          case 'wallet':
+            matches = hay.contains('wallet') ||
+                hay.contains('pay') ||
+                hay.contains('payment') ||
                 hay.contains('payments');
             break;
           default:
@@ -2201,7 +2206,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
             Stack(
               clipBehavior: Clip.none,
               children: [
-                WeChatLeadingIcon(
+                ShamellLeadingIcon(
                   icon: spec.icon,
                   background: spec.bg,
                   foreground: spec.fg,
@@ -2859,7 +2864,7 @@ class _MiniProgramsPinnedManagePageState
     final isDark = theme.brightness == Brightness.dark;
     final bgColor = isDark
         ? theme.colorScheme.surface.withValues(alpha: .96)
-        : WeChatPalette.background;
+        : ShamellPalette.background;
 
     final pinnedSet = _ids.toSet();
     final addableIds = <String>[];
@@ -2930,7 +2935,7 @@ class _MiniProgramsPinnedManagePageState
                     Stack(
                       clipBehavior: Clip.none,
                       children: [
-                        WeChatLeadingIcon(
+                        ShamellLeadingIcon(
                           icon: spec.icon,
                           background: spec.bg,
                           foreground: spec.fg,
@@ -3213,7 +3218,7 @@ class _MiniProgramsRecentsManagePageState
     final isDark = theme.brightness == Brightness.dark;
     final bgColor = isDark
         ? theme.colorScheme.surface.withValues(alpha: .96)
-        : WeChatPalette.background;
+        : ShamellPalette.background;
 
     Future<void> confirmClear() async {
       final ok = await showDialog<bool>(
@@ -3300,7 +3305,7 @@ class _MiniProgramsRecentsManagePageState
                       color: theme.colorScheme.surface,
                       child: ListTile(
                         dense: true,
-                        leading: WeChatLeadingIcon(
+                        leading: ShamellLeadingIcon(
                           icon: spec.icon,
                           background: spec.bg,
                           foreground: spec.fg,
@@ -3347,7 +3352,7 @@ class _MiniProgramsRecentsManagePageState
   }
 }
 
-class _WeChatPopoverDownArrowClipper extends CustomClipper<Path> {
+class _ShamellPopoverDownArrowClipper extends CustomClipper<Path> {
   @override
   Path getClip(Size size) {
     final path = Path();
@@ -3359,10 +3364,10 @@ class _WeChatPopoverDownArrowClipper extends CustomClipper<Path> {
   }
 
   @override
-  bool shouldReclip(_WeChatPopoverDownArrowClipper oldClipper) => false;
+  bool shouldReclip(_ShamellPopoverDownArrowClipper oldClipper) => false;
 }
 
-class _WeChatPopoverUpArrowClipper extends CustomClipper<Path> {
+class _ShamellPopoverUpArrowClipper extends CustomClipper<Path> {
   @override
   Path getClip(Size size) {
     final path = Path();
@@ -3374,5 +3379,5 @@ class _WeChatPopoverUpArrowClipper extends CustomClipper<Path> {
   }
 
   @override
-  bool shouldReclip(_WeChatPopoverUpArrowClipper oldClipper) => false;
+  bool shouldReclip(_ShamellPopoverUpArrowClipper oldClipper) => false;
 }

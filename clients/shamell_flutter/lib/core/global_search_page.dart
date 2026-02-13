@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -12,7 +13,8 @@ import 'official_accounts_page.dart'
 import 'moments_page.dart';
 import 'channels_page.dart' show ChannelsPage;
 import 'global_media_page.dart';
-import 'wechat_ui.dart';
+import 'http_error.dart';
+import 'shamell_ui.dart';
 
 class GlobalSearchPage extends StatefulWidget {
   final String baseUrl;
@@ -113,8 +115,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         h['sa_cookie'] = cookie;
       }
@@ -165,6 +166,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   Future<void> _runSearch({bool commitHistory = true}) async {
     final q = _qCtrl.text.trim();
     if (q.isEmpty) return;
+    final isArabic = L10n.of(context).isArabic;
     final seq = ++_searchSeq;
     setState(() {
       _loading = true;
@@ -186,7 +188,11 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted || seq != _searchSeq) return;
         setState(() {
-          _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: resp.statusCode,
+            rawBody: resp.body,
+            isArabic: isArabic,
+          );
           _loading = false;
         });
         return;
@@ -208,7 +214,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     } catch (e) {
       if (!mounted || seq != _searchSeq) return;
       setState(() {
-        _error = e.toString();
+        _error = isArabic ? 'تعذّر تنفيذ البحث.' : 'Could not run search.';
         _loading = false;
       });
     }
@@ -221,8 +227,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final isArabic = l.isArabic;
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
-    final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
+    final dividerColor = isDark ? theme.dividerColor : ShamellPalette.divider;
 
     final tabs = <Tab>[
       Tab(text: isArabic ? 'الكل' : 'All'),
@@ -249,8 +255,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                   height: 36,
                   decoration: BoxDecoration(
                     color: isDark
-                        ? WeChatPalette.searchFillDark
-                        : WeChatPalette.searchFill,
+                        ? ShamellPalette.searchFillDark
+                        : ShamellPalette.searchFill,
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: TextField(
@@ -292,14 +298,14 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                         size: 18,
                         color: isDark
                             ? theme.colorScheme.onSurface.withValues(alpha: .55)
-                            : WeChatPalette.textSecondary,
+                            : ShamellPalette.textSecondary,
                       ),
                       hintText: isArabic ? 'بحث' : 'Search',
                       hintStyle: theme.textTheme.bodyMedium?.copyWith(
                         fontSize: 13,
                         color: isDark
                             ? theme.colorScheme.onSurface.withValues(alpha: .55)
-                            : WeChatPalette.textSecondary,
+                            : ShamellPalette.textSecondary,
                       ),
                       suffixIcon: _qCtrl.text.trim().isEmpty
                           ? null
@@ -310,7 +316,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                                 color: isDark
                                     ? theme.colorScheme.onSurface
                                         .withValues(alpha: .55)
-                                    : WeChatPalette.textSecondary,
+                                    : ShamellPalette.textSecondary,
                               ),
                               onPressed: () {
                                 setState(() {
@@ -331,7 +337,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               const SizedBox(width: 8),
               TextButton(
                 onPressed: () => Navigator.of(context).maybePop(),
-                child: Text(l.mirsaalDialogCancel),
+                child: Text(l.shamellDialogCancel),
               ),
             ],
           ),
@@ -352,7 +358,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               labelColor: theme.colorScheme.onSurface,
               unselectedLabelColor:
                   theme.colorScheme.onSurface.withValues(alpha: .55),
-              indicatorColor: WeChatPalette.green,
+              indicatorColor: ShamellPalette.green,
               indicatorSize: TabBarIndicatorSize.label,
               indicatorWeight: 2.4,
               labelStyle: const TextStyle(
@@ -383,7 +389,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               _error == null &&
               _results.isEmpty &&
               _history.isNotEmpty)
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 12),
               dividerIndent: 0,
               children: [
@@ -426,7 +432,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                               backgroundColor: isDark
                                   ? theme.colorScheme.surfaceContainerHighest
                                       .withValues(alpha: .35)
-                                  : WeChatPalette.searchFill,
+                                  : ShamellPalette.searchFill,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(18),
                               ),
@@ -454,7 +460,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               _error == null &&
               _results.isEmpty &&
               _trendingTopics.isNotEmpty)
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 12),
               dividerIndent: 0,
               children: [
@@ -500,7 +506,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                               backgroundColor: isDark
                                   ? theme.colorScheme.surfaceContainerHighest
                                       .withValues(alpha: .35)
-                                  : WeChatPalette.searchFill,
+                                  : ShamellPalette.searchFill,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(18),
                               ),
@@ -531,7 +537,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               ],
             ),
           if (!_loading && _error == null)
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 12),
               children: [
                 ListTile(
@@ -592,7 +598,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final tileBg = isDark ? theme.colorScheme.surface : Colors.white;
-    final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
+    final dividerColor = isDark ? theme.dividerColor : ShamellPalette.divider;
 
     Widget resultsList(List<Map<String, dynamic>> entries) {
       return ListView.separated(

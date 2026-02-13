@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:pinenacl/x25519.dart' as x25519;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'chat_models.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 enum OfficialNotificationMode {
   full, // show message preview
@@ -17,9 +18,9 @@ enum OfficialNotificationMode {
 
 class ChatService {
   ChatService(String baseUrl)
-    : _base = baseUrl.endsWith('/')
-          ? baseUrl.substring(0, baseUrl.length - 1)
-          : baseUrl;
+      : _base = baseUrl.endsWith('/')
+            ? baseUrl.substring(0, baseUrl.length - 1)
+            : baseUrl;
 
   final String _base;
   WebSocketChannel? _ws;
@@ -870,6 +871,19 @@ class ChatService {
     return (deviceId: did, token: tok);
   }
 
+  bool _allowInsecureWsTokenQueryFallback() {
+    if (kReleaseMode) {
+      return const bool.fromEnvironment(
+        'ALLOW_INSECURE_WS_TOKEN_QUERY_FALLBACK_IN_RELEASE',
+        defaultValue: false,
+      );
+    }
+    return const bool.fromEnvironment(
+      'ALLOW_INSECURE_WS_TOKEN_QUERY_FALLBACK',
+      defaultValue: false,
+    );
+  }
+
   Uri _chatWsUriWithFallback(Uri wsUri, String? deviceId, String? token) {
     final qp = <String, String>{...wsUri.queryParameters};
     final did = (deviceId ?? '').trim();
@@ -877,7 +891,7 @@ class ChatService {
     if (did.isNotEmpty) {
       qp['chat_device_id'] = did;
     }
-    if (tok.isNotEmpty) {
+    if (tok.isNotEmpty && _allowInsecureWsTokenQueryFallback()) {
       qp['chat_device_token'] = tok;
     }
     return wsUri.replace(queryParameters: qp);
@@ -911,8 +925,7 @@ class ChatService {
   }) async {
     final h = <String, String>{};
     if (json) h['content-type'] = 'application/json';
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie');
+    final cookie = await getSessionCookie();
     if (cookie != null && cookie.isNotEmpty) {
       h['sa_cookie'] = cookie;
     }
@@ -931,9 +944,8 @@ class ChatService {
 
   Uri _uri(String path, [Map<String, String>? qp]) {
     final base = _base;
-    final prefix = base.endsWith('/')
-        ? base.substring(0, base.length - 1)
-        : base;
+    final prefix =
+        base.endsWith('/') ? base.substring(0, base.length - 1) : base;
     final full = '$prefix$path';
     return Uri.parse(full).replace(queryParameters: qp);
   }
@@ -952,6 +964,7 @@ class ChatLocalStore {
   static const _groupVoicePlayedPrefix = 'chat.grp.voice.played.';
   static const _draftsKey = 'chat.drafts.v1';
   static const _deviceTokenPrefix = 'chat.device.token.';
+  static const _secureFallbackPrefix = 'chat.sec.fallback.';
   static const int _voicePlayedMax = 200;
 
   Future<ChatIdentity?> loadIdentity() async {
@@ -974,15 +987,13 @@ class ChatLocalStore {
     final did = deviceId.trim();
     final tok = token.trim();
     if (did.isEmpty || tok.isEmpty) return;
-    final sec = _sec();
-    await sec.write(key: '$_deviceTokenPrefix$did', value: tok);
+    await _secureWrite('$_deviceTokenPrefix$did', tok);
   }
 
   Future<String?> loadDeviceAuthToken(String deviceId) async {
     final did = deviceId.trim();
     if (did.isEmpty) return null;
-    final sec = _sec();
-    final value = await sec.read(key: '$_deviceTokenPrefix$did');
+    final value = await _secureRead('$_deviceTokenPrefix$did');
     final token = (value ?? '').trim();
     if (token.isEmpty) return null;
     return token;
@@ -991,8 +1002,7 @@ class ChatLocalStore {
   Future<void> deleteDeviceAuthToken(String deviceId) async {
     final did = deviceId.trim();
     if (did.isEmpty) return;
-    final sec = _sec();
-    await sec.delete(key: '$_deviceTokenPrefix$did');
+    await _secureDelete('$_deviceTokenPrefix$did');
   }
 
   Future<ChatContact?> loadPeer() async {
@@ -1133,8 +1143,7 @@ class ChatLocalStore {
   Future<Set<String>> loadGroupVoicePlayed(String groupId) async {
     if (groupId.isEmpty) return <String>{};
     final sp = await SharedPreferences.getInstance();
-    final list =
-        sp.getStringList('$_groupVoicePlayedPrefix$groupId') ??
+    final list = sp.getStringList('$_groupVoicePlayedPrefix$groupId') ??
         const <String>[];
     return list.where((id) => id.trim().isNotEmpty).toSet();
   }
@@ -1441,17 +1450,15 @@ class ChatLocalStore {
   }
 
   Future<
-    ({
-      bool enabled,
-      bool preview,
-      bool sound,
-      bool vibrate,
-      bool dnd,
-      int dndStart,
-      int dndEnd,
-    })
-  >
-  loadNotifyConfig() async {
+      ({
+        bool enabled,
+        bool preview,
+        bool sound,
+        bool vibrate,
+        bool dnd,
+        int dndStart,
+        int dndEnd,
+      })> loadNotifyConfig() async {
     final sp = await SharedPreferences.getInstance();
     return (
       enabled: sp.getBool(_notifyEnabledKey) ?? true,
@@ -1477,8 +1484,7 @@ class ChatLocalStore {
   String _verKey(String peerId) => 'chat.ver.${peerId}';
 
   Future<Map<String, String>> loadSessionKeys() async {
-    final sec = _sec();
-    final raw = await sec.read(key: _sessionKeyMap);
+    final raw = await _secureRead(_sessionKeyMap);
     if (raw == null || raw.isEmpty) return {};
     final map = (jsonDecode(raw) as Map<String, Object?>);
     return map.map((k, v) => MapEntry(k, v.toString()));
@@ -1486,32 +1492,27 @@ class ChatLocalStore {
 
   Future<String?> loadGroupKey(String groupId) async {
     if (groupId.isEmpty) return null;
-    final sec = _sec();
-    return await sec.read(key: '$_groupKeyPrefix$groupId');
+    return await _secureRead('$_groupKeyPrefix$groupId');
   }
 
   Future<void> saveGroupKey(String groupId, String keyB64) async {
     if (groupId.isEmpty || keyB64.isEmpty) return;
-    final sec = _sec();
-    await sec.write(key: '$_groupKeyPrefix$groupId', value: keyB64);
+    await _secureWrite('$_groupKeyPrefix$groupId', keyB64);
   }
 
   Future<void> deleteGroupKey(String groupId) async {
     if (groupId.isEmpty) return;
-    final sec = _sec();
-    await sec.delete(key: '$_groupKeyPrefix$groupId');
+    await _secureDelete('$_groupKeyPrefix$groupId');
   }
 
   Future<void> saveSessionKey(String peerId, String keyB64) async {
     final map = await loadSessionKeys();
     map[peerId] = keyB64;
-    final sec = _sec();
-    await sec.write(key: _sessionKeyMap, value: jsonEncode(map));
+    await _secureWrite(_sessionKeyMap, jsonEncode(map));
   }
 
   Future<Map<String, Map<String, Object>>> loadChains() async {
-    final sec = _sec();
-    final raw = await sec.read(key: _chainMap);
+    final raw = await _secureRead(_chainMap);
     if (raw == null || raw.isEmpty) return {};
     final decoded = (jsonDecode(raw) as Map<String, Object?>);
     return decoded.map(
@@ -1525,25 +1526,21 @@ class ChatLocalStore {
   Future<void> saveChain(String peerId, Map<String, Object> state) async {
     final map = await loadChains();
     map[peerId] = state;
-    final sec = _sec();
-    await sec.write(key: _chainMap, value: jsonEncode(map));
+    await _secureWrite(_chainMap, jsonEncode(map));
   }
 
   Future<Map<String, Object>> loadRatchet(String peerId) async {
-    final sec = _sec();
-    final raw = await sec.read(key: '$_ratchetMap.$peerId');
+    final raw = await _secureRead('$_ratchetMap.$peerId');
     if (raw == null || raw.isEmpty) return {};
     return jsonDecode(raw) as Map<String, Object>;
   }
 
   Future<void> saveRatchet(String peerId, Map<String, Object> state) async {
-    final sec = _sec();
-    await sec.write(key: '$_ratchetMap.$peerId', value: jsonEncode(state));
+    await _secureWrite('$_ratchetMap.$peerId', jsonEncode(state));
   }
 
   Future<void> deleteRatchet(String peerId) async {
-    final sec = _sec();
-    await sec.delete(key: '$_ratchetMap.$peerId');
+    await _secureDelete('$_ratchetMap.$peerId');
   }
 
   static const _notifyPreviewKey = 'chat.notify.preview';
@@ -1560,16 +1557,98 @@ class ChatLocalStore {
   static const _ratchetMap = 'chat.ratchet';
   static const _groupKeyPrefix = 'chat.grp.key.';
 
+  bool _allowLegacySecureFallback() {
+    if (kReleaseMode) {
+      return const bool.fromEnvironment(
+        'ALLOW_LEGACY_CHAT_SECURE_FALLBACK_IN_RELEASE',
+        defaultValue: false,
+      );
+    }
+    return const bool.fromEnvironment(
+      'ALLOW_LEGACY_CHAT_SECURE_FALLBACK',
+      defaultValue: true,
+    );
+  }
+
+  bool _useSecureStore() {
+    if (kIsWeb) return true;
+    final isDesktop = defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux;
+    if (!isDesktop) return true;
+    if (kReleaseMode) {
+      return const bool.fromEnvironment(
+        'ENABLE_DESKTOP_SECURE_STORAGE',
+        defaultValue: true,
+      );
+    }
+    return const bool.fromEnvironment(
+      'ENABLE_DESKTOP_SECURE_STORAGE',
+      defaultValue: false,
+    );
+  }
+
+  String _legacySecureKey(String key) => '$_secureFallbackPrefix$key';
+
+  Future<String?> _secureRead(String key) async {
+    if (_useSecureStore()) {
+      try {
+        return await _sec().read(key: key);
+      } catch (_) {}
+    }
+    if (!_allowLegacySecureFallback()) return null;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      return sp.getString(_legacySecureKey(key));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _secureWrite(String key, String value) async {
+    if (_useSecureStore()) {
+      try {
+        await _sec().write(key: key, value: value);
+        if (_allowLegacySecureFallback()) {
+          try {
+            final sp = await SharedPreferences.getInstance();
+            await sp.remove(_legacySecureKey(key));
+          } catch (_) {}
+        }
+        return;
+      } catch (_) {}
+    }
+    if (!_allowLegacySecureFallback()) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString(_legacySecureKey(key), value);
+    } catch (_) {}
+  }
+
+  Future<void> _secureDelete(String key) async {
+    if (_useSecureStore()) {
+      try {
+        await _sec().delete(key: key);
+      } catch (_) {}
+    }
+    if (!_allowLegacySecureFallback()) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove(_legacySecureKey(key));
+    } catch (_) {}
+  }
+
   FlutterSecureStorage _sec() => const FlutterSecureStorage(
-    aOptions: AndroidOptions(
-      encryptedSharedPreferences: true,
-      resetOnError: true,
-      // prefer hardware-backed when available
-      sharedPreferencesName: 'chat_secure_store',
-    ),
-    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
-    mOptions: MacOsOptions(accessibility: KeychainAccessibility.first_unlock),
-  );
+        aOptions: AndroidOptions(
+          encryptedSharedPreferences: true,
+          resetOnError: true,
+          // prefer hardware-backed when available
+          sharedPreferencesName: 'chat_secure_store',
+        ),
+        iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+        mOptions:
+            MacOsOptions(accessibility: KeychainAccessibility.first_unlock),
+      );
 }
 
 class ChatCallStore {

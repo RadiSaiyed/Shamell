@@ -1,8 +1,9 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'moments_page.dart';
@@ -42,8 +43,7 @@ class _OfficialMomentsCommentsPageState
       headers['content-type'] = 'application/json';
     }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -93,7 +93,7 @@ class _OfficialMomentsCommentsPageState
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }

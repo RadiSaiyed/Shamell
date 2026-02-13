@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'http_error.dart';
 import 'l10n.dart';
 
 class MiniProgramRegisterPage extends StatefulWidget {
@@ -63,8 +65,7 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
   Future<Map<String, String>> _hdr() async {
     final headers = <String, String>{'content-type': 'application/json'};
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -125,14 +126,11 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
         body: jsonEncode(payload),
       );
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        String msg =
-            resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
-        try {
-          final decoded = jsonDecode(resp.body);
-          if (decoded is Map && decoded['detail'] != null) {
-            msg = decoded['detail'].toString();
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        );
         if (!mounted) return;
         setState(() {
           _submitting = false;
@@ -155,7 +153,7 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _error = e.toString();
+        _error = l.isArabic ? 'تعذّر إرسال الطلب.' : 'Could not submit request.';
       });
     }
   }
@@ -179,8 +177,8 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
             children: [
               Text(
                 isArabic
-                    ? 'سجّل برنامجك المصغر على نمط WeChat. يبدأ الإدخال كـ "مسودة" ويمكن لفريق Shamell مراجعته وتفعيله لاحقاً.'
-                    : 'Register your WeChat‑style mini‑program. It starts as a draft and can be reviewed and activated by the Shamell team.',
+                    ? 'سجّل برنامجك المصغر على نمط Shamell. يبدأ الإدخال كـ "مسودة" ويمكن لفريق Shamell مراجعته وتفعيله لاحقاً.'
+                    : 'Register your Shamell‑style mini‑program. It starts as a draft and can be reviewed and activated by the Shamell team.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .80),
                 ),

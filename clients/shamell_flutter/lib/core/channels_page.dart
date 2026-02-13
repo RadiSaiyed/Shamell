@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -13,8 +14,9 @@ import 'mini_apps_config.dart';
 import 'call_signaling.dart';
 import '../mini_apps/payments/payments_shell.dart';
 import 'mini_programs_my_page_insights.dart' show MiniProgramInsightChip;
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 import 'mini_program_runtime.dart';
+import 'http_error.dart';
 
 Future<Map<String, String>> _hdrChannels({bool json = false}) async {
   final headers = <String, String>{};
@@ -22,8 +24,7 @@ Future<Map<String, String>> _hdrChannels({bool json = false}) async {
     headers['content-type'] = 'application/json';
   }
   try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
+    final cookie = await getSessionCookie() ?? '';
     if (cookie.isNotEmpty) {
       headers['sa_cookie'] = cookie;
     }
@@ -45,7 +46,7 @@ class ChannelsPage extends StatefulWidget {
   // frame to mimic a "Go live" action.
   final bool openLiveComposerOnStart;
   // Optional: start with the "Live only"
-  // filter enabled, WeChat-style live tab.
+  // filter enabled, Shamell-style live tab.
   final bool initialLiveOnly;
 
   const ChannelsPage({
@@ -96,8 +97,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       headers['content-type'] = 'application/json';
     }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookie() ?? '';
       if (cookie.isNotEmpty) {
         headers['sa_cookie'] = cookie;
       }
@@ -201,8 +201,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                         ),
                         subtitle: Text(
                           l.isArabic
-                              ? 'اجعل هذا المقطع بثًا مباشرًا في القنوات، بأسلوب WeChat Channels.'
-                              : 'Mark this as a live session in Channels, WeChat‑Channels style.',
+                              ? 'اجعل هذا المقطع بثًا مباشرًا في القنوات، بأسلوب Shamell Channels.'
+                              : 'Mark this as a live session in Channels, Shamell‑Channels style.',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface
                                 .withValues(alpha: .70),
@@ -340,7 +340,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                     } catch (e) {
                                       setModalState(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error = sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -390,7 +390,11 @@ class _ChannelsPageState extends State<ChannelsPage> {
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
           _loading = false;
         });
         return;
@@ -415,7 +419,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -629,8 +633,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                       const SizedBox(height: 6),
                       Text(
                         l2.isArabic
-                            ? 'الهدايا عبارة عن عملات افتراضية صغيرة لدعم المقاطع، بأسلوب WeChat‑Channels.'
-                            : 'Gifts are small virtual coins to support clips, WeChat‑Channels style.',
+                            ? 'الهدايا عبارة عن عملات افتراضية صغيرة لدعم المقاطع، بأسلوب Shamell‑Channels.'
+                            : 'Gifts are small virtual coins to support clips, Shamell‑Channels style.',
                         style: theme.textTheme.bodySmall?.copyWith(
                           fontSize: 11,
                           color: theme.colorScheme.onSurface
@@ -699,7 +703,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                   ? null
                                   : () => Navigator.of(ctx2).pop(),
                               child: Text(
-                                l2.mirsaalDialogCancel,
+                                l2.shamellDialogCancel,
                               ),
                             ),
                           ),
@@ -796,7 +800,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                       } catch (e) {
                                         setModalState(() {
                                           submitting = false;
-                                          error = e.toString();
+                                          error = sanitizeExceptionForUi(error: e);
                                         });
                                       }
                                     },
@@ -1081,7 +1085,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
     Widget body;
     if (_loading) {
@@ -1162,7 +1166,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
         }
         indices.add(i);
       }
-      // Lightweight WeChat-like "Channel insights" for the current view –
+      // Lightweight Shamell-like "Channel insights" for the current view –
       // summarises clips, views, gifts and how many services are hot in Moments.
       int clipCount = indices.length;
       int totalViews = 0;
@@ -1217,8 +1221,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: Text(
                 l.isArabic
-                    ? 'اكتشف مقاطع قصيرة من الخدمات الرسمية القريبة منك، مرتبة حسب التفاعل والرواج في اللحظات.'
-                    : 'Discover short clips from nearby official services, ranked by engagement and how hot they are in Moments.',
+                    ? 'اكتشف مقاطع قصيرة من الخدمات الرسمية، مرتبة حسب التفاعل والرواج في اللحظات.'
+                    : 'Discover short clips from official services, ranked by engagement and how hot they are in Moments.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .75),
                 ),
@@ -3001,8 +3005,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                   const SizedBox(height: 8),
                   Text(
                     isAr
-                        ? 'هذه الأرقام تقريبية وتعكس تطور هذا المقطع في القنوات واللحظات، على غرار لوحة منشئي المحتوى في WeChat Channels.'
-                        : 'Numbers are approximate and reflect how this clip performs in Channels and Moments, similar to creator analytics in WeChat Channels.',
+                        ? 'هذه الأرقام تقريبية وتعكس تطور هذا المقطع في القنوات واللحظات، على غرار لوحة منشئي المحتوى في Shamell Channels.'
+                        : 'Numbers are approximate and reflect how this clip performs in Channels and Moments, similar to creator analytics in Shamell Channels.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),

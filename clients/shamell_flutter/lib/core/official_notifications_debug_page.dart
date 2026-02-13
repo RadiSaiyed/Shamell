@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -73,7 +74,7 @@ class _OfficialNotificationsDebugPageState
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     } finally {
       if (mounted) {

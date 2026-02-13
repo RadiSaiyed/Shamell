@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,11 +25,11 @@ import 'ui_kit.dart';
 import 'glass.dart';
 import 'chat/chat_models.dart';
 import 'chat/chat_service.dart';
-import 'chat/threema_chat_page.dart';
-import 'wechat_ui.dart';
-import 'wechat_group_chat_info_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'shamell_ui.dart';
+import 'shamell_group_chat_info_page.dart';
 
-enum _WeChatGroupComposerPanel { none, stickers, more }
+enum _ShamellGroupComposerPanel { none, stickers, more }
 
 class GroupChatsPage extends StatefulWidget {
   final String baseUrl;
@@ -77,7 +78,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
         _groups = await _service.listGroups(deviceId: me.id);
       }
     } catch (e) {
-      _error = e.toString();
+      _error = sanitizeExceptionForUi(error: e);
       _groups = const <ChatGroup>[];
     }
     if (!mounted) return;
@@ -115,7 +116,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -143,7 +144,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     final surface = theme.colorScheme.surface;
     final fieldFill = isDark
         ? theme.colorScheme.surfaceContainerHighest
-        : WeChatPalette.searchFill;
+        : ShamellPalette.searchFill;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -209,7 +210,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                 const SizedBox(height: 12),
                 FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: WeChatPalette.green,
+                    backgroundColor: ShamellPalette.green,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
@@ -235,7 +236,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
     Icon chevron() => Icon(
           l.isArabic ? Icons.chevron_left : Icons.chevron_right,
@@ -317,18 +318,18 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 const SizedBox(height: 8),
-                WeChatSearchBar(
+                ShamellSearchBar(
                   hintText: l.isArabic ? 'بحث' : 'Search',
                   controller: _searchCtrl,
                   onChanged: (v) => setState(() => _search = v),
                 ),
-                WeChatSection(
+                ShamellSection(
                   children: [
                     ListTile(
                       dense: true,
-                      leading: const WeChatLeadingIcon(
+                      leading: const ShamellLeadingIcon(
                         icon: Icons.group_add_outlined,
-                        background: WeChatPalette.green,
+                        background: ShamellPalette.green,
                       ),
                       title:
                           Text(l.isArabic ? 'مجموعة جديدة' : 'New group chat'),
@@ -364,7 +365,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                     ),
                   )
                 else
-                  WeChatSection(
+                  ShamellSection(
                     margin: const EdgeInsets.only(top: 12, bottom: 12),
                     children: [
                       for (final g in groups) groupTile(g),
@@ -443,13 +444,13 @@ class _MentionCandidate {
   const _MentionCandidate({required this.id, required this.label});
 }
 
-class _WeChatGroupMessageMenuActionSpec {
+class _ShamellGroupMessageMenuActionSpec {
   final IconData icon;
   final String label;
   final Color color;
   final VoidCallback onTap;
 
-  const _WeChatGroupMessageMenuActionSpec({
+  const _ShamellGroupMessageMenuActionSpec({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -503,11 +504,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
   String? _attachedMime;
   String? _attachedName;
 
-  static const double _wechatMorePanelHeight = 276.0;
-  _WeChatGroupComposerPanel _composerPanel = _WeChatGroupComposerPanel.none;
-  bool _wechatVoiceMode = false;
-  final PageController _wechatMorePanelCtrl = PageController();
-  int _wechatMorePanelPage = 0;
+  static const double _shamellMorePanelHeight = 276.0;
+  _ShamellGroupComposerPanel _composerPanel = _ShamellGroupComposerPanel.none;
+  bool _shamellVoiceMode = false;
+  final PageController _shamellMorePanelCtrl = PageController();
+  int _shamellMorePanelPage = 0;
 
   bool _recordingVoice = false;
   DateTime? _voiceStart;
@@ -702,7 +703,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     return _shortId(raw);
   }
 
-  Widget _wechatGroupMessageAvatar({
+  Widget _shamellGroupMessageAvatar({
     required String senderId,
     required bool incoming,
     required L10n l,
@@ -899,7 +900,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final base = baseStyle ??
         theme.textTheme.bodyMedium ??
         const TextStyle(fontSize: 14);
-    const mentionBlueLight = Color(0xFF576B95); // WeChat-like mention color
+    const mentionBlueLight = Color(0xFF576B95); // Shamell-like mention color
     const mentionBlueDark = Color(0xFF93C5FD);
     final mentionColor = theme.brightness == Brightness.dark
         ? mentionBlueDark
@@ -1367,7 +1368,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     _msgCtrl.removeListener(_onMessageChanged);
     _msgCtrl.dispose();
     _msgFocus.dispose();
-    _wechatMorePanelCtrl.dispose();
+    _shamellMorePanelCtrl.dispose();
     _scrollCtrl.removeListener(_onScrollChanged);
     _scrollCtrl.dispose();
     try {
@@ -1515,16 +1516,16 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   String _mentionPreviewText(ChatGroupMessage m, L10n l) {
     final kind = (m.kind ?? '').toLowerCase();
-    if (kind == 'voice') return l.mirsaalPreviewVoice;
+    if (kind == 'voice') return l.shamellPreviewVoice;
     final mime = (m.attachmentMime ?? '').toLowerCase();
     if (kind == 'image' || mime.startsWith('image/')) {
       final caption = m.text.trim();
       return caption.isNotEmpty
-          ? '${l.mirsaalPreviewImage} $caption'
-          : l.mirsaalPreviewImage;
+          ? '${l.shamellPreviewImage} $caption'
+          : l.shamellPreviewImage;
     }
     final text = m.text.trim();
-    return text.isNotEmpty ? text : l.mirsaalPreviewUnknown;
+    return text.isNotEmpty ? text : l.shamellPreviewUnknown;
   }
 
   String _formatMentionsForPreview(String text, L10n l) {
@@ -1714,7 +1715,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       return;
     }
 
-    const wechatUnreadRed = Color(0xFFFA5151);
+    const shamellUnreadRed = Color(0xFFFA5151);
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -1807,7 +1808,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: wechatUnreadRed,
+                                  color: shamellUnreadRed,
                                   borderRadius: BorderRadius.circular(999),
                                 ),
                                 child: Text(
@@ -1865,7 +1866,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final count = _pendingNewMessageCount;
     if (count <= 0 || _isNearBottom) return const SizedBox.shrink();
     final isDark = theme.brightness == Brightness.dark;
-    const wechatGreen = Color(0xFF07C160);
+    const shamellGreen = Color(0xFF07C160);
     final labelCount = count > 99 ? '99+' : '$count';
     final label = l.isArabic
         ? (count == 1 ? '$labelCount رسالة جديدة' : '$labelCount رسائل جديدة')
@@ -1902,7 +1903,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                 ),
               ),
               const SizedBox(width: 6),
-              Icon(Icons.keyboard_arrow_down, size: 18, color: wechatGreen),
+              Icon(Icons.keyboard_arrow_down, size: 18, color: shamellGreen),
             ],
           ),
         ),
@@ -1917,7 +1918,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       alpha: theme.brightness == Brightness.dark ? .86 : .94,
     );
     final fg = theme.colorScheme.onSurface.withValues(alpha: .78);
-    const wechatUnreadRed = Color(0xFFFA5151);
+    const shamellUnreadRed = Color(0xFFFA5151);
     final showCount = count > 1;
     final label = count > 99 ? '99+' : '$count';
     return Material(
@@ -1952,7 +1953,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 5, vertical: 1),
                         decoration: BoxDecoration(
-                          color: wechatUnreadRed,
+                          color: shamellUnreadRed,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
@@ -1968,7 +1969,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                         width: 8,
                         height: 8,
                         decoration: const BoxDecoration(
-                          color: wechatUnreadRed,
+                          color: shamellUnreadRed,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -1982,7 +1983,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   Widget _buildNewMessagesMarker(ThemeData theme, L10n l) {
     final label = _newMessagesCountAtOpen <= 1
-        ? l.mirsaalNewMessageTitle
+        ? l.shamellNewMessageTitle
         : (l.isArabic
             ? '${_newMessagesCountAtOpen} رسائل جديدة'
             : '${_newMessagesCountAtOpen} new messages');
@@ -2107,7 +2108,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       await Share.shareXFiles([file]);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -2152,10 +2153,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
     } catch (_) {}
   }
 
-  Future<void> _showWeChatGroupMessageLongPressMenu({
+  Future<void> _showShamellGroupMessageLongPressMenu({
     required Rect bubbleRect,
     required bool incoming,
-    required List<_WeChatGroupMessageMenuActionSpec> actions,
+    required List<_ShamellGroupMessageMenuActionSpec> actions,
     required ValueChanged<String> onReaction,
   }) async {
     final overlay = Overlay.of(context);
@@ -2439,19 +2440,19 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final shareLabel = l.isArabic ? 'مشاركة' : 'Share';
     final isMe = _deviceId != null && m.senderId == _deviceId;
 
-    final actions = <_WeChatGroupMessageMenuActionSpec>[];
+    final actions = <_ShamellGroupMessageMenuActionSpec>[];
     if (canCopyText) {
       actions.add(
-        _WeChatGroupMessageMenuActionSpec(
+        _ShamellGroupMessageMenuActionSpec(
           icon: Icons.copy_outlined,
-          label: l.mirsaalCopyMessage,
+          label: l.shamellCopyMessage,
           onTap: () {
             unawaited(() async {
               final text = _formatMentionsForPreview(rawText, l);
               await Clipboard.setData(ClipboardData(text: text));
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(l.mirsaalMessageCopiedSnack)),
+                SnackBar(content: Text(l.shamellMessageCopiedSnack)),
               );
             }());
           },
@@ -2460,7 +2461,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
     if (canShareAttachment) {
       actions.add(
-        _WeChatGroupMessageMenuActionSpec(
+        _ShamellGroupMessageMenuActionSpec(
           icon: Icons.ios_share_outlined,
           label: shareLabel,
           onTap: () {
@@ -2483,11 +2484,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
     if (isVoice) {
       actions.add(
-        _WeChatGroupMessageMenuActionSpec(
+        _ShamellGroupMessageMenuActionSpec(
           icon: _voiceUseSpeaker ? Icons.volume_up : Icons.hearing,
           label: _voiceUseSpeaker
-              ? l.mirsaalVoiceSpeakerMode
-              : l.mirsaalVoiceEarpieceMode,
+              ? l.shamellVoiceSpeakerMode
+              : l.shamellVoiceEarpieceMode,
           onTap: () {
             unawaited(() async {
               if (!mounted) return;
@@ -2501,9 +2502,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
       );
     }
     actions.add(
-      _WeChatGroupMessageMenuActionSpec(
+      _ShamellGroupMessageMenuActionSpec(
         icon: Icons.delete_outline,
-        label: l.mirsaalDeleteForMe,
+        label: l.shamellDeleteForMe,
         color: const Color(0xFFFA5151),
         onTap: () => unawaited(_deleteGroupMessageLocal(m)),
       ),
@@ -2527,7 +2528,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
           final tl = bubbleObj.localToGlobal(Offset.zero, ancestor: overlayBox);
           bubbleRect = tl & bubbleObj.size;
         }
-        await _showWeChatGroupMessageLongPressMenu(
+        await _showShamellGroupMessageLongPressMenu(
           bubbleRect: bubbleRect,
           incoming: !isMe,
           actions: actions,
@@ -2553,7 +2554,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  l.mirsaalMessageActionsTitle,
+                  l.shamellMessageActionsTitle,
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -2585,14 +2586,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     dense: true,
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.copy, size: 20),
-                    title: Text(l.mirsaalCopyMessage),
+                    title: Text(l.shamellCopyMessage),
                     onTap: () async {
                       final text = _formatMentionsForPreview(rawText, l);
                       await Clipboard.setData(ClipboardData(text: text));
                       if (!mounted) return;
                       Navigator.of(ctx).pop();
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text(l.mirsaalMessageCopiedSnack)),
+                        SnackBar(content: Text(l.shamellMessageCopiedSnack)),
                       );
                     },
                   ),
@@ -2627,8 +2628,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     ),
                     title: Text(
                       _voiceUseSpeaker
-                          ? l.mirsaalVoiceSpeakerMode
-                          : l.mirsaalVoiceEarpieceMode,
+                          ? l.shamellVoiceSpeakerMode
+                          : l.shamellVoiceEarpieceMode,
                     ),
                     onTap: () async {
                       Navigator.of(ctx).pop();
@@ -2648,7 +2649,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     color: theme.colorScheme.error,
                   ),
                   title: Text(
-                    l.mirsaalDeleteForMe,
+                    l.shamellDeleteForMe,
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                   onTap: () async {
@@ -2661,7 +2662,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   alignment: Alignment.centerRight,
                   child: TextButton(
                     onPressed: () => Navigator.of(ctx).pop(),
-                    child: Text(l.mirsaalDialogCancel),
+                    child: Text(l.shamellDialogCancel),
                   ),
                 ),
               ],
@@ -2799,7 +2800,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         _listenGroupWs(me.id);
       }
     } catch (e) {
-      _error = e.toString();
+      _error = sanitizeExceptionForUi(error: e);
       _messages = const <ChatGroupMessage>[];
       _playedVoiceMessageIds = <String>{};
       _newMessagesAnchorMessageId = null;
@@ -2962,7 +2963,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           });
                         } catch (e) {
                           if (!mounted) return;
-                          setState(() => _error = e.toString());
+                          setState(() => _error = sanitizeExceptionForUi(error: e));
                         }
                       },
                     ),
@@ -3110,7 +3111,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -3269,12 +3270,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  void _toggleComposerPanel(_WeChatGroupComposerPanel panel) {
+  void _toggleComposerPanel(_ShamellGroupComposerPanel panel) {
     if (_recordingVoice) return;
     if (_composerPanel == panel) {
       setState(() {
-        _composerPanel = _WeChatGroupComposerPanel.none;
-        _wechatVoiceMode = false;
+        _composerPanel = _ShamellGroupComposerPanel.none;
+        _shamellVoiceMode = false;
       });
       try {
         _msgFocus.requestFocus();
@@ -3284,14 +3285,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
     setState(() {
       _composerPanel = panel;
-      _wechatVoiceMode = false;
-      if (panel == _WeChatGroupComposerPanel.more) {
-        _wechatMorePanelPage = 0;
+      _shamellVoiceMode = false;
+      if (panel == _ShamellGroupComposerPanel.more) {
+        _shamellMorePanelPage = 0;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           try {
-            if (_wechatMorePanelCtrl.hasClients) {
-              _wechatMorePanelCtrl.jumpToPage(0);
+            if (_shamellMorePanelCtrl.hasClients) {
+              _shamellMorePanelCtrl.jumpToPage(0);
             }
           } catch (_) {}
         });
@@ -3328,7 +3329,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       } catch (_) {}
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -3362,7 +3363,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       } catch (_) {}
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -3451,7 +3452,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       } catch (_) {}
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -3644,7 +3645,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           width: double.infinity,
                           child: OutlinedButton(
                             onPressed: () => Navigator.of(ctx).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                       ],
@@ -3731,9 +3732,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
     ];
 
     return Container(
-      height: _wechatMorePanelHeight,
+      height: _shamellMorePanelHeight,
       decoration: BoxDecoration(
-        color: isDark ? theme.colorScheme.surface : WeChatPalette.background,
+        color: isDark ? theme.colorScheme.surface : ShamellPalette.background,
         border: Border(
           top: BorderSide(
             color: theme.dividerColor.withValues(alpha: isDark ? .18 : .38),
@@ -3808,7 +3809,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     void close() {
       if (!mounted) return;
       setState(() {
-        _composerPanel = _WeChatGroupComposerPanel.none;
+        _composerPanel = _ShamellGroupComposerPanel.none;
       });
     }
 
@@ -3841,7 +3842,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final actions = <({IconData icon, String label, VoidCallback onTap})>[
       (
         icon: Icons.photo_outlined,
-        label: l.mirsaalAttachImage,
+        label: l.shamellAttachImage,
         onTap: () {
           close();
           unawaited(_pickAttachment());
@@ -3857,7 +3858,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       ),
       (
         icon: Icons.videocam_outlined,
-        label: l.mirsaalInternetCall,
+        label: l.shamellInternetCall,
         onTap: notSupported,
       ),
       (
@@ -3867,7 +3868,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       ),
       (
         icon: Icons.location_on_outlined,
-        label: l.mirsaalSendLocation,
+        label: l.shamellSendLocation,
         onTap: () {
           close();
           unawaited(_sendCurrentLocation());
@@ -3901,7 +3902,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
     final pageCount = max(1, (actions.length / perPage).ceil());
     final clampedPage =
-        _wechatMorePanelPage.clamp(0, max(0, pageCount - 1)).toInt();
+        _shamellMorePanelPage.clamp(0, max(0, pageCount - 1)).toInt();
 
     Widget page(int pageIdx) {
       final start = pageIdx * perPage;
@@ -3923,9 +3924,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
 
     return Container(
-      height: _wechatMorePanelHeight,
+      height: _shamellMorePanelHeight,
       decoration: BoxDecoration(
-        color: isDark ? theme.colorScheme.surface : WeChatPalette.background,
+        color: isDark ? theme.colorScheme.surface : ShamellPalette.background,
         border: Border(
           top: BorderSide(
             color: theme.dividerColor.withValues(alpha: isDark ? .18 : .38),
@@ -3937,12 +3938,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
         children: [
           Expanded(
             child: PageView.builder(
-              controller: _wechatMorePanelCtrl,
+              controller: _shamellMorePanelCtrl,
               itemCount: pageCount,
               physics: const BouncingScrollPhysics(),
               onPageChanged: (idx) {
                 setState(() {
-                  _wechatMorePanelPage = idx;
+                  _shamellMorePanelPage = idx;
                 });
               },
               itemBuilder: (_, pageIdx) => page(pageIdx),
@@ -3984,7 +3985,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
     } catch (e) {
       final l = L10n.of(context);
-      setState(() => _error = '${l.mirsaalAttachFailed}: $e');
+      setState(() => _error = '${l.shamellAttachFailed}: $e');
     }
   }
 
@@ -4020,7 +4021,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         });
       });
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4028,13 +4029,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
     if (!_recordingVoice) return;
     final start = _voiceStart ?? DateTime.now();
     final elapsedMs = DateTime.now().difference(start).inMilliseconds;
-    // Very short taps should behave like WeChat: cancel instead of sending.
+    // Very short taps should behave like Shamell: cancel instead of sending.
     if (elapsedMs < 800) {
       final l = L10n.of(context);
       await _cancelVoiceRecord();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l.mirsaalVoiceTooShort)),
+        SnackBar(content: Text(l.shamellVoiceTooShort)),
       );
       return;
     }
@@ -4080,7 +4081,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         await ChatLocalStore().saveGroupMessages(widget.groupId, _messages);
       } catch (_) {}
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4145,7 +4146,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -4190,7 +4191,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
       await _audioPlayer.play();
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4238,7 +4239,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
       unawaited(_resolveMissingMemberNames(members));
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4319,7 +4320,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               );
                               await _refreshMembers();
                             } catch (e) {
-                              setState(() => _error = e.toString());
+                              setState(() => _error = sanitizeExceptionForUi(error: e));
                             }
                           },
                           child: Text(
@@ -4537,7 +4538,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           ),
                           TextButton(
                             onPressed: () => Navigator.of(ctx).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                           const SizedBox(width: 8),
                           PrimaryButton(
@@ -4563,7 +4564,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                       } catch (_) {}
                                       await _refreshMembers();
                                     } catch (e) {
-                                      setState(() => _error = e.toString());
+                                      setState(() => _error = sanitizeExceptionForUi(error: e));
                                     }
                                   },
                           ),
@@ -4669,14 +4670,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
         .map((m) {
           final id = m.deviceId.trim();
           if (id.isEmpty) return null;
-          return WeChatGroupMemberDisplay(
+          return ShamellGroupMemberDisplay(
             id: id,
             name: _displayNameForDeviceId(id, l),
             isAdmin: m.role == 'admin',
             isMe: myId.isNotEmpty && id == myId,
           );
         })
-        .whereType<WeChatGroupMemberDisplay>()
+        .whereType<ShamellGroupMemberDisplay>()
         .toList();
 
     final name =
@@ -4685,7 +4686,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
-        builder: (_) => WeChatGroupChatInfoPage(
+        builder: (_) => ShamellGroupChatInfoPage(
           groupId: widget.groupId,
           groupName: name,
           avatarBytes: avatarBytes,
@@ -4720,7 +4721,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       if (!mounted) return;
       Navigator.of(context).pop();
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4733,7 +4734,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         ? theme.colorScheme.surfaceContainerHighest
             .withValues(alpha: isDark ? .72 : .96)
         : _chatThemeKey == 'green'
-            ? WeChatPalette.green.withValues(alpha: isDark ? .14 : .08)
+            ? ShamellPalette.green.withValues(alpha: isDark ? .14 : .08)
             : (isDark ? theme.colorScheme.surface : const Color(0xFFEDEDED));
     final newMessagesIndex = (_newMessagesAnchorMessageId != null &&
             _newMessagesAnchorMessageId!.isNotEmpty &&
@@ -4744,9 +4745,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
         newMessagesIndex != -1 && _newMessagesCountAtOpen > 0;
     final showJumpToBottom =
         _pendingNewMessageCount <= 0 && !_isNearBottom && _messages.isNotEmpty;
-    final panelExtra = _composerPanel == _WeChatGroupComposerPanel.none
+    final panelExtra = _composerPanel == _ShamellGroupComposerPanel.none
         ? 0.0
-        : _wechatMorePanelHeight;
+        : _shamellMorePanelHeight;
     final mentionBottomBase =
         (_pendingNewMessageCount > 0 || showJumpToBottom) ? 148.0 : 96.0;
     final mentionBottom = mentionBottomBase + panelExtra;
@@ -4836,7 +4837,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         );
         content = Semantics(
           button: true,
-          label: l.mirsaalVoiceMessageLabel(secsLabel),
+          label: l.shamellVoiceMessageLabel(secsLabel),
           child: GestureDetector(
             onTap: () => _toggleVoicePlayback(m),
             child: SizedBox(
@@ -4902,7 +4903,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
               ),
               onPressed: () => _openLocationOnMap(lat, lon),
               icon: const Icon(Icons.map_outlined, size: 16),
-              label: Text(l.mirsaalLocationOpenInMap),
+              label: Text(l.shamellLocationOpenInMap),
             ),
           ],
         );
@@ -4919,7 +4920,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
             if (contactId.isEmpty) return;
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => ThreemaChatPage(
+                builder: (_) => ShamellChatPage(
                   baseUrl: widget.baseUrl,
                   initialPeerId: contactId,
                 ),
@@ -5084,7 +5085,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
       final incoming = !isMe;
       final maxBubbleWidth = MediaQuery.of(context).size.width * 0.66;
-      final avatar = _wechatGroupMessageAvatar(
+      final avatar = _shamellGroupMessageAvatar(
         senderId: m.senderId,
         incoming: incoming,
         l: l,
@@ -5285,12 +5286,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 if (!context.mounted) return;
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: Text(l.mirsaalVoiceCanceledSnack),
+                                    content: Text(l.shamellVoiceCanceledSnack),
                                   ),
                                 );
                               },
                               icon: const Icon(Icons.close, size: 16),
-                              label: Text(l.mirsaalDialogCancel),
+                              label: Text(l.shamellDialogCancel),
                             ),
                             const SizedBox(width: 6),
                             FilledButton.icon(
@@ -5304,10 +5305,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
                       const SizedBox(height: 4),
                       Text(
                         _voiceLocked
-                            ? l.mirsaalVoiceLocked
+                            ? l.shamellVoiceLocked
                             : (_voiceCancelPending
-                                ? l.mirsaalVoiceReleaseToCancel
-                                : l.mirsaalVoiceSlideUpToCancel),
+                                ? l.shamellVoiceReleaseToCancel
+                                : l.shamellVoiceSlideUpToCancel),
                         style: theme.textTheme.bodySmall?.copyWith(
                           fontSize: 11,
                           color: _voiceCancelPending
@@ -5355,7 +5356,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                 decoration: BoxDecoration(
                   color: isDark
                       ? theme.colorScheme.surface
-                      : WeChatPalette.background,
+                      : ShamellPalette.background,
                   border: Border(
                     top: BorderSide(
                       color: theme.dividerColor
@@ -5369,11 +5370,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     IconButton(
-                      tooltip: _wechatVoiceMode
+                      tooltip: _shamellVoiceMode
                           ? (l.isArabic ? 'لوحة المفاتيح' : 'Keyboard')
-                          : l.mirsaalStartVoice,
+                          : l.shamellStartVoice,
                       icon: Icon(
-                        _wechatVoiceMode
+                        _shamellVoiceMode
                             ? Icons.keyboard_alt_outlined
                             : Icons.keyboard_voice_outlined,
                       ),
@@ -5382,10 +5383,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               _recordingVoice)
                           ? null
                           : () {
-                              final next = !_wechatVoiceMode;
+                              final next = !_shamellVoiceMode;
                               setState(() {
-                                _wechatVoiceMode = next;
-                                _composerPanel = _WeChatGroupComposerPanel.none;
+                                _shamellVoiceMode = next;
+                                _composerPanel =
+                                    _ShamellGroupComposerPanel.none;
                               });
                               if (next) {
                                 FocusScope.of(context).unfocus();
@@ -5398,7 +5400,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     Expanded(
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 160),
-                        child: _wechatVoiceMode
+                        child: _shamellVoiceMode
                             ? GestureDetector(
                                 key: const ValueKey('voice'),
                                 behavior: HitTestBehavior.opaque,
@@ -5455,7 +5457,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
                                         content: Text(
-                                          l.mirsaalVoiceCanceledSnack,
+                                          l.shamellVoiceCanceledSnack,
                                         ),
                                       ),
                                     );
@@ -5492,16 +5494,16 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                   builder: (context) {
                                     final label = () {
                                       if (_recordingVoice && _voiceLocked) {
-                                        return l.mirsaalVoiceLocked;
+                                        return l.shamellVoiceLocked;
                                       }
                                       if (_recordingVoice &&
                                           _voiceCancelPending) {
-                                        return l.mirsaalVoiceReleaseToCancel;
+                                        return l.shamellVoiceReleaseToCancel;
                                       }
                                       if (_recordingVoice) {
-                                        return l.mirsaalRecordingVoice;
+                                        return l.shamellRecordingVoice;
                                       }
-                                      return l.mirsaalVoiceHoldToTalk;
+                                      return l.shamellVoiceHoldToTalk;
                                     }();
                                     final Color bg =
                                         (_recordingVoice && _voiceCancelPending)
@@ -5568,10 +5570,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                   maxLines: 4,
                                   onTap: () {
                                     if (_composerPanel !=
-                                        _WeChatGroupComposerPanel.none) {
+                                        _ShamellGroupComposerPanel.none) {
                                       setState(() {
                                         _composerPanel =
-                                            _WeChatGroupComposerPanel.none;
+                                            _ShamellGroupComposerPanel.none;
                                       });
                                     }
                                   },
@@ -5590,18 +5592,18 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     ),
                     const SizedBox(width: 6),
                     IconButton(
-                      tooltip: l.mirsaalStickers,
+                      tooltip: l.shamellStickers,
                       onPressed: (_loading ||
                               (_deviceId ?? '').trim().isEmpty ||
                               _recordingVoice)
                           ? null
                           : () {
                               _toggleComposerPanel(
-                                _WeChatGroupComposerPanel.stickers,
+                                _ShamellGroupComposerPanel.stickers,
                               );
                             },
                       icon: Icon(
-                        _composerPanel == _WeChatGroupComposerPanel.stickers
+                        _composerPanel == _ShamellGroupComposerPanel.stickers
                             ? Icons.keyboard_alt_outlined
                             : Icons.emoji_emotions_outlined,
                       ),
@@ -5620,7 +5622,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                             height: 36,
                             child: FilledButton(
                               style: FilledButton.styleFrom(
-                                backgroundColor: WeChatPalette.green,
+                                backgroundColor: ShamellPalette.green,
                                 foregroundColor: Colors.white,
                                 padding:
                                     const EdgeInsets.symmetric(horizontal: 14),
@@ -5646,7 +5648,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               ? null
                               : () {
                                   _toggleComposerPanel(
-                                    _WeChatGroupComposerPanel.more,
+                                    _ShamellGroupComposerPanel.more,
                                   );
                                 },
                           icon: const Icon(Icons.add_circle_outline, size: 26),
@@ -5656,9 +5658,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   ],
                 ),
               ),
-              if (_composerPanel == _WeChatGroupComposerPanel.stickers)
+              if (_composerPanel == _ShamellGroupComposerPanel.stickers)
                 _buildStickersPanel(theme, l),
-              if (_composerPanel == _WeChatGroupComposerPanel.more)
+              if (_composerPanel == _ShamellGroupComposerPanel.more)
                 _buildMorePanel(theme, l),
             ],
           );
