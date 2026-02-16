@@ -368,10 +368,32 @@ async fn enforce_no_protocol_downgrade_direct(
     recipient_id: &str,
     version: ChatProtocolVersion,
 ) -> Result<(), ApiError> {
+    let sender_v2_only = is_device_v2_only(state, sender_id).await?;
+    let recipient_v2_only = if sender_v2_only {
+        false
+    } else {
+        is_device_v2_only(state, recipient_id).await?
+    };
+    enforce_no_protocol_downgrade_direct_guard(
+        sender_v2_only,
+        recipient_v2_only,
+        sender_id,
+        recipient_id,
+        version,
+    )
+}
+
+fn enforce_no_protocol_downgrade_direct_guard(
+    sender_v2_only: bool,
+    recipient_v2_only: bool,
+    sender_id: &str,
+    recipient_id: &str,
+    version: ChatProtocolVersion,
+) -> ApiResult<()> {
     if version != ChatProtocolVersion::V1Legacy {
         return Ok(());
     }
-    if is_device_v2_only(state, sender_id).await? || is_device_v2_only(state, recipient_id).await? {
+    if sender_v2_only || recipient_v2_only {
         audit_chat_security_blocked(
             "chat_protocol_downgrade",
             "direct_v1_legacy_rejected",
@@ -390,12 +412,32 @@ async fn enforce_no_protocol_downgrade_group(
     sender_id: &str,
     version: ChatProtocolVersion,
 ) -> Result<(), ApiError> {
+    let sender_v2_only = is_device_v2_only(state, sender_id).await?;
+    let group_v2_only = if sender_v2_only {
+        false
+    } else {
+        group_has_v2_only_members(state, group_id).await?
+    };
+    enforce_no_protocol_downgrade_group_guard(
+        sender_v2_only,
+        group_v2_only,
+        group_id,
+        sender_id,
+        version,
+    )
+}
+
+fn enforce_no_protocol_downgrade_group_guard(
+    sender_v2_only: bool,
+    group_has_v2_only: bool,
+    group_id: &str,
+    sender_id: &str,
+    version: ChatProtocolVersion,
+) -> ApiResult<()> {
     if version != ChatProtocolVersion::V1Legacy {
         return Ok(());
     }
-    if is_device_v2_only(state, sender_id).await?
-        || group_has_v2_only_members(state, group_id).await?
-    {
+    if sender_v2_only || group_has_v2_only {
         audit_chat_security_blocked(
             "chat_protocol_downgrade",
             "group_v1_legacy_rejected",
@@ -3592,13 +3634,14 @@ fn should_redact_sender(sealed_flag: i64, sealed_view: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_push_data, enforce_strict_v2_bundle_policy, is_strict_v2_bundle_eligible,
-        is_valid_device_id, normalize_key_material, normalize_mailbox_token,
-        normalize_prekey_batch, parse_protocol_version, parse_required_direct_ciphertext,
-        parse_required_group_ciphertext, register_keys, require_sealed_sender_flag,
-        require_v2_only_key_registration, should_redact_sender, validate_protocol_write,
-        verify_signed_prekey_signature, ChatProtocolVersion, PROTOCOL_V1_LEGACY,
-        PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
+        build_push_data, enforce_no_protocol_downgrade_direct_guard,
+        enforce_no_protocol_downgrade_group_guard, enforce_strict_v2_bundle_policy,
+        is_strict_v2_bundle_eligible, is_valid_device_id, normalize_key_material,
+        normalize_mailbox_token, normalize_prekey_batch, parse_protocol_version,
+        parse_required_direct_ciphertext, parse_required_group_ciphertext, register_keys,
+        require_sealed_sender_flag, require_v2_only_key_registration, should_redact_sender,
+        validate_protocol_write, verify_signed_prekey_signature, ChatProtocolVersion,
+        PROTOCOL_V1_LEGACY, PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
     };
     use crate::models::{GroupSendReq, OneTimePrekeyIn};
     use crate::state::AppState;
@@ -3999,6 +4042,84 @@ mod tests {
         );
         assert!(
             log_text.contains("\"reason\":\"strict_v2_bundle_required\""),
+            "missing reason log: {log_text}"
+        );
+    }
+
+    #[test]
+    fn protocol_downgrade_direct_guard_rejects_and_logs_security_event() {
+        let logs = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_current_span(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+        let err = enforce_no_protocol_downgrade_direct_guard(
+            true,
+            false,
+            "SENDER123",
+            "RECIP456",
+            ChatProtocolVersion::V1Legacy,
+        )
+        .expect_err("v1 downgrade must be rejected for v2-only participants");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.detail, "protocol downgrade rejected");
+
+        let log_text = logs.as_string();
+        assert!(
+            log_text.contains("\"security_event\":\"chat_protocol_downgrade\""),
+            "missing security_event log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"outcome\":\"blocked\""),
+            "missing blocked outcome log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"reason\":\"direct_v1_legacy_rejected\""),
+            "missing reason log: {log_text}"
+        );
+    }
+
+    #[test]
+    fn protocol_downgrade_group_guard_rejects_and_logs_security_event() {
+        let logs = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_current_span(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+        let err = enforce_no_protocol_downgrade_group_guard(
+            false,
+            true,
+            "GROUP123",
+            "SENDER123",
+            ChatProtocolVersion::V1Legacy,
+        )
+        .expect_err("group v1 downgrade must be rejected for v2-only groups");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.detail, "protocol downgrade rejected");
+
+        let log_text = logs.as_string();
+        assert!(
+            log_text.contains("\"security_event\":\"chat_protocol_downgrade\""),
+            "missing security_event log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"outcome\":\"blocked\""),
+            "missing blocked outcome log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"reason\":\"group_v1_legacy_rejected\""),
             "missing reason log: {log_text}"
         );
     }
