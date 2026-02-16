@@ -39,6 +39,8 @@ jobs:
           SMOKE_MAX_FAILED_CHECKS: ${{ vars.CORS_PREFLIGHT_MAX_FAILED_CHECKS || '0' }}
           SMOKE_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_TIMEOUT_SECS || '15' }}
           SMOKE_CONNECT_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_CONNECT_TIMEOUT_SECS || '5' }}
+          SMOKE_REQUIRE_REQUEST_ID: ${{ vars.CORS_PREFLIGHT_REQUIRE_REQUEST_ID || 'true' }}
+          SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS: ${{ vars.CORS_PREFLIGHT_STAGING_ALLOW_WILDCARD_ALLOW_HEADERS || 'false' }}
           SMOKE_USER_AGENT: "shamell-cors-preflight-smoke/staging"
         run: |
           bash ./scripts/cors_preflight_smoke.sh
@@ -61,6 +63,8 @@ jobs:
           SMOKE_MAX_FAILED_CHECKS: ${{ vars.CORS_PREFLIGHT_MAX_FAILED_CHECKS || '0' }}
           SMOKE_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_TIMEOUT_SECS || '15' }}
           SMOKE_CONNECT_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_CONNECT_TIMEOUT_SECS || '5' }}
+          SMOKE_REQUIRE_REQUEST_ID: ${{ vars.CORS_PREFLIGHT_REQUIRE_REQUEST_ID || 'true' }}
+          SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS: ${{ vars.CORS_PREFLIGHT_PROD_ALLOW_WILDCARD_ALLOW_HEADERS || 'false' }}
           SMOKE_USER_AGENT: "shamell-cors-preflight-smoke/production"
         run: |
           bash ./scripts/cors_preflight_smoke.sh

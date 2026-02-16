@@ -47,6 +47,9 @@ Required secrets/vars:
   - `CORS_PREFLIGHT_MAX_FAILED_CHECKS` (default: `0`)
   - `CORS_PREFLIGHT_TIMEOUT_SECS` (default: `15`)
   - `CORS_PREFLIGHT_CONNECT_TIMEOUT_SECS` (default: `5`)
+  - `CORS_PREFLIGHT_REQUIRE_REQUEST_ID` (default: `true`)
+  - `CORS_PREFLIGHT_STAGING_ALLOW_WILDCARD_ALLOW_HEADERS` (default: `false`)
+  - `CORS_PREFLIGHT_PROD_ALLOW_WILDCARD_ALLOW_HEADERS` (default: `false`)
 
 ## Remote smoke (optional)
 
