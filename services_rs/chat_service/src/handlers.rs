@@ -1064,6 +1064,25 @@ pub async fn register_keys(
     if !is_valid_device_id(&did) {
         return Err(ApiError::bad_request("invalid device id"));
     }
+    let v2_only =
+        match require_v2_only_key_registration(state.chat_protocol_v2_enabled, body.v2_only) {
+            Ok(v2_only) => v2_only,
+            Err(err) => {
+                let reason = if state.chat_protocol_v2_enabled {
+                    "v2_only_required"
+                } else {
+                    "protocol_v2_disabled"
+                };
+                audit_chat_security_blocked(
+                    "chat_key_register_policy",
+                    reason,
+                    Some(&did),
+                    None,
+                    None,
+                );
+                return Err(err);
+            }
+        };
     if body.signed_prekey_id <= 0 {
         return Err(ApiError::bad_request("invalid signed_prekey_id"));
     }
@@ -1115,25 +1134,6 @@ pub async fn register_keys(
         return Err(ApiError::not_found("unknown device"));
     }
 
-    let v2_only =
-        match require_v2_only_key_registration(state.chat_protocol_v2_enabled, body.v2_only) {
-            Ok(v2_only) => v2_only,
-            Err(err) => {
-                let reason = if state.chat_protocol_v2_enabled {
-                    "v2_only_required"
-                } else {
-                    "protocol_v2_disabled"
-                };
-                audit_chat_security_blocked(
-                    "chat_key_register_policy",
-                    reason,
-                    Some(&did),
-                    None,
-                    None,
-                );
-                return Err(err);
-            }
-        };
     let protocol_floor = PROTOCOL_V2_LIBSIGNAL;
     let now = now_iso();
 
@@ -3565,16 +3565,26 @@ mod tests {
     use super::{
         build_push_data, is_strict_v2_bundle_eligible, is_valid_device_id, normalize_key_material,
         normalize_mailbox_token, normalize_prekey_batch, parse_protocol_version,
-        parse_required_direct_ciphertext, parse_required_group_ciphertext,
+        parse_required_direct_ciphertext, parse_required_group_ciphertext, register_keys,
         require_sealed_sender_flag, require_v2_only_key_registration, should_redact_sender,
         validate_protocol_write, verify_signed_prekey_signature, ChatProtocolVersion,
         PROTOCOL_V1_LEGACY, PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
     };
     use crate::models::{GroupSendReq, OneTimePrekeyIn};
-    use axum::http::StatusCode;
+    use crate::state::AppState;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use axum::Router;
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use ed25519_dalek::{Signer, SigningKey};
+    use reqwest::Client;
+    use sqlx::postgres::PgPoolOptions;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tower::ServiceExt;
+    use tracing_subscriber::fmt::writer::MakeWriter;
 
     fn group_req() -> GroupSendReq {
         GroupSendReq {
@@ -3584,6 +3594,115 @@ mod tests {
             box_b64: None,
             expire_after_seconds: None,
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedLogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedLogBuffer {
+        fn as_string(&self) -> String {
+            let guard = self.0.lock().expect("log buffer lock");
+            String::from_utf8_lossy(&guard).to_string()
+        }
+    }
+
+    struct SharedLogBufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedLogBufferWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut guard = self.0.lock().expect("log buffer writer lock");
+            guard.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedLogBuffer {
+        type Writer = SharedLogBufferWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedLogBufferWriter(self.0.clone())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn keys_register_route_rejects_missing_v2_only_and_logs_security_event() {
+        let logs = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_current_span(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("lazy test pool");
+        let http = Client::builder().build().expect("http client");
+        let state = AppState {
+            pool,
+            db_schema: None,
+            env_name: "test".to_string(),
+            enforce_device_auth: false,
+            fcm_server_key: None,
+            chat_protocol_v2_enabled: true,
+            chat_protocol_v1_write_enabled: false,
+            chat_protocol_v1_read_enabled: false,
+            chat_protocol_require_v2_for_groups: true,
+            chat_mailbox_api_enabled: false,
+            chat_mailbox_inactive_retention_secs: 0,
+            chat_mailbox_consumed_retention_secs: 0,
+            http,
+        };
+        let app = Router::new()
+            .route("/keys/register", post(register_keys))
+            .with_state(state);
+
+        let body = serde_json::json!({
+            "device_id": "DEV12345",
+            "identity_key_b64": "x",
+            "identity_signing_pubkey_b64": "x",
+            "signed_prekey_id": 1,
+            "signed_prekey_b64": "x",
+            "signed_prekey_sig_b64": "x",
+            "signed_prekey_sig_alg": "ed25519"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/keys/register")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.expect("body");
+        let out: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            out.get("detail").and_then(|v| v.as_str()),
+            Some("v2_only=true required")
+        );
+
+        let log_text = logs.as_string();
+        assert!(
+            log_text.contains("\"security_event\":\"chat_key_register_policy\""),
+            "missing security_event log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"outcome\":\"blocked\""),
+            "missing blocked outcome log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"reason\":\"v2_only_required\""),
+            "missing reason log: {log_text}"
+        );
     }
 
     #[test]
