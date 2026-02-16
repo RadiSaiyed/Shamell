@@ -195,11 +195,14 @@ impl Config {
         }
 
         let mut allowed_origins = parse_csv(&env_or("ALLOWED_ORIGINS", ""));
-        if allowed_origins.is_empty() {
+        if allowed_origins.is_empty() && matches!(env_lower.as_str(), "dev" | "test") {
             allowed_origins = vec![
                 "http://localhost:5173".to_string(),
                 "http://127.0.0.1:5173".to_string(),
             ];
+        }
+        if prod_like && allowed_origins.is_empty() {
+            return Err("ALLOWED_ORIGINS must be set in prod/staging".to_string());
         }
         if prod_like && allowed_origins.iter().any(|o| o.trim() == "*") {
             return Err("ALLOWED_ORIGINS must not contain '*' in prod/staging".to_string());
@@ -377,9 +380,13 @@ mod tests {
 
     impl EnvGuard {
         fn new(keys: &[&str]) -> Self {
+            let mut keys = keys.to_vec();
+            if !keys.contains(&"ALLOWED_ORIGINS") {
+                keys.push("ALLOWED_ORIGINS");
+            }
             let mut saved = Vec::with_capacity(keys.len());
             for k in keys {
-                saved.push(((*k).to_string(), env::var(k).ok()));
+                saved.push((k.to_string(), env::var(k).ok()));
             }
             Self { saved }
         }
@@ -416,6 +423,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -493,6 +501,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -524,6 +533,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -555,6 +565,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -702,6 +713,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -737,6 +749,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -772,6 +785,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -809,6 +823,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -877,6 +892,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -943,6 +959,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -979,6 +996,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -994,6 +1012,43 @@ mod tests {
 
         let err = Config::from_env().expect_err("wildcard origins must be rejected in prod");
         assert!(err.contains("ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn prod_requires_explicit_allowed_origins() {
+        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "PAYMENTS_BASE_URL",
+            "CHAT_BASE_URL",
+            "BUS_BASE_URL",
+            "PAYMENTS_INTERNAL_SECRET",
+            "CHAT_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "INTERNAL_API_SECRET",
+            "BFF_REQUIRE_INTERNAL_SECRET",
+            "BFF_ENFORCE_ROUTE_AUTHZ",
+            "BFF_ROLE_HEADER_SECRET",
+            "CSRF_GUARD_ENABLED",
+            "ALLOWED_ORIGINS",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
+        env::set_var("CHAT_BASE_URL", "http://chat:8081");
+        env::set_var("BUS_BASE_URL", "http://bus:8083");
+        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
+        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
+        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
+        env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("CSRF_GUARD_ENABLED", "true");
+        env::remove_var("ALLOWED_ORIGINS");
+
+        let err = Config::from_env().expect_err("missing ALLOWED_ORIGINS must be rejected in prod");
+        assert!(err.contains("ALLOWED_ORIGINS must be set in prod/staging"));
     }
 
     #[test]
@@ -1016,6 +1071,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -1052,6 +1108,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -1087,6 +1144,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -1219,6 +1277,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -1252,6 +1311,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
@@ -1287,6 +1347,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");

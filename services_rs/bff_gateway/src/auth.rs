@@ -3672,8 +3672,8 @@ fn has_leading_zero_bits(bytes: &[u8], bits: u8) -> bool {
     if full > bytes.len() {
         return false;
     }
-    for i in 0..full {
-        if bytes[i] != 0 {
+    for b in bytes.iter().take(full) {
+        if *b != 0 {
             return false;
         }
     }
@@ -3706,7 +3706,7 @@ fn verify_pow_solution(secret: &str, device_id: &str, token: &str, raw_solution:
     if !sol.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    let Ok(nonce) = u64::from_str_radix(sol, 10) else {
+    let Ok(nonce) = sol.parse::<u64>() else {
         return false;
     };
 
@@ -5224,8 +5224,8 @@ mod tests {
         assert!(resp.0.contains("Device login"));
     }
 
-    #[tokio::test]
-    async fn account_create_from_env_ignores_partial_play_config_when_hw_attestation_disabled() {
+    #[test]
+    fn account_create_from_env_ignores_partial_play_config_when_hw_attestation_disabled() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let _env = EnvGuard::new(&[
             "DB_URL",
@@ -5259,7 +5259,11 @@ mod tests {
             "false",
         );
 
-        let err = match AuthRuntime::from_env("dev").await {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let err = match rt.block_on(AuthRuntime::from_env("dev")) {
             Ok(_) => panic!("expected auth runtime init to fail"),
             Err(err) => err,
         };
@@ -5269,8 +5273,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn account_create_from_env_fails_on_partial_play_config_when_hw_attestation_enabled() {
+    #[test]
+    fn account_create_from_env_fails_on_partial_play_config_when_hw_attestation_enabled() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let _env = EnvGuard::new(&[
             "DB_URL",
@@ -5289,7 +5293,11 @@ mod tests {
             "online.shamell.app",
         );
 
-        let err = match AuthRuntime::from_env("dev").await {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let err = match rt.block_on(AuthRuntime::from_env("dev")) {
             Ok(_) => panic!("expected auth runtime init to fail"),
             Err(err) => err,
         };
@@ -5301,8 +5309,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn account_create_from_env_fails_in_prod_when_enabled_without_required_attestation() {
+    #[test]
+    fn account_create_from_env_fails_in_prod_when_enabled_without_required_attestation() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let _env = EnvGuard::new(&[
             "DB_URL",
@@ -5323,7 +5331,11 @@ mod tests {
         env::set_var("AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED", "false");
         env::set_var("AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION", "false");
 
-        let err = match AuthRuntime::from_env("prod").await {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let err = match rt.block_on(AuthRuntime::from_env("prod")) {
             Ok(_) => panic!("expected auth runtime init to fail"),
             Err(err) => err,
         };

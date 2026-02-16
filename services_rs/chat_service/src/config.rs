@@ -207,11 +207,14 @@ impl Config {
         }
 
         let mut allowed_origins = parse_csv(&env_or("ALLOWED_ORIGINS", ""));
-        if allowed_origins.is_empty() {
+        if allowed_origins.is_empty() && matches!(env_lower.as_str(), "dev" | "test") {
             allowed_origins = vec![
                 "http://localhost:5173".to_string(),
                 "http://127.0.0.1:5173".to_string(),
             ];
+        }
+        if prod_like && allowed_origins.is_empty() {
+            return Err("ALLOWED_ORIGINS must be set in prod/staging".to_string());
         }
         if prod_like && allowed_origins.iter().any(|o| o.trim() == "*") {
             return Err("ALLOWED_ORIGINS must not contain '*' in prod/staging".to_string());
@@ -327,6 +330,9 @@ mod tests {
             if !keys.contains(&"CHAT_ENFORCE_DEVICE_AUTH") {
                 keys.push("CHAT_ENFORCE_DEVICE_AUTH");
             }
+            if !keys.contains(&"ALLOWED_ORIGINS") {
+                keys.push("ALLOWED_ORIGINS");
+            }
             let mut saved = Vec::with_capacity(keys.len());
             for k in keys {
                 let existing = env::var(k).ok();
@@ -396,6 +402,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("INTERNAL_API_SECRET", "change-me-secret");
@@ -427,6 +434,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("INTERNAL_API_SECRET", "chat-secret-0123456789");
@@ -458,6 +466,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("INTERNAL_API_SECRET", "chat-secret-0123456789");
@@ -465,6 +474,28 @@ mod tests {
 
         let err = Config::from_env().expect_err("wildcard hosts must be rejected in prod");
         assert!(err.contains("ALLOWED_HOSTS"));
+    }
+
+    #[test]
+    fn prod_requires_explicit_allowed_origins() {
+        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "CHAT_DB_URL",
+            "CHAT_MAX_BODY_BYTES",
+            "CHAT_REQUIRE_INTERNAL_SECRET",
+            "INTERNAL_API_SECRET",
+            "ALLOWED_ORIGINS",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
+        env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("INTERNAL_API_SECRET", "chat-secret-0123456789");
+        env::remove_var("ALLOWED_ORIGINS");
+
+        let err = Config::from_env().expect_err("missing ALLOWED_ORIGINS must be rejected in prod");
+        assert!(err.contains("ALLOWED_ORIGINS must be set in prod/staging"));
     }
 
     #[test]
@@ -489,6 +520,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("INTERNAL_API_SECRET", "chat-secret-0123456789");
@@ -513,6 +545,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("INTERNAL_API_SECRET", "chat-secret-0123456789");
@@ -537,6 +570,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("INTERNAL_API_SECRET", "chat-secret-0123456789");
@@ -557,6 +591,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("CHAT_DB_URL", "postgresql://u:p@localhost:5432/chat");
         env::set_var("CHAT_REQUIRE_INTERNAL_SECRET", "false");
 

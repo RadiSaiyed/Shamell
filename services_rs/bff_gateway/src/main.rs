@@ -305,7 +305,10 @@ async fn main() {
         )
         .merge(
             admin_only
-                .layer(middleware::from_fn_with_state(state.clone(), authz::require_admin))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    authz::require_admin,
+                ))
                 .layer(cors_layer_for_headers(
                     &cfg.allowed_origins,
                     bff_public_cors_allowed_headers(),
@@ -467,7 +470,10 @@ fn bff_bus_cors_allowed_headers() -> Vec<HeaderName> {
     headers
 }
 
-fn cors_layer_for_headers(allowed_origins: &[String], allowed_headers: Vec<HeaderName>) -> CorsLayer {
+fn cors_layer_for_headers(
+    allowed_origins: &[String],
+    allowed_headers: Vec<HeaderName>,
+) -> CorsLayer {
     if allowed_origins.iter().any(|o| o == "*") {
         CorsLayer::new()
             .allow_origin(Any)
@@ -756,7 +762,10 @@ mod tests {
                 bff_public_cors_allowed_headers(),
             ));
         let contacts = Router::new()
-            .route("/contacts/invites/redeem", post(|| async { StatusCode::OK }))
+            .route(
+                "/contacts/invites/redeem",
+                post(|| async { StatusCode::OK }),
+            )
             .layer(cors_layer_for_headers(
                 &allowed_origins,
                 bff_contacts_cors_allowed_headers(),
@@ -774,7 +783,10 @@ mod tests {
                 bff_payments_cors_allowed_headers(),
             ));
         let bus = Router::new()
-            .route("/bus/trips/:trip_id/book", post(|| async { StatusCode::OK }))
+            .route(
+                "/bus/trips/:trip_id/book",
+                post(|| async { StatusCode::OK }),
+            )
             .layer(cors_layer_for_headers(
                 &allowed_origins,
                 bff_bus_cors_allowed_headers(),
@@ -790,7 +802,11 @@ mod tests {
             .merge(internal)
     }
 
-    async fn preflight(path: &str, requested_method: Method, requested_headers: &str) -> axum::response::Response {
+    async fn preflight(
+        path: &str,
+        requested_method: Method,
+        requested_headers: &str,
+    ) -> axum::response::Response {
         cors_zone_test_app()
             .oneshot(
                 Request::builder()

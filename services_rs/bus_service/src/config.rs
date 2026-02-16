@@ -202,12 +202,15 @@ impl Config {
         }
 
         let mut allowed_origins = parse_csv(&env_or("ALLOWED_ORIGINS", ""));
-        if allowed_origins.is_empty() {
+        if allowed_origins.is_empty() && matches!(env_lower.as_str(), "dev" | "test") {
             // Safe local default for development.
             allowed_origins = vec![
                 "http://localhost:5173".to_string(),
                 "http://127.0.0.1:5173".to_string(),
             ];
+        }
+        if prod_like && allowed_origins.is_empty() {
+            return Err("ALLOWED_ORIGINS must be set in prod/staging".to_string());
         }
         if prod_like && allowed_origins.iter().any(|o| o.trim() == "*") {
             return Err("ALLOWED_ORIGINS must not contain '*' in prod/staging".to_string());
@@ -280,6 +283,9 @@ mod tests {
             if !keys.contains(&"BUS_MAX_BODY_BYTES") {
                 keys.push("BUS_MAX_BODY_BYTES");
             }
+            if !keys.contains(&"ALLOWED_ORIGINS") {
+                keys.push("ALLOWED_ORIGINS");
+            }
             let mut saved = Vec::with_capacity(keys.len());
             for k in keys {
                 let existing = env::var(k).ok();
@@ -327,6 +333,7 @@ mod tests {
         let _env = EnvGuard::new(&["ENV", "BUS_DB_URL", "DB_URL", "BUS_TICKET_SECRET"]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
         env::set_var("BUS_TICKET_SECRET", "change-me-bus-ticket");
 
@@ -349,6 +356,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
         env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
@@ -376,6 +384,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
         env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
@@ -384,6 +393,34 @@ mod tests {
 
         let err = Config::from_env().expect_err("wildcard hosts must be rejected in prod");
         assert!(err.contains("ALLOWED_HOSTS"));
+    }
+
+    #[test]
+    fn prod_requires_explicit_allowed_origins() {
+        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_DB_URL",
+            "DB_URL",
+            "BUS_TICKET_SECRET",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+            "PAYMENTS_BASE_URL",
+            "BUS_PAYMENTS_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
+        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::remove_var("ALLOWED_ORIGINS");
+        env::remove_var("PAYMENTS_BASE_URL");
+        env::remove_var("BUS_PAYMENTS_INTERNAL_SECRET");
+
+        let err = Config::from_env().expect_err("missing ALLOWED_ORIGINS must be rejected in prod");
+        assert!(err.contains("ALLOWED_ORIGINS must be set in prod/staging"));
     }
 
     #[test]
@@ -400,6 +437,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
         env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
@@ -422,6 +460,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
         env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");

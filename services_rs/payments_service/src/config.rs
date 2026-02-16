@@ -202,11 +202,14 @@ impl Config {
         }
 
         let mut allowed_origins = parse_csv(&env_or("ALLOWED_ORIGINS", ""));
-        if allowed_origins.is_empty() {
+        if allowed_origins.is_empty() && matches!(env_lower.as_str(), "dev" | "test") {
             allowed_origins = vec![
                 "http://localhost:5173".to_string(),
                 "http://127.0.0.1:5173".to_string(),
             ];
+        }
+        if prod_like && allowed_origins.is_empty() {
+            return Err("ALLOWED_ORIGINS must be set in prod/staging".to_string());
         }
         if prod_like && allowed_origins.iter().any(|o| o.trim() == "*") {
             return Err("ALLOWED_ORIGINS must not contain '*' in prod/staging".to_string());
@@ -299,6 +302,9 @@ mod tests {
             if !keys.contains(&"PAYMENTS_MAX_BODY_BYTES") {
                 keys.push("PAYMENTS_MAX_BODY_BYTES");
             }
+            if !keys.contains(&"ALLOWED_ORIGINS") {
+                keys.push("ALLOWED_ORIGINS");
+            }
             let mut saved = Vec::with_capacity(keys.len());
             for k in keys {
                 let existing = env::var(k).ok();
@@ -352,6 +358,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var(
             "PAYMENTS_DB_URL",
             "postgresql://u:p@localhost:5432/payments",
@@ -387,6 +394,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var(
             "PAYMENTS_DB_URL",
             "postgresql://u:p@localhost:5432/payments",
@@ -422,6 +430,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var(
             "PAYMENTS_DB_URL",
             "postgresql://u:p@localhost:5432/payments",
@@ -456,6 +465,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var(
             "PAYMENTS_DB_URL",
             "postgresql://u:p@localhost:5432/payments",
@@ -477,6 +487,41 @@ mod tests {
     }
 
     #[test]
+    fn prod_requires_explicit_allowed_origins() {
+        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "PAYMENTS_DB_URL",
+            "DB_URL",
+            "PAYMENTS_REQUIRE_INTERNAL_SECRET",
+            "INTERNAL_API_SECRET",
+            "BUS_PAYMENTS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+            "FEE_WALLET_ACCOUNT_ID",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var(
+            "PAYMENTS_DB_URL",
+            "postgresql://u:p@localhost:5432/payments",
+        );
+        env::set_var("PAYMENTS_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("INTERNAL_API_SECRET", "payments-secret-0123456789");
+        env::set_var(
+            "BUS_PAYMENTS_INTERNAL_SECRET",
+            "bus-pay-bind-secret-0123456789",
+        );
+        env::set_var(
+            "FEE_WALLET_ACCOUNT_ID",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::remove_var("ALLOWED_ORIGINS");
+
+        let err = Config::from_env().expect_err("missing ALLOWED_ORIGINS must be rejected in prod");
+        assert!(err.contains("ALLOWED_ORIGINS must be set in prod/staging"));
+    }
+
+    #[test]
     fn prod_rejects_non_https_allowed_origins() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let _env = EnvGuard::new(&[
@@ -491,6 +536,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var(
             "PAYMENTS_DB_URL",
             "postgresql://u:p@localhost:5432/payments",
@@ -522,6 +568,7 @@ mod tests {
         ]);
 
         env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
         env::set_var(
             "PAYMENTS_DB_URL",
             "postgresql://u:p@localhost:5432/payments",

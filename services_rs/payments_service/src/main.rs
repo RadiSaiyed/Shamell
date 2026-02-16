@@ -304,9 +304,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_routes_return_404_not_internal_auth_required() {
         let internal = InternalAuthLayer::new(true, Some("test-secret".to_string()));
-        let authed = Router::new()
-            .route("/foo", get(ok_handler))
-            .layer(internal);
+        let authed = Router::new().route("/foo", get(ok_handler)).layer(internal);
 
         let app = Router::new()
             .route("/health", get(ok_handler))
