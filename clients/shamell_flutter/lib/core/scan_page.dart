@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'l10n.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
@@ -143,7 +143,7 @@ class _ScannerOverlayPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final overlayPaint = Paint()..color = Colors.black.withValues(alpha: .55);
     final borderPaint = Paint()
-      ..color = WeChatPalette.green.withValues(alpha: .95)
+      ..color = ShamellPalette.green.withValues(alpha: .95)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -160,7 +160,7 @@ class _ScannerOverlayPainter extends CustomPainter {
       ..fillType = PathFillType.evenOdd;
     canvas.drawPath(path, overlayPaint);
 
-    // Draw WeChat-like corner brackets.
+    // Draw Shamell-like corner brackets.
     const corner = 22.0;
     const inset = 8.0;
     final left = rect.left + inset;

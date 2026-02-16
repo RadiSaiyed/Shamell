@@ -981,9 +981,9 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
   Future<Map<String, String>> _authHeaders() async {
     final headers = <String, String>{};
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -1010,7 +1010,7 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
 
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs');
-      final resp = await http.get(uri);
+      final resp = await http.get(uri, headers: await _authHeaders());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
         final merged = _mergeWithLocal(_programs);

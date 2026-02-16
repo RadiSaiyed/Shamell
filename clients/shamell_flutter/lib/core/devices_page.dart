@@ -4,11 +4,11 @@ import 'package:shamell_flutter/core/session_cookie_store.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'device_id.dart';
 import 'http_error.dart';
+import 'logout_wipe.dart';
 import '../main.dart' show LoginPage;
 
 class DevicesPage extends StatefulWidget {
@@ -36,10 +36,8 @@ class _DevicesPageState extends State<DevicesPage> {
   Future<Map<String, String>> _hdr() async {
     final h = <String, String>{};
     try {
-      final cookie = await getSessionCookie() ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     return h;
   }
@@ -99,9 +97,9 @@ class _DevicesPageState extends State<DevicesPage> {
     final u = Uri.tryParse(base);
     if (u == null) return Uri.parse(base);
     final host = u.host.toLowerCase();
-    // Local dev: keep the demo endpoint for quick testing.
+    // Local dev: use the device-login page (works in all envs) to bootstrap a browser session.
     if (host == 'localhost' || host == '127.0.0.1') {
-      return u.replace(path: '/auth/device_login_demo', queryParameters: {});
+      return u.replace(path: '/auth/device_login', queryParameters: {});
     }
     // Production/staging: derive the web origin from the API hostname.
     if (host.startsWith('api.')) {
@@ -123,24 +121,87 @@ class _DevicesPageState extends State<DevicesPage> {
   }
 
   Future<void> _logoutThisDevice() async {
+    String cookie = '';
     try {
-      String? cookie;
-      try {
-        final sp = await SharedPreferences.getInstance();
-        cookie = await getSessionCookie();
-        await clearSessionCookie();
-        await sp.remove('chat.identity');
-      } catch (_) {}
+      cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+    } catch (_) {}
+    try {
       final uri = Uri.parse('${widget.baseUrl}/auth/logout');
       await http.post(
         uri,
         headers: {
-          if (cookie != null && cookie.isNotEmpty) 'Cookie': cookie,
+          if (cookie.isNotEmpty) 'cookie': cookie,
         },
       );
-    } catch (_) {
-      // Best-effort; ignore logout errors and still navigate back to login.
+    } catch (_) {}
+    await wipeLocalAccountData(preserveDevicePrefs: true);
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+      (_) => false,
+    );
+  }
+
+  Future<void> _logoutForgetDevice() async {
+    final l = L10n.of(context);
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(l.menuLogoutForgetDeviceConfirmTitle),
+            content: Text(l.menuLogoutForgetDeviceConfirmBody),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: Text(l.shamellDialogCancel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFA5151),
+                  foregroundColor: Colors.white,
+                ),
+                child: Text(l.menuLogoutForgetDeviceConfirmAction),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+
+    String cookie = '';
+    try {
+      cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+    } catch (_) {}
+
+    // Best-effort: remove this device server-side (revokes its sessions).
+    final did = (_currentDeviceId ?? (await loadStableDeviceId() ?? '')).trim();
+    if (did.isNotEmpty) {
+      try {
+        final uri = Uri.parse(
+          '${widget.baseUrl}/auth/devices/${Uri.encodeComponent(did)}',
+        );
+        await http.delete(
+          uri,
+          headers: {
+            if (cookie.isNotEmpty) 'cookie': cookie,
+          },
+        );
+      } catch (_) {}
     }
+
+    // Best-effort: clear server session cookie.
+    try {
+      final uri = Uri.parse('${widget.baseUrl}/auth/logout');
+      await http.post(
+        uri,
+        headers: {
+          if (cookie.isNotEmpty) 'cookie': cookie,
+        },
+      );
+    } catch (_) {}
+
+    await wipeLocalForForgetDevice();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
@@ -372,6 +433,27 @@ class _DevicesPageState extends State<DevicesPage> {
                         : 'Log out from this device',
                   ),
                   onPressed: _logoutThisDevice,
+                ),
+              ),
+            ),
+          if (_currentDeviceId != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: Icon(
+                    Icons.delete_forever,
+                    size: 18,
+                    color: theme.colorScheme.error.withValues(alpha: .90),
+                  ),
+                  label: Text(
+                    l.menuLogoutForgetDevice,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.error.withValues(alpha: .90),
+                    ),
+                  ),
+                  onPressed: _logoutForgetDevice,
                 ),
               ),
             ),

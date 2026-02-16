@@ -200,7 +200,6 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
 - `SECURITY_ALERT_COOLDOWN_SECS`: minimum resend interval per alert action (default `600`).
 - `SECURITY_ALERT_SERVICE`: comma-separated compose service names to scan (default `bff,chat`).
 - `SECURITY_ALERT_THRESHOLDS`: comma-separated `action:threshold` pairs. Default covers:
-  - `header_session_auth_rejected.blocked`
   - `device_login_approve.blocked`
   - `device_login_redeem.blocked`
   - `biometric_login.blocked`
@@ -224,7 +223,6 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
   - local dry-run: `./scripts/ops.sh pipg security-drill --dry-run`
   - live host drill: `./scripts/sync_hetzner_security_timer.sh shamell --drill`
 - Current runtime security event names include:
-  - `header_session_auth_rejected`
   - `device_login_start`
   - `device_login_approve`
   - `device_login_redeem`

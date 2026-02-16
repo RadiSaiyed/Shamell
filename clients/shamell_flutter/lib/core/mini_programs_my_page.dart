@@ -10,12 +10,12 @@ import 'mini_programs_my_page_insights.dart';
 import 'moments_page.dart';
 import 'http_error.dart';
 
-Future<Map<String, String>> _hdrMiniPrograms() async {
+Future<Map<String, String>> _hdrMiniPrograms({required String baseUrl}) async {
   final headers = <String, String>{};
   try {
-    final cookie = await getSessionCookie() ?? '';
+    final cookie = await getSessionCookieHeader(baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
+      headers['cookie'] = cookie;
     }
   } catch (_) {}
   return headers;
@@ -62,7 +62,8 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs/developer_json');
-      final resp = await http.get(uri, headers: await _hdrMiniPrograms());
+      final resp = await http.get(uri,
+          headers: await _hdrMiniPrograms(baseUrl: widget.baseUrl));
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -659,7 +660,10 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(appId)}/moments_stats',
       );
-      final resp = await http.get(uri, headers: await _hdrMiniPrograms());
+      final resp = await http.get(
+        uri,
+        headers: await _hdrMiniPrograms(baseUrl: widget.baseUrl),
+      );
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         final decoded = jsonDecode(resp.body);
         if (decoded is Map) {
@@ -1137,7 +1141,9 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                       };
                                       final resp = await http.post(
                                         uri,
-                                        headers: await _hdrMiniPrograms(),
+                                        headers: await _hdrMiniPrograms(
+                                          baseUrl: widget.baseUrl,
+                                        ),
                                         body: jsonEncode(payload),
                                       );
                                       if (resp.statusCode < 200 ||
@@ -1207,7 +1213,9 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                   );
                                   final resp = await http.post(
                                     uri,
-                                    headers: await _hdrMiniPrograms(),
+                                    headers: await _hdrMiniPrograms(
+                                      baseUrl: widget.baseUrl,
+                                    ),
                                   );
                                   if (resp.statusCode < 200 ||
                                       resp.statusCode >= 300) {
@@ -1271,7 +1279,10 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(appId)}/submit_review',
       );
-      final resp = await http.post(uri, headers: await _hdrMiniPrograms());
+      final resp = await http.post(
+        uri,
+        headers: await _hdrMiniPrograms(baseUrl: widget.baseUrl),
+      );
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         final msg = sanitizeHttpError(
           statusCode: resp.statusCode,

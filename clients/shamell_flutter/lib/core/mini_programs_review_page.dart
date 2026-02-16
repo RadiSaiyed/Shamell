@@ -30,9 +30,9 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
   Future<Map<String, String>> _hdr() async {
     final headers = <String, String>{};
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -95,13 +95,11 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
         body: jsonEncode(body),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) {
-        String msg = 'HTTP ${r.statusCode}';
-        try {
-          final decoded = jsonDecode(r.body);
-          if (decoded is Map && decoded['detail'] != null) {
-            msg = decoded['detail'].toString();
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: l.isArabic,
+        );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(msg)),

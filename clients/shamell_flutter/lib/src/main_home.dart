@@ -13,17 +13,16 @@ class _HomePageState extends State<HomePage> {
     'BASE_URL',
     defaultValue: 'http://localhost:8080',
   );
-  // WeChat-like bottom navigation tabs:
+  // Shamell-like bottom navigation tabs:
   // 0 = Chats, 1 = Contacts, 2 = Discover/Services, 3 = Me.
   int _tabIndex = 0;
-  bool _wechatStrictUi = true;
+  bool _shamellStrictUi = true;
   bool _pluginShowMoments = true;
   bool _pluginShowChannels = true;
   bool _pluginShowScan = true;
-  bool _pluginShowPeopleNearby = true;
   bool _pluginShowMiniPrograms = true;
   bool _pluginShowCardsOffers = true;
-  bool _pluginShowStickers = true;
+  ShamellCapabilities _caps = ShamellCapabilities.conservativeDefaults;
   String _walletId = '';
   int? _walletBalanceCents;
   String _walletCurrency = 'SYP';
@@ -63,7 +62,6 @@ class _HomePageState extends State<HomePage> {
   CallSignalingClient? _callClient;
   StreamSubscription<Map<String, dynamic>>? _callSub;
   bool _hasUnreadMoments = false;
-  int _redpacketMoments30d = 0;
   int _officialServiceMoments = 0;
   int _officialSubscriptionMoments = 0;
   int _officialHotAccounts = 0;
@@ -159,6 +157,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadFriendsSummary() async {
+    if (!_caps.friends) return;
     try {
       int friends = 0;
       int closeFriends = 0;
@@ -182,19 +181,21 @@ class _HomePageState extends State<HomePage> {
       } catch (_) {}
       // Close friends
       try {
-        final uri = Uri.parse('$_baseUrl/me/close_friends');
-        final r = await http.get(uri, headers: await _hdr());
-        if (r.statusCode >= 200 && r.statusCode < 300) {
-          final decoded = jsonDecode(r.body);
-          List<dynamic>? arr;
-          if (decoded is Map && decoded['friends'] is List) {
-            arr = decoded['friends'] as List;
-          } else if (decoded is List) {
-            arr = decoded;
-          }
-          if (arr != null) {
-            closeFriends = arr.length;
-          }
+        // Best-practice: close-friends is a local-only preference by default.
+        final sp = await SharedPreferences.getInstance();
+        final rawClose = sp.getString('friends.close') ?? '{}';
+        final decoded = jsonDecode(rawClose);
+        if (decoded is Map) {
+          int count = 0;
+          decoded.forEach((k, v) {
+            final key = (k ?? '').toString().trim();
+            if (key.isEmpty) return;
+            final boolVal = v is bool
+                ? v
+                : (v != null && v.toString().toLowerCase() == 'true');
+            if (boolVal) count++;
+          });
+          closeFriends = count;
         }
       } catch (_) {}
       // Pending friend requests (incoming only)
@@ -224,6 +225,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadContactsRosterMeta() async {
+    if (!_caps.friends) return;
     try {
       final sp = await SharedPreferences.getInstance();
 
@@ -256,6 +258,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadContactsRoster({bool force = false}) async {
+    if (!_caps.friends) return;
     if (_contactsRosterLoading) return;
     if (!force && _contactsRoster.isNotEmpty) return;
     setState(() {
@@ -302,6 +305,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadDefaultOfficialAccountFlag() async {
+    if (!_caps.officialAccounts) return;
     try {
       final sp = await SharedPreferences.getInstance();
       final accId = sp.getString('official.default_account_id') ?? '';
@@ -412,7 +416,7 @@ class _HomePageState extends State<HomePage> {
         onOpenChat: (peerId) {
           if (peerId.isEmpty) return;
           _navPush(
-            ThreemaChatPage(
+            ShamellChatPage(
               baseUrl: _baseUrl,
               initialPeerId: peerId,
             ),
@@ -423,6 +427,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadOfficialStrip() async {
+    if (!_caps.officialAccounts) return;
     if (_officialStripLoading || _officialStripAccounts.isNotEmpty) {
       return;
     }
@@ -911,9 +916,9 @@ class _HomePageState extends State<HomePage> {
     String _homeTitle() {
       switch (_tabIndex) {
         case 0:
-          return l.mirsaalTabChats;
+          return l.shamellTabChats;
         case 1:
-          return l.mirsaalTabContacts;
+          return l.shamellTabContacts;
         case 2:
           return l.isArabic ? 'استكشاف' : 'Discover';
         case 3:
@@ -925,7 +930,7 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       // Chats tab is a full-page chat shell (it has its own AppBar with
-      // WeChat-style actions), so avoid rendering a second AppBar here.
+      // Shamell-style actions), so avoid rendering a second AppBar here.
       appBar: _tabIndex == 0
           ? null
           : AppBar(
@@ -946,7 +951,7 @@ class _HomePageState extends State<HomePage> {
                           );
                           return;
                         case 'scan':
-                          unawaited(_openWeChatScanAndHandle());
+                          unawaited(_openShamellScanAndHandle());
                           return;
                         case 'help':
                           _openOnboarding();
@@ -999,7 +1004,7 @@ class _HomePageState extends State<HomePage> {
                 if (_tabIndex == 3)
                   IconButton(
                     onPressed: () {
-                      _openWeChatSettings();
+                      _openShamellSettings();
                     },
                     tooltip: l.settingsTitle,
                     icon: const Icon(Icons.settings_outlined),
@@ -1072,12 +1077,12 @@ class _HomePageState extends State<HomePage> {
                   ),
               ],
             ),
-            label: l.mirsaalTabChats,
+            label: l.shamellTabChats,
           ),
           BottomNavigationBarItem(
             icon: const Icon(Icons.people_outline),
             activeIcon: const Icon(Icons.people),
-            label: l.mirsaalTabContacts,
+            label: l.shamellTabContacts,
           ),
           BottomNavigationBarItem(
             icon: Stack(
@@ -1138,7 +1143,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// Top-level body switch for WeChat-like tab layout.
+  /// Top-level body switch for Shamell-like tab layout.
   Widget _buildTabBody() {
     switch (_tabIndex) {
       case 0:
@@ -1156,7 +1161,7 @@ class _HomePageState extends State<HomePage> {
 
   /// Tab 0 – Chats: entry point for end-user and service chats.
   Widget _buildChatsTab() {
-    return ThreemaChatPage(
+    return ShamellChatPage(
       baseUrl: _baseUrl,
       showBottomNav: false,
     );
@@ -1209,8 +1214,7 @@ class _HomePageState extends State<HomePage> {
     String chatIdForFriend(Map<String, dynamic> f) {
       final deviceId = (f['device_id'] ?? '').toString().trim();
       if (deviceId.isNotEmpty) return deviceId;
-      final shamellId = (f['shamell_id'] ?? '').toString().trim();
-      if (shamellId.isNotEmpty) return shamellId;
+      // Chat peer ids must be device-scoped (Chat-ID), not user handles (Shamell-ID).
       final id = (f['id'] ?? '').toString().trim();
       if (id.isNotEmpty) return id;
       final phone = (f['phone'] ?? '').toString().trim();
@@ -1257,7 +1261,7 @@ class _HomePageState extends State<HomePage> {
           onTap: () {
             if (chatId.isEmpty) return;
             _navPush(
-              WeChatContactInfoPage(
+              ShamellContactInfoPage(
                 baseUrl: _baseUrl,
                 friend: f,
                 peerId: chatId,
@@ -1318,7 +1322,7 @@ class _HomePageState extends State<HomePage> {
     Widget contactLetterHeader(String letter, GlobalKey key) {
       return Container(
         key: key,
-        color: WeChatPalette.background,
+        color: ShamellPalette.background,
         padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
         child: Text(
           letter,
@@ -1333,7 +1337,7 @@ class _HomePageState extends State<HomePage> {
     Widget contactSectionHeader(String label, {Key? headerKey}) {
       return Container(
         key: headerKey,
-        color: WeChatPalette.background,
+        color: ShamellPalette.background,
         padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
         child: Text(
           label,
@@ -1366,7 +1370,7 @@ class _HomePageState extends State<HomePage> {
                 ? (l.isArabic
                     ? 'تعذر تحميل جهات الاتصال. اسحب للتحديث.'
                     : 'Could not load contacts. Pull to refresh.')
-                : l.mirsaalNoContactsHint,
+                : l.shamellNoContactsHint,
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurface.withValues(alpha: .70),
@@ -1405,7 +1409,7 @@ class _HomePageState extends State<HomePage> {
         _contactsLetterKeys['☆'] = closeKey;
         widgets.add(
           contactSectionHeader(
-            l.mirsaalFriendsCloseLabel,
+            l.shamellFriendsCloseLabel,
             headerKey: closeKey,
           ),
         );
@@ -1455,108 +1459,125 @@ class _HomePageState extends State<HomePage> {
         children: [
           Container(
             key: topKey,
-            child: WeChatSearchBar(
+            child: ShamellSearchBar(
               hintText: l.isArabic ? 'بحث' : 'Search',
               readOnly: true,
               onTap: _openGlobalSearch,
             ),
           ),
-          WeChatSection(
+          ShamellSection(
             children: [
-              ListTile(
-                dense: true,
-                leading: const WeChatLeadingIcon(
-                  icon: Icons.person_add_outlined,
-                  background: Color(0xFFF59E0B),
-                ),
-                title: Text(l.isArabic ? 'أصدقاء جدد' : 'New friends'),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_friendRequestsPending > 0) ...[
-                      friendReqBadge(),
-                      const SizedBox(width: 8),
+              if (_caps.friends)
+                ListTile(
+                  dense: true,
+                  leading: const ShamellLeadingIcon(
+                    icon: Icons.person_add_outlined,
+                    background: Color(0xFFF59E0B),
+                  ),
+                  title: Text(l.isArabic ? 'أصدقاء جدد' : 'New friends'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_friendRequestsPending > 0) ...[
+                        friendReqBadge(),
+                        const SizedBox(width: 8),
+                      ],
+                      chevron(),
                     ],
-                    chevron(),
-                  ],
+                  ),
+                  onTap: () {
+                    _navPush(
+                      FriendsPage(_baseUrl, mode: FriendsPageMode.newFriends),
+                      onReturn: () {
+                        unawaited(_loadFriendsSummary());
+                        unawaited(_loadContactsRosterMeta());
+                        unawaited(_loadContactsRoster(force: true));
+                      },
+                    );
+                  },
                 ),
-                onTap: () {
-                  _navPush(
-                    FriendsPage(_baseUrl, mode: FriendsPageMode.newFriends),
-                    onReturn: () {
-                      unawaited(_loadFriendsSummary());
-                      unawaited(_loadContactsRosterMeta());
-                      unawaited(_loadContactsRoster(force: true));
-                    },
-                  );
-                },
-              ),
               ListTile(
                 dense: true,
-                leading: const WeChatLeadingIcon(
+                leading: const ShamellLeadingIcon(
                   icon: Icons.group_outlined,
-                  background: WeChatPalette.green,
+                  background: ShamellPalette.green,
                 ),
                 title: Text(l.isArabic ? 'الدردشات الجماعية' : 'Group chats'),
                 trailing: chevron(),
                 onTap: () => _navPush(GroupChatsPage(baseUrl: _baseUrl)),
               ),
-              ListTile(
-                dense: true,
-                leading: const WeChatLeadingIcon(
-                  icon: Icons.sell_outlined,
-                  background: Color(0xFF3B82F6),
+              if (_caps.friends)
+                ListTile(
+                  dense: true,
+                  leading: const ShamellLeadingIcon(
+                    icon: Icons.sell_outlined,
+                    background: Color(0xFF3B82F6),
+                  ),
+                  title: Text(l.isArabic ? 'الوسوم' : 'Tags'),
+                  trailing: chevron(),
+                  onTap: () => _navPush(FriendTagsPage(baseUrl: _baseUrl)),
                 ),
-                title: Text(l.isArabic ? 'الوسوم' : 'Tags'),
-                trailing: chevron(),
-                onTap: () => _navPush(FriendTagsPage(baseUrl: _baseUrl)),
-              ),
-              ListTile(
-                dense: true,
-                leading: const WeChatLeadingIcon(
-                  icon: Icons.verified_outlined,
-                  background: Color(0xFF10B981),
-                ),
-                title:
-                    Text(l.isArabic ? 'الحسابات الرسمية' : 'Official accounts'),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_hasUnreadOfficialFeeds) ...[
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: Colors.redAccent,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    chevron(),
-                  ],
-                ),
-                onTap: () {
-                  _navPush(
-                    OfficialAccountsPage(
-                      baseUrl: _baseUrl,
-                      initialCityFilter: _officialStripCityLabel,
-                      onOpenChat: (peerId) {
-                        if (peerId.isEmpty) return;
-                        _navPush(
-                          ThreemaChatPage(
-                            baseUrl: _baseUrl,
-                            initialPeerId: peerId,
+              if (_caps.officialAccounts)
+                ListTile(
+                  dense: true,
+                  leading: const ShamellLeadingIcon(
+                    icon: Icons.verified_outlined,
+                    background: Color(0xFF10B981),
+                  ),
+                  title: Text(
+                      l.isArabic ? 'الحسابات الرسمية' : 'Official accounts'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_hasUnreadOfficialFeeds) ...[
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: Colors.redAccent,
+                            shape: BoxShape.circle,
                           ),
-                        );
-                      },
-                    ),
-                  );
-                },
-              ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      chevron(),
+                    ],
+                  ),
+                  onTap: () {
+                    _navPush(
+                      OfficialAccountsPage(
+                        baseUrl: _baseUrl,
+                        initialCityFilter: _officialStripCityLabel,
+                        onOpenChat: (peerId) {
+                          if (peerId.isEmpty) return;
+                          _navPush(
+                            ShamellChatPage(
+                              baseUrl: _baseUrl,
+                              initialPeerId: peerId,
+                            ),
+                          );
+                        },
+                      ),
+                    );
+                  },
+                ),
             ],
           ),
-          roster(),
+          if (_caps.friends)
+            roster()
+          else
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+              child: Text(
+                l.isArabic
+                    ? 'جهات الاتصال غير متاحة حالياً.'
+                    : 'Contacts are not available right now.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1587,7 +1608,7 @@ class _HomePageState extends State<HomePage> {
                   height: 28,
                   alignment: Alignment.centerLeft,
                   decoration: BoxDecoration(
-                    color: WeChatPalette.background,
+                    color: ShamellPalette.background,
                     border: Border(
                       bottom: BorderSide(
                         color: theme.dividerColor.withValues(
@@ -1600,7 +1621,7 @@ class _HomePageState extends State<HomePage> {
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Text(
                     _contactsStickyHeader == '☆'
-                        ? l.mirsaalFriendsCloseLabel
+                        ? l.shamellFriendsCloseLabel
                         : _contactsStickyHeader!,
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontWeight: FontWeight.w700,
@@ -1719,7 +1740,7 @@ class _HomePageState extends State<HomePage> {
                           child: DecoratedBox(
                             decoration: selected
                                 ? const BoxDecoration(
-                                    color: WeChatPalette.green,
+                                    color: ShamellPalette.green,
                                     shape: BoxShape.circle,
                                   )
                                 : const BoxDecoration(),
@@ -1851,9 +1872,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _openWeChatSettings() {
+  void _openShamellSettings() {
     _navPush(
-      WeChatSettingsPage(
+      ShamellSettingsPage(
         baseUrl: _baseUrl,
         walletId: _walletId,
         deviceId: deviceId,
@@ -1868,64 +1889,72 @@ class _HomePageState extends State<HomePage> {
         miniProgramsMoments30d: _miniProgramsMoments30d,
         onOpenOfficialNotifications: _openOfficialNotifications,
         onLogout: _logout,
+        onLogoutForgetDevice: _logoutForgetDevice,
         pushPage: (page) => _navPush(page),
         onOpenMod: _openMod,
       ),
     );
   }
 
-  String? _friendQrPayload() {
-    final p = _profilePhone.trim();
-    final id = _profileShamellId.trim();
-    if (p.isEmpty && id.isEmpty) return null;
-    if (id.isNotEmpty && p.isNotEmpty) {
-      final uri = Uri(
-        scheme: 'shamell',
-        host: 'friend',
-        path: '/$id',
-        queryParameters: {'phone': p},
-      );
-      return uri.toString();
-    }
-    final core = p.isNotEmpty ? p : id;
-    final uri = Uri(
-      scheme: 'shamell',
-      host: 'friend',
-      path: '/$core',
-    );
-    return uri.toString();
-  }
-
-  void _showFriendQr() {
+  Future<void> _showInviteQr() async {
     final l = L10n.of(context);
-    final payload = _friendQrPayload();
-    if (payload == null || payload.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            l.isArabic
-                ? 'لا يوجد معرّف أو رقم هاتف صالح بعد.'
-                : 'No valid Shamell ID or phone yet.',
+    var showing = false;
+    if (mounted) {
+      showing = true;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => const Center(
+          child: SizedBox(
+            width: 28,
+            height: 28,
+            child: CircularProgressIndicator(strokeWidth: 2),
           ),
         ),
       );
-      return;
     }
-    _navPush(
-      WeChatMyQrCodePage(
-        payload: payload,
-        profileName: _profileName,
-        profilePhone: _profilePhone,
-        profileShamellId: _profileShamellId,
-      ),
-    );
+    try {
+      final svc = ChatService(_baseUrl);
+      final tok = await svc.createContactInviteToken(maxUses: 1);
+      final payload = Uri(
+        scheme: 'shamell',
+        host: 'invite',
+        queryParameters: <String, String>{'token': tok},
+      ).toString();
+      if (!mounted) return;
+      if (showing) Navigator.of(context, rootNavigator: true).pop();
+      showing = false;
+      _navPush(
+        ShamellMyQrCodePage(
+          payload: payload,
+          profileName: _profileName,
+          // Best practice: invite QR is a bearer-capability; do not display
+          // stable identifiers (phone/Shamell-ID) on this screen.
+          profilePhone: '',
+          profileShamellId: '',
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      if (showing) Navigator.of(context, rootNavigator: true).pop();
+      showing = false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(sanitizeExceptionForUi(error: e, isArabic: l.isArabic)),
+        ),
+      );
+    } finally {
+      if (mounted && showing) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
   }
 
   /// Tab 1 – Services: main super app hub (existing HomeRoute* layouts).
   Widget _buildServicesTab() {
     final l = L10n.of(context);
     final theme = Theme.of(context);
-    if (_wechatStrictUi) {
+    if (_shamellStrictUi) {
       Icon chevron() => Icon(
             l.isArabic ? Icons.chevron_left : Icons.chevron_right,
             size: 18,
@@ -1991,7 +2020,7 @@ class _HomePageState extends State<HomePage> {
           ids.add(clean);
         }
 
-        // Prefer items with update badges (WeChat-style: show updated mini
+        // Prefer items with update badges (Shamell-style: show updated mini
         // programs first in the Discover preview stack).
         if (updateBadges.isNotEmpty) {
           for (final id in _recentMiniPrograms) {
@@ -2094,14 +2123,14 @@ class _HomePageState extends State<HomePage> {
       }
 
       final discoverTopTiles = <Widget>[
-        if (_pluginShowMoments)
+        if (_caps.moments && _pluginShowMoments)
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.photo_library_outlined,
               background: Color(0xFF10B981),
             ),
-            title: Text(l.mirsaalChannelMomentsTitle),
+            title: Text(l.shamellChannelMomentsTitle),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -2116,31 +2145,33 @@ class _HomePageState extends State<HomePage> {
               _navPush(
                 MomentsPage(
                   baseUrl: _baseUrl,
-                  onOpenOfficialDirectory: (ctx) {
-                    _navPush(
-                      OfficialAccountsPage(
-                        baseUrl: _baseUrl,
-                        initialCityFilter: _officialStripCityLabel,
-                        onOpenChat: (peerId) {
-                          if (peerId.isEmpty) return;
+                  onOpenOfficialDirectory: _caps.officialAccounts
+                      ? (ctx) {
                           _navPush(
-                            ThreemaChatPage(
+                            OfficialAccountsPage(
                               baseUrl: _baseUrl,
-                              initialPeerId: peerId,
+                              initialCityFilter: _officialStripCityLabel,
+                              onOpenChat: (peerId) {
+                                if (peerId.isEmpty) return;
+                                _navPush(
+                                  ShamellChatPage(
+                                    baseUrl: _baseUrl,
+                                    initialPeerId: peerId,
+                                  ),
+                                );
+                              },
                             ),
                           );
-                        },
-                      ),
-                    );
-                  },
+                        }
+                      : null,
                 ),
               );
             },
           ),
-        if (_pluginShowChannels)
+        if (_caps.channels && _pluginShowChannels)
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.live_tv_outlined,
               background: Color(0xFFF59E0B),
             ),
@@ -2154,10 +2185,10 @@ class _HomePageState extends State<HomePage> {
               );
             },
           ),
-        if (_pluginShowChannels)
+        if (_caps.channels && _pluginShowChannels)
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.radio_button_checked,
               background: Color(0xFFF43F5E),
             ),
@@ -2172,10 +2203,10 @@ class _HomePageState extends State<HomePage> {
               );
             },
           ),
-        if (_pluginShowMoments)
+        if (_caps.moments && _caps.officialAccounts && _pluginShowMoments)
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.local_fire_department_outlined,
               background: Color(0xFFF59E0B),
             ),
@@ -2197,31 +2228,14 @@ class _HomePageState extends State<HomePage> {
         if (_pluginShowScan)
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.qr_code_scanner,
               background: Color(0xFF3B82F6),
             ),
-            title: Text(l.mirsaalChannelScanTitle),
+            title: Text(l.shamellChannelScanTitle),
             trailing: chevron(),
             onTap: () {
-              unawaited(_openWeChatScanAndHandle());
-            },
-          ),
-        if (_pluginShowPeopleNearby)
-          ListTile(
-            dense: true,
-            leading: const WeChatLeadingIcon(
-              icon: Icons.vibration_outlined,
-              background: Color(0xFF8B5CF6),
-            ),
-            title: Text(l.isArabic ? 'هزّ' : 'Shake'),
-            trailing: chevron(),
-            onTap: () {
-              _navPush(
-                WeChatShakePage(
-                  baseUrl: _baseUrl,
-                ),
-              );
+              unawaited(_openShamellScanAndHandle());
             },
           ),
       ];
@@ -2229,7 +2243,7 @@ class _HomePageState extends State<HomePage> {
       final discoverSearchTiles = <Widget>[
         ListTile(
           dense: true,
-          leading: const WeChatLeadingIcon(
+          leading: const ShamellLeadingIcon(
             icon: Icons.search,
             background: Color(0xFF64748B),
           ),
@@ -2239,26 +2253,13 @@ class _HomePageState extends State<HomePage> {
         ),
       ];
 
-      final discoverNearbyTiles = <Widget>[
-        if (_pluginShowPeopleNearby)
+      final discoverAppsTiles = <Widget>[
+        if (_caps.miniPrograms && _pluginShowMiniPrograms)
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
-              icon: Icons.people_alt_outlined,
-              background: Color(0xFF7C3AED),
-            ),
-            title: Text(l.mirsaalFriendsPeopleNearbyTitle),
-            trailing: chevron(),
-            onTap: () {
-              _navPush(PeopleNearbyPage(baseUrl: _baseUrl));
-            },
-          ),
-        if (_pluginShowMiniPrograms)
-          ListTile(
-            dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.grid_view_outlined,
-              background: WeChatPalette.green,
+              background: ShamellPalette.green,
             ),
             title: Text(l.miniAppsTitle),
             trailing: miniProgramsTrailing(),
@@ -2279,18 +2280,18 @@ class _HomePageState extends State<HomePage> {
                 final allowSwitch = isSuper;
                 return Row(
                   children: [
-	                  _RoleChip(
-	                    mode: AppMode.user,
-	                    current: _appMode,
-	                    onTap: () => _changeAppMode(AppMode.user),
-	                    enabled: allowSwitch || _appMode == AppMode.user,
-	                  ),
-	                  const SizedBox(width: 8),
-	                  _RoleChip(
-	                    mode: AppMode.operator,
-	                    current: _appMode,
-	                    onTap: () => _changeAppMode(AppMode.operator),
-	                    enabled: allowSwitch && hasOps,
+                    _RoleChip(
+                      mode: AppMode.user,
+                      current: _appMode,
+                      onTap: () => _changeAppMode(AppMode.user),
+                      enabled: allowSwitch || _appMode == AppMode.user,
+                    ),
+                    const SizedBox(width: 8),
+                    _RoleChip(
+                      mode: AppMode.operator,
+                      current: _appMode,
+                      onTap: () => _changeAppMode(AppMode.operator),
+                      enabled: allowSwitch && hasOps,
                     ),
                     const SizedBox(width: 8),
                     _RoleChip(
@@ -2310,24 +2311,24 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ],
                 );
-	              }),
-	            ),
-	          if (discoverTopTiles.isNotEmpty)
-	            WeChatSection(
-	              margin: const EdgeInsets.only(top: 8),
-	              children: discoverTopTiles,
+              }),
+            ),
+          if (discoverTopTiles.isNotEmpty)
+            ShamellSection(
+              margin: const EdgeInsets.only(top: 8),
+              children: discoverTopTiles,
             ),
           if (discoverToolsTiles.isNotEmpty)
-            WeChatSection(
+            ShamellSection(
               children: discoverToolsTiles,
             ),
           if (discoverSearchTiles.isNotEmpty)
-            WeChatSection(
+            ShamellSection(
               children: discoverSearchTiles,
             ),
-          if (discoverNearbyTiles.isNotEmpty)
-            WeChatSection(
-              children: discoverNearbyTiles,
+          if (discoverAppsTiles.isNotEmpty)
+            ShamellSection(
+              children: discoverAppsTiles,
             ),
           if (!kEnduserOnly &&
               (_appMode == AppMode.operator || _appMode == AppMode.admin) &&
@@ -2367,7 +2368,7 @@ class _HomePageState extends State<HomePage> {
                             Uri.parse(
                                 '${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/bus/admin');
                         _navPush(
-                          WeChatWebViewPage(
+                          ShamellWebViewPage(
                             initialUri: uri,
                             baseUri: baseUri,
                             initialTitle: L10n.of(context).isArabic
@@ -2396,18 +2397,18 @@ class _HomePageState extends State<HomePage> {
               final allowSwitch = isSuper;
               return Row(
                 children: [
-	                  _RoleChip(
-	                    mode: AppMode.user,
-	                    current: _appMode,
-	                    onTap: () => _changeAppMode(AppMode.user),
-	                    enabled: allowSwitch || _appMode == AppMode.user,
-	                  ),
-	                  const SizedBox(width: 8),
-	                  _RoleChip(
-	                    mode: AppMode.operator,
-	                    current: _appMode,
-	                    onTap: () => _changeAppMode(AppMode.operator),
-	                    enabled: allowSwitch && hasOps,
+                  _RoleChip(
+                    mode: AppMode.user,
+                    current: _appMode,
+                    onTap: () => _changeAppMode(AppMode.user),
+                    enabled: allowSwitch || _appMode == AppMode.user,
+                  ),
+                  const SizedBox(width: 8),
+                  _RoleChip(
+                    mode: AppMode.operator,
+                    current: _appMode,
+                    onTap: () => _changeAppMode(AppMode.operator),
+                    enabled: allowSwitch && hasOps,
                   ),
                   const SizedBox(width: 8),
                   _RoleChip(
@@ -2427,169 +2428,156 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               );
-	            }),
-	          ),
-	        // WeChat-like primary Discover list: Moments, Scan, People Nearby,
-	        // Mini-programs, Official accounts.
-	        WeChatSection(
-	          margin: const EdgeInsets.only(top: 8),
+            }),
+          ),
+        // Shamell-like primary Discover list: Moments, Scan,
+        // Mini-programs, Official accounts.
+        ShamellSection(
+          margin: const EdgeInsets.only(top: 8),
           children: [
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.photo_library_outlined,
-                background: Color(0xFF10B981),
-              ),
-              title: Text(l.mirsaalChannelMomentsTitle),
-              subtitle: Text(l.mirsaalChannelMomentsSubtitle),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_hasUnreadMoments) ...[
-                    Container(
-                      width: 8,
-                      height: 8,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: const BoxDecoration(
-                        color: Colors.redAccent,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ],
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-                ],
-              ),
-              onTap: () {
-                _navPush(
-                  MomentsPage(
-                    baseUrl: _baseUrl,
-                    onOpenOfficialDirectory: (ctx) {
-                      _navPush(
-                        OfficialAccountsPage(
-                          baseUrl: _baseUrl,
-                          initialCityFilter: _officialStripCityLabel,
-                          onOpenChat: (peerId) {
-                            if (peerId.isEmpty) return;
-                            _navPush(
-                              ThreemaChatPage(
-                                baseUrl: _baseUrl,
-                                initialPeerId: peerId,
-                              ),
-                            );
-                          },
+            if (_caps.moments && _pluginShowMoments)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.photo_library_outlined,
+                  background: Color(0xFF10B981),
+                ),
+                title: Text(l.shamellChannelMomentsTitle),
+                subtitle: Text(l.shamellChannelMomentsSubtitle),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_hasUnreadMoments) ...[
+                      Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: const BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
                         ),
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
+                      ),
+                    ],
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                  ],
+                ),
+                onTap: () {
+                  _navPush(
+                    MomentsPage(
+                      baseUrl: _baseUrl,
+                      onOpenOfficialDirectory: _caps.officialAccounts
+                          ? (ctx) {
+                              _navPush(
+                                OfficialAccountsPage(
+                                  baseUrl: _baseUrl,
+                                  initialCityFilter: _officialStripCityLabel,
+                                  onOpenChat: (peerId) {
+                                    if (peerId.isEmpty) return;
+                                    _navPush(
+                                      ShamellChatPage(
+                                        baseUrl: _baseUrl,
+                                        initialPeerId: peerId,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              );
+                            }
+                          : null,
+                    ),
+                  );
+                },
+              ),
+            if (_caps.channels && _pluginShowChannels)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.live_tv_outlined,
+                  background: Color(0xFFF59E0B),
+                ),
+                title: Text(l.isArabic ? 'القنوات' : 'Channels'),
+                subtitle: Text(
+                  l.isArabic
+                      ? 'مقاطع قصيرة وبث مباشر من الحسابات الرسمية'
+                      : 'Short videos and live from official accounts',
+                ),
+                trailing:
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                onTap: () {
+                  _navPush(
+                    ChannelsPage(
+                      baseUrl: _baseUrl,
+                    ),
+                  );
+                },
+              ),
+            if (_caps.channels && _pluginShowChannels)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.radio_button_checked,
+                  background: Color(0xFFF43F5E),
+                ),
+                title: Text(l.isArabic ? 'مباشر' : 'Live'),
+                subtitle: Text(
+                  l.isArabic
+                      ? 'البث المباشر من القنوات'
+                      : 'Live now in Channels',
+                ),
+                trailing:
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                onTap: () {
+                  _navPush(
+                    ChannelsPage(
+                      baseUrl: _baseUrl,
+                      initialLiveOnly: true,
+                    ),
+                  );
+                },
+              ),
+            if (_pluginShowScan)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.qr_code_scanner,
+                  background: Color(0xFF3B82F6),
+                ),
+                title: Text(l.shamellChannelScanTitle),
+                subtitle: Text(l.shamellChannelScanSubtitle),
+                trailing:
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                onTap: () {
+                  unawaited(_openShamellScanAndHandle());
+                },
+              ),
+            if (_caps.moments && _caps.officialAccounts && _pluginShowMoments)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.local_fire_department_outlined,
+                  background: Color(0xFFF59E0B),
+                ),
+                title: Text(l.isArabic ? 'الأخبار' : 'Top Stories'),
+                subtitle: Text(
+                  l.isArabic
+                      ? 'أفضل المشاركات من الحسابات الرسمية'
+                      : 'Hot shares from official accounts',
+                ),
+                trailing:
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                onTap: () {
+                  _navPush(
+                    MomentsPage(
+                      baseUrl: _baseUrl,
+                      initialHotOfficialsOnly: true,
+                      showComposer: false,
+                    ),
+                  );
+                },
+              ),
             ListTile(
               dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.live_tv_outlined,
-                background: Color(0xFFF59E0B),
-              ),
-              title: Text(l.isArabic ? 'القنوات' : 'Channels'),
-              subtitle: Text(
-                l.isArabic
-                    ? 'مقاطع قصيرة وبث مباشر من الحسابات الرسمية'
-                    : 'Short videos and live from official accounts',
-              ),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: () {
-                _navPush(
-                  ChannelsPage(
-                    baseUrl: _baseUrl,
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.radio_button_checked,
-                background: Color(0xFFF43F5E),
-              ),
-              title: Text(l.isArabic ? 'مباشر' : 'Live'),
-              subtitle: Text(
-                l.isArabic ? 'البث المباشر من القنوات' : 'Live now in Channels',
-              ),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: () {
-                _navPush(
-                  ChannelsPage(
-                    baseUrl: _baseUrl,
-                    initialLiveOnly: true,
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.qr_code_scanner,
-                background: Color(0xFF3B82F6),
-              ),
-              title: Text(l.mirsaalChannelScanTitle),
-              subtitle: Text(l.mirsaalChannelScanSubtitle),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: () {
-                unawaited(_openWeChatScanAndHandle());
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.vibration_outlined,
-                background: Color(0xFF8B5CF6),
-              ),
-              title: Text(l.isArabic ? 'هزّ' : 'Shake'),
-              subtitle: Text(
-                l.isArabic
-                    ? 'اكتشف أشخاصاً وخدمات عبر الهزّ'
-                    : 'Discover by shaking',
-              ),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: () {
-                _navPush(
-                  WeChatShakePage(
-                    baseUrl: _baseUrl,
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.local_fire_department_outlined,
-                background: Color(0xFFF59E0B),
-              ),
-              title: Text(l.isArabic ? 'الأخبار' : 'Top Stories'),
-              subtitle: Text(
-                l.isArabic
-                    ? 'أفضل المشاركات من الحسابات الرسمية'
-                    : 'Hot shares from official accounts',
-              ),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: () {
-                _navPush(
-                  MomentsPage(
-                    baseUrl: _baseUrl,
-                    initialHotOfficialsOnly: true,
-                    showComposer: false,
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
+              leading: const ShamellLeadingIcon(
                 icon: Icons.search,
                 background: Color(0xFF64748B),
               ),
@@ -2603,79 +2591,67 @@ class _HomePageState extends State<HomePage> {
                   Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
               onTap: _openGlobalSearch,
             ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.people_alt_outlined,
-                background: Color(0xFF7C3AED),
+            if (_caps.miniPrograms && _pluginShowMiniPrograms)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.grid_view_outlined,
+                  background: ShamellPalette.green,
+                ),
+                title: Text(l.miniAppsTitle),
+                subtitle: Text(
+                  l.isArabic
+                      ? 'فتح تطبيقات شامل المصغّرة'
+                      : 'Open Shamell mini‑programs',
+                ),
+                trailing:
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                onTap: _openMiniProgramsDiscover,
               ),
-              title: Text(l.mirsaalFriendsPeopleNearbyTitle),
-              subtitle: Text(l.mirsaalFriendsPeopleNearbySubtitle),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: () {
-                _navPush(PeopleNearbyPage(baseUrl: _baseUrl));
-              },
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.grid_view_outlined,
-                background: WeChatPalette.green,
-              ),
-              title: Text(l.miniAppsTitle),
-              subtitle: Text(
-                l.isArabic
-                    ? 'فتح تطبيقات مرسال المصغّرة'
-                    : 'Open Shamell mini‑programs',
-              ),
-              trailing:
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-              onTap: _openMiniProgramsDiscover,
-            ),
-            ListTile(
-              dense: true,
-              leading: const WeChatLeadingIcon(
-                icon: Icons.verified_outlined,
-                background: Color(0xFF10B981),
-              ),
-              title: Text(l.mirsaalChannelOfficialAccountsTitle),
-              subtitle: Text(l.mirsaalChannelOfficialAccountsSubtitle),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_hasUnreadOfficialFeeds) ...[
-                    Container(
-                      width: 8,
-                      height: 8,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: const BoxDecoration(
-                        color: Colors.redAccent,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ],
-                  Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
-                ],
-              ),
-              onTap: () {
-                _navPush(
-                  OfficialAccountsPage(
-                    baseUrl: _baseUrl,
-                    initialCityFilter: _officialStripCityLabel,
-                    onOpenChat: (peerId) {
-                      if (peerId.isEmpty) return;
-                      _navPush(
-                        ThreemaChatPage(
-                          baseUrl: _baseUrl,
-                          initialPeerId: peerId,
+            if (_caps.officialAccounts)
+              ListTile(
+                dense: true,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.verified_outlined,
+                  background: Color(0xFF10B981),
+                ),
+                title: Text(l.shamellChannelOfficialAccountsTitle),
+                subtitle: Text(l.shamellChannelOfficialAccountsSubtitle),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_hasUnreadOfficialFeeds) ...[
+                      Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: const BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
                         ),
-                      );
-                    },
-                  ),
-                );
-              },
-            ),
+                      ),
+                    ],
+                    Icon(l.isArabic ? Icons.chevron_left : Icons.chevron_right),
+                  ],
+                ),
+                onTap: () {
+                  _navPush(
+                    OfficialAccountsPage(
+                      baseUrl: _baseUrl,
+                      initialCityFilter: _officialStripCityLabel,
+                      onOpenChat: (peerId) {
+                        if (peerId.isEmpty) return;
+                        _navPush(
+                          ShamellChatPage(
+                            baseUrl: _baseUrl,
+                            initialPeerId: peerId,
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                },
+              ),
           ],
         ),
         if (!kEnduserOnly &&
@@ -2714,7 +2690,7 @@ class _HomePageState extends State<HomePage> {
                           Uri.parse(
                               '${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/bus/admin');
                       _navPush(
-                        WeChatWebViewPage(
+                        ShamellWebViewPage(
                           initialUri: uri,
                           baseUri: baseUri,
                           initialTitle: L10n.of(context).isArabic
@@ -2830,7 +2806,7 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
-        if (_officialStripAccounts.isNotEmpty) ...[
+        if (_caps.officialAccounts && _officialStripAccounts.isNotEmpty) ...[
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Column(
@@ -2847,7 +2823,7 @@ class _HomePageState extends State<HomePage> {
                         onOpenChat: (peerId) {
                           if (peerId.isEmpty) return;
                           _navPush(
-                            ThreemaChatPage(
+                            ShamellChatPage(
                               baseUrl: _baseUrl,
                               initialPeerId: peerId,
                             ),
@@ -2981,7 +2957,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               const SizedBox(height: 8),
-              // WeChat-like “Discover” strip: lightweight promos to key mini-apps.
+              // Shamell-like “Discover” strip: lightweight promos to key mini-apps.
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
@@ -2999,71 +2975,77 @@ class _HomePageState extends State<HomePage> {
                           ),
                         );
                       },
-	                    ),
-	                    _buildDiscoverPromoChip(
-	                      icon: Icons.directions_bus_filled_outlined,
-	                      label: l.isArabic ? 'الباص بضغطة زر' : 'Bus in one tap',
-	                      onTap: () => _openMod('bus'),
-	                    ),
-                    if (_walletId.isNotEmpty)
+                    ),
+                    if (_caps.bus)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.directions_bus_filled_outlined,
+                        label: l.isArabic ? 'الباص بضغطة زر' : 'Bus in one tap',
+                        onTap: () => _openMod('bus'),
+                      ),
+                    if (_walletId.isNotEmpty && _caps.payments)
                       _buildDiscoverPromoChip(
                         icon: Icons
                             .qr_code_scanner, // mirrors Wallet “Scan & pay”
                         label: l.isArabic ? 'امسح للدفع' : 'Scan & pay',
                         onTap: _quickScanPay,
                       ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.verified_outlined,
-                      label: _officialStripCityLabel != null &&
-                              _officialStripCityLabel!.isNotEmpty
-                          ? (l.isArabic
-                              ? 'خدمات في ${_officialStripCityLabel}'
-                              : 'Services in ${_officialStripCityLabel}')
-                          : (l.isArabic
-                              ? 'الحسابات الرسمية'
-                              : 'Official accounts'),
-                      showUnreadDot: _hasUnreadOfficialFeeds,
-                      badgeIcon: _officialHotAccounts > 0
-                          ? Icons.local_fire_department_outlined
-                          : null,
-                      onTap: () {
-                        Perf.action(
-                            'official_open_directory_from_discover_chip');
-                        _navPush(
-                          OfficialAccountsPage(
-                            baseUrl: _baseUrl,
-                            initialCityFilter: _officialStripCityLabel,
-                            onOpenChat: (peerId) {
-                              if (peerId.isEmpty) return;
-                              _navPush(
-                                ThreemaChatPage(
-                                  baseUrl: _baseUrl,
-                                  initialPeerId: peerId,
-                                ),
-                              );
-                            },
-                          ),
-                        );
-                      },
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.subscriptions_outlined,
-                      label: l.isArabic
-                          ? 'خلاصة الاشتراكات'
-                          : 'Subscriptions feed',
-                      showUnreadDot: _hasUnreadOfficialFeeds,
-                      onTap: () {
-                        Perf.action(
-                            'official_open_subscriptions_from_discover_chip');
-                        _navPush(
-                          ThreemaChatPage(
-                            baseUrl: _baseUrl,
-                            initialPeerId: '__official_subscriptions__',
-                          ),
-                        );
-                      },
-                    ),
-                    if (_officialStripCityLabel != null &&
+                    if (_caps.officialAccounts)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.verified_outlined,
+                        label: _officialStripCityLabel != null &&
+                                _officialStripCityLabel!.isNotEmpty
+                            ? (l.isArabic
+                                ? 'خدمات في ${_officialStripCityLabel}'
+                                : 'Services in ${_officialStripCityLabel}')
+                            : (l.isArabic
+                                ? 'الحسابات الرسمية'
+                                : 'Official accounts'),
+                        showUnreadDot: _hasUnreadOfficialFeeds,
+                        badgeIcon: _officialHotAccounts > 0
+                            ? Icons.local_fire_department_outlined
+                            : null,
+                        onTap: () {
+                          Perf.action(
+                              'official_open_directory_from_discover_chip');
+                          _navPush(
+                            OfficialAccountsPage(
+                              baseUrl: _baseUrl,
+                              initialCityFilter: _officialStripCityLabel,
+                              onOpenChat: (peerId) {
+                                if (peerId.isEmpty) return;
+                                _navPush(
+                                  ShamellChatPage(
+                                    baseUrl: _baseUrl,
+                                    initialPeerId: peerId,
+                                  ),
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    if (_caps.subscriptions)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.subscriptions_outlined,
+                        label: l.isArabic
+                            ? 'خلاصة الاشتراكات'
+                            : 'Subscriptions feed',
+                        showUnreadDot: _hasUnreadOfficialFeeds,
+                        onTap: () {
+                          Perf.action(
+                              'official_open_subscriptions_from_discover_chip');
+                          _navPush(
+                            ShamellChatPage(
+                              baseUrl: _baseUrl,
+                              initialPeerId: '__official_subscriptions__',
+                            ),
+                          );
+                        },
+                      ),
+                    if (_caps.moments &&
+                        _pluginShowMoments &&
+                        _caps.officialAccounts &&
+                        _officialStripCityLabel != null &&
                         _officialStripCityLabel!.isNotEmpty)
                       _buildDiscoverPromoChip(
                         icon: Icons.photo_library_outlined,
@@ -3084,7 +3066,7 @@ class _HomePageState extends State<HomePage> {
                                   onOpenChat: (peerId) {
                                     if (peerId.isEmpty) return;
                                     _navPush(
-                                      ThreemaChatPage(
+                                      ShamellChatPage(
                                         baseUrl: _baseUrl,
                                         initialPeerId: peerId,
                                       ),
@@ -3096,250 +3078,123 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.photo_library_outlined,
-                      label: l.isArabic ? 'اللحظات' : 'Moments',
-                      showUnreadDot: _hasUnreadMoments,
-                      badgeIcon:
-                          _redpacketMoments30d > 0 ? Icons.card_giftcard : null,
-                      onTap: () => _navPush(
-                        MomentsPage(
-                          baseUrl: _baseUrl,
-                          onOpenOfficialDirectory: (ctx) {
-                            _navPush(
-                              OfficialAccountsPage(
-                                baseUrl: _baseUrl,
-                                initialCityFilter: _officialStripCityLabel,
-                                onOpenChat: (peerId) {
-                                  if (peerId.isEmpty) return;
-                                  _navPush(
-                                    ThreemaChatPage(
-                                      baseUrl: _baseUrl,
-                                      initialPeerId: peerId,
-                                    ),
-                                  );
-                                },
-                              ),
-                            );
-                          },
+                    if (_caps.moments && _pluginShowMoments)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.photo_library_outlined,
+                        label: l.isArabic ? 'اللحظات' : 'Moments',
+                        showUnreadDot: _hasUnreadMoments,
+                        onTap: () => _navPush(
+                          MomentsPage(
+                            baseUrl: _baseUrl,
+                            onOpenOfficialDirectory: _caps.officialAccounts
+                                ? (ctx) {
+                                    _navPush(
+                                      OfficialAccountsPage(
+                                        baseUrl: _baseUrl,
+                                        initialCityFilter:
+                                            _officialStripCityLabel,
+                                        onOpenChat: (peerId) {
+                                          if (peerId.isEmpty) return;
+                                          _navPush(
+                                            ShamellChatPage(
+                                              baseUrl: _baseUrl,
+                                              initialPeerId: peerId,
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    );
+                                  }
+                                : null,
+                          ),
                         ),
                       ),
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.grid_view_outlined,
-                      label: l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs',
-                      badgeLabel: _miniProgramsCount > 0
-                          ? (l.isArabic ? 'جديد' : 'My apps')
-                          : null,
-                      onTap: _openMiniProgramsDiscover,
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.local_fire_department_outlined,
-                      label: l.isArabic
-                          ? 'لحظات: حسابات رائجة'
-                          : 'Moments: hot official shares',
-                      onTap: () {
-                        _navPush(
-                          MomentsPage(
-                            baseUrl: _baseUrl,
-                            initialHotOfficialsOnly: true,
-                          ),
-                        );
-                      },
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.live_tv_outlined,
-                      label: l.isArabic ? 'القنوات' : 'Channels',
-                      badgeLabel: _hasDefaultOfficialAccount
-                          ? (l.isArabic ? 'منشئ' : 'Creator')
-                          : null,
-                      onTap: () {
-                        _navPush(
-                          ChannelsPage(
-                            baseUrl: _baseUrl,
-                          ),
-                        );
-                      },
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.radio_button_checked,
-                      label: l.isArabic
-                          ? 'القنوات: البث المباشر'
-                          : 'Channels: live now',
-                      onTap: () {
-                        _navPush(
-                          ChannelsPage(
-                            baseUrl: _baseUrl,
-                            initialLiveOnly: true,
-                          ),
-                        );
-                      },
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.local_fire_department_outlined,
-                      label: l.isArabic
-                          ? 'القنوات: المقاطع الرائجة'
-                          : 'Channels: hot clips',
-                      onTap: () {
-                        _navPush(
-                          ChannelsPage(
-                            baseUrl: _baseUrl,
-                            initialHotOnly: true,
-                          ),
-                        );
-                      },
-                    ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.tag_outlined,
-                      label: l.isArabic
-                          ? 'مواضيع اللحظات الشائعة'
-                          : 'Trending Moments topics',
-                      onTap: () {
-                        _navPush(
-                          MomentsPage(
-                            baseUrl: _baseUrl,
-                          ),
-                        );
-                      },
-                    ),
-                    if (_walletId.isNotEmpty)
+                    if (_caps.miniPrograms && _pluginShowMiniPrograms)
                       _buildDiscoverPromoChip(
-                        icon: Icons.card_giftcard_outlined,
-                        label: l.isArabic
-                            ? 'مهرجان الحزم الحمراء'
-                            : 'Red‑packet festival',
-                        showUnreadDot: _redpacketMoments30d > 0,
-                        badgeIcon: _redpacketMoments30d > 0
-                            ? Icons.photo_library_outlined
+                        icon: Icons.grid_view_outlined,
+                        label:
+                            l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs',
+                        badgeLabel: _miniProgramsCount > 0
+                            ? (l.isArabic ? 'جديد' : 'My apps')
                             : null,
+                        onTap: _openMiniProgramsDiscover,
+                      ),
+                    if (_caps.moments &&
+                        _pluginShowMoments &&
+                        _caps.officialAccounts)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.local_fire_department_outlined,
+                        label: l.isArabic
+                            ? 'لحظات: حسابات رائجة'
+                            : 'Moments: hot official shares',
                         onTap: () {
-                          showModalBottomSheet<void>(
-                            context: context,
-                            backgroundColor: Colors.transparent,
-                            builder: (ctx) {
-                              final t = Theme.of(ctx);
-                              return Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Material(
-                                  color: t.cardColor,
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      ListTile(
-                                        leading: const Icon(
-                                          Icons.photo_library_outlined,
-                                        ),
-                                        title: Text(
-                                          l.isArabic
-                                              ? 'حزم حمراء في اللحظات'
-                                              : 'Red packets in Moments',
-                                        ),
-                                        subtitle: Text(
-                                          l.isArabic
-                                              ? (_redpacketMoments30d > 0
-                                                  ? 'منشورات تحتوي على حزم حمراء (آخر ٣٠ يوماً: $_redpacketMoments30d)'
-                                                  : 'عرض المشاركات التي تحتوي على حزم حمراء في اللحظات')
-                                              : (_redpacketMoments30d > 0
-                                                  ? 'Moments with red packets (last 30 days: $_redpacketMoments30d)'
-                                                  : 'See Moments posts that include red packets'),
-                                          style:
-                                              t.textTheme.bodySmall?.copyWith(
-                                            color: t.colorScheme.onSurface
-                                                .withValues(alpha: .70),
-                                          ),
-                                        ),
-                                        onTap: () {
-                                          Navigator.of(ctx).pop();
-                                          _navPush(
-                                            MomentsPage(
-                                              baseUrl: _baseUrl,
-                                              initialRedpacketOnly: true,
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                      ListTile(
-                                        leading: const Icon(
-                                          Icons.tag_outlined,
-                                        ),
-                                        title: Text(
-                                          l.isArabic
-                                              ? 'هاشتاق حزم حمراء'
-                                              : 'Red‑packet Moments topic',
-                                        ),
-                                        subtitle: Text(
-                                          l.isArabic
-                                              ? 'استعرض المشاركات مع الوسم #ShamellRedPacket'
-                                              : 'Browse Moments with #ShamellRedPacket',
-                                          style:
-                                              t.textTheme.bodySmall?.copyWith(
-                                            color: t.colorScheme.onSurface
-                                                .withValues(alpha: .70),
-                                          ),
-                                        ),
-                                        onTap: () {
-                                          Navigator.of(ctx).pop();
-                                          _navPush(
-                                            MomentsPage(
-                                              baseUrl: _baseUrl,
-                                              topicTag: '#ShamellRedPacket',
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                      if (_walletId.isNotEmpty)
-                                        ListTile(
-                                          leading: const Icon(
-                                            Icons.card_giftcard_outlined,
-                                          ),
-                                          title: Text(
-                                            l.isArabic
-                                                ? 'سجل الحزم الحمراء'
-                                                : 'Red‑packet history',
-                                          ),
-                                          subtitle: Text(
-                                            l.isArabic
-                                                ? 'عرض سجل الحزم الحمراء في المحفظة'
-                                                : 'View your red‑packet history in the wallet',
-                                            style:
-                                                t.textTheme.bodySmall?.copyWith(
-                                              color: t.colorScheme.onSurface
-                                                  .withValues(alpha: .70),
-                                            ),
-                                          ),
-                                          onTap: () {
-                                            Navigator.of(ctx).pop();
-                                            _navPush(
-                                              PaymentsPage(
-                                                _baseUrl,
-                                                _walletId,
-                                                deviceId,
-                                                initialSection:
-                                                    'redpacket_history',
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
+                          _navPush(
+                            MomentsPage(
+                              baseUrl: _baseUrl,
+                              initialHotOfficialsOnly: true,
+                            ),
                           );
                         },
                       ),
-                    _buildDiscoverPromoChip(
-                      icon: Icons.location_on_outlined,
-                      label: l.isArabic ? 'الأشخاص القريبون' : 'People nearby',
-                      onTap: () => _navPush(
-                        PeopleNearbyPage(
-                          baseUrl: _baseUrl,
-                          recommendedOfficials: _officialStripAccounts,
-                          recommendedCityLabel: _officialStripCityLabel,
-                        ),
+                    if (_caps.channels && _pluginShowChannels)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.live_tv_outlined,
+                        label: l.isArabic ? 'القنوات' : 'Channels',
+                        badgeLabel: _hasDefaultOfficialAccount
+                            ? (l.isArabic ? 'منشئ' : 'Creator')
+                            : null,
+                        onTap: () {
+                          _navPush(
+                            ChannelsPage(
+                              baseUrl: _baseUrl,
+                            ),
+                          );
+                        },
                       ),
-                    ),
+                    if (_caps.channels && _pluginShowChannels)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.radio_button_checked,
+                        label: l.isArabic
+                            ? 'القنوات: البث المباشر'
+                            : 'Channels: live now',
+                        onTap: () {
+                          _navPush(
+                            ChannelsPage(
+                              baseUrl: _baseUrl,
+                              initialLiveOnly: true,
+                            ),
+                          );
+                        },
+                      ),
+                    if (_caps.channels && _pluginShowChannels)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.local_fire_department_outlined,
+                        label: l.isArabic
+                            ? 'القنوات: المقاطع الرائجة'
+                            : 'Channels: hot clips',
+                        onTap: () {
+                          _navPush(
+                            ChannelsPage(
+                              baseUrl: _baseUrl,
+                              initialHotOnly: true,
+                            ),
+                          );
+                        },
+                      ),
+                    if (_caps.moments && _pluginShowMoments)
+                      _buildDiscoverPromoChip(
+                        icon: Icons.tag_outlined,
+                        label: l.isArabic
+                            ? 'مواضيع اللحظات الشائعة'
+                            : 'Trending Moments topics',
+                        onTap: () {
+                          _navPush(
+                            MomentsPage(
+                              baseUrl: _baseUrl,
+                            ),
+                          );
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -3528,7 +3383,7 @@ class _HomePageState extends State<HomePage> {
     final isDark = theme.brightness == Brightness.dark;
     final Color bgColor = isDark
         ? theme.colorScheme.surface.withValues(alpha: .96)
-        : WeChatPalette.background;
+        : ShamellPalette.background;
     String avatarInitial() {
       final n = _profileName.trim();
       if (n.isNotEmpty) {
@@ -3552,13 +3407,13 @@ class _HomePageState extends State<HomePage> {
           color: theme.colorScheme.onSurface.withValues(alpha: .40),
         );
 
-    if (_wechatStrictUi) {
+    if (_shamellStrictUi) {
       return Container(
         color: bgColor,
         child: ListView(
           padding: const EdgeInsets.only(top: 8, bottom: 24),
           children: [
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 0),
               dividerIndent: 16,
               children: [
@@ -3608,7 +3463,7 @@ class _HomePageState extends State<HomePage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       InkResponse(
-                        onTap: _showFriendQr,
+                        onTap: () => unawaited(_showInviteQr()),
                         radius: 22,
                         child: Icon(
                           Icons.qr_code_2_outlined,
@@ -3625,13 +3480,13 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
             ),
-            WeChatSection(
+            ShamellSection(
               children: [
                 ListTile(
                   dense: true,
-                  leading: const WeChatLeadingIcon(
+                  leading: const ShamellLeadingIcon(
                     icon: Icons.account_balance_wallet_outlined,
-                    background: WeChatPalette.green,
+                    background: ShamellPalette.green,
                   ),
                   title: Text(
                     l.mePayEntryTitle,
@@ -3643,11 +3498,11 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
             ),
-            WeChatSection(
+            ShamellSection(
               children: [
                 ListTile(
                   dense: true,
-                  leading: const WeChatLeadingIcon(
+                  leading: const ShamellLeadingIcon(
                     icon: Icons.star_outline,
                     background: Color(0xFFF59E0B),
                   ),
@@ -3655,14 +3510,14 @@ class _HomePageState extends State<HomePage> {
                   trailing: chevron(),
                   onTap: () => _navPush(FavoritesPage(baseUrl: _baseUrl)),
                 ),
-                if (_pluginShowMoments)
+                if (_caps.moments && _pluginShowMoments)
                   ListTile(
                     dense: true,
-                    leading: const WeChatLeadingIcon(
+                    leading: const ShamellLeadingIcon(
                       icon: Icons.photo_library_outlined,
                       background: Color(0xFF10B981),
                     ),
-                    title: Text(l.mirsaalChannelMomentsTitle),
+                    title: Text(l.shamellChannelMomentsTitle),
                     trailing: chevron(),
                     onTap: () {
                       _navPush(
@@ -3677,7 +3532,7 @@ class _HomePageState extends State<HomePage> {
                 if (_pluginShowCardsOffers)
                   ListTile(
                     dense: true,
-                    leading: const WeChatLeadingIcon(
+                    leading: const ShamellLeadingIcon(
                       icon: Icons.card_giftcard_outlined,
                       background: Color(0xFF3B82F6),
                     ),
@@ -3694,30 +3549,19 @@ class _HomePageState extends State<HomePage> {
                       );
                     },
                   ),
-                if (_pluginShowStickers)
-                  ListTile(
-                    dense: true,
-                    leading: const WeChatLeadingIcon(
-                      icon: Icons.emoji_emotions_outlined,
-                      background: Color(0xFF7C3AED),
-                    ),
-                    title: Text(l.isArabic ? 'الملصقات' : 'Sticker Gallery'),
-                    trailing: chevron(),
-                    onTap: () => _navPush(StickerStorePage(baseUrl: _baseUrl)),
-                  ),
               ],
             ),
-            WeChatSection(
+            ShamellSection(
               children: [
                 ListTile(
                   dense: true,
-                  leading: const WeChatLeadingIcon(
+                  leading: const ShamellLeadingIcon(
                     icon: Icons.settings_outlined,
                     background: Color(0xFF64748B),
                   ),
                   title: Text(l.settingsTitle),
                   trailing: chevron(),
-                  onTap: _openWeChatSettings,
+                  onTap: _openShamellSettings,
                 ),
               ],
             ),
@@ -3868,7 +3712,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           const SizedBox(height: 4),
-          if (_hasDefaultOfficialAccount)
+          if (_caps.officialAccounts && _hasDefaultOfficialAccount)
             ListTile(
               leading: const Icon(Icons.storefront_outlined),
               title: Text(
@@ -3908,116 +3752,99 @@ class _HomePageState extends State<HomePage> {
                 } catch (_) {}
               },
             ),
-          ListTile(
-            leading: const Icon(Icons.group_outlined),
-            title: Text(l.isArabic ? 'الأصدقاء' : 'Friends'),
-            subtitle: Text(() {
-              if (_friendsCount > 0 || _closeFriendsCount > 0) {
-                if (l.isArabic) {
-                  return 'عدد الأصدقاء: $_friendsCount · الأصدقاء المقرّبون: $_closeFriendsCount';
+          if (_caps.friends)
+            ListTile(
+              leading: const Icon(Icons.group_outlined),
+              title: Text(l.isArabic ? 'الأصدقاء' : 'Friends'),
+              subtitle: Text(() {
+                if (_friendsCount > 0 || _closeFriendsCount > 0) {
+                  if (l.isArabic) {
+                    return 'عدد الأصدقاء: $_friendsCount · الأصدقاء المقرّبون: $_closeFriendsCount';
+                  }
+                  return 'Friends: $_friendsCount · Close friends: $_closeFriendsCount';
                 }
-                return 'Friends: $_friendsCount · Close friends: $_closeFriendsCount';
-              }
-              return l.isArabic
-                  ? 'إدارة شبكة الأصدقاء واختيار الأصدقاء المقرّبين للحظات'
-                  : 'Manage your friends and choose close friends for Moments';
-            }()),
-            onTap: () {
-              _navPush(FriendsPage(_baseUrl, mode: FriendsPageMode.manage));
-            },
-          ),
+                return l.isArabic
+                    ? 'إدارة شبكة الأصدقاء واختيار الأصدقاء المقرّبين للحظات'
+                    : 'Manage your friends and choose close friends for Moments';
+              }()),
+              onTap: () {
+                _navPush(FriendsPage(_baseUrl, mode: FriendsPageMode.manage));
+              },
+            ),
           const SizedBox(height: 8),
-          ListTile(
-            leading: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                const Icon(Icons.verified_outlined),
-                if (_hasUnreadOfficialFeeds)
-                  Positioned(
-                    right: -2,
-                    top: -2,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Colors.redAccent,
-                        shape: BoxShape.circle,
+          if (_caps.officialAccounts)
+            ListTile(
+              leading: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Icon(Icons.verified_outlined),
+                  if (_hasUnreadOfficialFeeds)
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
+                        ),
                       ),
                     ),
+                ],
+              ),
+              title:
+                  Text(l.isArabic ? 'الحسابات الرسمية' : 'Official accounts'),
+              subtitle: Text(
+                () {
+                  final base = _unreadOfficialAccounts > 0
+                      ? (l.isArabic
+                          ? 'متابَعة: $_followedServiceCount خدمة · $_followedSubscriptionCount اشتراك · $_unreadOfficialAccounts حساب غير مقروء'
+                          : 'Following: $_followedServiceCount Service · $_followedSubscriptionCount Subscriptions · $_unreadOfficialAccounts with unread updates')
+                      : (l.isArabic
+                          ? 'متابَعة: $_followedServiceCount خدمة · $_followedSubscriptionCount اشتراك'
+                          : 'Following: $_followedServiceCount Service · $_followedSubscriptionCount Subscriptions');
+                  final svc = _officialServiceMoments;
+                  final sub = _officialSubscriptionMoments;
+                  final hot = _officialHotAccounts;
+                  var out = base;
+                  if (svc > 0 || sub > 0) {
+                    final extra = l.isArabic
+                        ? ' · منشورات في اللحظات: $svc خدمة · $sub اشتراك'
+                        : ' · Moments shares: $svc from services · $sub from subscriptions';
+                    out = '$out$extra';
+                  }
+                  if (hot > 0) {
+                    final extraHot = l.isArabic
+                        ? ' · حسابات رائجة في اللحظات: $hot'
+                        : ' · Hot in Moments: $hot accounts';
+                    out = '$out$extraHot';
+                  }
+                  return out;
+                }(),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Perf.action('official_open_directory_from_me_tile');
+                _navPush(
+                  OfficialAccountsPage(
+                    baseUrl: _baseUrl,
+                    initialCityFilter: _officialStripCityLabel,
+                    initialKindFilter: null,
+                    onOpenChat: (peerId) {
+                      if (peerId.isEmpty) return;
+                      _navPush(
+                        ShamellChatPage(
+                          baseUrl: _baseUrl,
+                          initialPeerId: peerId,
+                        ),
+                      );
+                    },
                   ),
-              ],
+                );
+              },
             ),
-            title: Text(l.isArabic ? 'الحسابات الرسمية' : 'Official accounts'),
-            subtitle: Text(
-              () {
-                final base = _unreadOfficialAccounts > 0
-                    ? (l.isArabic
-                        ? 'متابَعة: $_followedServiceCount خدمة · $_followedSubscriptionCount اشتراك · $_unreadOfficialAccounts حساب غير مقروء'
-                        : 'Following: $_followedServiceCount Service · $_followedSubscriptionCount Subscriptions · $_unreadOfficialAccounts with unread updates')
-                    : (l.isArabic
-                        ? 'متابَعة: $_followedServiceCount خدمة · $_followedSubscriptionCount اشتراك'
-                        : 'Following: $_followedServiceCount Service · $_followedSubscriptionCount Subscriptions');
-                final svc = _officialServiceMoments;
-                final sub = _officialSubscriptionMoments;
-                final hot = _officialHotAccounts;
-                var out = base;
-                if (svc > 0 || sub > 0) {
-                  final extra = l.isArabic
-                      ? ' · منشورات في اللحظات: $svc خدمة · $sub اشتراك'
-                      : ' · Moments shares: $svc from services · $sub from subscriptions';
-                  out = '$out$extra';
-                }
-                if (hot > 0) {
-                  final extraHot = l.isArabic
-                      ? ' · حسابات رائجة في اللحظات: $hot'
-                      : ' · Hot in Moments: $hot accounts';
-                  out = '$out$extraHot';
-                }
-                return out;
-              }(),
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              Perf.action('official_open_directory_from_me_tile');
-              _navPush(
-                OfficialAccountsPage(
-                  baseUrl: _baseUrl,
-                  initialCityFilter: _officialStripCityLabel,
-                  initialKindFilter: null,
-                  onOpenChat: (peerId) {
-                    if (peerId.isEmpty) return;
-                    _navPush(
-                      ThreemaChatPage(
-                        baseUrl: _baseUrl,
-                        initialPeerId: peerId,
-                      ),
-                    );
-                  },
-                ),
-              );
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.add_business_outlined),
-            title: Text(
-              l.isArabic
-                  ? 'تسجيل حساب رسمي جديد'
-                  : 'Register new official account',
-            ),
-            subtitle: Text(
-              l.isArabic
-                  ? 'إنشاء حساب رسمي لخدمتك على نمط WeChat (يبدأ كطلب قيد المراجعة).'
-                  : 'Create a WeChat‑style Official account for your service (starts as a request under review).',
-            ),
-            onTap: () {
-              _navPush(
-                OfficialAccountRegisterPage(
-                  baseUrl: _baseUrl,
-                ),
-              );
-            },
-          ),
-          if (_followedOfficialsPreview.isNotEmpty) ...[
+          if (_caps.officialAccounts && _followedOfficialsPreview.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
               l.isArabic ? 'الخدمات المميزة' : 'Starred services',
@@ -4070,7 +3897,7 @@ class _HomePageState extends State<HomePage> {
                         onOpenChat: (peerId) {
                           if (peerId.isEmpty) return;
                           _navPush(
-                            ThreemaChatPage(
+                            ShamellChatPage(
                               baseUrl: _baseUrl,
                               initialPeerId: peerId,
                             ),
@@ -4172,62 +3999,64 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
           const SizedBox(height: 8),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.notifications_none_outlined),
-            title: Text(
-              l.isArabic
-                  ? 'إشعارات الحسابات الرسمية'
-                  : 'Official notifications',
+          if (_caps.officialAccounts)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.notifications_none_outlined),
+              title: Text(
+                l.isArabic
+                    ? 'إشعارات الحسابات الرسمية'
+                    : 'Official notifications',
+              ),
+              subtitle: Text(
+                l.isArabic
+                    ? 'تعيين وضع الإشعارات لخدماتك واشتراكاتك'
+                    : 'Set notification mode for your service and subscription accounts',
+              ),
+              trailing: const Icon(Icons.chevron_right, size: 18),
+              onTap: _openOfficialNotifications,
+              onLongPress: () {
+                _navPush(
+                  OfficialNotificationsDebugPage(baseUrl: _baseUrl),
+                );
+              },
             ),
-            subtitle: Text(
-              l.isArabic
-                  ? 'تعيين وضع الإشعارات لخدماتك واشتراكاتك'
-                  : 'Set notification mode for your service and subscription accounts',
-            ),
-            trailing: const Icon(Icons.chevron_right, size: 18),
-            onTap: _openOfficialNotifications,
-            onLongPress: () {
-              _navPush(
-                OfficialNotificationsDebugPage(baseUrl: _baseUrl),
-              );
-            },
-          ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.mark_email_unread_outlined),
-            title: Text(
-              l.isArabic ? 'إشعارات الخدمات' : 'Service notifications',
-            ),
-            subtitle: Text(
-              l.isArabic
-                  ? 'مركز رسائل الحسابات الرسمية بأسلوب WeChat Service Notifications'
-                  : 'Notification center for official accounts, similar to WeChat Service Notifications',
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_hasUnreadServiceNotifications)
-                  Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.primary,
-                      shape: BoxShape.circle,
+          if (_caps.serviceNotifications)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.mark_email_unread_outlined),
+              title: Text(
+                l.isArabic ? 'إشعارات الخدمات' : 'Service notifications',
+              ),
+              subtitle: Text(
+                l.isArabic
+                    ? 'مركز رسائل الحسابات الرسمية بأسلوب Shamell Service Notifications'
+                    : 'Notification center for official accounts, similar to Shamell Service Notifications',
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_hasUnreadServiceNotifications)
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary,
+                        shape: BoxShape.circle,
+                      ),
                     ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.chevron_right, size: 18),
+                ],
+              ),
+              onTap: () {
+                _navPush(
+                  OfficialTemplateMessagesPage(
+                    baseUrl: _baseUrl,
                   ),
-                const SizedBox(width: 6),
-                const Icon(Icons.chevron_right, size: 18),
-              ],
+                );
+              },
             ),
-            onTap: () {
-              _navPush(
-                OfficialTemplateMessagesPage(
-                  baseUrl: _baseUrl,
-                ),
-              );
-            },
-          ),
           const SizedBox(height: 12),
           Text(
             l.isArabic ? 'المحتوى واللحظات' : 'Content & Moments',
@@ -4237,7 +4066,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           const SizedBox(height: 4),
-          if (_hasUnreadOfficialFeeds) ...[
+          if (_caps.subscriptions && _hasUnreadOfficialFeeds) ...[
             const SizedBox(height: 4),
             ListTile(
               dense: true,
@@ -4249,8 +4078,8 @@ class _HomePageState extends State<HomePage> {
               ),
               subtitle: Text(
                 l.isArabic
-                    ? 'فتح خلاصة الاشتراكات في Mirsaal'
-                    : 'Open the subscriptions feed in Mirsaal',
+                    ? 'فتح خلاصة الاشتراكات في Shamell'
+                    : 'Open the subscriptions feed in Shamell',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context)
                           .colorScheme
@@ -4262,7 +4091,7 @@ class _HomePageState extends State<HomePage> {
               onTap: () {
                 Perf.action('official_open_subscriptions_from_me_tile');
                 _navPush(
-                  ThreemaChatPage(
+                  ShamellChatPage(
                     baseUrl: _baseUrl,
                     initialPeerId: '__official_subscriptions__',
                   ),
@@ -4270,68 +4099,71 @@ class _HomePageState extends State<HomePage> {
               },
             ),
           ],
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Perf.action('official_open_directory_from_me_service');
-                    _navPush(
-                      OfficialAccountsPage(
-                        baseUrl: _baseUrl,
-                        initialCityFilter: _officialStripCityLabel,
-                        initialKindFilter: 'service',
-                        onOpenChat: (peerId) {
-                          if (peerId.isEmpty) return;
-                          _navPush(
-                            ThreemaChatPage(
-                              baseUrl: _baseUrl,
-                              initialPeerId: peerId,
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.miscellaneous_services_outlined,
-                      size: 18),
-                  label: Text(
-                    l.isArabic ? 'حسابات الخدمات' : 'Service accounts',
+          if (_caps.officialAccounts) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Perf.action('official_open_directory_from_me_service');
+                      _navPush(
+                        OfficialAccountsPage(
+                          baseUrl: _baseUrl,
+                          initialCityFilter: _officialStripCityLabel,
+                          initialKindFilter: 'service',
+                          onOpenChat: (peerId) {
+                            if (peerId.isEmpty) return;
+                            _navPush(
+                              ShamellChatPage(
+                                baseUrl: _baseUrl,
+                                initialPeerId: peerId,
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.miscellaneous_services_outlined,
+                        size: 18),
+                    label: Text(
+                      l.isArabic ? 'حسابات الخدمات' : 'Service accounts',
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Perf.action('official_open_directory_from_me_subscription');
-                    _navPush(
-                      OfficialAccountsPage(
-                        baseUrl: _baseUrl,
-                        initialCityFilter: _officialStripCityLabel,
-                        initialKindFilter: 'subscription',
-                        onOpenChat: (peerId) {
-                          if (peerId.isEmpty) return;
-                          _navPush(
-                            ThreemaChatPage(
-                              baseUrl: _baseUrl,
-                              initialPeerId: peerId,
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.subscriptions_outlined, size: 18),
-                  label: Text(
-                    l.isArabic ? 'حسابات الاشتراك' : 'Subscription accounts',
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Perf.action(
+                          'official_open_directory_from_me_subscription');
+                      _navPush(
+                        OfficialAccountsPage(
+                          baseUrl: _baseUrl,
+                          initialCityFilter: _officialStripCityLabel,
+                          initialKindFilter: 'subscription',
+                          onOpenChat: (peerId) {
+                            if (peerId.isEmpty) return;
+                            _navPush(
+                              ShamellChatPage(
+                                baseUrl: _baseUrl,
+                                initialPeerId: peerId,
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.subscriptions_outlined, size: 18),
+                    label: Text(
+                      l.isArabic ? 'حسابات الاشتراك' : 'Subscription accounts',
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          if (_latestOfficialUpdates.isNotEmpty) ...[
+              ],
+            ),
+          ],
+          if (_caps.officialAccounts && _latestOfficialUpdates.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
               l.isArabic
@@ -4383,7 +4215,7 @@ class _HomePageState extends State<HomePage> {
                       onOpenChat: (peerId) {
                         if (peerId.isEmpty) return;
                         _navPush(
-                          ThreemaChatPage(
+                          ShamellChatPage(
                             baseUrl: _baseUrl,
                             initialPeerId: peerId,
                           ),
@@ -4408,208 +4240,173 @@ class _HomePageState extends State<HomePage> {
               _navPush(FavoritesPage(baseUrl: _baseUrl));
             },
           ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.photo_library_outlined),
-            title: Text(l.isArabic ? 'اللحظات' : 'Moments'),
-            subtitle: Text(() {
-              final base = l.isArabic
-                  ? 'مشاركات مع الأصدقاء وخدمة الحسابات الرسمية'
-                  : 'Share moments with friends and official accounts';
-              final rp = _redpacketMoments30d;
-              String out = base;
-              if (rp > 0) {
-                final extra = l.isArabic
-                    ? ' · حزم حمراء في آخر ٣٠ يوماً: $rp'
-                    : ' · Red packets in last 30 days: $rp';
-                out = '$out$extra';
-              }
-              if (_trendingTopicsShort.isNotEmpty) {
-                final tags =
-                    _trendingTopicsShort.take(3).map((t) => '#$t').join(', ');
-                final extraTopics = l.isArabic
-                    ? ' · مواضيع شائعة: $tags'
-                    : ' · Trending topics: $tags';
-                out = '$out$extraTopics';
-              }
-              return out;
-            }()),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_hasUnreadMoments)
-                  Container(
-                    width: 10,
-                    height: 10,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.primary,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                const SizedBox(width: 6),
-                const Icon(Icons.chevron_right, size: 18),
-              ],
-            ),
-            onTap: () {
-              _navPush(
-                MomentsPage(
-                  baseUrl: _baseUrl,
-                  onOpenOfficialDirectory: (ctx) {
-                    _navPush(
-                      OfficialAccountsPage(
-                        baseUrl: _baseUrl,
-                        initialCityFilter: _officialStripCityLabel,
-                        onOpenChat: (peerId) {
-                          if (peerId.isEmpty) return;
-                          _navPush(
-                            ThreemaChatPage(
-                              baseUrl: _baseUrl,
-                              initialPeerId: peerId,
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  },
-                ),
-              );
-            },
-          ),
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.emoji_emotions_outlined),
-            title: Text(l.isArabic ? 'الملصقات' : 'Stickers'),
-            subtitle: Text(
-              l.isArabic
-                  ? 'استعرض وحمّل حزم الملصقات للدردشة'
-                  : 'Browse and install chat sticker packs',
-            ),
-            onTap: () {
-              _navPush(StickerStorePage(baseUrl: _baseUrl));
-            },
-          ),
-          const SizedBox(height: 12),
-          Text(
-            l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs',
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: theme.colorScheme.onSurface.withValues(alpha: .80),
-            ),
-          ),
-          const SizedBox(height: 4),
-          ListTile(
-            leading: const Icon(Icons.grid_view_outlined),
-            title: Text(
-              l.isArabic ? 'التطبيقات المصغرة' : 'Mini‑programs',
-            ),
-            subtitle: Text(() {
-              final pinned = _pinnedMiniApps.length;
-              final recent = _recentModules.length;
-              if (pinned > 0 || recent > 0) {
-                if (l.isArabic) {
-                  return 'خدمات/برامج مصغّرة مثبتة: $pinned · مستخدمة مؤخراً: $recent';
+          if (_caps.moments && _pluginShowMoments)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text(l.isArabic ? 'اللحظات' : 'Moments'),
+              subtitle: Text(() {
+                final base = l.isArabic
+                    ? 'مشاركات مع الأصدقاء وخدمة الحسابات الرسمية'
+                    : 'Share moments with friends and official accounts';
+                String out = base;
+                if (_trendingTopicsShort.isNotEmpty) {
+                  final tags = _trendingTopicsShort
+                      .take(3)
+                      .map((t) => '#$t')
+                      .join(', ');
+                  final extraTopics = l.isArabic
+                      ? ' · مواضيع شائعة: $tags'
+                      : ' · Trending topics: $tags';
+                  out = '$out$extraTopics';
                 }
-                return 'Pinned mini‑apps/programs: $pinned · Recently used: $recent';
-              }
-		              return l.isArabic
-		                  ? 'استعرض تطبيقات وخدمات مثل الباص والمحفظة'
-		                  : 'Browse mini‑apps and mini‑programs like Bus and Wallet';
-		            }()),
-	            onTap: _openMiniProgramsDiscover,
-	          ),
-          if (_miniProgramsCount > 0 || _showOps) ...[
+                return out;
+              }()),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_hasUnreadMoments)
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.chevron_right, size: 18),
+                ],
+              ),
+              onTap: () {
+                _navPush(
+                  MomentsPage(
+                    baseUrl: _baseUrl,
+                    onOpenOfficialDirectory: _caps.officialAccounts
+                        ? (ctx) {
+                            _navPush(
+                              OfficialAccountsPage(
+                                baseUrl: _baseUrl,
+                                initialCityFilter: _officialStripCityLabel,
+                                onOpenChat: (peerId) {
+                                  if (peerId.isEmpty) return;
+                                  _navPush(
+                                    ShamellChatPage(
+                                      baseUrl: _baseUrl,
+                                      initialPeerId: peerId,
+                                    ),
+                                  );
+                                },
+                              ),
+                            );
+                          }
+                        : null,
+                  ),
+                );
+              },
+            ),
+          if (_caps.miniPrograms && _pluginShowMiniPrograms) ...[
             const SizedBox(height: 12),
             Text(
-              l.isArabic
-                  ? 'مركز مطوري البرامج المصغّرة'
-                  : 'Mini‑program Dev Center',
+              l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs',
               style: theme.textTheme.bodySmall?.copyWith(
                 fontWeight: FontWeight.w700,
                 color: theme.colorScheme.onSurface.withValues(alpha: .80),
               ),
             ),
             const SizedBox(height: 4),
-            Card(
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+            ListTile(
+              leading: const Icon(Icons.grid_view_outlined),
+              title: Text(
+                l.isArabic ? 'التطبيقات المصغرة' : 'Mini‑programs',
               ),
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.widgets_outlined),
-                    title: Text(
-                      l.isArabic ? 'برامجي المصغّرة' : 'My mini‑programs',
-                    ),
-                    subtitle: Text(() {
-                      if (_miniProgramsCount > 0) {
-                        if (l.isArabic) {
-                          return 'عدد البرامج: $_miniProgramsCount · الفتحات: $_miniProgramsTotalUsage · اللحظات (٣٠ يوماً): $_miniProgramsMoments30d';
-                        }
-                        return 'Mini‑programs: $_miniProgramsCount · Opens: $_miniProgramsTotalUsage · Moments (30d): $_miniProgramsMoments30d';
-                      }
-                      return l.isArabic
-                          ? 'لوحة مطور صغيرة لبرامجك المصغّرة'
-                          : 'Developer dashboard for your mini‑programs';
-                    }()),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      _navPush(
-                        MyMiniProgramsPage(
-                          baseUrl: _baseUrl,
-                          walletId: _walletId,
-                          deviceId: deviceId,
-                          onOpenMod: _openMod,
-                        ),
-                      );
-                    },
-                  ),
-                  if (_showOps) const Divider(height: 1),
-                  if (_showOps)
+              subtitle: Text(() {
+                final pinned = _pinnedMiniApps.length;
+                final recent = _recentModules.length;
+                if (pinned > 0 || recent > 0) {
+                  if (l.isArabic) {
+                    return 'خدمات/برامج مصغّرة مثبتة: $pinned · مستخدمة مؤخراً: $recent';
+                  }
+                  return 'Pinned mini‑apps/programs: $pinned · Recently used: $recent';
+                }
+                return l.isArabic
+                    ? 'استعرض تطبيقات وخدمات مثل الباص والمحفظة'
+                    : 'Browse mini‑apps and mini‑programs like Bus and Wallet';
+              }()),
+              onTap: _openMiniProgramsDiscover,
+            ),
+            if (_miniProgramsCount > 0 || _showOps) ...[
+              const SizedBox(height: 12),
+              Text(
+                l.isArabic
+                    ? 'مركز مطوري البرامج المصغّرة'
+                    : 'Mini‑program Dev Center',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface.withValues(alpha: .80),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
                     ListTile(
-                      leading: const Icon(Icons.add_box_outlined),
+                      leading: const Icon(Icons.widgets_outlined),
                       title: Text(
-                        l.isArabic
-                            ? 'تسجيل برنامج مصغر جديد'
-                            : 'Register new mini‑program',
+                        l.isArabic ? 'برامجي المصغّرة' : 'My mini‑programs',
                       ),
-                      subtitle: Text(
-                        l.isArabic
-                            ? 'إنشاء برنامج مصغر على نمط WeChat لحسابك (يبدأ كمسودة قيد المراجعة).'
-                            : 'Create a WeChat‑style mini‑program (starts as a draft under review).',
-                      ),
+                      subtitle: Text(() {
+                        if (_miniProgramsCount > 0) {
+                          if (l.isArabic) {
+                            return 'عدد البرامج: $_miniProgramsCount · الفتحات: $_miniProgramsTotalUsage · اللحظات (٣٠ يوماً): $_miniProgramsMoments30d';
+                          }
+                          return 'Mini‑programs: $_miniProgramsCount · Opens: $_miniProgramsTotalUsage · Moments (30d): $_miniProgramsMoments30d';
+                        }
+                        return l.isArabic
+                            ? 'لوحة مطور صغيرة لبرامجك المصغّرة'
+                            : 'Developer dashboard for your mini‑programs';
+                      }()),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
                         _navPush(
-                          MiniProgramRegisterPage(
+                          MyMiniProgramsPage(
                             baseUrl: _baseUrl,
+                            walletId: _walletId,
+                            deviceId: deviceId,
+                            onOpenMod: _openMod,
                           ),
                         );
                       },
                     ),
-                ],
-              ),
-            ),
-          ],
-          ListTile(
-            leading: const Icon(Icons.photo_album_outlined),
-            title: Text(
-              l.isArabic ? 'لحظاتي فقط' : 'My Moments',
-            ),
-            subtitle: Text(
-              l.isArabic
-                  ? 'عرض اللحظات التي قمت بنشرها'
-                  : 'View only the moments you posted',
-            ),
-            onTap: () {
-              _navPush(
-                MomentsPage(
-                  baseUrl: _baseUrl,
-                  showOnlyMine: true,
+                  ],
                 ),
-              );
-            },
-          ),
+              ),
+            ],
+          ],
+          if (_caps.moments && _pluginShowMoments)
+            ListTile(
+              leading: const Icon(Icons.photo_album_outlined),
+              title: Text(
+                l.isArabic ? 'لحظاتي فقط' : 'My Moments',
+              ),
+              subtitle: Text(
+                l.isArabic
+                    ? 'عرض اللحظات التي قمت بنشرها'
+                    : 'View only the moments you posted',
+              ),
+              onTap: () {
+                _navPush(
+                  MomentsPage(
+                    baseUrl: _baseUrl,
+                    showOnlyMine: true,
+                  ),
+                );
+              },
+            ),
           const SizedBox(height: 12),
           if (_walletId.isNotEmpty)
             Text(
@@ -4628,8 +4425,8 @@ class _HomePageState extends State<HomePage> {
               ),
               subtitle: Text(
                 l.isArabic
-                    ? 'عرض رمز QR لاستلام المدفوعات عبر Shamell Pay، مشابه لرمز WeChat Pay.'
-                    : 'Show a QR code to receive payments via Shamell Pay, similar to a WeChat Pay money code.',
+                    ? 'عرض رمز QR لاستلام المدفوعات عبر Shamell Pay، مشابه لرمز Shamell Pay.'
+                    : 'Show a QR code to receive payments via Shamell Pay, similar to a Shamell Pay money code.',
               ),
               onTap: () {
                 _navPush(
@@ -4657,8 +4454,8 @@ class _HomePageState extends State<HomePage> {
                     ),
                     subtitle: Text(
                       l.isArabic
-                          ? 'عرض رمز QR لاستلام المدفوعات عبر Shamell Pay، مشابه لرمز WeChat Pay.'
-                          : 'Show a QR code to receive payments via Shamell Pay, similar to a WeChat Pay money code.',
+                          ? 'عرض رمز QR لاستلام المدفوعات عبر Shamell Pay، مشابه لرمز Shamell Pay.'
+                          : 'Show a QR code to receive payments via Shamell Pay, similar to a Shamell Pay money code.',
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
@@ -4670,80 +4467,6 @@ class _HomePageState extends State<HomePage> {
                           initialSection: 'receive',
                         ),
                       );
-                    },
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.card_giftcard_outlined),
-                    title: Text(
-                      l.isArabic ? 'حزم حمراء' : 'Red packets',
-                    ),
-                    subtitle: Text(() {
-                      final base = l.isArabic
-                          ? 'سجل الحزم الحمراء في Mirsaal'
-                          : 'View your Mirsaal red‑packet history';
-                      final rp = _redpacketMoments30d;
-                      if (rp > 0) {
-                        final extra = l.isArabic
-                            ? ' · حزم حمراء في اللحظات (آخر ٣٠ يوماً): $rp'
-                            : ' · Red packets in Moments (last 30 days): $rp';
-                        return '$base$extra';
-                      }
-                      return base;
-                    }()),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      _navPush(
-                        PaymentsPage(
-                          _baseUrl,
-                          _walletId,
-                          deviceId,
-                          initialSection: 'redpacket_history',
-                        ),
-                      );
-                    },
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.campaign_outlined),
-                    title: Text(
-                      l.isArabic
-                          ? 'حملات الحزم الحمراء'
-                          : 'Red‑packet campaigns',
-                    ),
-                    subtitle: Text(
-                      l.isArabic
-                          ? 'إدارة حملات الحزم الحمراء ومشاركتها في اللحظات'
-                          : 'Manage your red‑packet campaigns and share them in Moments',
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () async {
-                      try {
-                        final sp = await SharedPreferences.getInstance();
-                        final accId =
-                            sp.getString('official.default_account_id') ?? '';
-                        final accName =
-                            sp.getString('official.default_account_name') ?? '';
-                        if (accId.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                l.isArabic
-                                    ? 'لا يوجد حساب رسمي مرتبط لإدارة الحملات.'
-                                    : 'No linked official account to manage campaigns.',
-                              ),
-                            ),
-                          );
-                          return;
-                        }
-                        _navPush(
-                          RedpacketCampaignsPage(
-                            baseUrl: _baseUrl,
-                            accountId: accId,
-                            accountName: accName.isNotEmpty ? accName : accId,
-                          ),
-                        );
-                      } catch (_) {}
                     },
                   ),
                 ],
@@ -4816,8 +4539,8 @@ class _HomePageState extends State<HomePage> {
                   ),
                   subtitle: Text(
                     l.isArabic
-                        ? 'إدارة مرسال ويب ومرسال على أجهزة أخرى وتسجيل الخروج عن بُعد'
-                        : 'Manage Mirsaal Web / Desktop logins and sign out from other devices',
+                        ? 'إدارة شامل ويب وشامل على أجهزة أخرى وتسجيل الخروج عن بُعد'
+                        : 'Manage Shamell Web / Desktop logins and sign out from other devices',
                   ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
@@ -4852,18 +4575,18 @@ class _HomePageState extends State<HomePage> {
                   },
                 ),
                 const Divider(height: 1),
-	                ListTile(
-	                  leading: const Icon(Icons.receipt_long_outlined),
-	                  title: Text(l.isArabic ? 'رحلاتي' : 'My trips'),
-		                  subtitle: Text(
-		                    l.isArabic
-		                        ? 'كل رحلات وحجوزات الباص في مكان واحد'
-		                        : 'All bus trips and bookings in one place',
-		                  ),
-	                  trailing: const Icon(Icons.chevron_right),
-	                  onTap: () {
-	                    _navPush(OrderCenterPage(_baseUrl));
-	                  },
+                ListTile(
+                  leading: const Icon(Icons.receipt_long_outlined),
+                  title: Text(l.isArabic ? 'رحلاتي' : 'My trips'),
+                  subtitle: Text(
+                    l.isArabic
+                        ? 'كل رحلات وحجوزات الباص في مكان واحد'
+                        : 'All bus trips and bookings in one place',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    _navPush(OrderCenterPage(_baseUrl));
+                  },
                 ),
                 if (_walletId.isNotEmpty) const Divider(height: 1),
                 if (_walletId.isNotEmpty)
@@ -5045,12 +4768,30 @@ class _HomePageState extends State<HomePage> {
             ),
             onTap: _logout,
           ),
+          const Divider(height: 1),
+          ListTile(
+            leading: Icon(
+              Icons.delete_forever,
+              color: theme.colorScheme.error.withValues(alpha: .90),
+            ),
+            title: Text(
+              l.menuLogoutForgetDevice,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.error.withValues(alpha: .90),
+              ),
+            ),
+            subtitle: Text(
+              l.menuLogoutForgetDeviceSubtitle,
+              style: theme.textTheme.bodySmall,
+            ),
+            onTap: _logoutForgetDevice,
+          ),
         ],
       ),
     );
   }
 
-  /// Compact WeChat‑style grid of operator / admin shortcuts inside Me tab.
+  /// Compact Shamell‑style grid of operator / admin shortcuts inside Me tab.
   Widget _buildOpsWorkbenchShortcuts(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
@@ -5096,12 +4837,12 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
-	    final shortcuts = <Widget>[];
+    final shortcuts = <Widget>[];
 
-	    if (_operatorDomains.contains('bus')) {
-	      shortcuts.add(
-	        tile(
-	          icon: Icons.directions_bus_filled_outlined,
+    if (_operatorDomains.contains('bus')) {
+      shortcuts.add(
+        tile(
+          icon: Icons.directions_bus_filled_outlined,
           label: l.isArabic ? 'مشغل الباص' : 'Bus operator',
           tint: Tokens.colorBus,
           onTap: () {
@@ -5110,7 +4851,7 @@ class _HomePageState extends State<HomePage> {
                 Uri.parse(
                     '${_baseUrl.replaceAll(RegExp(r'/+$'), '')}/bus/admin');
             _navPush(
-              WeChatWebViewPage(
+              ShamellWebViewPage(
                 initialUri: uri,
                 baseUri: baseUri,
                 initialTitle: l.isArabic ? 'إدارة الباص' : 'Bus admin',
@@ -5195,6 +4936,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadMomentsNotifications() async {
+    if (!_caps.moments) return;
     try {
       final sp = await SharedPreferences.getInstance();
       final seenRaw = (sp.getString('moments.comments_seen_ts') ?? '').trim();
@@ -5204,8 +4946,6 @@ class _HomePageState extends State<HomePage> {
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
       final lastTs = (decoded['last_comment_ts'] ?? '').toString().trim();
-      final rpRaw = decoded['redpacket_posts_30d'];
-      final rp = rpRaw is num ? rpRaw.toInt() : 0;
       bool hasUnread = false;
       if (lastTs.isNotEmpty) {
         if (seenRaw.isEmpty) {
@@ -5225,12 +4965,12 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       setState(() {
         _hasUnreadMoments = hasUnread;
-        _redpacketMoments30d = rp;
       });
     } catch (_) {}
   }
 
   Future<void> _loadOfficialMomentsStats() async {
+    if (!_caps.officialAccounts) return;
     try {
       final uri = Uri.parse('$_baseUrl/me/official_moments_stats');
       final r = await http.get(uri, headers: await _hdr());
@@ -5253,6 +4993,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadTrendingTopicsShort() async {
+    if (!_caps.moments) return;
     try {
       final uri = Uri.parse('$_baseUrl/moments/topics/trending')
           .replace(queryParameters: const {'limit': '3'});
@@ -5281,10 +5022,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadTrendingMiniPrograms() async {
+    if (!_caps.miniPrograms) return;
     try {
       final uri = Uri.parse('$_baseUrl/mini_programs')
           .replace(queryParameters: const {'limit': '20'});
-      final r = await http.get(uri);
+      final r = await http.get(uri, headers: await _hdr());
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -5313,7 +5055,7 @@ class _HomePageState extends State<HomePage> {
           final ua = _usage(m);
           final ra = _rating(m);
           final ma = _moments30(m);
-          // WeChat‑artige Heuristik für „Top diese Woche“:
+          // Shamell‑artige Heuristik für „Top diese Woche“:
           // Nutzung + Rating + Moments‑Shares der letzten 30 Tage.
           return ua + (ra * 8.0) + (ma * 5.0);
         }
@@ -5342,6 +5084,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadServiceNotificationsBadge() async {
+    if (!_caps.serviceNotifications) return;
     try {
       // Lightweight probe: ask backend for unread-only template messages
       // and treat a non-empty list as "has unread service notifications".
@@ -5375,6 +5118,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadMiniProgramDeveloperStats() async {
+    if (!_caps.miniPrograms) return;
     try {
       final uri = Uri.parse('$_baseUrl/mini_programs/developer_json');
       final r = await http.get(uri, headers: await _hdr());
@@ -5459,25 +5203,22 @@ class _HomePageState extends State<HomePage> {
     final storedRoles = sp.getStringList('roles') ?? const [];
     final storedOpDomains = sp.getStringList('operator_domains') ?? const [];
     final storedMode = sp.getString('app_mode');
-    final storedPhone = sp.getString('phone') ?? '';
+    final storedBaseUrl = sp.getString('base_url') ?? _baseUrl;
     final storedProfileName = sp.getString('last_login_name') ?? '';
     final storedProfilePhone = sp.getString('last_login_phone') ?? '';
-    String derivedShamellId = '';
-    final corePhone = storedProfilePhone.trim().replaceAll('+', '');
-    if (corePhone.isNotEmpty) {
-      derivedShamellId = 'm$corePhone';
-    }
+    final shamellUserId = await getOrCreateShamellUserId(sp: sp);
     final storedIsSuper = sp.getBool('is_superadmin') ?? false;
-    final pluginShowMoments = sp.getBool(_kWeChatPluginShowMoments) ?? true;
-    final pluginShowChannels = sp.getBool(_kWeChatPluginShowChannels) ?? true;
-    final pluginShowScan = sp.getBool(_kWeChatPluginShowScan) ?? true;
-    final pluginShowPeopleNearby =
-        sp.getBool(_kWeChatPluginShowPeopleNearby) ?? true;
+    final pluginShowMoments = sp.getBool(_kShamellPluginShowMoments) ?? true;
+    final pluginShowChannels = sp.getBool(_kShamellPluginShowChannels) ?? true;
+    final pluginShowScan = sp.getBool(_kShamellPluginShowScan) ?? true;
     final pluginShowMiniPrograms =
-        sp.getBool(_kWeChatPluginShowMiniPrograms) ?? true;
+        sp.getBool(_kShamellPluginShowMiniPrograms) ?? true;
     final pluginShowCardsOffers =
-        sp.getBool(_kWeChatPluginShowCardsOffers) ?? true;
-    final pluginShowStickers = sp.getBool(_kWeChatPluginShowStickers) ?? true;
+        sp.getBool(_kShamellPluginShowCardsOffers) ?? true;
+    // Best practice: start fail-closed and do not trust persisted capability
+    // toggles to enable unfinished/internal modules. Capabilities are only
+    // enabled via the cached/online `/me/home_snapshot`.
+    final storedCaps = ShamellCapabilities.conservativeDefaults;
     // Start from lockedMode when provided; otherwise from currentAppMode and prefs.
     AppMode appMode =
         widget.lockedMode == AppMode.auto ? currentAppMode : widget.lockedMode;
@@ -5500,19 +5241,18 @@ class _HomePageState extends State<HomePage> {
       }
     }
     final baseShowOps = _computeShowOps(storedRoles, appMode);
-    final showSuper = storedIsSuper || storedPhone == kSuperadminPhone;
+    final showSuper = storedIsSuper;
     final showOps = baseShowOps || showSuper;
     final effectiveMode = kEnduserOnly ? AppMode.user : appMode;
     setState(() {
-      _baseUrl = sp.getString('base_url') ?? _baseUrl;
+      _baseUrl = storedBaseUrl;
       _walletId = sp.getString('wallet_id') ?? _walletId;
       _pluginShowMoments = pluginShowMoments;
       _pluginShowChannels = pluginShowChannels;
       _pluginShowScan = pluginShowScan;
-      _pluginShowPeopleNearby = pluginShowPeopleNearby;
       _pluginShowMiniPrograms = pluginShowMiniPrograms;
       _pluginShowCardsOffers = pluginShowCardsOffers;
-      _pluginShowStickers = pluginShowStickers;
+      _caps = storedCaps;
       _roles = storedRoles;
       _operatorDomains = storedOpDomains;
       _appMode = effectiveMode;
@@ -5526,7 +5266,7 @@ class _HomePageState extends State<HomePage> {
           sp.getStringList('recent_mini_programs') ?? const [];
       _profileName = storedProfileName;
       _profilePhone = storedProfilePhone;
-      _profileShamellId = derivedShamellId;
+      _profileShamellId = shamellUserId;
     });
     unawaited(_refreshMiniProgramUpdateBadges());
     // Configure remote metrics after loading prefs
@@ -5544,8 +5284,10 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {}
     // ensure Wallet/Rollen + erste KPIs via Aggregat-Endpunkt (idempotent)
     try {
-      final r = await http.get(Uri.parse('$_baseUrl/me/home_snapshot'),
-          headers: await _hdr());
+      final r = await http.get(
+        Uri.parse('$_baseUrl/me/home_snapshot'),
+        headers: await _hdr(),
+      );
       if (r.statusCode == 200) {
         Perf.action('home_snapshot_ok');
         final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -5553,9 +5295,21 @@ class _HomePageState extends State<HomePage> {
         await _applyHomeSnapshot(j, sp, appMode, persist: true);
       } else {
         Perf.action('home_snapshot_fail');
+        // Fail closed: if we can't refresh server state, do not keep stale
+        // capabilities that might expose internal/unfinished modules.
+        if (mounted) {
+          setState(() {
+            _caps = ShamellCapabilities.conservativeDefaults;
+          });
+        }
       }
     } catch (_) {
       Perf.action('home_snapshot_error');
+      if (mounted) {
+        setState(() {
+          _caps = ShamellCapabilities.conservativeDefaults;
+        });
+      }
     }
     // Fallback: explizit Rollen laden, falls Aggregat leer war
     if (_roles.isEmpty) {
@@ -5578,12 +5332,23 @@ class _HomePageState extends State<HomePage> {
     required bool persist,
   }) async {
     final phone = (j['phone'] ?? '').toString();
+    final shamellIdRaw = (j['shamell_id'] ?? '').toString().trim().toUpperCase();
     final isSuperFlag = (j['is_superadmin'] ?? false) == true;
     if (persist) {
       if (phone.isNotEmpty) {
         await sp.setString('phone', phone);
       }
       await sp.setBool('is_superadmin', isSuperFlag);
+    }
+    if (isValidShamellUserId(shamellIdRaw)) {
+      if (persist) {
+        await sp.setString(kShamellUserIdPrefKey, shamellIdRaw);
+      }
+      if (mounted) {
+        setState(() {
+          _profileShamellId = shamellIdRaw;
+        });
+      }
     }
     final w = (j['wallet_id'] ?? '').toString();
     final rolesFromOverview =
@@ -5608,19 +5373,19 @@ class _HomePageState extends State<HomePage> {
         await sp.setStringList('operator_domains', opDomainsFromOverview);
       }
       final baseShowOps = _computeShowOps(rolesFromOverview, appMode);
-      final showSuper = isSuperFlag || phone == kSuperadminPhone;
+      final showSuper = isSuperFlag;
       final showOps = baseShowOps || showSuper;
-	      if (mounted) {
-	        setState(() {
-	          _roles = rolesFromOverview;
-	          _operatorDomains = opDomainsFromOverview;
-	          _showOps = showOps;
-	          _showSuperadmin = showSuper;
-	        });
-	      }
-	    } else {
+      if (mounted) {
+        setState(() {
+          _roles = rolesFromOverview;
+          _operatorDomains = opDomainsFromOverview;
+          _showOps = showOps;
+          _showSuperadmin = showSuper;
+        });
+      }
+    } else {
       // Even without explicit roles, a flagged Superadmin should see Ops/Superadmin UI.
-      final showSuper = isSuperFlag || phone == kSuperadminPhone;
+      final showSuper = isSuperFlag;
       final showOps = showSuper;
       if (mounted) {
         setState(() {
@@ -5628,12 +5393,24 @@ class _HomePageState extends State<HomePage> {
           _showSuperadmin = showSuper;
         });
       }
-	    }
-	    // Optional: hydrate initial KPIs from the snapshot
-	    try {
-	      final bs = j['bus_admin_summary'];
-	      if (bs is Map<String, dynamic>) {
-	        final trips = bs['trips_today'] ?? 0;
+    }
+    // Capabilities: fail-closed. Missing keys keep prior defaults.
+    try {
+      final nextCaps = ShamellCapabilities.mergeJson(j['capabilities'], _caps);
+      if (persist) {
+        await nextCaps.persistForBaseUrl(sp, _baseUrl);
+      }
+      if (mounted) {
+        setState(() {
+          _caps = nextCaps;
+        });
+      }
+    } catch (_) {}
+    // Optional: hydrate initial KPIs from the snapshot
+    try {
+      final bs = j['bus_admin_summary'];
+      if (bs is Map<String, dynamic>) {
+        final trips = bs['trips_today'] ?? 0;
         final bookings = bs['bookings_today'] ?? 0;
         final revenueC = bs['revenue_cents_today'] ?? 0;
         final revInt =
@@ -5648,9 +5425,38 @@ class _HomePageState extends State<HomePage> {
             _busRevenueTodayCents = revInt;
           });
         }
-	      }
-	    } catch (_) {}
-	  }
+      }
+    } catch (_) {}
+    if (persist) {
+      _kickOffCapabilityLoads();
+    }
+  }
+
+  void _kickOffCapabilityLoads() {
+    // Best practice: capability gated (fail-closed) and best-effort.
+    // This may be called multiple times as /me/home_snapshot refreshes.
+    if (_caps.friends) {
+      unawaited(_loadFriendsSummary());
+      unawaited(_loadContactsRosterMeta());
+      unawaited(_loadContactsRoster());
+    }
+    if (_caps.moments && _pluginShowMoments) {
+      unawaited(_loadMomentsNotifications());
+      unawaited(_loadTrendingTopicsShort());
+    }
+    if (_caps.officialAccounts) {
+      unawaited(_loadOfficialStrip());
+      unawaited(_loadOfficialMomentsStats());
+      unawaited(_loadDefaultOfficialAccountFlag());
+    }
+    if (_caps.miniPrograms && _pluginShowMiniPrograms) {
+      unawaited(_loadTrendingMiniPrograms());
+      unawaited(_loadMiniProgramDeveloperStats());
+    }
+    if (_caps.serviceNotifications) {
+      unawaited(_loadServiceNotificationsBadge());
+    }
+  }
 
   @override
   void dispose() {
@@ -5730,13 +5536,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildHomeRoute() {
-	    final actions = HomeActions(
-	      onScanPay: _quickScanPay,
-	      onTopup: _quickTopup,
-	      onSonic: () => _navPush(SonicPayPage(_baseUrl)),
-	      onP2P: _quickP2P,
-	      onMobility: () => _navPush(JourneyPage(_baseUrl)),
-	      onOps: () => _navPush(OpsPage(_baseUrl)),
+    final actions = HomeActions(
+      onScanPay: _quickScanPay,
+      onTopup: _quickTopup,
+      onSonic: () => _navPush(SonicPayPage(_baseUrl)),
+      onP2P: _quickP2P,
+      onMobility: () => _navPush(JourneyPage(_baseUrl)),
+      onOps: () => _navPush(OpsPage(_baseUrl)),
       onBills: () => _navPush(BillsPage(_baseUrl, _walletId, deviceId)),
       onWallet: () =>
           _navPush(HistoryPage(baseUrl: _baseUrl, walletId: _walletId)),
@@ -5749,13 +5555,13 @@ class _HomePageState extends State<HomePage> {
       onRequests: () =>
           _navPush(RequestsPage(baseUrl: _baseUrl, walletId: _walletId)),
     );
-	    final child = HomeRouteGrid(
-	      actions: actions,
-	      showOps: _showOps,
-	      showSuperadmin: _showSuperadmin,
-	    );
-	    return AnimatedSwitcher(duration: Tokens.motionBase, child: child);
-	  }
+    final child = HomeRouteGrid(
+      actions: actions,
+      showOps: _showOps,
+      showSuperadmin: _showSuperadmin,
+    );
+    return AnimatedSwitcher(duration: Tokens.motionBase, child: child);
+  }
 
   AppLinks? _appLinks;
   StreamSubscription<Uri>? _linksSub;
@@ -5774,6 +5580,84 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {}
   }
 
+  Future<void> _confirmDeviceLoginRequest({
+    required String token,
+    String? label,
+  }) async {
+    final l = L10n.of(context);
+    final t = token.trim().toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(t)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(l.isArabic
+            ? 'رمز تسجيل الدخول غير صالح.'
+            : 'Invalid device-login token.'),
+      ));
+      return;
+    }
+    final deviceLabel = (label ?? '').trim();
+
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(
+              l.isArabic ? 'تسجيل دخول جهاز' : 'Device login',
+            ),
+            content: Text(
+              deviceLabel.isNotEmpty
+                  ? (l.isArabic
+                      ? 'هل تريد الموافقة على تسجيل دخول هذا الجهاز: \"$deviceLabel\"؟'
+                      : 'Approve signing in this device: \"$deviceLabel\"?')
+                  : (l.isArabic
+                      ? 'هل تريد الموافقة على تسجيل دخول هذا الجهاز؟'
+                      : 'Approve signing in this device?'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: Text(l.shamellDialogCancel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: Text(l.isArabic ? 'موافقة' : 'Approve'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+
+    try {
+      final uri = Uri.parse('$_baseUrl/auth/device_login/approve');
+      final resp = await http.post(
+        uri,
+        headers: await _hdr(json: true, baseUrl: _baseUrl),
+        body: jsonEncode(<String, Object?>{'token': t}),
+      );
+      if (!mounted) return;
+      if (resp.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.isArabic
+              ? 'تمت الموافقة على تسجيل الدخول.'
+              : 'Device login approved.'),
+        ));
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        )),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(sanitizeExceptionForUi(error: e, isArabic: l.isArabic)),
+      ));
+    }
+  }
+
   Future<void> _handleUri(Uri uri) async {
     try {
       final scheme = uri.scheme.toLowerCase();
@@ -5783,139 +5667,60 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       if (scheme == 'shamell') {
-        if (host == 'friend') {
-          final segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-          final core = segs.isNotEmpty ? Uri.decodeComponent(segs.last) : '';
-          final phone = (uri.queryParameters['phone'] ?? '').trim();
-          final target = (phone.isNotEmpty ? phone : core).trim();
-          if (target.isEmpty) return;
-          final meId = _profileShamellId.trim();
-          final mePhone = _profilePhone.trim();
-          if (target == meId || target == mePhone) {
-            final l = L10n.of(context);
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(
-                    l.isArabic ? 'هذا هو رمزك.' : 'That is your own QR code.'),
-              ));
-            }
-            return;
-          }
-
-          Map<String, dynamic>? found;
-          String foundChatId = '';
-          String norm(String s) => s.trim().toLowerCase();
-          final needle = norm(target);
-          String digitsOnly(String s) => s.replaceAll(RegExp(r'[^0-9+]'), '');
-          final needleDigits = digitsOnly(target);
-          for (final f in _contactsRoster) {
-            final candidates = <String>[
-              (f['device_id'] ?? '').toString(),
-              (f['shamell_id'] ?? '').toString(),
-              (f['id'] ?? '').toString(),
-              (f['phone'] ?? '').toString(),
-            ].map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-            bool match = candidates.any((c) => norm(c) == needle);
-            if (!match && needleDigits.isNotEmpty) {
-              match = candidates.any((c) => digitsOnly(c) == needleDigits);
-            }
-            if (!match) continue;
-            found = f;
-            foundChatId = () {
-              final deviceId = (f['device_id'] ?? '').toString().trim();
-              if (deviceId.isNotEmpty) return deviceId;
-              final shamellId = (f['shamell_id'] ?? '').toString().trim();
-              if (shamellId.isNotEmpty) return shamellId;
-              final id = (f['id'] ?? '').toString().trim();
-              if (id.isNotEmpty) return id;
-              final phone = (f['phone'] ?? '').toString().trim();
-              if (phone.isNotEmpty) return phone;
-              return '';
-            }();
-            break;
-          }
-
-          if (found != null && foundChatId.isNotEmpty) {
-            final alias = (_contactsAliases[foundChatId] ?? '').trim();
-            final tags = (_contactsTags[foundChatId] ?? '').trim();
-            final display =
-                (found['name'] ?? found['id'] ?? '').toString().trim();
-            final isClose = ((found['close'] as bool?) ?? false) == true;
+        if (host == 'device_login') {
+          final token = (uri.queryParameters['token'] ?? '').trim();
+          final label = (uri.queryParameters['label'] ?? '').trim();
+          if (token.isEmpty) return;
+          await _confirmDeviceLoginRequest(token: token, label: label);
+          return;
+        }
+        if (host == 'invite') {
+          final token = (uri.queryParameters['token'] ?? '').trim();
+          if (token.isEmpty) return;
+          final l = L10n.of(context);
+          try {
+            final svc = ChatService(_baseUrl);
+            final peerId = await svc.redeemContactInviteToken(token);
+            if (peerId.isEmpty) return;
             _navPush(
-              WeChatContactInfoPage(
+              ShamellChatPage(
                 baseUrl: _baseUrl,
-                friend: found,
-                peerId: foundChatId,
-                displayName: display.isNotEmpty ? display : foundChatId,
-                alias: alias,
-                tags: tags,
-                isCloseFriend: isClose,
-                pushPage: _navPush,
+                initialPeerId: peerId,
               ),
-              onReturn: () {
-                unawaited(_loadFriendsSummary());
-                unawaited(_loadContactsRosterMeta());
-                unawaited(_loadContactsRoster(force: true));
-              },
             );
-            return;
+          } catch (e) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content:
+                    Text(sanitizeExceptionForUi(error: e, isArabic: l.isArabic)),
+              ),
+            );
           }
-
-          _navPush(
-            FriendsPage(
-              _baseUrl,
-              mode: FriendsPageMode.newFriends,
-              initialAddText: target,
-            ),
-          );
+          return;
+        }
+        if (host == 'friend') {
+          final l = L10n.of(context);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  l.isArabic
+                      ? 'رمز الصديق القديم لم يعد مدعوماً. اطلب رمز دعوة جديد.'
+                      : 'Legacy friend QR is no longer supported. Ask for a new invite QR.',
+                ),
+              ),
+            );
+          }
           return;
         }
         if (host == 'chat') {
-          final groupId = (uri.queryParameters['group_id'] ?? '').trim();
-          final mid = (uri.queryParameters['mid'] ?? '').trim();
-          if (groupId.isNotEmpty) {
-            String groupName = groupId;
-            try {
-              final cached = await ChatLocalStore().loadGroupName(groupId);
-              if (cached != null && cached.trim().isNotEmpty) {
-                groupName = cached.trim();
-              }
-            } catch (_) {}
-            _navPush(
-              GroupChatPage(
-                baseUrl: _baseUrl,
-                groupId: groupId,
-                groupName: groupName,
-                initialMessageId: mid.isNotEmpty ? mid : null,
-              ),
-            );
-            return;
-          }
-
-          String peerId = (uri.queryParameters['peer_id'] ?? '').trim();
-          final senderHint = (uri.queryParameters['sender_hint'] ?? '').trim();
-          if (peerId.isEmpty) {
-            final segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-            if (segs.isNotEmpty) peerId = segs.last.trim();
-          }
-          if (peerId.isEmpty && senderHint.isNotEmpty) {
-            try {
-              final contacts = await ChatLocalStore().loadContacts();
-              final match = contacts
-                  .where((c) => c.fingerprint == senderHint)
-                  .cast<ChatContact?>()
-                  .firstWhere((c) => c != null, orElse: () => null);
-              if (match != null && match.id.trim().isNotEmpty) {
-                peerId = match.id.trim();
-              }
-            } catch (_) {}
-          }
-          if (peerId.isEmpty) return;
+          // Hardening: disable rich chat deep-links (peer/group/message). This
+          // avoids stable-identifier link sharing and enforces invite-capability
+          // contact onboarding.
           _navPush(
-            ThreemaChatPage(
+            ShamellChatPage(
               baseUrl: _baseUrl,
-              initialPeerId: peerId,
-              initialMessageId: mid.isNotEmpty ? mid : null,
             ),
           );
           return;
@@ -5936,27 +5741,22 @@ class _HomePageState extends State<HomePage> {
             return;
           }
         }
-        if (host == 'stickers') {
-          final segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-          String? packId;
-          if (segs.isNotEmpty) {
-            if (segs.length >= 2 && segs.first.toLowerCase() == 'pack') {
-              packId = segs[1];
-            } else {
-              packId = segs.last;
+        if (host == 'official') {
+          if (!_caps.officialAccounts) {
+            final l = L10n.of(context);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    l.isArabic
+                        ? 'هذه الميزة غير متاحة على هذا الخادم.'
+                        : 'This feature is not available on this server.',
+                  ),
+                ),
+              );
             }
-          } else {
-            packId = uri.queryParameters['pack_id'];
-          }
-          if (packId != null && packId.isNotEmpty) {
-            _openStickerPackDeepLink(packId);
             return;
           }
-          // Fallback: open generic sticker store.
-          _navPush(StickerStorePage(baseUrl: _baseUrl));
-          return;
-        }
-        if (host == 'official') {
           final segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
           if (segs.isEmpty) return;
           final accountId = segs.first;
@@ -5972,6 +5772,21 @@ class _HomePageState extends State<HomePage> {
           return;
         }
         if (host == 'moments') {
+          if (!_caps.moments) {
+            final l = L10n.of(context);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    l.isArabic
+                        ? 'هذه الميزة غير متاحة على هذا الخادم.'
+                        : 'This feature is not available on this server.',
+                  ),
+                ),
+              );
+            }
+            return;
+          }
           final postId = uri.queryParameters['post_id'];
           final focus = (uri.queryParameters['focus'] ?? '').toLowerCase();
           final focusComments =
@@ -6005,7 +5820,7 @@ class _HomePageState extends State<HomePage> {
         onOpenChat: (peerId) {
           if (peerId.isEmpty) return;
           _navPush(
-            ThreemaChatPage(
+            ShamellChatPage(
               baseUrl: _baseUrl,
               initialPeerId: peerId,
             ),
@@ -6020,42 +5835,44 @@ class _HomePageState extends State<HomePage> {
     bool focusComments = false,
     String? commentId,
   }) {
+    if (!_caps.moments) {
+      final l = L10n.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            l.isArabic
+                ? 'اللحظات غير متاحة حالياً.'
+                : 'Moments are not available right now.',
+          ),
+        ),
+      );
+      return;
+    }
     _navPush(
       MomentsPage(
         baseUrl: _baseUrl,
         initialPostId: postId,
         focusComments: focusComments,
         initialCommentId: commentId,
-        onOpenOfficialDirectory: (ctx) {
-          _navPush(
-            OfficialAccountsPage(
-              baseUrl: _baseUrl,
-              initialCityFilter: _officialStripCityLabel,
-              onOpenChat: (peerId) {
-                if (peerId.isEmpty) return;
+        onOpenOfficialDirectory: _caps.officialAccounts
+            ? (ctx) {
                 _navPush(
-                  ThreemaChatPage(
+                  OfficialAccountsPage(
                     baseUrl: _baseUrl,
-                    initialPeerId: peerId,
+                    initialCityFilter: _officialStripCityLabel,
+                    onOpenChat: (peerId) {
+                      if (peerId.isEmpty) return;
+                      _navPush(
+                        ShamellChatPage(
+                          baseUrl: _baseUrl,
+                          initialPeerId: peerId,
+                        ),
+                      );
+                    },
                   ),
                 );
-              },
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  void _openStickerPackDeepLink(String packId) {
-    if (packId.isEmpty) {
-      _navPush(StickerStorePage(baseUrl: _baseUrl));
-      return;
-    }
-    _navPush(
-      StickerStorePage(
-        baseUrl: _baseUrl,
-        initialPackId: packId,
+              }
+            : null,
       ),
     );
   }
@@ -6070,7 +5887,7 @@ class _HomePageState extends State<HomePage> {
         onOpenChat: (peerId) {
           if (peerId.isEmpty) return;
           _navPush(
-            ThreemaChatPage(
+            ShamellChatPage(
               baseUrl: _baseUrl,
               initialPeerId: peerId,
             ),
@@ -6144,7 +5961,7 @@ class _HomePageState extends State<HomePage> {
       launchUrl(Uri.parse('tel:+963996428955'));
     } catch (_) {}
   }
-  // NOTE: support call number aligned with current superadmin phone.
+  // NOTE: support call number. Do not use phone numbers as authorization.
 
   Future<void> _loadRoles() async {
     try {
@@ -6164,7 +5981,7 @@ class _HomePageState extends State<HomePage> {
         final storedIsSuper = sp.getBool('is_superadmin') ?? false;
         if (mounted) {
           final baseShowOps = _computeShowOps(roles, _appMode);
-          final showSuper = storedIsSuper || phone == kSuperadminPhone;
+          final showSuper = storedIsSuper;
           final showOps = baseShowOps || showSuper;
           setState(() {
             _roles = roles;
@@ -6180,8 +5997,20 @@ class _HomePageState extends State<HomePage> {
     final id = mod.trim().toLowerCase();
     if (id.isEmpty) return;
 
+    final l = L10n.of(context);
+    void blocked({required String en, required String ar}) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l.isArabic ? ar : en)),
+      );
+    }
+
     // Native modules: keep Payments + Chat fully integrated.
     if (id == 'chat') {
+      if (!_caps.chat) {
+        blocked(en: 'Chat is disabled on this server.', ar: 'الدردشة معطّلة على هذا الخادم.');
+        return;
+      }
       if (mounted) {
         setState(() {
           _tabIndex = 0;
@@ -6190,8 +6019,21 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     if (id == 'payments' || id == 'pay' || id == 'wallet') {
+      if (!_caps.payments) {
+        blocked(
+          en: 'Payments are disabled on this server.',
+          ar: 'المدفوعات معطّلة على هذا الخادم.',
+        );
+        return;
+      }
       _quickP2P();
       return;
+    }
+    if (id == 'bus') {
+      if (!_caps.bus) {
+        blocked(en: 'Bus is disabled on this server.', ar: 'خدمة الحافلات معطّلة على هذا الخادم.');
+        return;
+      }
     }
     final api = SuperappAPI(
       baseUrl: _baseUrl,
@@ -6210,6 +6052,13 @@ class _HomePageState extends State<HomePage> {
     }
 
     unawaited(_recordModuleUse(id));
+    if (!_caps.miniPrograms || !_pluginShowMiniPrograms) {
+      blocked(
+        en: 'Mini programs are disabled on this server.',
+        ar: 'البرامج المصغرة معطّلة على هذا الخادم.',
+      );
+      return;
+    }
     _navPush(
       MiniProgramPage(
         id: id,
@@ -6255,7 +6104,7 @@ class _HomePageState extends State<HomePage> {
     return map;
   }
 
-  Future<void> _openWeChatScanAndHandle() async {
+  Future<void> _openShamellScanAndHandle() async {
     try {
       final res = await Navigator.of(context).push<String?>(
         MaterialPageRoute(builder: (_) => const ScanPage()),
@@ -6263,7 +6112,7 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       _loadUnreadBadge();
       _loadMomentsNotifications();
-      unawaited(_loadWeChatPluginsPrefs());
+      unawaited(_loadShamellPluginsPrefs());
       final raw = (res ?? '').trim();
       if (raw.isEmpty) return;
       await _handleScanResult(raw);
@@ -6412,7 +6261,7 @@ class _HomePageState extends State<HomePage> {
     await _showScanResultSheet(text);
   }
 
-  Future<void> _scanMiniAppQr() => _openWeChatScanAndHandle();
+  Future<void> _scanMiniAppQr() => _openShamellScanAndHandle();
 
   Future<void> _recordModuleUse(String moduleId) async {
     try {
@@ -6511,7 +6360,7 @@ class _HomePageState extends State<HomePage> {
         final prev = (nextSeen[id] ?? '').trim();
         if (prev.isEmpty) {
           // Treat the current release as "seen" so we only badge when a newer
-          // release appears later (WeChat-style red dot behaviour).
+          // release appears later (Shamell-style red dot behaviour).
           nextSeen[id] = rel;
           seenChanged = true;
           continue;
@@ -6651,7 +6500,7 @@ class _HomePageState extends State<HomePage> {
       );
     }
     // Fallback: treat as pinned Mini‑Program runtime app_id so it still
-    // appears in the Discover row WeChat‑style.
+    // appears in the Discover row Shamell‑style.
     final isArabic = l.isArabic;
     final label = isArabic ? 'برنامج مصغّر $id' : 'Mini‑program $id';
     return Padding(
@@ -6675,57 +6524,167 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _loadWeChatPluginsPrefs() async {
+  Future<void> _loadShamellPluginsPrefs() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      final showMoments = sp.getBool(_kWeChatPluginShowMoments) ?? true;
-      final showChannels = sp.getBool(_kWeChatPluginShowChannels) ?? true;
-      final showScan = sp.getBool(_kWeChatPluginShowScan) ?? true;
-      final showPeopleNearby =
-          sp.getBool(_kWeChatPluginShowPeopleNearby) ?? true;
+      final showMoments = sp.getBool(_kShamellPluginShowMoments) ?? true;
+      final showChannels = sp.getBool(_kShamellPluginShowChannels) ?? true;
+      final showScan = sp.getBool(_kShamellPluginShowScan) ?? true;
       final showMiniPrograms =
-          sp.getBool(_kWeChatPluginShowMiniPrograms) ?? true;
-      final showCardsOffers = sp.getBool(_kWeChatPluginShowCardsOffers) ?? true;
-      final showStickers = sp.getBool(_kWeChatPluginShowStickers) ?? true;
+          sp.getBool(_kShamellPluginShowMiniPrograms) ?? true;
+      final showCardsOffers =
+          sp.getBool(_kShamellPluginShowCardsOffers) ?? true;
       if (!mounted) return;
       setState(() {
         _pluginShowMoments = showMoments;
         _pluginShowChannels = showChannels;
         _pluginShowScan = showScan;
-        _pluginShowPeopleNearby = showPeopleNearby;
         _pluginShowMiniPrograms = showMiniPrograms;
         _pluginShowCardsOffers = showCardsOffers;
-        _pluginShowStickers = showStickers;
       });
     } catch (_) {}
   }
 
-  void _navPush(Widget page, {VoidCallback? onReturn}) {
-    Navigator.of(context)
-        .push(PageRouteBuilder(
-      transitionDuration: const Duration(milliseconds: 240),
-      pageBuilder: (context, animation, secondaryAnimation) => FadeTransition(
-        opacity: animation,
-        child: ScaleTransition(
-            scale: Tween<double>(begin: 0.98, end: 1).animate(animation),
-            child: page),
+  bool _requiresAuthSessionForPage(Widget page) {
+    return page is OfficialAccountsPage ||
+        page is ChannelsPage ||
+        page is OfficialNotificationsDebugPage ||
+        page is OfficialTemplateMessagesPage ||
+        page is MyMiniProgramsPage ||
+        page is MiniProgramsDiscoverPage ||
+        page is MiniProgramPage;
+  }
+
+  Future<bool> _ensureAuthSessionForGuardedNav() async {
+    final cookie = (await _getCookie())?.trim() ?? '';
+    if (cookie.isNotEmpty) return true;
+    if (!mounted) return false;
+    final l = L10n.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          l.isArabic
+              ? 'هذه الصفحة تتطلب تسجيل الدخول أولاً.'
+              : 'This page requires sign in first.',
+        ),
+        action: SnackBarAction(
+          label: l.isArabic ? 'تسجيل الدخول' : 'Sign in',
+          onPressed: () {
+            if (!mounted) return;
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LoginPage()),
+            );
+          },
+        ),
       ),
-    ))
-        .then((_) {
-      _loadUnreadBadge();
-      _loadMomentsNotifications();
-      unawaited(_loadWeChatPluginsPrefs());
-      onReturn?.call();
-    });
+    );
+    return false;
+  }
+
+  void _navPush(Widget page, {VoidCallback? onReturn}) {
+    unawaited(_navPushGuarded(page, onReturn: onReturn));
+  }
+
+  Future<void> _navPushGuarded(Widget page, {VoidCallback? onReturn}) async {
+    if (_requiresAuthSessionForPage(page) &&
+        !await _ensureAuthSessionForGuardedNav()) {
+      return;
+    }
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 240),
+        pageBuilder: (context, animation, secondaryAnimation) => FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.98, end: 1).animate(animation),
+            child: page,
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    _loadUnreadBadge();
+    _loadMomentsNotifications();
+    unawaited(_loadShamellPluginsPrefs());
+    onReturn?.call();
   }
 
   Future<void> _logout() async {
+    String? cookie;
     try {
-      final cookie = await _getCookie();
-      await _clearCookie();
+      cookie = await _getCookie();
       final uri = Uri.parse('$_baseUrl/auth/logout');
       await http.post(uri, headers: {'Cookie': cookie ?? ''});
     } catch (_) {}
+    await wipeLocalAccountData(preserveDevicePrefs: true);
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _logoutForgetDevice() async {
+    final l = L10n.of(context);
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(l.menuLogoutForgetDeviceConfirmTitle),
+            content: Text(l.menuLogoutForgetDeviceConfirmBody),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: Text(l.shamellDialogCancel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFA5151),
+                  foregroundColor: Colors.white,
+                ),
+                child: Text(l.menuLogoutForgetDeviceConfirmAction),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+
+    var cookie = '';
+    try {
+      cookie = (await _getCookie())?.trim() ?? '';
+    } catch (_) {}
+
+    // Best-effort: remove this device server-side (revokes its sessions).
+    try {
+      final did = (await loadStableDeviceId() ?? '').trim();
+      if (did.isNotEmpty) {
+        final uri =
+            Uri.parse('$_baseUrl/auth/devices/${Uri.encodeComponent(did)}');
+        await http.delete(
+          uri,
+          headers: {
+            if (cookie.isNotEmpty) 'cookie': cookie,
+          },
+        );
+      }
+    } catch (_) {}
+
+    // Best-effort: clear server session cookie.
+    try {
+      final uri = Uri.parse('$_baseUrl/auth/logout');
+      await http.post(
+        uri,
+        headers: {
+          if (cookie.isNotEmpty) 'cookie': cookie,
+        },
+      );
+    } catch (_) {}
+
+    await wipeLocalForForgetDevice();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginPage()),

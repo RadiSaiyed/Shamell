@@ -68,7 +68,7 @@ class _VoipCallPageState extends State<VoipCallPage> {
       final devId = await CallSignalingClient.loadDeviceId();
       if (!mounted) return;
       if (devId == null || devId.isEmpty) {
-        // No Mirsaal identity yet; keep call UI local-only.
+        // No Shamell identity yet; keep call UI local-only.
         return;
       }
       _deviceId = devId;

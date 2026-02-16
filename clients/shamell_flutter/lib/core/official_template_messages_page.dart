@@ -48,9 +48,9 @@ class _OfficialTemplateMessagesPageState
       headers['content-type'] = 'application/json';
     }
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -73,7 +73,11 @@ class _OfficialTemplateMessagesPageState
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = 'HTTP ${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -150,17 +154,9 @@ class _OfficialTemplateMessagesPageState
         final p = payload;
         if (p != null) {
           final rawSection = p['section'];
-          final rawCampaign = p['campaign'];
           final rawLabel = p['label'];
           if (rawSection is String && rawSection.trim().isNotEmpty) {
-            final sec = rawSection.trim();
-            if (sec.toLowerCase() == 'redpacket' &&
-                rawCampaign is String &&
-                rawCampaign.trim().isNotEmpty) {
-              initialSection = 'redpacket:${rawCampaign.trim()}';
-            } else {
-              initialSection = sec;
-            }
+            initialSection = rawSection.trim();
           }
           if (rawLabel is String && rawLabel.trim().isNotEmpty) {
             contextLabel = rawLabel.trim();

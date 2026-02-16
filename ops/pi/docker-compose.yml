@@ -1,43 +1,30 @@
 services:
-  bootstrap-perms:
-    image: alpine:3.19
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - FOWNER
-      - DAC_OVERRIDE
-    read_only: true
-    tmpfs:
-      - /tmp
-    network_mode: none
-    command:
-      - /bin/sh
-      - -ceu
-      - |
-        uid=10001
-        gid=10001
-
-        # Ensure the runtime UID/GID can write service volumes.
-        for d in /vol/bff_data /vol/chat_data /vol/payments_data /vol/bus_data; do
-          [ -d "$$d" ] || continue
-          owner="$$(stat -c '%u:%g' "$$d" 2>/dev/null || true)"
-          if [ "$$owner" = "$$uid:$$gid" ]; then
-            continue
-          fi
-          echo "Fixing ownership: $$d -> $${uid}:$${gid} (was $${owner:-unknown})" >&2
-          chown -R "$${uid}:$${gid}" "$$d"
-        done
+  db:
+    image: postgres:16-alpine@sha256:97ff59a4e30e08d1c11bdcd9455e7832368c0572b576c9092cde2df4ae5552a3
+    init: true
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER in ops/pi/.env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ops/pi/.env}"
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+      POSTGRES_DB_CORE: "${POSTGRES_DB_CORE:-shamell_core}"
+      POSTGRES_DB_CHAT: "${POSTGRES_DB_CHAT:-shamell_chat}"
+      POSTGRES_DB_PAYMENTS: "${POSTGRES_DB_PAYMENTS:-shamell_payments}"
+      POSTGRES_DB_BUS: "${POSTGRES_DB_BUS:-shamell_bus}"
     volumes:
-      - bff_data:/vol/bff_data
-      - chat_data:/vol/chat_data
-      - payments_data:/vol/payments_data
-      - bus_data:/vol/bus_data
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
 
   bff:
-    image: shamell-core:pi
+    build:
+      context: ../..
+      dockerfile: services_rs/bff_gateway/Dockerfile
+    image: shamell-bff-rs:pi
     init: true
     security_opt:
       - no-new-privileges:true
@@ -48,68 +35,87 @@ services:
       - /tmp
     environment:
       ENV: "${ENV:-prod}"
-      HOME: "/tmp"
-      TMPDIR: "/tmp"
-      XDG_CACHE_HOME: "/tmp/.cache"
-      DB_URL: "${DB_URL:-sqlite+pysqlite:////data/core.db}"
+      SHAMELL_DEPLOYMENT_PROFILE: "${SHAMELL_DEPLOYMENT_PROFILE:-ops-pi}"
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8080"
+      DB_URL: "${DB_URL:?set DB_URL (postgres) in ops/pi/.env}"
       INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
+      BFF_SECURITY_ALERT_ALLOWED_CALLERS: "${BFF_SECURITY_ALERT_ALLOWED_CALLERS:-security-reporter}"
+      BFF_INTERNAL_SERVICE_ID: "${BFF_INTERNAL_SERVICE_ID:-bff}"
       PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      CHAT_INTERNAL_SECRET: "${CHAT_INTERNAL_SECRET:?set CHAT_INTERNAL_SECRET in ops/pi/.env}"
       BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in ops/pi/.env}"
+      BFF_REQUIRE_INTERNAL_SECRET: "${BFF_REQUIRE_INTERNAL_SECRET:-true}"
+      BFF_ENFORCE_ROUTE_AUTHZ: "${BFF_ENFORCE_ROUTE_AUTHZ:-true}"
+      CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-true}"
+      AUTH_ACCEPT_LEGACY_SESSION_COOKIE: "${AUTH_ACCEPT_LEGACY_SESSION_COOKIE:-false}"
+      AUTH_DEVICE_LOGIN_WEB_ENABLED: "${AUTH_DEVICE_LOGIN_WEB_ENABLED:-false}"
+      SECURITY_HEADERS_ENABLED: "${SECURITY_HEADERS_ENABLED:-true}"
+      HSTS_ENABLED: "${HSTS_ENABLED:-true}"
+      CSP_ENABLED: "${CSP_ENABLED:-true}"
+      BFF_ROLE_HEADER_SECRET: "${BFF_ROLE_HEADER_SECRET:-}"
       CHAT_BASE_URL: "${CHAT_BASE_URL:-http://chat:8081}"
       PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
       BUS_BASE_URL: "${BUS_BASE_URL:-http://bus:8083}"
-      BUS_INTERNAL_MODE: "off"
-      FORCE_INTERNAL_DOMAINS: "false"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
-      CSRF_GUARD_ENABLED: "${CSRF_GUARD_ENABLED:-true}"
-      RATE_STORE_MAX_KEYS: "${RATE_STORE_MAX_KEYS:-20000}"
-      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
-      EXPOSE_PAYMENTS_ROUTER: "${EXPOSE_PAYMENTS_ROUTER:-false}"
-      EXPOSE_CHAT_ROUTER: "${EXPOSE_CHAT_ROUTER:-false}"
-      ENABLE_WALLET_WS_IN_PROD: "${ENABLE_WALLET_WS_IN_PROD:-false}"
-      METRICS_INGEST_SECRET: "${METRICS_INGEST_SECRET:-}"
-      AUTH_EXPOSE_CODES: "${AUTH_EXPOSE_CODES:-false}"
-      ALIAS_EXPOSE_CODE: "${ALIAS_EXPOSE_CODE:-false}"
-      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-auto}"
-      TRUST_PRIVATE_PROXY_HOPS: "${TRUST_PRIVATE_PROXY_HOPS:-true}"
-      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
-      # UnifiedPush callback guardrails (SSRF prevention)
-      PUSH_ALLOWED_HOSTS: "${PUSH_ALLOWED_HOSTS:-}"
-      PUSH_ALLOW_HTTP: "${PUSH_ALLOW_HTTP:-false}"
-      PUSH_ALLOW_PRIVATE_IPS: "${PUSH_ALLOW_PRIVATE_IPS:-false}"
-      PUSH_VALIDATE_DNS: "${PUSH_VALIDATE_DNS:-true}"
-      PUSH_MAX_ENDPOINT_LEN: "${PUSH_MAX_ENDPOINT_LEN:-2048}"
-      # CPU-bound fleet helper caps
-      FLEET_MAX_STOPS: "${FLEET_MAX_STOPS:-200}"
-      FLEET_MAX_DEPOTS: "${FLEET_MAX_DEPOTS:-50}"
-      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:-}"
-      PAY_API_RATE_WINDOW_SECS: "${PAY_API_RATE_WINDOW_SECS:-60}"
-      PAY_API_REQ_WRITE_MAX_PER_WALLET: "${PAY_API_REQ_WRITE_MAX_PER_WALLET:-45}"
-      PAY_API_REQ_WRITE_MAX_PER_IP: "${PAY_API_REQ_WRITE_MAX_PER_IP:-180}"
-      PAY_API_REQ_READ_MAX_PER_WALLET: "${PAY_API_REQ_READ_MAX_PER_WALLET:-180}"
-      PAY_API_REQ_READ_MAX_PER_IP: "${PAY_API_REQ_READ_MAX_PER_IP:-700}"
-      PAY_API_FAV_WRITE_MAX_PER_WALLET: "${PAY_API_FAV_WRITE_MAX_PER_WALLET:-30}"
-      PAY_API_FAV_WRITE_MAX_PER_IP: "${PAY_API_FAV_WRITE_MAX_PER_IP:-120}"
-      PAY_API_FAV_READ_MAX_PER_WALLET: "${PAY_API_FAV_READ_MAX_PER_WALLET:-180}"
-      PAY_API_FAV_READ_MAX_PER_IP: "${PAY_API_FAV_READ_MAX_PER_IP:-700}"
-      PAY_API_RESOLVE_MAX_PER_WALLET: "${PAY_API_RESOLVE_MAX_PER_WALLET:-15}"
-      PAY_API_RESOLVE_MAX_PER_IP: "${PAY_API_RESOLVE_MAX_PER_IP:-90}"
-      # Chat edge abuse controls (BFF)
-      CHAT_RATE_WINDOW_SECS: "${CHAT_RATE_WINDOW_SECS:-60}"
-      CHAT_REGISTER_MAX_PER_IP: "${CHAT_REGISTER_MAX_PER_IP:-25}"
-      CHAT_SEND_MAX_PER_DEVICE: "${CHAT_SEND_MAX_PER_DEVICE:-120}"
-      CHAT_SEND_MAX_PER_IP: "${CHAT_SEND_MAX_PER_IP:-300}"
-      # Chat WebSocket abuse controls (BFF)
-      CHAT_WS_CONNECT_WINDOW_SECS: "${CHAT_WS_CONNECT_WINDOW_SECS:-60}"
-      CHAT_WS_CONNECT_MAX_PER_IP: "${CHAT_WS_CONNECT_MAX_PER_IP:-60}"
-      CHAT_WS_MAX_ACTIVE_PER_IP: "${CHAT_WS_MAX_ACTIVE_PER_IP:-20}"
-      CHAT_WS_MAX_ACTIVE_PER_DEVICE: "${CHAT_WS_MAX_ACTIVE_PER_DEVICE:-3}"
-      SECURITY_ALERT_WEBHOOK_URL: "${SECURITY_ALERT_WEBHOOK_URL:-}"
-      SECURITY_ALERT_WINDOW_SECS: "${SECURITY_ALERT_WINDOW_SECS:-300}"
-      SECURITY_ALERT_COOLDOWN_SECS: "${SECURITY_ALERT_COOLDOWN_SECS:-600}"
-      SECURITY_ALERT_THRESHOLDS: "${SECURITY_ALERT_THRESHOLDS:-payments_transfer_wallet_mismatch:4,alias_request_wallet_mismatch:4,alias_request_user_override_blocked:4,favorites_owner_wallet_mismatch:4,payments_request_from_wallet_mismatch:4,payments_edge_rate_limit_wallet:25,payments_edge_rate_limit_ip:40}"
-      # LiveKit (publicly reachable, but joining requires server-minted tokens)
+      AUTH_ACCOUNT_CREATE_WINDOW_SECS: "${AUTH_ACCOUNT_CREATE_WINDOW_SECS:-86400}"
+      AUTH_ACCOUNT_CREATE_MAX_PER_IP: "${AUTH_ACCOUNT_CREATE_MAX_PER_IP:-500}"
+      AUTH_ACCOUNT_CREATE_MAX_PER_DEVICE: "${AUTH_ACCOUNT_CREATE_MAX_PER_DEVICE:-3}"
+      AUTH_ACCOUNT_CREATE_ENABLED: "${AUTH_ACCOUNT_CREATE_ENABLED:-true}"
+      AUTH_ACCOUNT_CREATE_POW_ENABLED: "${AUTH_ACCOUNT_CREATE_POW_ENABLED:-true}"
+      AUTH_ACCOUNT_CREATE_POW_TTL_SECS: "${AUTH_ACCOUNT_CREATE_POW_TTL_SECS:-300}"
+      AUTH_ACCOUNT_CREATE_POW_DIFFICULTY_BITS: "${AUTH_ACCOUNT_CREATE_POW_DIFFICULTY_BITS:-18}"
+      AUTH_ACCOUNT_CREATE_POW_SECRET: "${AUTH_ACCOUNT_CREATE_POW_SECRET:-}"
+      AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED: "${AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED:-true}"
+      AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION: "${AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION:-true}"
+      AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_TEAM_ID: "${AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_TEAM_ID:-}"
+      AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_KEY_ID: "${AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_KEY_ID:-}"
+      AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_PRIVATE_KEY_P8_B64: "${AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_PRIVATE_KEY_P8_B64:-}"
+      AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON_B64: "${AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON_B64:-}"
+      AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_ALLOWED_PACKAGE_NAMES: "${AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_ALLOWED_PACKAGE_NAMES:-}"
+      AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_STRONG_INTEGRITY: "${AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_STRONG_INTEGRITY:-true}"
+      AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_PLAY_RECOGNIZED: "${AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_PLAY_RECOGNIZED:-true}"
+      AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_LICENSED: "${AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_LICENSED:-false}"
+      AUTH_ACCOUNT_CREATE_CHALLENGE_WINDOW_SECS: "${AUTH_ACCOUNT_CREATE_CHALLENGE_WINDOW_SECS:-300}"
+      AUTH_ACCOUNT_CREATE_CHALLENGE_MAX_PER_IP: "${AUTH_ACCOUNT_CREATE_CHALLENGE_MAX_PER_IP:-2000}"
+      AUTH_ACCOUNT_CREATE_CHALLENGE_MAX_PER_DEVICE: "${AUTH_ACCOUNT_CREATE_CHALLENGE_MAX_PER_DEVICE:-60}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.shamell.online,online.shamell.online}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://online.shamell.online,https://shamell.online}"
+      AUTH_BIOMETRIC_TOKEN_TTL_SECS: "${AUTH_BIOMETRIC_TOKEN_TTL_SECS:-31536000}"
+      AUTH_BIOMETRIC_LOGIN_WINDOW_SECS: "${AUTH_BIOMETRIC_LOGIN_WINDOW_SECS:-300}"
+      AUTH_BIOMETRIC_LOGIN_MAX_PER_IP: "${AUTH_BIOMETRIC_LOGIN_MAX_PER_IP:-60}"
+      AUTH_BIOMETRIC_LOGIN_MAX_PER_DEVICE: "${AUTH_BIOMETRIC_LOGIN_MAX_PER_DEVICE:-30}"
+      AUTH_CHAT_REGISTER_WINDOW_SECS: "${AUTH_CHAT_REGISTER_WINDOW_SECS:-300}"
+      AUTH_CHAT_REGISTER_MAX_PER_IP: "${AUTH_CHAT_REGISTER_MAX_PER_IP:-40}"
+      AUTH_CHAT_REGISTER_MAX_PER_DEVICE: "${AUTH_CHAT_REGISTER_MAX_PER_DEVICE:-20}"
+      AUTH_CHAT_GET_DEVICE_WINDOW_SECS: "${AUTH_CHAT_GET_DEVICE_WINDOW_SECS:-300}"
+      AUTH_CHAT_GET_DEVICE_MAX_PER_IP: "${AUTH_CHAT_GET_DEVICE_MAX_PER_IP:-80}"
+      AUTH_CHAT_GET_DEVICE_MAX_PER_DEVICE: "${AUTH_CHAT_GET_DEVICE_MAX_PER_DEVICE:-40}"
+      AUTH_CHAT_MAILBOX_WRITE_WINDOW_SECS: "${AUTH_CHAT_MAILBOX_WRITE_WINDOW_SECS:-60}"
+      AUTH_CHAT_MAILBOX_WRITE_MAX_PER_IP: "${AUTH_CHAT_MAILBOX_WRITE_MAX_PER_IP:-2000}"
+      AUTH_CHAT_MAILBOX_WRITE_MAX_PER_DEVICE: "${AUTH_CHAT_MAILBOX_WRITE_MAX_PER_DEVICE:-120}"
+      AUTH_CHAT_MAILBOX_WRITE_MAX_PER_MAILBOX: "${AUTH_CHAT_MAILBOX_WRITE_MAX_PER_MAILBOX:-60}"
+      AUTH_DEVICE_LOGIN_WINDOW_SECS: "${AUTH_DEVICE_LOGIN_WINDOW_SECS:-300}"
+      AUTH_DEVICE_LOGIN_START_MAX_PER_IP: "${AUTH_DEVICE_LOGIN_START_MAX_PER_IP:-30}"
+      AUTH_DEVICE_LOGIN_REDEEM_MAX_PER_IP: "${AUTH_DEVICE_LOGIN_REDEEM_MAX_PER_IP:-60}"
+      AUTH_DEVICE_LOGIN_APPROVE_MAX_PER_PHONE: "${AUTH_DEVICE_LOGIN_APPROVE_MAX_PER_PHONE:-30}"
+      AUTH_DEVICE_LOGIN_REDEEM_MAX_PER_TOKEN: "${AUTH_DEVICE_LOGIN_REDEEM_MAX_PER_TOKEN:-30}"
+      AUTH_DEVICE_LOGIN_APPROVE_MAX_PER_TOKEN: "${AUTH_DEVICE_LOGIN_APPROVE_MAX_PER_TOKEN:-20}"
+      AUTH_CONTACT_INVITE_TTL_SECS: "${AUTH_CONTACT_INVITE_TTL_SECS:-86400}"
+      AUTH_CONTACT_INVITE_WINDOW_SECS: "${AUTH_CONTACT_INVITE_WINDOW_SECS:-300}"
+      AUTH_CONTACT_INVITE_CREATE_MAX_PER_IP: "${AUTH_CONTACT_INVITE_CREATE_MAX_PER_IP:-40}"
+      AUTH_CONTACT_INVITE_CREATE_MAX_PER_PHONE: "${AUTH_CONTACT_INVITE_CREATE_MAX_PER_PHONE:-20}"
+      AUTH_CONTACT_INVITE_REDEEM_MAX_PER_IP: "${AUTH_CONTACT_INVITE_REDEEM_MAX_PER_IP:-200}"
+      AUTH_CONTACT_INVITE_REDEEM_MAX_PER_PHONE: "${AUTH_CONTACT_INVITE_REDEEM_MAX_PER_PHONE:-80}"
+      AUTH_CONTACT_INVITE_REDEEM_MAX_PER_TOKEN: "${AUTH_CONTACT_INVITE_REDEEM_MAX_PER_TOKEN:-10}"
+      AUTH_MAINTENANCE_INTERVAL_SECS: "${AUTH_MAINTENANCE_INTERVAL_SECS:-3600}"
+      AUTH_SESSION_IDLE_TTL_SECS: "${AUTH_SESSION_IDLE_TTL_SECS:-43200}"
+      AUTH_SESSION_CLEANUP_GRACE_SECS: "${AUTH_SESSION_CLEANUP_GRACE_SECS:-86400}"
+      AUTH_DEVICE_LOGIN_CLEANUP_GRACE_SECS: "${AUTH_DEVICE_LOGIN_CLEANUP_GRACE_SECS:-86400}"
+      AUTH_DEVICE_SESSION_RETENTION_SECS: "${AUTH_DEVICE_SESSION_RETENTION_SECS:-2592000}"
+      AUTH_RATE_LIMIT_RETENTION_SECS: "${AUTH_RATE_LIMIT_RETENTION_SECS:-86400}"
+      BFF_MAX_BODY_BYTES: "${BFF_MAX_BODY_BYTES:-1048576}"
+      BFF_MAX_UPSTREAM_BODY_BYTES: "${BFF_MAX_UPSTREAM_BODY_BYTES:-1048576}"
+      BFF_EXPOSE_UPSTREAM_ERRORS: "${BFF_EXPOSE_UPSTREAM_ERRORS:-false}"
       LIVEKIT_URL: "${LIVEKIT_URL:-ws://livekit:7880}"
       LIVEKIT_PUBLIC_URL: "${LIVEKIT_PUBLIC_URL:-}"
       LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
@@ -120,34 +126,30 @@ services:
       LIVEKIT_TOKEN_RATE_WINDOW_SECS: "${LIVEKIT_TOKEN_RATE_WINDOW_SECS:-60}"
       LIVEKIT_TOKEN_MAX_PER_PHONE: "${LIVEKIT_TOKEN_MAX_PER_PHONE:-30}"
       LIVEKIT_TOKEN_MAX_PER_IP: "${LIVEKIT_TOKEN_MAX_PER_IP:-80}"
-    volumes:
-      - bff_data:/data
     ports:
       - "${BFF_PUBLISH_ADDR:-127.0.0.1}:${BFF_PUBLISH_PORT:-8080}:8080"
-    command: ["uvicorn", "apps.bff.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
     depends_on:
-      bootstrap-perms:
-        condition: service_completed_successfully
+      db:
+        condition: service_healthy
       chat:
         condition: service_healthy
       payments:
         condition: service_healthy
       bus:
         condition: service_healthy
-    restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+      test: ["CMD", "curl", "-fsS", "-H", "Host: bff", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 3s
       retries: 12
       start_period: 20s
+    restart: unless-stopped
 
   chat:
-    image: shamell-core:pi
+    build:
+      context: ../..
+      dockerfile: services_rs/chat_service/Dockerfile
+    image: shamell-chat-rs:pi
     init: true
     security_opt:
       - no-new-privileges:true
@@ -158,35 +160,41 @@ services:
       - /tmp
     environment:
       ENV: "${ENV:-prod}"
-      HOME: "/tmp"
-      TMPDIR: "/tmp"
-      XDG_CACHE_HOME: "/tmp/.cache"
-      DB_URL: "sqlite+pysqlite:////data/chat.db"
-      INTERNAL_API_SECRET: "${INTERNAL_API_SECRET:?set INTERNAL_API_SECRET in ops/pi/.env}"
-      CHAT_REQUIRE_INTERNAL_SECRET: "true"
-      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
-    volumes:
-      - chat_data:/data
-    command: ["uvicorn", "apps.chat.app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8081"
+      CHAT_DB_URL: "${CHAT_DB_URL:?set CHAT_DB_URL (postgres) in ops/pi/.env}"
+      INTERNAL_API_SECRET: "${CHAT_INTERNAL_SECRET:?set CHAT_INTERNAL_SECRET in ops/pi/.env}"
+      CHAT_REQUIRE_INTERNAL_SECRET: "${CHAT_REQUIRE_INTERNAL_SECRET:-true}"
+      CHAT_ENFORCE_DEVICE_AUTH: "${CHAT_ENFORCE_DEVICE_AUTH:-true}"
+      CHAT_INTERNAL_ALLOWED_CALLERS: "${CHAT_INTERNAL_ALLOWED_CALLERS:-bff}"
+      CHAT_PROTOCOL_V2_ENABLED: "${CHAT_PROTOCOL_V2_ENABLED:-true}"
+      CHAT_PROTOCOL_V1_WRITE_ENABLED: "${CHAT_PROTOCOL_V1_WRITE_ENABLED:-false}"
+      CHAT_PROTOCOL_V1_READ_ENABLED: "${CHAT_PROTOCOL_V1_READ_ENABLED:-false}"
+      CHAT_PROTOCOL_REQUIRE_V2_FOR_GROUPS: "${CHAT_PROTOCOL_REQUIRE_V2_FOR_GROUPS:-true}"
+      CHAT_MAILBOX_API_ENABLED: "${CHAT_MAILBOX_API_ENABLED:-false}"
+      CHAT_MAILBOX_INACTIVE_RETENTION_SECS: "${CHAT_MAILBOX_INACTIVE_RETENTION_SECS:-86400}"
+      CHAT_MAILBOX_CONSUMED_RETENTION_SECS: "${CHAT_MAILBOX_CONSUMED_RETENTION_SECS:-3600}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.shamell.online,online.shamell.online}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://online.shamell.online,https://shamell.online}"
+      SECURITY_HEADERS_ENABLED: "${SECURITY_HEADERS_ENABLED:-true}"
+      HSTS_ENABLED: "${HSTS_ENABLED:-true}"
+      CSP_ENABLED: "${CSP_ENABLED:-true}"
     depends_on:
-      bootstrap-perms:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      db:
+        condition: service_healthy
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3).read()"
+      test: ["CMD", "curl", "-fsS", "-H", "Host: chat", "http://127.0.0.1:8081/health"]
       interval: 10s
       timeout: 3s
       retries: 12
       start_period: 20s
+    restart: unless-stopped
 
   payments:
-    image: shamell-core:pi
+    build:
+      context: ../..
+      dockerfile: services_rs/payments_service/Dockerfile
+    image: shamell-payments-rs:pi
     init: true
     security_opt:
       - no-new-privileges:true
@@ -197,44 +205,40 @@ services:
       - /tmp
     environment:
       ENV: "${ENV:-prod}"
-      HOME: "/tmp"
-      TMPDIR: "/tmp"
-      XDG_CACHE_HOME: "/tmp/.cache"
-      PAYMENTS_DB_URL: "${PAYMENTS_DB_URL:-sqlite+pysqlite:////data/payments.db}"
-      AUTO_CREATE_SCHEMA: "${AUTO_CREATE_SCHEMA:-true}"
-      RUN_ALEMBIC_ON_STARTUP: "${RUN_ALEMBIC_ON_STARTUP:-false}"
-      # IMPORTANT: payments uses INTERNAL_API_SECRET; point it to PAYMENTS_INTERNAL_SECRET
-      # so BFF-to-payments internal calls validate against the dedicated payments secret.
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8082"
+      PAYMENTS_DB_URL: "${PAYMENTS_DB_URL:?set PAYMENTS_DB_URL (postgres) in ops/pi/.env}"
       INTERNAL_API_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
-      PAYMENTS_REQUIRE_INTERNAL_SECRET: "true"
-      SONIC_SECRET: "${SONIC_SECRET:?set SONIC_SECRET in ops/pi/.env}"
-      TOPUP_SECRET: "${TOPUP_SECRET:?set TOPUP_SECRET in ops/pi/.env}"
-      ALIAS_CODE_PEPPER: "${ALIAS_CODE_PEPPER:?set ALIAS_CODE_PEPPER in ops/pi/.env}"
-      CASH_SECRET_PEPPER: "${CASH_SECRET_PEPPER:?set CASH_SECRET_PEPPER in ops/pi/.env}"
-      ADMIN_TOKEN_SHA256: "${ADMIN_TOKEN_SHA256:-}"
-      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
-    volumes:
-      - payments_data:/data
-    command: ["uvicorn", "apps.payments.app.main:app", "--host", "0.0.0.0", "--port", "8082"]
+      PAYMENTS_REQUIRE_INTERNAL_SECRET: "${PAYMENTS_REQUIRE_INTERNAL_SECRET:-true}"
+      PAYMENTS_INTERNAL_ALLOWED_CALLERS: "${PAYMENTS_INTERNAL_ALLOWED_CALLERS:-bff}"
+      BUS_PAYMENTS_INTERNAL_SECRET: "${BUS_PAYMENTS_INTERNAL_SECRET:?set BUS_PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.shamell.online,online.shamell.online}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://online.shamell.online,https://shamell.online}"
+      SECURITY_HEADERS_ENABLED: "${SECURITY_HEADERS_ENABLED:-true}"
+      HSTS_ENABLED: "${HSTS_ENABLED:-true}"
+      CSP_ENABLED: "${CSP_ENABLED:-true}"
+      DEFAULT_CURRENCY: "${DEFAULT_CURRENCY:-SYP}"
+      PAYMENTS_MAX_BODY_BYTES: "${PAYMENTS_MAX_BODY_BYTES:-1048576}"
+      PAYMENTS_ALLOW_DIRECT_TOPUP: "${PAYMENTS_ALLOW_DIRECT_TOPUP:-false}"
+      MERCHANT_FEE_BPS: "${MERCHANT_FEE_BPS:-150}"
+      FEE_WALLET_ACCOUNT_ID: "${FEE_WALLET_ACCOUNT_ID:-}"
+      FEE_WALLET_PHONE: "${FEE_WALLET_PHONE:-+963999999999}"
     depends_on:
-      bootstrap-perms:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      db:
+        condition: service_healthy
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=3).read()"
+      test: ["CMD", "curl", "-fsS", "-H", "Host: payments", "http://127.0.0.1:8082/health"]
       interval: 10s
       timeout: 3s
       retries: 12
       start_period: 20s
+    restart: unless-stopped
 
   bus:
-    image: shamell-core:pi
+    build:
+      context: ../..
+      dockerfile: services_rs/bus_service/Dockerfile
+    image: shamell-bus-rs:pi
     init: true
     security_opt:
       - no-new-privileges:true
@@ -245,36 +249,37 @@ services:
       - /tmp
     environment:
       ENV: "${ENV:-prod}"
-      HOME: "/tmp"
-      TMPDIR: "/tmp"
-      XDG_CACHE_HOME: "/tmp/.cache"
-      BUS_DB_URL: "${BUS_DB_URL:-sqlite+pysqlite:////data/bus.db}"
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8083"
+      BUS_DB_URL: "${BUS_DB_URL:?set BUS_DB_URL (postgres) in ops/pi/.env}"
       BUS_TICKET_SECRET: "${BUS_TICKET_SECRET:?set BUS_TICKET_SECRET in ops/pi/.env}"
       BUS_INTERNAL_SECRET: "${BUS_INTERNAL_SECRET:?set BUS_INTERNAL_SECRET in ops/pi/.env}"
-      BUS_REQUIRE_INTERNAL_SECRET: "true"
-      ENABLE_API_DOCS_IN_PROD: "${ENABLE_API_DOCS_IN_PROD:-false}"
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173}"
-    volumes:
-      - bus_data:/data
-    command: ["uvicorn", "apps.bus.app.main:app", "--host", "0.0.0.0", "--port", "8083"]
+      BUS_REQUIRE_INTERNAL_SECRET: "${BUS_REQUIRE_INTERNAL_SECRET:-true}"
+      BUS_INTERNAL_ALLOWED_CALLERS: "${BUS_INTERNAL_ALLOWED_CALLERS:-bff}"
+      BUS_INTERNAL_SERVICE_ID: "${BUS_INTERNAL_SERVICE_ID:-bus}"
+      BUS_MAX_BODY_BYTES: "${BUS_MAX_BODY_BYTES:-1048576}"
+      PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
+      BUS_PAYMENTS_INTERNAL_SECRET: "${BUS_PAYMENTS_INTERNAL_SECRET:?set BUS_PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.shamell.online,online.shamell.online}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://online.shamell.online,https://shamell.online}"
+      SECURITY_HEADERS_ENABLED: "${SECURITY_HEADERS_ENABLED:-true}"
+      HSTS_ENABLED: "${HSTS_ENABLED:-true}"
+      CSP_ENABLED: "${CSP_ENABLED:-true}"
     depends_on:
-      bootstrap-perms:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      db:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=3).read()"
+      test: ["CMD", "curl", "-fsS", "-H", "Host: bus", "http://127.0.0.1:8083/health"]
       interval: 10s
       timeout: 3s
       retries: 12
       start_period: 20s
+    restart: unless-stopped
 
   livekit:
-    image: livekit/livekit-server:v1.5.2
+    image: livekit/livekit-server:v1.5.2@sha256:fb032a59b5d926efae328ba46e54fba69cce5bd09cd4c8ed64d0302f6ed9c6cf
     init: true
     security_opt:
       - no-new-privileges:true
@@ -285,20 +290,16 @@ services:
       - /tmp
     command: ["--config", "/etc/livekit/livekit.yaml"]
     environment:
-      # Never allow dev defaults in prod/staging: if keys are unset, fail fast.
       LIVEKIT_KEYS: "{${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in ops/pi/.env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in ops/pi/.env}${LIVEKIT_KEYS_EXTRA:-}}"
     volumes:
       - ./livekit:/etc/livekit:ro
     ports:
-      # Serve LiveKit's HTTP/WebSocket API on localhost by default; terminate TLS in Nginx.
       - "${LIVEKIT_HTTP_PUBLISH_ADDR:-127.0.0.1}:${LIVEKIT_HTTP_PORT:-7880}:7880"
-      # RTC ports must be publicly reachable for WebRTC media.
-      - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
-      - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
+      # Best-practice default on the API host: keep RTC ports local.
+      # Run public LiveKit RTC on a dedicated host (see ops/livekit).
+      - "${LIVEKIT_RTC_PUBLISH_ADDR:-127.0.0.1}:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "${LIVEKIT_RTC_PUBLISH_ADDR:-127.0.0.1}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
     restart: unless-stopped
 
 volumes:
-  bff_data:
-  chat_data:
-  payments_data:
-  bus_data:
+  postgres_data:

@@ -18,15 +18,18 @@ import 'shamell_ui.dart';
 import 'mini_program_runtime.dart';
 import 'http_error.dart';
 
-Future<Map<String, String>> _hdrChannels({bool json = false}) async {
+Future<Map<String, String>> _hdrChannels({
+  required String baseUrl,
+  bool json = false,
+}) async {
   final headers = <String, String>{};
   if (json) {
     headers['content-type'] = 'application/json';
   }
   try {
-    final cookie = await getSessionCookie() ?? '';
+    final cookie = await getSessionCookieHeader(baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
+      headers['cookie'] = cookie;
     }
   } catch (_) {}
   return headers;
@@ -97,9 +100,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
       headers['content-type'] = 'application/json';
     }
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -308,14 +311,11 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                       );
                                       if (resp.statusCode < 200 ||
                                           resp.statusCode >= 300) {
-                                        String msg = 'HTTP ${resp.statusCode}';
-                                        try {
-                                          final decoded = jsonDecode(resp.body);
-                                          if (decoded is Map &&
-                                              decoded['detail'] != null) {
-                                            msg = decoded['detail'].toString();
-                                          }
-                                        } catch (_) {}
+                                        final msg = sanitizeHttpError(
+                                          statusCode: resp.statusCode,
+                                          rawBody: resp.body,
+                                          isArabic: l.isArabic,
+                                        );
                                         setModalState(() {
                                           submitting = false;
                                           error = msg;
@@ -386,7 +386,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       }
       final uri = Uri.parse('${widget.baseUrl}/channels/feed')
           .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdrChannels());
+      final r = await http.get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -431,7 +431,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/view',
       );
-      await http.post(uri, headers: await _hdrChannels());
+      await http.post(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
     } catch (_) {}
   }
 
@@ -443,7 +443,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       );
       final r = await http.post(
         uri,
-        headers: await _hdrChannels(json: true),
+        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(<String, dynamic>{}),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) return;
@@ -474,7 +474,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       );
       final r = await http.post(
         uri,
-        headers: await _hdrChannels(json: true),
+        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(<String, dynamic>{}),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) {
@@ -524,7 +524,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/accounts/${Uri.encodeComponent(accountId)}/$path',
       );
-      final r = await http.post(uri, headers: await _hdrChannels(json: true));
+      final r = await http.post(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true));
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -567,263 +567,11 @@ class _ChannelsPageState extends State<ChannelsPage> {
     } catch (_) {}
   }
 
-  Future<void> _sendGift(Map<String, dynamic> raw) async {
-    final l = L10n.of(context);
-    final theme = Theme.of(context);
-    final itemId = (raw['id'] ?? '').toString().trim();
-    final accId = (raw['official_account_id'] ?? '').toString().trim();
-    if (itemId.isEmpty || accId.isEmpty) return;
-    final giftsRaw = raw['gifts'];
-    final myGiftsRaw = raw['gifts_by_me'];
-    final gifts = giftsRaw is num ? giftsRaw.toInt() : 0;
-    final myGifts = myGiftsRaw is num ? myGiftsRaw.toInt() : 0;
-    int coins = 10;
-    bool submitting = false;
-    String? error;
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (ctx) {
-        final bottom = MediaQuery.of(ctx).viewInsets.bottom;
-        final l2 = L10n.of(ctx);
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 12,
-            right: 12,
-            top: 12,
-            bottom: bottom + 12,
-          ),
-          child: Material(
-            color: theme.cardColor,
-            borderRadius: BorderRadius.circular(12),
-            child: StatefulBuilder(
-              builder: (ctx2, setModalState) {
-                return Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.card_giftcard_outlined,
-                            size: 20,
-                            color: theme.colorScheme.primary
-                                .withValues(alpha: .85),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              l2.isArabic
-                                  ? 'إرسال هدية إلى هذه القناة'
-                                  : 'Send a gift to this channel',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close),
-                            onPressed: () => Navigator.of(ctx).pop(),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        l2.isArabic
-                            ? 'الهدايا عبارة عن عملات افتراضية صغيرة لدعم المقاطع، بأسلوب Shamell‑Channels.'
-                            : 'Gifts are small virtual coins to support clips, Shamell‑Channels style.',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontSize: 11,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .70),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          ChoiceChip(
-                            label: const Text('10'),
-                            selected: coins == 10,
-                            onSelected: (sel) {
-                              if (!sel) return;
-                              setModalState(() => coins = 10);
-                            },
-                          ),
-                          ChoiceChip(
-                            label: const Text('50'),
-                            selected: coins == 50,
-                            onSelected: (sel) {
-                              if (!sel) return;
-                              setModalState(() => coins = 50);
-                            },
-                          ),
-                          ChoiceChip(
-                            label: const Text('100'),
-                            selected: coins == 100,
-                            onSelected: (sel) {
-                              if (!sel) return;
-                              setModalState(() => coins = 100);
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      if (gifts > 0 || myGifts > 0)
-                        Text(
-                          l2.isArabic
-                              ? 'إجمالي الهدايا: $gifts · هداياك: $myGifts'
-                              : 'Total gifts: $gifts · Yours: $myGifts',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontSize: 11,
-                            color: theme.colorScheme.onSurface
-                                .withValues(alpha: .65),
-                          ),
-                        ),
-                      if (error != null && error!.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          error!,
-                          style: TextStyle(
-                            color: theme.colorScheme.error,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextButton(
-                              onPressed: submitting
-                                  ? null
-                                  : () => Navigator.of(ctx2).pop(),
-                              child: Text(
-                                l2.shamellDialogCancel,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: FilledButton.icon(
-                              icon: const Icon(Icons.card_giftcard_outlined),
-                              label: Text(
-                                submitting
-                                    ? (l2.isArabic
-                                        ? 'جارٍ الإرسال…'
-                                        : 'Sending…')
-                                    : (l2.isArabic
-                                        ? 'إرسال الهدية'
-                                        : 'Send gift'),
-                              ),
-                              onPressed: submitting
-                                  ? null
-                                  : () async {
-                                      setModalState(() {
-                                        submitting = true;
-                                        error = null;
-                                      });
-                                      try {
-                                        final uri = Uri.parse(
-                                            '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/gift');
-                                        final r = await http.post(
-                                          uri,
-                                          headers:
-                                              await _hdrChannels(json: true),
-                                          body: jsonEncode(<String, Object?>{
-                                            'account_id': accId,
-                                            'coins': coins,
-                                          }),
-                                        );
-                                        if (r.statusCode < 200 ||
-                                            r.statusCode >= 300) {
-                                          String msg = 'HTTP ${r.statusCode}';
-                                          try {
-                                            final body =
-                                                jsonDecode(r.body) as Map;
-                                            final d = body['detail'];
-                                            if (d is String &&
-                                                d.trim().isNotEmpty) {
-                                              msg = d;
-                                            }
-                                          } catch (_) {}
-                                          setModalState(() {
-                                            submitting = false;
-                                            error = msg;
-                                          });
-                                          return;
-                                        }
-                                        if (mounted) {
-                                          setState(() {
-                                            for (var i = 0;
-                                                i < _items.length;
-                                                i++) {
-                                              final it = _items[i];
-                                              final iid = (it['id'] ?? '')
-                                                  .toString()
-                                                  .trim();
-                                              if (iid != itemId) continue;
-                                              final copy =
-                                                  Map<String, dynamic>.from(it);
-                                              final gRaw = copy['gifts'];
-                                              final mgRaw = copy['gifts_by_me'];
-                                              final curGifts = gRaw is num
-                                                  ? gRaw.toInt()
-                                                  : 0;
-                                              final curMy = mgRaw is num
-                                                  ? mgRaw.toInt()
-                                                  : 0;
-                                              copy['gifts'] = curGifts + coins;
-                                              copy['gifts_by_me'] =
-                                                  curMy + coins;
-                                              _items[i] = copy;
-                                            }
-                                          });
-                                        }
-                                        if (context.mounted) {
-                                          Navigator.of(ctx2).pop();
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                l.isArabic
-                                                    ? 'تم إرسال الهدية.'
-                                                    : 'Gift sent.',
-                                              ),
-                                            ),
-                                          );
-                                        }
-                                      } catch (e) {
-                                        setModalState(() {
-                                          submitting = false;
-                                          error = sanitizeExceptionForUi(error: e);
-                                        });
-                                      }
-                                    },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   Future<List<Map<String, dynamic>>> _fetchComments(String itemId) async {
     final uri = Uri.parse(
       '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/comments',
     ).replace(queryParameters: const {'limit': '50'});
-    final r = await http.get(uri, headers: await _hdrChannels());
+    final r = await http.get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
     if (r.statusCode < 200 || r.statusCode >= 300) {
       return const <Map<String, dynamic>>[];
     }
@@ -1033,7 +781,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                       );
                                       final r = await http.post(
                                         uri,
-                                        headers: await _hdrChannels(json: true),
+                                        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
                                         body: jsonEncode(
                                           <String, dynamic>{'text': text},
                                         ),
@@ -1167,12 +915,11 @@ class _ChannelsPageState extends State<ChannelsPage> {
         indices.add(i);
       }
       // Lightweight Shamell-like "Channel insights" for the current view –
-      // summarises clips, views, gifts and how many services are hot in Moments.
+      // summarises clips, views, and how many services are hot in Moments.
       int clipCount = indices.length;
       int totalViews = 0;
       int totalLikes = 0;
       int totalComments = 0;
-      int totalGifts = 0;
       final Set<String> services = <String>{};
       final Set<String> hotServices = <String>{};
       int hotClips = 0;
@@ -1181,15 +928,12 @@ class _ChannelsPageState extends State<ChannelsPage> {
         final viewsRaw = raw['views'];
         final likesRaw = raw['likes'];
         final commentsRaw = raw['comments'];
-        final giftsRaw = raw['gifts'];
         final views = viewsRaw is num ? viewsRaw.toInt() : 0;
         final likes = likesRaw is num ? likesRaw.toInt() : 0;
         final comments = commentsRaw is num ? commentsRaw.toInt() : 0;
-        final gifts = giftsRaw is num ? giftsRaw.toInt() : 0;
         totalViews += views;
         totalLikes += likes;
         totalComments += comments;
-        totalGifts += gifts;
         final accId = (raw['official_account_id'] ?? '').toString().trim();
         if (accId.isNotEmpty) {
           services.add(accId);
@@ -1639,7 +1383,6 @@ class _ChannelsPageState extends State<ChannelsPage> {
                 totalViews: totalViews,
                 totalLikes: totalLikes,
                 totalComments: totalComments,
-                totalGifts: totalGifts,
                 servicesCount: services.length,
                 hotServicesCount: hotServices.length,
                 hotClipsCount: hotClips,
@@ -2210,34 +1953,6 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                         },
                                       ),
                                       const SizedBox(width: 12),
-                                      IconButton(
-                                        iconSize: 18,
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        icon: const Icon(
-                                          Icons.card_giftcard_outlined,
-                                          size: 18,
-                                        ),
-                                        onPressed: () {
-                                          _sendGift(raw);
-                                        },
-                                      ),
-                                      if ((raw['gifts'] as num?) != null &&
-                                          (raw['gifts'] as num) > 0)
-                                        Padding(
-                                          padding:
-                                              const EdgeInsets.only(left: 4),
-                                          child: Text(
-                                            '${(raw['gifts'] as num).toInt()}',
-                                            style: theme.textTheme.bodySmall
-                                                ?.copyWith(
-                                              fontSize: 11,
-                                              color: theme.colorScheme.onSurface
-                                                  .withValues(alpha: .70),
-                                            ),
-                                          ),
-                                        ),
-                                      const SizedBox(width: 8),
                                       const Icon(
                                         Icons.remove_red_eye_outlined,
                                         size: 16,
@@ -2553,7 +2268,6 @@ class _ChannelsPageState extends State<ChannelsPage> {
     required int totalViews,
     required int totalLikes,
     required int totalComments,
-    required int totalGifts,
     required int servicesCount,
     required int hotServicesCount,
     required int hotClipsCount,
@@ -2626,16 +2340,6 @@ class _ChannelsPageState extends State<ChannelsPage> {
         pill(
           label,
           Icons.favorite_border,
-        ),
-      );
-    }
-    if (totalGifts > 0) {
-      pills.add(
-        pill(
-          isArabic
-              ? 'هدايا القنوات: $totalGifts'
-              : 'Channel gifts: $totalGifts',
-          Icons.card_giftcard_outlined,
         ),
       );
     }
@@ -2717,11 +2421,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
   String? _initialSectionFromPayload(Map<String, dynamic>? payload) {
     if (payload == null) return null;
     final rawSection = (payload['section'] ?? '').toString().trim();
-    final rawCampaign = (payload['campaign'] ?? '').toString().trim();
     if (rawSection.isEmpty) return null;
-    if (rawSection.toLowerCase() == 'redpacket' && rawCampaign.isNotEmpty) {
-      return 'redpacket:$rawCampaign';
-    }
     return rawSection;
   }
 
@@ -2781,7 +2481,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
         final uri = Uri.parse(
           '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/moments_stats',
         );
-        final r = await http.get(uri, headers: await _hdrChannels());
+        final r = await http.get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           if (decoded is Map) {

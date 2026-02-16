@@ -29,7 +29,7 @@ import 'chat/shamell_chat_page.dart';
 import 'shamell_ui.dart';
 import 'shamell_group_chat_info_page.dart';
 
-enum _ShamellGroupComposerPanel { none, stickers, more }
+enum _ShamellGroupComposerPanel { none, more }
 
 class GroupChatsPage extends StatefulWidget {
   final String baseUrl;
@@ -678,6 +678,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
           me: me,
           peer: peer,
           plainText: payload,
+          sealedSender: true,
+          senderHint: me.fingerprint,
         );
       } catch (_) {}
     }
@@ -1070,32 +1072,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
       _mentionQuery = '';
       _mentionStart = -1;
     });
-  }
-
-  void _insertComposerText(String insert) {
-    if (insert.isEmpty) return;
-    final value = _msgCtrl.value;
-    final text = value.text;
-    final sel = value.selection;
-    final start =
-        (sel.start >= 0 && sel.start <= text.length) ? sel.start : text.length;
-    final end =
-        (sel.end >= 0 && sel.end <= text.length) ? sel.end : text.length;
-    final before = text.substring(0, start);
-    final after = text.substring(end);
-    final next = before + insert + after;
-    _msgCtrl.value = value.copyWith(
-      text: next,
-      selection: TextSelection.collapsed(offset: before.length + insert.length),
-      composing: TextRange.empty,
-    );
-    if (_mentionActive) {
-      setState(() {
-        _mentionActive = false;
-        _mentionQuery = '';
-        _mentionStart = -1;
-      });
-    }
   }
 
   Widget _buildMentionSuggestions(L10n l, ThemeData theme) {
@@ -3673,101 +3649,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
     await _sendTextQuick(txt);
   }
 
-  Widget _buildStickersPanel(ThemeData theme, L10n l) {
-    final isDark = theme.brightness == Brightness.dark;
-    const emojis = <String>[
-      '😀',
-      '😁',
-      '😂',
-      '🤣',
-      '😃',
-      '😄',
-      '😅',
-      '😆',
-      '😉',
-      '😊',
-      '😍',
-      '😘',
-      '😗',
-      '😙',
-      '😚',
-      '🙂',
-      '🤗',
-      '🤔',
-      '😐',
-      '😑',
-      '🙄',
-      '😏',
-      '😣',
-      '😥',
-      '😮',
-      '😪',
-      '😫',
-      '😴',
-      '😌',
-      '😛',
-      '😜',
-      '😝',
-      '🤤',
-      '😓',
-      '😔',
-      '😕',
-      '🙃',
-      '😲',
-      '☹️',
-      '🙁',
-      '😖',
-      '😞',
-      '😟',
-      '😤',
-      '😢',
-      '😭',
-      '😩',
-      '😬',
-      '😡',
-      '👍',
-      '🙏',
-      '❤️',
-      '🎉',
-    ];
-
-    return Container(
-      height: _shamellMorePanelHeight,
-      decoration: BoxDecoration(
-        color: isDark ? theme.colorScheme.surface : ShamellPalette.background,
-        border: Border(
-          top: BorderSide(
-            color: theme.dividerColor.withValues(alpha: isDark ? .18 : .38),
-            width: 0.6,
-          ),
-        ),
-      ),
-      child: GridView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-        physics: const BouncingScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 8,
-          mainAxisSpacing: 6,
-          crossAxisSpacing: 6,
-        ),
-        itemCount: emojis.length,
-        itemBuilder: (_, i) {
-          final emoji = emojis[i];
-          return InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => _insertComposerText(emoji),
-            child: Center(
-              child: Text(
-                emoji,
-                style: const TextStyle(fontSize: 22),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   Widget _buildMorePanel(ThemeData theme, L10n l) {
     final isDark = theme.brightness == Brightness.dark;
     const perPage = 8;
@@ -5589,29 +5470,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 ),
                               ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    IconButton(
-                      tooltip: l.shamellStickers,
-                      onPressed: (_loading ||
-                              (_deviceId ?? '').trim().isEmpty ||
-                              _recordingVoice)
-                          ? null
-                          : () {
-                              _toggleComposerPanel(
-                                _ShamellGroupComposerPanel.stickers,
-                              );
-                            },
-                      icon: Icon(
-                        _composerPanel == _ShamellGroupComposerPanel.stickers
-                            ? Icons.keyboard_alt_outlined
-                            : Icons.emoji_emotions_outlined,
-                      ),
-                    ),
-                    const SizedBox(width: 2),
-                    ValueListenableBuilder<TextEditingValue>(
-                      valueListenable: _msgCtrl,
-                      builder: (context, value, _) {
+	                    ),
+	                    const SizedBox(width: 6),
+	                    ValueListenableBuilder<TextEditingValue>(
+	                      valueListenable: _msgCtrl,
+	                      builder: (context, value, _) {
                         final showSend = value.text.trim().isNotEmpty ||
                             _attachedBytes != null;
                         final canSend = !_loading &&
@@ -5654,16 +5517,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           icon: const Icon(Icons.add_circle_outline, size: 26),
                         );
                       },
-                    ),
-                  ],
-                ),
-              ),
-              if (_composerPanel == _ShamellGroupComposerPanel.stickers)
-                _buildStickersPanel(theme, l),
-              if (_composerPanel == _ShamellGroupComposerPanel.more)
-                _buildMorePanel(theme, l),
-            ],
-          );
+	                    ),
+	                  ],
+	                ),
+	              ),
+	              if (_composerPanel == _ShamellGroupComposerPanel.more)
+	                _buildMorePanel(theme, l),
+	            ],
+	          );
 
     final title =
         _groupName.isEmpty ? (l.isArabic ? 'مجموعة' : 'Group') : _groupName;

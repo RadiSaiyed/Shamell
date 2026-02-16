@@ -159,7 +159,16 @@ class _TopupPageState extends State<TopupPage> {
         });
       final body = jsonEncode({'amount': double.parse(amt.toStringAsFixed(2))});
       final r = await http.post(uri, headers: headers, body: body);
-      setState(() => out = '${r.statusCode}: ${r.body}');
+      setState(() {
+        final isAr = L10n.of(context).isArabic;
+        out = r.statusCode >= 200 && r.statusCode < 300
+            ? (isAr ? 'تم.' : 'OK.')
+            : sanitizeHttpError(
+                statusCode: r.statusCode,
+                rawBody: r.body,
+                isArabic: isAr,
+              );
+      });
       if (r.statusCode >= 500) {
         await OfflineQueue.enqueue(OfflineTask(
             id: 'top-${DateTime.now().millisecondsSinceEpoch}',
@@ -243,7 +252,16 @@ class _TopupPageState extends State<TopupPage> {
           'to_wallet_id': toWallet
         });
         final r = await http.post(uri, headers: headers, body: body);
-        setState(() => out = '${r.statusCode}: ${r.body}');
+        setState(() {
+          final isAr = L10n.of(context).isArabic;
+          out = r.statusCode >= 200 && r.statusCode < 300
+              ? (isAr ? 'تم.' : 'OK.')
+              : sanitizeHttpError(
+                  statusCode: r.statusCode,
+                  rawBody: r.body,
+                  isArabic: isAr,
+                );
+        });
         return;
       }
       if (map['wallet'] != null) {
@@ -339,14 +357,14 @@ class OpsPage extends StatelessWidget {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => WeChatWebViewPage(
+          builder: (_) => ShamellWebViewPage(
             initialUri: uri,
             baseUri: baseUri,
             initialTitle: title,
           ),
         ),
       );
-	    }
+    }
 
     final nativeTiles = <Widget>[
       btn(Icons.directions_bus_filled_outlined, 'Bus Operator', () {
@@ -501,14 +519,14 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => WeChatWebViewPage(
+          builder: (_) => ShamellWebViewPage(
             initialUri: uri,
             baseUri: baseUri,
             initialTitle: title,
           ),
         ),
       );
-	    }
+    }
 
     final tiles = <Widget>[];
     if (_domains.contains('bus')) {
@@ -991,12 +1009,12 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
                             return '$label: ${v.toString()}';
                           }
 
-	                          final actionLines = <String>[
-	                            fmt('pay_send_ok', 'Payments ok'),
-	                            fmt('pay_send_fail', 'Payments fail'),
-	                            fmt('bus_book_ok', 'Bus ok'),
-	                            fmt('bus_book_fail', 'Bus fail'),
-	                          ].where((s) => s.isNotEmpty).toList();
+                          final actionLines = <String>[
+                            fmt('pay_send_ok', 'Payments ok'),
+                            fmt('pay_send_fail', 'Payments fail'),
+                            fmt('bus_book_ok', 'Bus ok'),
+                            fmt('bus_book_fail', 'Bus fail'),
+                          ].where((s) => s.isNotEmpty).toList();
                           if (actionLines.isEmpty) {
                             return Text(
                               'No action counts yet.',
@@ -1098,14 +1116,14 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
         const SizedBox(height: 6),
         GlassPanel(
           padding: const EdgeInsets.all(12),
-		          child: Text(
-		            l.isArabic
-		                ? 'أدوار المشغلين (الباص وغيرها) تُدار الآن داخل كل تطبيق نطاقي لتبقى لوحة Superadmin بسيطة ومركزة على الإحصاءات العامة.'
-		                : 'Operator roles are now managed inside each domain dashboard so this Superadmin home stays focused on global stats.',
-		            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-		                  color: Theme.of(context)
-		                      .colorScheme
-		                      .onSurface
+          child: Text(
+            l.isArabic
+                ? 'أدوار المشغلين (الباص وغيرها) تُدار الآن داخل كل تطبيق نطاقي لتبقى لوحة Superadmin بسيطة ومركزة على الإحصاءات العامة.'
+                : 'Operator roles are now managed inside each domain dashboard so this Superadmin home stays focused on global stats.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
                       .withValues(alpha: .80),
                 ),
           ),
@@ -1128,18 +1146,18 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
                   MaterialPageRoute(
                       builder: (_) => OperatorDashboardPage(baseUrl)));
             }, tint: Tokens.colorBus),
-	            btn(Icons.admin_panel_settings_outlined, l.adminDashboardTitle, () {
-	              Navigator.push(
-	                  context,
-	                  MaterialPageRoute(
-	                      builder: (_) => AdminDashboardPage(baseUrl)));
-	            }, tint: Colors.redAccent),
-	            btn(Icons.layers_outlined, l.opsTitle, () {
-	              Navigator.push(
-	                  context, MaterialPageRoute(builder: (_) => OpsPage(baseUrl)));
-	            }, tint: const Color(0xFF64748B)),
-	          ],
-	        ),
+            btn(Icons.admin_panel_settings_outlined, l.adminDashboardTitle, () {
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => AdminDashboardPage(baseUrl)));
+            }, tint: Colors.redAccent),
+            btn(Icons.layers_outlined, l.opsTitle, () {
+              Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => OpsPage(baseUrl)));
+            }, tint: const Color(0xFF64748B)),
+          ],
+        ),
       ],
     );
     return Scaffold(
@@ -1181,10 +1199,21 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
         _items = (j['items'] as List?) ?? [];
         setState(() => out = 'Created batch $_batchId');
       } else {
-        setState(() => out = '${r.statusCode}: ${r.body}');
+        setState(() {
+          out = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
+        });
       }
     } catch (e) {
-      setState(() => out = 'error: $e');
+      setState(() {
+        out = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     }
   }
 
@@ -1209,7 +1238,12 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
       _items = jsonDecode(r.body) as List? ?? [];
       setState(() => out = 'Loaded $bid');
     } catch (e) {
-      setState(() => out = 'error: $e');
+      setState(() {
+        out = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     }
   }
 
@@ -1254,11 +1288,32 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
                       child: Column(children: [
                         Expanded(
                             child: Center(
-                                child: Image.network(
-                                    '${widget.baseUrl}/qr.png?data=' +
-                                        Uri.encodeComponent(payload),
+                                child: Container(
                                     width: 180,
-                                    height: 180))),
+                                    height: 180,
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                    child: payload.isEmpty
+                                        ? const Icon(Icons.qr_code_2,
+                                            size: 64, color: Colors.black54)
+                                          : QrImageView(
+                                              data: payload,
+                                              version: QrVersions.auto,
+                                              backgroundColor: Colors.white,
+                                              eyeStyle: const QrEyeStyle(
+                                                eyeShape: QrEyeShape.square,
+                                                color: Colors.black,
+                                              ),
+                                              dataModuleStyle:
+                                                  const QrDataModuleStyle(
+                                                dataModuleShape:
+                                                    QrDataModuleShape.square,
+                                                color: Colors.black,
+                                              ),
+                                            )))),
                         const SizedBox(height: 6),
                         Text(code, style: const TextStyle(fontSize: 12)),
                         Text(
@@ -1406,10 +1461,21 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
         setState(() => out = 'Voided $code');
         if (_batchId.isNotEmpty) await _openBatch(_batchId);
       } else {
-        setState(() => out = '${r.statusCode}: ${r.body}');
+        setState(() {
+          out = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
+        });
       }
     } catch (e) {
-      setState(() => out = 'error: $e');
+      setState(() {
+        out = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     }
   }
 }
@@ -1444,11 +1510,22 @@ class _SystemStatusPageState extends State<SystemStatusPage> {
         setState(() => _data = j);
       } else {
         Perf.action('system_status_fail');
-        setState(() => _error = '${r.statusCode}: ${r.body}');
+        setState(() {
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
+        });
       }
     } catch (e) {
       Perf.action('system_status_error');
-      setState(() => _error = 'error: $e');
+      setState(() {
+        _error = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     } finally {
       if (mounted) {
         setState(() => _loading = false);
@@ -1678,7 +1755,7 @@ class _SettingsPageState extends State<SettingsPage> {
           decoration: InputDecoration(labelText: l.settingsMyWallet),
         ),
         const SizedBox(height: 8),
-        // Removed manual UI route selector; WeChat-style layout is always used.
+        // Removed manual UI route selector; Shamell-style layout is always used.
         const SizedBox(height: 8),
         SwitchListTile(
           value: _debugSkeletonLong,
@@ -1761,7 +1838,13 @@ class _SonicPayPageState extends State<SonicPayPage> {
                 'from_wallet_id': fromCtrl.text.trim(),
                 'amount_cents': int.tryParse(amtCtrl.text.trim()) ?? 0,
               }));
-      out = '${r.statusCode}: ${r.body}';
+      out = r.statusCode >= 200 && r.statusCode < 300
+          ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
+          : sanitizeHttpError(
+              statusCode: r.statusCode,
+              rawBody: r.body,
+              isArabic: L10n.of(context).isArabic,
+            );
       try {
         final j = jsonDecode(r.body);
         final tok = j['token'] ?? '';
@@ -1770,7 +1853,10 @@ class _SonicPayPageState extends State<SonicPayPage> {
             : 'SONIC|token=' + tok.toString();
       } catch (_) {}
     } catch (e) {
-      out = 'error: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -1795,9 +1881,18 @@ class _SonicPayPageState extends State<SonicPayPage> {
                 'to_wallet_id':
                     toCtrl.text.trim().isEmpty ? null : toCtrl.text.trim(),
               }));
-      out = '${r.statusCode}: ${r.body}';
+      out = r.statusCode >= 200 && r.statusCode < 300
+          ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
+          : sanitizeHttpError(
+              statusCode: r.statusCode,
+              rawBody: r.body,
+              isArabic: L10n.of(context).isArabic,
+            );
     } catch (e) {
-      out = 'error: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -1870,7 +1965,13 @@ class _CashMandatePageState extends State<CashMandatePage> {
     try {
       final headers = await _hdr(json: true);
       final r = await http.post(uri, headers: headers, body: body);
-      out = '${r.statusCode}: ${r.body}';
+      out = r.statusCode >= 200 && r.statusCode < 300
+          ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
+          : sanitizeHttpError(
+              statusCode: r.statusCode,
+              rawBody: r.body,
+              isArabic: L10n.of(context).isArabic,
+            );
       if (r.statusCode >= 500) {
         await OfflineQueue.enqueue(OfflineTask(
             id: 'cash-${DateTime.now().millisecondsSinceEpoch}',
@@ -1908,9 +2009,18 @@ class _CashMandatePageState extends State<CashMandatePage> {
       final r = await http.get(Uri.parse(
           '${widget.baseUrl}/payments/cash/status/' +
               Uri.encodeComponent(codeCtrl.text.trim())));
-      out = '${r.statusCode}: ${r.body}';
+      out = r.statusCode >= 200 && r.statusCode < 300
+          ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
+          : sanitizeHttpError(
+              statusCode: r.statusCode,
+              rawBody: r.body,
+              isArabic: L10n.of(context).isArabic,
+            );
     } catch (e) {
-      out = 'error: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -1922,9 +2032,18 @@ class _CashMandatePageState extends State<CashMandatePage> {
           Uri.parse('${widget.baseUrl}/payments/cash/cancel'),
           headers: await _hdr(json: true),
           body: jsonEncode({'code': codeCtrl.text.trim()}));
-      out = '${r.statusCode}: ${r.body}';
+      out = r.statusCode >= 200 && r.statusCode < 300
+          ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
+          : sanitizeHttpError(
+              statusCode: r.statusCode,
+              rawBody: r.body,
+              isArabic: L10n.of(context).isArabic,
+            );
     } catch (e) {
-      out = 'error: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -1947,9 +2066,18 @@ class _CashMandatePageState extends State<CashMandatePage> {
                     : phraseCtrl.text.trim(),
                 'to_wallet_id': myWallet,
               }));
-      out = '${r.statusCode}: ${r.body}';
+      out = r.statusCode >= 200 && r.statusCode < 300
+          ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
+          : sanitizeHttpError(
+              statusCode: r.statusCode,
+              rawBody: r.body,
+              isArabic: L10n.of(context).isArabic,
+            );
     } catch (e) {
-      out = 'error: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted) setState(() {});
   }
@@ -2033,12 +2161,23 @@ class _ModuleHealthPageState extends State<ModuleHealthPage> {
           headers: await _hdr());
       setState(() {
         _statusCode = r.statusCode;
-        out = r.body;
+        if (r.statusCode >= 200 && r.statusCode < 300) {
+          out = r.body;
+        } else {
+          out = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
+        }
       });
     } catch (e) {
       setState(() {
         _statusCode = null;
-        out = 'error: $e';
+        out = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
       });
     }
   }

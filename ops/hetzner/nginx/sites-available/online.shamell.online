@@ -1,5 +1,6 @@
 server {
     server_name online.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
 
     root /var/www/shamell;
     index index.html;
@@ -22,15 +23,13 @@ server {
 
     # OpenAPI/Docs only for trusted source + localhost.
     location = /openapi.json {
-        allow 83.137.6.187;
-        allow 127.0.0.1;
-        allow ::1;
+        include /etc/nginx/snippets/shamell_docs_allowlist.local.conf;
         deny all;
 
         proxy_pass http://127.0.0.1:8080/openapi.json;
         proxy_http_version 1.1;
 
-        proxy_set_header X-Internal-Secret "";
+        include /etc/nginx/snippets/shamell_bff_edge_hardening.conf;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -38,15 +37,13 @@ server {
     }
 
     location = /docs {
-        allow 83.137.6.187;
-        allow 127.0.0.1;
-        allow ::1;
+        include /etc/nginx/snippets/shamell_docs_allowlist.local.conf;
         deny all;
 
         proxy_pass http://127.0.0.1:8080/docs;
         proxy_http_version 1.1;
 
-        proxy_set_header X-Internal-Secret "";
+        include /etc/nginx/snippets/shamell_bff_edge_hardening.conf;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -79,5 +76,6 @@ server {
 
     listen 80;
     server_name online.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
     return 404;
 }

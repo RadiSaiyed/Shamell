@@ -39,6 +39,7 @@ class Tokens {
   static const List<double> space = [4, 8, 12, 16, 24, 32];
 
   // Domain accent colours (used for icons / chips)
-  static const Color colorPayments = Color(0xFF07C160); // WeChat-inspired green
+  static const Color colorPayments =
+      Color(0xFF07C160); // Shamell-inspired green
   static const Color colorBus = Color(0xFF3B82F6); // blue
 }

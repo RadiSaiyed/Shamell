@@ -39,7 +39,11 @@ class _OfficialNotificationsDebugPageState
       final r = await http.get(uri);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         setState(() {
-          _error = 'HTTP ${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }

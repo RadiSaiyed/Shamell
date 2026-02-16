@@ -25,9 +25,9 @@ void main() {
       expect(m.containsKey('to_alias'), true);
       expect(m['to_alias'], '@alice');
     });
-    test('resolved phone to wallet id', () {
-      final m = buildTransferTarget('+963999', resolvedWalletId: 'w123');
-      expect(m['to_wallet_id'], 'w123');
+    test('phone numbers are rejected', () {
+      final m = buildTransferTarget('+963999');
+      expect(m.isEmpty, true);
     });
     test('plain wallet id passthrough', () {
       final m = buildTransferTarget('w555');

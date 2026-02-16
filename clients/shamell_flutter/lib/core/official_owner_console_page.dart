@@ -5,7 +5,6 @@ import 'http_error.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
 import 'l10n.dart';
@@ -14,8 +13,6 @@ import 'official_accounts_page.dart'
 import 'mini_programs_my_page_insights.dart' show MiniProgramInsightChip;
 import 'moments_page.dart' show MomentsPage;
 import 'channels_page.dart' show ChannelsPage;
-import 'redpacket_campaigns_page.dart';
-import '../mini_apps/payments/payments_shell.dart';
 import 'official_moments_comments_page.dart';
 import 'official_service_inbox_page.dart';
 import 'app_shell_widgets.dart' show AppBG;
@@ -43,7 +40,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
   OfficialAccountHandle? _account;
   Map<String, dynamic>? _momentsStats;
   List<Map<String, dynamic>> _autoReplies = const <Map<String, dynamic>>[];
-  Map<String, dynamic>? _campaignSummary;
 
   @override
   void initState() {
@@ -57,9 +53,9 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
       headers['content-type'] = 'application/json';
     }
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -106,7 +102,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
       } catch (_) {}
       Map<String, dynamic>? moments;
       List<Map<String, dynamic>> autoReplies = const <Map<String, dynamic>>[];
-      Map<String, dynamic>? campaignSummary;
       try {
         final uri = Uri.parse(
           '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(widget.accountId)}/moments_stats',
@@ -116,53 +111,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
           final decoded = jsonDecode(r.body);
           if (decoded is Map) {
             moments = decoded.cast<String, dynamic>();
-          }
-        }
-      } catch (_) {}
-      // Load aggregate Red‑packet campaign summary for this Official.
-      try {
-        final uri = Uri.parse(
-          '${widget.baseUrl}/admin/redpacket_campaigns',
-        ).replace(queryParameters: <String, String>{
-          'account_id': widget.accountId,
-        });
-        final r = await http.get(uri, headers: await _hdr());
-        if (r.statusCode >= 200 && r.statusCode < 300) {
-          final decoded = jsonDecode(r.body);
-          List<dynamic> raw = const [];
-          if (decoded is Map && decoded['campaigns'] is List) {
-            raw = decoded['campaigns'] as List;
-          } else if (decoded is List) {
-            raw = decoded;
-          }
-          int total = 0;
-          int active = 0;
-          int defaultPackets = 0;
-          int budgetCents = 0;
-          for (final e in raw) {
-            if (e is! Map) continue;
-            final m = e.cast<String, dynamic>();
-            total += 1;
-            final isActive = (m['active'] as bool?) ?? true;
-            if (isActive) {
-              active += 1;
-            }
-            final defAmt = m['default_amount_cents'];
-            final defCount = m['default_count'];
-            final amt = defAmt is num ? defAmt.toInt() : 0;
-            final cnt = defCount is num ? defCount.toInt() : 0;
-            if (amt > 0 && cnt > 0) {
-              defaultPackets += cnt;
-              budgetCents += amt * cnt;
-            }
-          }
-          if (total > 0) {
-            campaignSummary = <String, dynamic>{
-              'total_campaigns': total,
-              'active_campaigns': active,
-              'default_packets_total': defaultPackets,
-              'total_budget_cents': budgetCents,
-            };
           }
         }
       } catch (_) {}
@@ -190,7 +138,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
         _account = acc;
         _momentsStats = moments;
         _autoReplies = autoReplies;
-        _campaignSummary = campaignSummary;
         _loading = false;
         if (acc == null) {
           _error = 'Official account not found';
@@ -253,9 +200,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
         : 0;
     final shares30 =
         (stats['shares_30d'] is num) ? (stats['shares_30d'] as num).toInt() : 0;
-    final redpacket30 = (stats['redpacket_shares_30d'] is num)
-        ? (stats['redpacket_shares_30d'] as num).toInt()
-        : 0;
     final uniqueSharersTotal = (stats['unique_sharers_total'] is num)
         ? (stats['unique_sharers_total'] as num).toInt()
         : 0;
@@ -267,7 +211,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
     final sharesPer1k = (stats['shares_per_1k_followers'] is num)
         ? (stats['shares_per_1k_followers'] as num).toDouble()
         : 0.0;
-    final campaignSummary = _campaignSummary;
 
     final body = ListView(
       padding: const EdgeInsets.all(16),
@@ -438,8 +381,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
         if (totalShares > 0 ||
             shares30 > 0 ||
             followers > 0 ||
-            comments30 > 0 ||
-            redpacket30 > 0)
+            comments30 > 0)
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -470,15 +412,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                             l.isArabic ? 'مشاركات (٣٠ يوماً)' : 'Shares (30d)',
                         value: shares30 > 0
                             ? shares30.toString()
-                            : (l.isArabic ? 'لا بيانات' : 'No data'),
-                      ),
-                      MiniProgramInsightChip(
-                        icon: Icons.card_giftcard_outlined,
-                        label: l.isArabic
-                            ? 'حزم حمراء (٣٠ يوماً)'
-                            : 'Red‑packet Moments (30d)',
-                        value: redpacket30 > 0
-                            ? redpacket30.toString()
                             : (l.isArabic ? 'لا بيانات' : 'No data'),
                       ),
                       MiniProgramInsightChip(
@@ -520,68 +453,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
               ),
             ),
           ),
-        if (campaignSummary != null) ...[
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    l.isArabic
-                        ? 'حملات الحزم الحمراء'
-                        : 'Red‑packet campaigns overview',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 4,
-                    children: [
-                      MiniProgramInsightChip(
-                        icon: Icons.campaign_outlined,
-                        label: l.isArabic ? 'الحملات' : 'Campaigns',
-                        value:
-                            '${(campaignSummary['active_campaigns'] as int?) ?? 0}/${(campaignSummary['total_campaigns'] as int?) ?? 0}',
-                      ),
-                      MiniProgramInsightChip(
-                        icon: Icons.redeem_outlined,
-                        label: l.isArabic ? 'حزم افتراضية' : 'Default packets',
-                        value:
-                            ((campaignSummary['default_packets_total']
-                                            as int?) ??
-                                        0) >
-                                    0
-                                ? (campaignSummary['default_packets_total']
-                                        as int)
-                                    .toString()
-                                : (l.isArabic ? 'لا بيانات' : 'No data'),
-                      ),
-                      MiniProgramInsightChip(
-                        icon: Icons.attach_money_outlined,
-                        label:
-                            l.isArabic ? 'ميزانية تقديرية' : 'Estimated budget',
-                        value: () {
-                          final cents =
-                              (campaignSummary['total_budget_cents'] as int?) ??
-                                  0;
-                          if (cents <= 0) {
-                            return l.isArabic ? 'لا بيانات' : 'No data';
-                          }
-                          final major = cents / 100.0;
-                          return major.toStringAsFixed(2);
-                        }(),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
         const SizedBox(height: 12),
         Card(
           child: Padding(
@@ -666,25 +537,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                       onPressed: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => RedpacketCampaignsPage(
-                              baseUrl: widget.baseUrl,
-                              accountId: widget.accountId,
-                              accountName: acc.name,
-                            ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.campaign_outlined, size: 18),
-                      label: Text(
-                        l.isArabic
-                            ? 'حملات الحزم الحمراء'
-                            : 'Red‑packet campaigns',
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
                             builder: (_) => MomentsPage(
                               baseUrl: widget.baseUrl,
                               originOfficialAccountId: widget.accountId,
@@ -716,41 +568,6 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                         l.isArabic
                             ? 'تعليقات اللحظات (إدارة)'
                             : 'Moments comments (admin)',
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: () async {
-                        try {
-                          final sp = await SharedPreferences.getInstance();
-                          final walletId = sp.getString('wallet_id') ?? '';
-                          if (!mounted || walletId.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  l.isArabic
-                                      ? 'يرجى إعداد المحفظة أولاً.'
-                                      : 'Please set up your wallet first.',
-                                ),
-                              ),
-                            );
-                            return;
-                          }
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => PaymentsPage(
-                                widget.baseUrl,
-                                walletId,
-                                'official',
-                                initialSection: 'redpacket',
-                                contextLabel: widget.accountName,
-                              ),
-                            ),
-                          );
-                        } catch (_) {}
-                      },
-                      icon: const Icon(Icons.card_giftcard_outlined, size: 18),
-                      label: Text(
-                        l.isArabic ? 'إصدار حزم حمراء' : 'Issue red packets',
                       ),
                     ),
                   ],
@@ -1155,15 +972,11 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       );
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
-                                        String msg =
-                                            'HTTP ${r.statusCode}: ${r.body}';
-                                        try {
-                                          final decoded = jsonDecode(r.body);
-                                          if (decoded is Map &&
-                                              decoded['detail'] != null) {
-                                            msg = decoded['detail'].toString();
-                                          }
-                                        } catch (_) {}
+                                        final msg = sanitizeHttpError(
+                                          statusCode: r.statusCode,
+                                          rawBody: r.body,
+                                          isArabic: l.isArabic,
+                                        );
                                         if (!mounted) return;
                                         setModalState(() {
                                           submitting = false;
@@ -1392,15 +1205,11 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       }
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
-                                        String msg =
-                                            'HTTP ${r.statusCode}: ${r.body}';
-                                        try {
-                                          final decoded = jsonDecode(r.body);
-                                          if (decoded is Map &&
-                                              decoded['detail'] != null) {
-                                            msg = decoded['detail'].toString();
-                                          }
-                                        } catch (_) {}
+                                        final msg = sanitizeHttpError(
+                                          statusCode: r.statusCode,
+                                          rawBody: r.body,
+                                          isArabic: l.isArabic,
+                                        );
                                         if (!mounted) return;
                                         setModalState(() {
                                           submitting = false;
@@ -1639,15 +1448,11 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       }
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
-                                        String msg =
-                                            'HTTP ${r.statusCode}: ${r.body}';
-                                        try {
-                                          final decoded = jsonDecode(r.body);
-                                          if (decoded is Map &&
-                                              decoded['detail'] != null) {
-                                            msg = decoded['detail'].toString();
-                                          }
-                                        } catch (_) {}
+                                        final msg = sanitizeHttpError(
+                                          statusCode: r.statusCode,
+                                          rawBody: r.body,
+                                          isArabic: l.isArabic,
+                                        );
                                         if (!mounted) return;
                                         setModalState(() {
                                           submitting = false;

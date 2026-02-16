@@ -574,11 +574,11 @@ impl AuthRuntime {
             parse_int_env("AUTH_ACCOUNT_CREATE_CHALLENGE_MAX_PER_IP", 2000, 1, 200_000);
         let account_create_challenge_max_per_device =
             parse_int_env("AUTH_ACCOUNT_CREATE_CHALLENGE_MAX_PER_DEVICE", 60, 1, 5000);
+        let hw_provider_configured =
+            account_create_apple_devicecheck.is_some() || account_create_play_integrity.is_some();
         let account_create_enabled = {
             let raw = env::var("AUTH_ACCOUNT_CREATE_ENABLED").unwrap_or_default();
             let v = raw.trim().to_ascii_lowercase();
-            let hw_provider_configured = account_create_apple_devicecheck.is_some()
-                || account_create_play_integrity.is_some();
             let default_enabled = if matches!(env_lower.as_str(), "prod" | "production" | "staging")
             {
                 account_create_hw_attestation_enabled
@@ -593,6 +593,14 @@ impl AuthRuntime {
                 !matches!(v.as_str(), "0" | "false" | "no" | "off")
             }
         };
+        if secret_policy::is_production_like(env_name)
+            && account_create_enabled
+            && (!account_create_hw_attestation_enabled
+                || !account_create_hw_attestation_required
+                || !hw_provider_configured)
+        {
+            return Err("AUTH_ACCOUNT_CREATE_ENABLED=true in prod/staging requires hardware attestation enabled+required and at least one configured provider".to_string());
+        }
         let biometric_token_ttl_secs = parse_int_env(
             "AUTH_BIOMETRIC_TOKEN_TTL_SECS",
             31_536_000,
@@ -5288,6 +5296,40 @@ mod tests {
         assert!(
             err.contains(
                 "Play Integrity attestation configured partially; missing AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON_B64"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_create_from_env_fails_in_prod_when_enabled_without_required_attestation() {
+        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "DB_URL",
+            "AUTH_ACCOUNT_CREATE_ENABLED",
+            "AUTH_ACCOUNT_CREATE_POW_ENABLED",
+            "AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED",
+            "AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION",
+            "AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_TEAM_ID",
+            "AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_KEY_ID",
+            "AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_PRIVATE_KEY_P8_B64",
+            "AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON_B64",
+            "AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_ALLOWED_PACKAGE_NAMES",
+        ]);
+
+        env::set_var("DB_URL", "postgresql://127.0.0.1:1/shamell_auth_test");
+        env::set_var("AUTH_ACCOUNT_CREATE_ENABLED", "true");
+        env::set_var("AUTH_ACCOUNT_CREATE_POW_ENABLED", "false");
+        env::set_var("AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED", "false");
+        env::set_var("AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION", "false");
+
+        let err = match AuthRuntime::from_env("prod").await {
+            Ok(_) => panic!("expected auth runtime init to fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains(
+                "AUTH_ACCOUNT_CREATE_ENABLED=true in prod/staging requires hardware attestation enabled+required and at least one configured provider"
             ),
             "unexpected error: {err}"
         );

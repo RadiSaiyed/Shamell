@@ -107,9 +107,9 @@ class _BillsPageState extends State<BillsPage> {
 
   Future<Map<String, String>> _hdr() async {
     final h = <String, String>{'content-type': 'application/json'};
-    final cookie = await getSessionCookie() ?? '';
+    final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      h['Cookie'] = cookie;
+      h['cookie'] = cookie;
     }
     h['X-Device-ID'] = widget.deviceId;
     return h;
@@ -348,15 +348,11 @@ class _BillsPageState extends State<BillsPage> {
               l.isArabic ? 'تم دفع الفاتورة بنجاح' : 'Bill paid successfully';
         });
       } else {
-        String msg = l.paySendFailed;
-        try {
-          final body = jsonDecode(resp.body);
-          final detail =
-              body is Map<String, dynamic> ? body['detail']?.toString() : null;
-          if (detail != null && detail.isNotEmpty) {
-            msg = detail;
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        );
         setState(() {
           _bannerError = true;
           _banner = msg;

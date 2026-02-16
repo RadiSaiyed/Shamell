@@ -50,7 +50,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   bool _miniProgramTrendingOnly = false;
   bool _channelCampaignOnly = false;
   bool _channelPromoOnly = false;
-  bool _momentRedpacketOnly = false;
   bool _officialCampaignOnly = false;
 
   @override
@@ -115,9 +114,9 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
+        h['cookie'] = cookie;
       }
     } catch (_) {}
     return h;
@@ -129,11 +128,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
           .replace(queryParameters: const {'limit': '8'});
       final resp = await http.get(uri, headers: await _hdr());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        // Fallback: still show the Red‑packet Moments topic even if trending API fails.
-        if (!mounted) return;
-        setState(() {
-          _trendingTopics = const ['ShamellRedPacket'];
-        });
         return;
       }
       final decoded = jsonDecode(resp.body);
@@ -150,11 +144,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
         final tag = (m['tag'] ?? '').toString().trim();
         if (tag.isEmpty) continue;
         tags.add(tag);
-      }
-      // Ensure the Red‑packet Moments topic is always visible in search.
-      const redTag = 'ShamellRedPacket';
-      if (!tags.any((t) => t.toLowerCase() == redTag.toLowerCase())) {
-        tags.add(redTag);
       }
       if (!mounted || tags.isEmpty) return;
       setState(() {
@@ -884,59 +873,11 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     if (filter == 'moment') {
       final filtered = <Map<String, dynamic>>[];
       for (final e in items) {
-        final extra = (e['extra'] is Map)
-            ? (e['extra'] as Map).cast<String, dynamic>()
-            : <String, dynamic>{};
-        final badgesRaw = extra['badges'];
-        final List<String> badges = badgesRaw is List
-            ? badgesRaw.whereType<String>().toList()
-            : const <String>[];
-        if (_momentRedpacketOnly && !badges.contains('redpacket')) {
-          continue;
-        }
         filtered.add(e);
       }
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (items.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                children: [
-                  ChoiceChip(
-                    label: Text(l.isArabic ? 'الكل' : 'All moments'),
-                    selected: !_momentRedpacketOnly,
-                    onSelected: (sel) {
-                      if (!sel) return;
-                      setState(() {
-                        _momentRedpacketOnly = false;
-                      });
-                    },
-                  ),
-                  ChoiceChip(
-                    label: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.card_giftcard_outlined, size: 14),
-                        const SizedBox(width: 4),
-                        Text(
-                          l.isArabic ? 'حزم حمراء' : 'Red‑packet moments',
-                        ),
-                      ],
-                    ),
-                    selected: _momentRedpacketOnly,
-                    onSelected: (sel) {
-                      setState(() {
-                        _momentRedpacketOnly = sel;
-                      });
-                    },
-                  ),
-                ],
-              ),
-            ),
           Expanded(
             child: filtered.isEmpty
                 ? Center(
@@ -1561,14 +1502,13 @@ void _appendBadges(
           return l.isArabic ? 'مقطع شائع' : 'Popular clip';
         case 'discussed':
           return l.isArabic ? 'نقاشات' : 'Discussed';
-        case 'redpacket':
-          return l.isArabic ? 'حزم حمراء' : 'Red‑packet';
         case 'live':
           return l.isArabic ? 'بث مباشر' : 'Live now';
         default:
-          return b;
+          return '';
       }
     }();
+    if (labelText.isEmpty) continue;
     metaChips.add(Padding(
       padding: const EdgeInsets.only(left: 6),
       child: Container(

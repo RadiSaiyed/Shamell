@@ -42,9 +42,9 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
       headers['content-type'] = 'application/json';
     }
     try {
-      final cookie = await getSessionCookie() ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
