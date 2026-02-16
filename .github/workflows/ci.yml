@@ -90,7 +90,7 @@ jobs:
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/repo" \
             -w /repo \
-            rhysd/actionlint:1.7.8
+            rhysd/actionlint:1.7.8@sha256:96d4a8c87dbbfb3bdd324f8fdc285fc3df5261e2decc619a4dd7e8ee52bbfd46
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -117,7 +117,7 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -168,6 +168,14 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: cargo audit -D warnings
 
+      - name: Install cargo-deny
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo install cargo-deny --locked --version 0.19.0
+
+      - name: cargo deny (licenses, bans, sources)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo deny check licenses bans sources
+
       - name: Guard legacy artifacts are absent
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_no_legacy_artifacts.sh
@@ -184,9 +192,25 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_deploy_env_invariants.sh
 
+      - name: Account-create profile smoke (strict + interim)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: bash ./scripts/ci_account_create_profiles.sh
+
+      - name: Guard image digest pinning
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_image_digest_pinning.sh
+
       - name: Guard frontend UI error sanitization
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_frontend_error_sanitization.sh
+
+      - name: Guard no secrets in URLs (query strings)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_secrets_in_urls.sh
+
+      - name: Guard no payments phone routing
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_payments_phone_routing.sh
 
       - name: Skip note (no Cargo.toml)
         if: steps.detect_rust.outputs.present != 'true'
@@ -211,6 +235,10 @@ jobs:
       - name: Flutter smoke test
         working-directory: clients/shamell_flutter
         run: flutter test test/ratchet_kdf_test.dart
+
+      - name: Flutter security hardening tests
+        working-directory: clients/shamell_flutter
+        run: flutter test test/chat_security_hardening_test.dart
 
   flutter-macos-smoke:
     runs-on: macos-latest
