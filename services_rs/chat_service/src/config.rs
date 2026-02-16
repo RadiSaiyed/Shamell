@@ -324,8 +324,14 @@ mod tests {
     impl EnvGuard {
         fn new(keys: &[&str]) -> Self {
             let mut keys = keys.to_vec();
-            if !keys.contains(&"CHAT_ENFORCE_DEVICE_AUTH") {
-                keys.push("CHAT_ENFORCE_DEVICE_AUTH");
+            for required in [
+                "CHAT_ENFORCE_DEVICE_AUTH",
+                "ALLOWED_HOSTS",
+                "ALLOWED_ORIGINS",
+            ] {
+                if !keys.contains(&required) {
+                    keys.push(required);
+                }
             }
             let mut saved = Vec::with_capacity(keys.len());
             for k in keys {
@@ -333,6 +339,8 @@ mod tests {
                 saved.push((k.to_string(), existing));
                 env::remove_var(k);
             }
+            env::set_var("ALLOWED_HOSTS", "online.shamell.online");
+            env::set_var("ALLOWED_ORIGINS", "https://online.shamell.online");
             Self { saved }
         }
     }
