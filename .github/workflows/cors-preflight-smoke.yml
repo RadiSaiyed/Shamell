@@ -1,0 +1,66 @@
+name: CORS Preflight Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Smoke target environment"
+        type: choice
+        required: true
+        default: staging
+        options:
+          - staging
+          - production
+          - both
+  schedule:
+    - cron: "31 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cors-preflight-smoke
+  cancel-in-progress: false
+
+jobs:
+  staging-cors-preflight-smoke:
+    if: github.event_name == 'schedule' || github.event.inputs.target == 'staging' || github.event.inputs.target == 'both'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run staging CORS preflight smoke
+        env:
+          SMOKE_BASE_URL: ${{ secrets.STAGING_BFF_BASE_URL }}
+          SMOKE_ORIGIN: ${{ vars.CORS_PREFLIGHT_STAGING_ORIGIN || 'https://online.shamell.online' }}
+          SMOKE_MAX_FAILED_CHECKS: ${{ vars.CORS_PREFLIGHT_MAX_FAILED_CHECKS || '0' }}
+          SMOKE_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_TIMEOUT_SECS || '15' }}
+          SMOKE_CONNECT_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_CONNECT_TIMEOUT_SECS || '5' }}
+          SMOKE_USER_AGENT: "shamell-cors-preflight-smoke/staging"
+        run: |
+          bash ./scripts/cors_preflight_smoke.sh
+
+  production-cors-preflight-smoke:
+    if: |
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'production' || github.event.inputs.target == 'both')) ||
+      (github.event_name == 'schedule' && vars.CORS_PREFLIGHT_PROD_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Run production CORS preflight smoke
+        env:
+          SMOKE_BASE_URL: ${{ secrets.PROD_BFF_BASE_URL }}
+          SMOKE_ORIGIN: ${{ vars.CORS_PREFLIGHT_PROD_ORIGIN || 'https://online.shamell.online' }}
+          SMOKE_MAX_FAILED_CHECKS: ${{ vars.CORS_PREFLIGHT_MAX_FAILED_CHECKS || '0' }}
+          SMOKE_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_TIMEOUT_SECS || '15' }}
+          SMOKE_CONNECT_TIMEOUT_SECS: ${{ vars.CORS_PREFLIGHT_CONNECT_TIMEOUT_SECS || '5' }}
+          SMOKE_USER_AGENT: "shamell-cors-preflight-smoke/production"
+        run: |
+          bash ./scripts/cors_preflight_smoke.sh
