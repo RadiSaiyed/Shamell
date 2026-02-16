@@ -241,6 +241,40 @@ fn is_strict_v2_bundle_eligible(
     true
 }
 
+fn enforce_strict_v2_bundle_policy(
+    actor_device_id: &str,
+    target_device_id: &str,
+    protocol_floor: &str,
+    supports_v2: bool,
+    v2_only: bool,
+    identity_key_b64: &str,
+    identity_signing_pubkey_b64: Option<&str>,
+    signed_prekey_id: i64,
+    signed_prekey_b64: &str,
+    signed_prekey_sig_b64: &str,
+) -> ApiResult<()> {
+    if is_strict_v2_bundle_eligible(
+        protocol_floor,
+        supports_v2,
+        v2_only,
+        identity_key_b64,
+        identity_signing_pubkey_b64,
+        signed_prekey_id,
+        signed_prekey_b64,
+        signed_prekey_sig_b64,
+    ) {
+        return Ok(());
+    }
+    audit_chat_security_blocked(
+        "chat_key_bundle_policy",
+        "strict_v2_bundle_required",
+        Some(actor_device_id),
+        Some(target_device_id),
+        None,
+    );
+    Err(ApiError::not_found("bundle unavailable"))
+}
+
 fn normalize_key_material(
     raw: &str,
     field: &str,
@@ -1319,7 +1353,9 @@ pub async fn get_key_bundle(
     let supports_v2 = supports_v2_i != 0;
     let v2_only = v2_only_i != 0;
 
-    if !is_strict_v2_bundle_eligible(
+    if let Err(err) = enforce_strict_v2_bundle_policy(
+        &actor,
+        &target_id,
         &protocol_floor,
         supports_v2,
         v2_only,
@@ -1330,15 +1366,8 @@ pub async fn get_key_bundle(
         &signed_prekey_sig_b64,
     ) {
         let _ = tx.rollback().await;
-        audit_chat_security_blocked(
-            "chat_key_bundle_policy",
-            "strict_v2_bundle_required",
-            Some(&actor),
-            Some(&target_id),
-            None,
-        );
         // Keep response generic to avoid exposing policy-state details.
-        return Err(ApiError::not_found("bundle unavailable"));
+        return Err(err);
     }
 
     let consumed = sqlx::query(&format!(
@@ -3563,12 +3592,13 @@ fn should_redact_sender(sealed_flag: i64, sealed_view: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_push_data, is_strict_v2_bundle_eligible, is_valid_device_id, normalize_key_material,
-        normalize_mailbox_token, normalize_prekey_batch, parse_protocol_version,
-        parse_required_direct_ciphertext, parse_required_group_ciphertext, register_keys,
-        require_sealed_sender_flag, require_v2_only_key_registration, should_redact_sender,
-        validate_protocol_write, verify_signed_prekey_signature, ChatProtocolVersion,
-        PROTOCOL_V1_LEGACY, PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
+        build_push_data, enforce_strict_v2_bundle_policy, is_strict_v2_bundle_eligible,
+        is_valid_device_id, normalize_key_material, normalize_mailbox_token,
+        normalize_prekey_batch, parse_protocol_version, parse_required_direct_ciphertext,
+        parse_required_group_ciphertext, register_keys, require_sealed_sender_flag,
+        require_v2_only_key_registration, should_redact_sender, validate_protocol_write,
+        verify_signed_prekey_signature, ChatProtocolVersion, PROTOCOL_V1_LEGACY,
+        PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
     };
     use crate::models::{GroupSendReq, OneTimePrekeyIn};
     use crate::state::AppState;
@@ -3927,6 +3957,50 @@ mod tests {
         let v2_only =
             require_v2_only_key_registration(true, Some(true)).expect("v2_only=true should pass");
         assert!(v2_only);
+    }
+
+    #[test]
+    fn strict_bundle_policy_guard_rejects_and_logs_security_event() {
+        let logs = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_current_span(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+        let err = enforce_strict_v2_bundle_policy(
+            "ACTOR123",
+            "TARGET456",
+            PROTOCOL_V2_LIBSIGNAL,
+            true,
+            true,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            None,
+            7,
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        )
+        .expect_err("missing signing key must be rejected");
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        assert_eq!(err.detail, "bundle unavailable");
+
+        let log_text = logs.as_string();
+        assert!(
+            log_text.contains("\"security_event\":\"chat_key_bundle_policy\""),
+            "missing security_event log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"outcome\":\"blocked\""),
+            "missing blocked outcome log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"reason\":\"strict_v2_bundle_required\""),
+            "missing reason log: {log_text}"
+        );
     }
 
     #[test]
