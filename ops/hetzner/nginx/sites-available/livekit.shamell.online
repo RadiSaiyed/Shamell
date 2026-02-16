@@ -5,12 +5,14 @@ server {
 
     listen 80;
     server_name livekit.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
     server_name livekit.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
 
     ssl_certificate /etc/letsencrypt/live/livekit.shamell.online/fullchain.pem; # managed by Certbot
     ssl_certificate_key /etc/letsencrypt/live/livekit.shamell.online/privkey.pem; # managed by Certbot
@@ -47,4 +49,3 @@ server {
         proxy_buffering off;
     }
 }
-

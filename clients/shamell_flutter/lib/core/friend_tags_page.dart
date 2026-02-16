@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
 import 'l10n.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 
 class FriendTagsPage extends StatefulWidget {
   final String baseUrl;
@@ -114,7 +114,7 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final tags = _tagToChatIds;
 
     Icon chevron() => Icon(
@@ -159,7 +159,7 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
               : ListView(
                   children: [
                     const SizedBox(height: 8),
-                    WeChatSearchBar(
+                    ShamellSearchBar(
                       hintText: l.isArabic ? 'بحث' : 'Search',
                       controller: _searchCtrl,
                       onChanged: (v) => setState(() => _search = v),
@@ -176,12 +176,12 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
                         ),
                       )
                     else
-                      WeChatSection(
+                      ShamellSection(
                         children: [
                           for (final entry in filtered)
                             ListTile(
                               dense: true,
-                              leading: const WeChatLeadingIcon(
+                              leading: const ShamellLeadingIcon(
                                 icon: Icons.sell_outlined,
                                 background: Color(0xFF3B82F6),
                               ),
@@ -246,7 +246,7 @@ class _TagMembersPageState extends State<_TagMembersPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
     Icon chevron() => Icon(
           l.isArabic ? Icons.chevron_left : Icons.chevron_right,
@@ -273,7 +273,7 @@ class _TagMembersPageState extends State<_TagMembersPage> {
       body: ListView(
         children: [
           const SizedBox(height: 8),
-          WeChatSearchBar(
+          ShamellSearchBar(
             hintText: l.isArabic ? 'بحث' : 'Search',
             controller: _searchCtrl,
             onChanged: (v) => setState(() => _search = v),
@@ -289,7 +289,7 @@ class _TagMembersPageState extends State<_TagMembersPage> {
               ),
             )
           else
-            WeChatSection(
+            ShamellSection(
               children: [
                 for (final id in filtered)
                   ListTile(
@@ -316,7 +316,7 @@ class _TagMembersPageState extends State<_TagMembersPage> {
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => ThreemaChatPage(
+                          builder: (_) => ShamellChatPage(
                             baseUrl: widget.baseUrl,
                             initialPeerId: id,
                           ),

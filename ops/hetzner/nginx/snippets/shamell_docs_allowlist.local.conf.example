@@ -1,0 +1,12 @@
+# Host-local allowlist for BFF docs endpoints (`/docs`, `/openapi.json`).
+# Keep this file on the host at:
+#   /etc/nginx/snippets/shamell_docs_allowlist.local.conf
+#
+# Notes:
+# - `127.0.0.1` and `::1` allow local host checks/ops.
+# - Add your trusted office/VPN IPs (or CIDRs) as needed.
+
+allow 127.0.0.1;
+allow ::1;
+# allow 83.137.6.187;
+# allow 203.0.113.0/24;

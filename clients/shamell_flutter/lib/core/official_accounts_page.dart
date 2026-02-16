@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -18,11 +19,11 @@ import 'ui_kit.dart';
 import 'call_signaling.dart';
 import 'moments_page.dart' show MomentsPage;
 import 'channels_page.dart' show ChannelsPage;
-import 'redpacket_campaigns_page.dart';
 import 'app_shell_widgets.dart' show AppBG;
 import 'mini_program_runtime.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 import 'perf.dart';
+import 'http_error.dart';
 
 class OfficialAccountsPage extends StatefulWidget {
   final String baseUrl;
@@ -62,7 +63,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
   bool _hotOnly = false;
   final Map<String, Map<String, dynamic>> _momentsStatsByAccountId =
       <String, Map<String, dynamic>>{};
-  final Map<String, int> _campaignsActiveByAccountId = <String, int>{};
 
   @override
   void initState() {
@@ -83,11 +83,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     return h;
   }
@@ -109,11 +106,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
             if (e is Map) {
               final m = e.cast<String, dynamic>();
               list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
             }
           }
         } else if (decoded is List) {
@@ -121,11 +113,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
             if (e is Map) {
               final m = e.cast<String, dynamic>();
               list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
             }
           }
         }
@@ -143,12 +130,16 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         await _preloadNotificationModes(result);
       } else {
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     } finally {
       if (mounted) {
@@ -176,11 +167,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
             if (e is Map) {
               final m = e.cast<String, dynamic>();
               list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
             }
           }
         } else if (decoded is List) {
@@ -188,11 +174,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
             if (e is Map) {
               final m = e.cast<String, dynamic>();
               list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
             }
           }
         }
@@ -215,12 +196,19 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         await _preloadNotificationModes(result);
       } else {
         setState(() {
-          _discoverError = '${r.statusCode}: ${r.body}';
+          _discoverError = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _discoverError = e.toString();
+        _discoverError = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
       });
     } finally {
       if (mounted) {
@@ -291,9 +279,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
               }
             }
           }
-          final campaignsActiveRaw = extra['campaigns_active'];
-          final campaignsActive =
-              campaignsActiveRaw is num ? campaignsActiveRaw.toInt() : 0;
           final acc = _OfficialAccount(
             id: (e['id'] ?? '').toString(),
             kind: (extra['kind'] ?? 'service').toString(),
@@ -326,9 +311,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
             menuItems: const <_OfficialMenuItem>[],
             notifMode: null,
           );
-          if (acc.id.isNotEmpty && campaignsActive > 0) {
-            _campaignsActiveByAccountId[acc.id] = campaignsActive;
-          }
           list.add(acc);
         }
       }
@@ -379,19 +361,16 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
           final decoded = jsonDecode(r.body);
           if (decoded is! Map) continue;
           final total = decoded['total_shares'];
-          final rp = decoded['redpacket_shares_30d'];
           final shares30 = decoded['shares_30d'];
           final followers = decoded['followers'];
           final per1k = decoded['shares_per_1k_followers'];
           final totalInt = total is num ? total.toInt() : 0;
-          final rpInt = rp is num ? rp.toInt() : 0;
           final shares30Int = shares30 is num ? shares30.toInt() : 0;
           final followersInt = followers is num ? followers.toInt() : 0;
           final per1kVal = per1k is num ? per1k.toDouble() : 0.0;
           if (!mounted) continue;
           _momentsStatsByAccountId[id] = <String, dynamic>{
             'total_shares': totalInt,
-            'redpacket_shares_30d': rpInt,
             'shares_30d': shares30Int,
             'followers': followersInt,
             'shares_per_1k_followers': per1kVal,
@@ -436,15 +415,13 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         final stats = _momentsStatsByAccountId[a.id];
         if (stats == null) return false;
         final totalRaw = stats['total_shares'];
-        final rpRaw = stats['redpacket_shares_30d'];
         final s30Raw = stats['shares_30d'];
         final per1kRaw = stats['shares_per_1k_followers'];
         final total = totalRaw is num ? totalRaw.toInt() : 0;
-        final rp = rpRaw is num ? rpRaw.toInt() : 0;
         final s30 = s30Raw is num ? s30Raw.toInt() : 0;
         final per1k = per1kRaw is num ? per1kRaw.toDouble() : 0.0;
         // Hot if either strong all-time, strong last 30d or high per-1k.
-        return total >= 10 || rp >= 3 || s30 >= 3 || per1k >= 5.0;
+        return total >= 10 || s30 >= 3 || per1k >= 5.0;
       }).toList();
     }
     return list;
@@ -512,7 +489,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final isDiscover = _tabIndex == 1;
     final baseList = isDiscover ? _allAccounts : _accounts;
     final filtered = _filtered(baseList);
@@ -572,7 +549,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     }
 
     // When a search query is active and we have results from /search,
-    // use them as the primary Discover list to get WeChat-like ranking.
+    // use them as the primary Discover list to get Shamell-like ranking.
     final bool useSearch =
         _search.trim().isNotEmpty && _searchResults.isNotEmpty;
     final listForUi = useSearch ? _searchResults : filtered;
@@ -595,7 +572,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   decoration: BoxDecoration(
                     color: isDark
                         ? theme.colorScheme.surfaceContainerHighest
-                        : WeChatPalette.searchFill,
+                        : ShamellPalette.searchFill,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Row(
@@ -657,7 +634,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   ),
                 ),
               ),
-              WeChatSearchBar(
+              ShamellSearchBar(
                 hintText: l.isArabic
                     ? 'ابحث في الحسابات الرسمية'
                     : 'Search official accounts',
@@ -903,20 +880,17 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                                   final stats = _momentsStatsByAccountId[a.id];
                                   if (stats == null) continue;
                                   final totalRaw = stats['total_shares'];
-                                  final rpRaw = stats['redpacket_shares_30d'];
                                   final s30Raw = stats['shares_30d'];
                                   final per1kRaw =
                                       stats['shares_per_1k_followers'];
                                   final total =
                                       totalRaw is num ? totalRaw.toInt() : 0;
-                                  final rp = rpRaw is num ? rpRaw.toInt() : 0;
                                   final s30 =
                                       s30Raw is num ? s30Raw.toInt() : 0;
                                   final per1k = per1kRaw is num
                                       ? per1kRaw.toDouble()
                                       : 0.0;
                                   if (total >= 10 ||
-                                      rp >= 3 ||
                                       s30 >= 3 ||
                                       per1k >= 5.0) {
                                     hot.add(a);
@@ -1206,8 +1180,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final stats = _momentsStatsByAccountId[a.id];
     final totalShares =
         stats != null ? (stats['total_shares'] as int? ?? 0) : 0;
-    final rp30 =
-        stats != null ? (stats['redpacket_shares_30d'] as int? ?? 0) : 0;
     final shares30 = stats != null ? (stats['shares_30d'] as int? ?? 0) : 0;
     final per1k = stats != null
         ? (stats['shares_per_1k_followers'] as num? ?? 0).toDouble()
@@ -1220,7 +1192,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final hasCity = rawCity.isNotEmpty;
     final categoryLabel =
         hasCategory ? _labelForCategory(rawCategory, l) : null;
-    final campCount = _campaignsActiveByAccountId[a.id] ?? 0;
 
     return ListTile(
       onTap: () {
@@ -1293,36 +1264,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                     const SizedBox(width: 2),
                     Text(
                       l.isArabic ? 'مميز' : 'Featured',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          if (campCount > 0)
-            Padding(
-              padding: const EdgeInsets.only(left: 4.0),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: .08),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.card_giftcard_outlined,
-                      size: 12,
-                    ),
-                    const SizedBox(width: 2),
-                    Text(
-                      l.isArabic
-                          ? 'حملات: $campCount'
-                          : 'Campaigns: $campCount',
                       style: const TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w500,
@@ -1413,9 +1354,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                       parts.add(
                           '${per1k.toStringAsFixed(1)} مشاركة لكل ١٬٠٠٠ متابع');
                     }
-                    if (rp30 > 0) {
-                      parts.add('$rp30 حزم حمراء في آخر ٣٠ يوماً');
-                    }
                     return 'الأثر في اللحظات: ${parts.join(' · ')}';
                   } else {
                     final parts = <String>[];
@@ -1426,9 +1364,6 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                     if (per1k > 0) {
                       parts.add(
                           '${per1k.toStringAsFixed(1)} shares per 1k followers');
-                    }
-                    if (rp30 > 0) {
-                      parts.add('$rp30 red‑packet moments in last 30 days');
                     }
                     return 'Moments impact: ${parts.join(' · ')}';
                   }
@@ -1497,7 +1432,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                   IconButton(
                     tooltip: () {
                       final id = (a.miniAppId ?? '').trim();
-                      if (id == 'bus') return l.isArabic ? 'فتح الباص' : 'Open bus';
+                      if (id == 'bus')
+                        return l.isArabic ? 'فتح الباص' : 'Open bus';
                       if (id == 'payments') {
                         return l.isArabic ? 'فتح المحفظة' : 'Open wallet';
                       }
@@ -1753,11 +1689,8 @@ class _OfficialAccountDeepLinkPageState
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     return h;
   }
@@ -1808,14 +1741,18 @@ class _OfficialAccountDeepLinkPageState
       } else {
         if (!mounted) return;
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
           _loading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -1888,11 +1825,8 @@ class _OfficialFeedItemDeepLinkPageState
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     return h;
   }
@@ -1966,21 +1900,29 @@ class _OfficialFeedItemDeepLinkPageState
         } else {
           if (!mounted) return;
           setState(() {
-            _error = '${fr.statusCode}: ${fr.body}';
+            _error = sanitizeHttpError(
+              statusCode: fr.statusCode,
+              rawBody: fr.body,
+              isArabic: L10n.of(context).isArabic,
+            );
             _loading = false;
           });
         }
       } else {
         if (!mounted) return;
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
           _loading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -2359,26 +2301,11 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
   List<OfficialAccountHandle> _relatedAccounts =
       const <OfficialAccountHandle>[];
   int _momentsSharesTotal = 0;
-  int _momentsRedpacket30d = 0;
   int _momentsUniqueSharers30d = 0;
   double _momentsSharesPer1k = 0;
   int _momentsComments30d = 0;
   List<Map<String, dynamic>> _channelClips = const <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _latestMoments = const <Map<String, dynamic>>[];
-  int? _campaignDefaultAmountCents;
-  int? _campaignDefaultCount;
-  bool get _hasRedpacketCampaign {
-    return _items.any((e) => e.isRedpacketCampaign);
-  }
-
-  String? get _firstCampaignId {
-    for (final e in _items) {
-      if (e.isRedpacketCampaign && e.id.isNotEmpty) {
-        return e.id;
-      }
-    }
-    return null;
-  }
 
   @override
   void initState() {
@@ -2392,11 +2319,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     return h;
   }
@@ -2440,7 +2364,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           }
         } catch (_) {}
         int sharesTotal = 0;
-        int sharesRp30 = 0;
         int uniqSharers30 = 0;
         double sharesPer1k = 0;
         int comments30 = 0;
@@ -2452,54 +2375,13 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
             final sd = jsonDecode(sr.body);
             if (sd is Map) {
               final t = sd['total_shares'];
-              final rp = sd['redpacket_shares_30d'];
               final u30 = sd['unique_sharers_30d'];
               final spk = sd['shares_per_1k_followers'];
               final c30 = sd['comments_30d'];
               if (t is num) sharesTotal = t.toInt();
-              if (rp is num) sharesRp30 = rp.toInt();
               if (u30 is num) uniqSharers30 = u30.toInt();
               if (spk is num) sharesPer1k = spk.toDouble();
               if (c30 is num) comments30 = c30.toInt();
-            }
-          }
-        } catch (_) {}
-        int? defAmt;
-        int? defCount;
-        try {
-          final campUri = Uri.parse(
-              '${widget.baseUrl}/official_accounts/${widget.account.id}/campaigns');
-          final cr = await http.get(campUri, headers: await _hdr());
-          if (cr.statusCode >= 200 && cr.statusCode < 300) {
-            final cd = jsonDecode(cr.body);
-            if (cd is Map && cd['campaigns'] is List) {
-              final arr = cd['campaigns'] as List;
-              String? firstId;
-              for (final it in list) {
-                if (it.isRedpacketCampaign && it.id.isNotEmpty) {
-                  firstId = it.id;
-                  break;
-                }
-              }
-              Map<String, dynamic>? chosen;
-              if (firstId != null && firstId.isNotEmpty) {
-                for (final e in arr) {
-                  if (e is Map &&
-                      (e['id'] ?? '').toString().trim() == firstId) {
-                    chosen = e.cast<String, dynamic>();
-                    break;
-                  }
-                }
-              }
-              chosen ??= arr.isNotEmpty && arr.first is Map
-                  ? (arr.first as Map).cast<String, dynamic>()
-                  : null;
-              if (chosen != null) {
-                final da = chosen['default_amount_cents'];
-                final dc = chosen['default_count'];
-                if (da is num) defAmt = da.toInt();
-                if (dc is num) defCount = dc.toInt();
-              }
             }
           }
         } catch (_) {}
@@ -2507,14 +2389,11 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           _items = list;
           _locations = locs;
           _momentsSharesTotal = sharesTotal;
-          _momentsRedpacket30d = sharesRp30;
           _momentsUniqueSharers30d = uniqSharers30;
           _momentsSharesPer1k = sharesPer1k;
           _momentsComments30d = comments30;
-          _campaignDefaultAmountCents = defAmt;
-          _campaignDefaultCount = defCount;
         });
-        // Load Channels clips for this Official (WeChat‑style cross‑view).
+        // Load Channels clips for this Official (Shamell‑style cross‑view).
         // ignore: discarded_futures
         _loadChannelClips();
         // Load latest Moments posts for this Official so we can show a
@@ -2541,12 +2420,16 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         }
       } else {
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     } finally {
       if (mounted) {
@@ -2822,7 +2705,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                       ),
                     ),
                   ),
-                if (_momentsSharesTotal >= 10 || _momentsRedpacket30d >= 3)
+                if (_momentsSharesTotal >= 10)
                   Padding(
                     padding: const EdgeInsets.only(left: 4.0),
                     child: Container(
@@ -3018,16 +2901,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         final p = payload;
         if (p != null) {
           final rawSection = p['section'];
-          final rawCampaign = p['campaign'];
           if (rawSection is String && rawSection.trim().isNotEmpty) {
-            final sec = rawSection.trim();
-            if (sec.toLowerCase() == 'redpacket' &&
-                rawCampaign is String &&
-                rawCampaign.trim().isNotEmpty) {
-              initialSection = 'redpacket:${rawCampaign.trim()}';
-            } else {
-              initialSection = sec;
-            }
+            initialSection = rawSection.trim();
           }
         }
         if (!mounted) return;
@@ -3056,298 +2931,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         ),
       ),
     );
-  }
-
-  Future<void> _openCampaignRedPacketComposer() async {
-    final l = L10n.of(context);
-    final theme = Theme.of(context);
-    final campaignId = _firstCampaignId;
-    if (campaignId == null || campaignId.isEmpty) return;
-    String initialAmountText = '';
-    if (_campaignDefaultAmountCents != null &&
-        _campaignDefaultAmountCents! > 0) {
-      final d = _campaignDefaultAmountCents!;
-      initialAmountText = (d / 100.0).toStringAsFixed(2);
-    }
-    final amountCtrl = TextEditingController(text: initialAmountText);
-    final countCtrl = TextEditingController(
-        text: (_campaignDefaultCount != null && _campaignDefaultCount! > 0)
-            ? _campaignDefaultCount!.toString()
-            : '10');
-    final noteCtrl = TextEditingController();
-    bool randomMode = true;
-    bool submitting = false;
-    String? error;
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        final bottom = MediaQuery.of(ctx).viewInsets.bottom;
-        return Padding(
-          padding:
-              EdgeInsets.only(bottom: bottom, left: 12, right: 12, top: 12),
-          child: Material(
-            color: theme.cardColor,
-            borderRadius: BorderRadius.circular(16),
-            child: StatefulBuilder(
-              builder: (ctx2, setStateSB) {
-                return Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        l.isArabic
-                            ? 'إصدار حزم حمراء لهذه الحملة'
-                            : 'Issue red packets for this campaign',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        l.isArabic
-                            ? 'سيتم ربط هذه الحزم بالحملة الحالية في التقارير.'
-                            : 'These packets will be linked to this campaign in analytics.',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .70),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: amountCtrl,
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                      decimal: true),
-                              decoration: InputDecoration(
-                                labelText: l.isArabic
-                                    ? 'المبلغ الإجمالي'
-                                    : 'Total amount',
-                                hintText: '100.00',
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: countCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: InputDecoration(
-                                labelText:
-                                    l.isArabic ? 'عدد المستلمين' : 'Recipients',
-                                hintText: '10',
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          ChoiceChip(
-                            label: Text(
-                              l.isArabic ? 'عشوائي' : 'Random',
-                            ),
-                            selected: randomMode,
-                            onSelected: (v) {
-                              setStateSB(() => randomMode = true);
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          ChoiceChip(
-                            label: Text(
-                              l.isArabic ? 'مبلغ ثابت' : 'Fixed per person',
-                            ),
-                            selected: !randomMode,
-                            onSelected: (v) {
-                              setStateSB(() => randomMode = false);
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: noteCtrl,
-                        maxLines: 2,
-                        decoration: InputDecoration(
-                          labelText: l.isArabic
-                              ? 'ملاحظة (اختياري)'
-                              : 'Note (optional)',
-                        ),
-                      ),
-                      if (error != null && error!.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          error!,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.error,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: submitting
-                                ? null
-                                : () {
-                                    Navigator.of(ctx2).pop();
-                                  },
-                            child: Text(
-                              l.isArabic ? 'إلغاء' : 'Cancel',
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton(
-                            onPressed: submitting
-                                ? null
-                                : () async {
-                                    final amtStr =
-                                        amountCtrl.text.trim().replaceAll(
-                                              ',',
-                                              '.',
-                                            );
-                                    final amt = double.tryParse(amtStr) ?? 0;
-                                    final cnt = int.tryParse(
-                                          countCtrl.text.trim(),
-                                        ) ??
-                                        1;
-                                    if (amt <= 0 || cnt < 1) {
-                                      setStateSB(() {
-                                        error = l.payCheckInputs;
-                                      });
-                                      return;
-                                    }
-                                    if (cnt > 100) {
-                                      setStateSB(() {
-                                        error = l.isArabic
-                                            ? 'بحد أقصى ١٠٠ مستلم لكل حزمة حمراء.'
-                                            : 'Maximum 100 recipients per red packet.';
-                                      });
-                                      return;
-                                    }
-                                    if (!randomMode && amt / cnt < 0.01) {
-                                      setStateSB(() {
-                                        error = l.isArabic
-                                            ? 'المبلغ لكل مستلم صغير جداً.'
-                                            : 'Amount per recipient is too small.';
-                                      });
-                                      return;
-                                    }
-                                    setStateSB(() {
-                                      submitting = true;
-                                      error = null;
-                                    });
-                                    try {
-                                      await _issueCampaignRedPacket(
-                                        amountMajor: amt,
-                                        count: cnt,
-                                        message: noteCtrl.text.trim(),
-                                        campaignId: campaignId,
-                                        randomMode: randomMode,
-                                      );
-                                      if (context.mounted) {
-                                        Navigator.of(ctx2).pop();
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              l.isArabic
-                                                  ? 'تم إصدار الحزم الحمراء لهذه الحملة.'
-                                                  : 'Red packets issued for this campaign.',
-                                            ),
-                                          ),
-                                        );
-                                      }
-                                    } catch (e) {
-                                      setStateSB(() {
-                                        submitting = false;
-                                        error = e.toString();
-                                      });
-                                    }
-                                  },
-                            child: submitting
-                                ? SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(
-                                        theme.colorScheme.onPrimary,
-                                      ),
-                                    ),
-                                  )
-                                : Text(
-                                    l.isArabic ? 'إصدار' : 'Issue',
-                                  ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _issueCampaignRedPacket({
-    required double amountMajor,
-    required int count,
-    required String message,
-    required String campaignId,
-    required bool randomMode,
-  }) async {
-    final sp = await SharedPreferences.getInstance();
-    final walletId = sp.getString('wallet_id') ?? '';
-    if (walletId.isEmpty) {
-      if (!mounted) return;
-      final l = L10n.of(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            l.isArabic
-                ? 'يرجى إعداد المحفظة أولاً.'
-                : 'Please set up your wallet first.',
-          ),
-        ),
-      );
-      throw Exception('wallet missing');
-    }
-    final headers = await _hdr(jsonBody: true);
-    final uri = Uri.parse('${widget.baseUrl}/payments/redpacket/issue');
-    final payload = <String, Object?>{
-      'creator_wallet_id': walletId,
-      'amount': double.parse(amountMajor.toStringAsFixed(2)),
-      'count': count,
-      'group_id': 'campaign:$campaignId',
-      'mode': randomMode ? 'random' : 'fixed',
-    };
-    if (message.trim().isNotEmpty) {
-      payload['message'] = message.trim();
-    }
-    final resp =
-        await http.post(uri, headers: headers, body: jsonEncode(payload));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      String detail = 'status ${resp.statusCode}';
-      try {
-        final body = jsonDecode(resp.body);
-        if (body is Map && body['detail'] != null) {
-          detail = body['detail'].toString();
-        }
-      } catch (_) {}
-      throw Exception(detail);
-    }
   }
 
   Future<void> _loadRelatedAccounts() async {
@@ -3416,7 +2999,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final acc = widget.account;
     final items = _items;
     final articleItems =
@@ -3686,133 +3269,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
               ),
               const SizedBox(height: 8),
               _buildServiceMenu(context, acc, widget.baseUrl),
-              if (_hasRedpacketCampaign)
-                Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.card_giftcard,
-                            size: 18,
-                            color: theme.colorScheme.primary
-                                .withValues(alpha: .85),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              l.isArabic
-                                  ? 'حملة حزم حمراء نشطة لهذا التاجر.'
-                                  : 'Active red‑packet campaign for this merchant.',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.colorScheme.onSurface
-                                    .withValues(alpha: .80),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (_campaignDefaultAmountCents != null ||
-                          _campaignDefaultCount != null) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          () {
-                            final parts = <String>[];
-                            final amt = _campaignDefaultAmountCents;
-                            final cnt = _campaignDefaultCount;
-                            if (amt != null && amt > 0) {
-                              final major = (amt / 100.0).toStringAsFixed(2);
-                              parts.add(
-                                l.isArabic
-                                    ? 'إجمالي افتراضي: $major'
-                                    : 'Default total: $major',
-                              );
-                            }
-                            if (cnt != null && cnt > 0) {
-                              parts.add(
-                                l.isArabic
-                                    ? 'عدد المستلمين: $cnt'
-                                    : 'Recipients: $cnt',
-                              );
-                            }
-                            return parts.join(' · ');
-                          }(),
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontSize: 11,
-                            color: theme.colorScheme.onSurface
-                                .withValues(alpha: .70),
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 4),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 4,
-                        children: [
-                          TextButton.icon(
-                            onPressed: _openCampaignRedPacketComposer,
-                            icon: const Icon(Icons.add_card, size: 18),
-                            label: Text(
-                              l.isArabic
-                                  ? 'إصدار حزم حمراء لهذه الحملة'
-                                  : 'Issue red packets for this campaign',
-                            ),
-                          ),
-                          TextButton.icon(
-                            onPressed: () async {
-                              final cid = _firstCampaignId;
-                              if (cid == null || cid.isEmpty) return;
-                              try {
-                                final uri = Uri.parse(
-                                  '${widget.baseUrl}/redpacket/campaigns/${Uri.encodeComponent(cid)}/moments_template',
-                                );
-                                final r = await http.get(
-                                  uri,
-                                  headers: await _hdr(jsonBody: false),
-                                );
-                                if (r.statusCode < 200 || r.statusCode >= 300) {
-                                  return;
-                                }
-                                final decoded = jsonDecode(r.body);
-                                if (decoded is! Map) return;
-                                final isAr = l.isArabic;
-                                final txt =
-                                    (decoded[isAr ? 'text_ar' : 'text_en'] ??
-                                            '')
-                                        .toString()
-                                        .trim();
-                                if (txt.isEmpty) return;
-                                final sp =
-                                    await SharedPreferences.getInstance();
-                                await sp.setString('moments_preset_text', txt);
-                                if (!mounted) return;
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        MomentsPage(baseUrl: widget.baseUrl),
-                                  ),
-                                );
-                              } catch (_) {}
-                            },
-                            icon: const Icon(
-                              Icons.photo_library_outlined,
-                              size: 18,
-                            ),
-                            label: Text(
-                              l.isArabic
-                                  ? 'مشاركة الحملة في اللحظات'
-                                  : 'Share campaign to Moments',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
               Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
@@ -3856,7 +3312,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                         child: Text(
                           () {
                             final total = _momentsSharesTotal;
-                            final rp = _momentsRedpacket30d;
                             final u30 = _momentsUniqueSharers30d;
                             final spk = _momentsSharesPer1k;
                             final c30 = _momentsComments30d;
@@ -3864,9 +3319,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                               var base =
                                   'الأثر الاجتماعي في اللحظات: تمت مشاركة هذا الحساب $total مرة';
                               final parts = <String>[];
-                              if (rp > 0) {
-                                parts.add('$rp حزم حمراء في آخر ٣٠ يوماً');
-                              }
                               if (c30 > 0) {
                                 parts.add(
                                     '$c30 تعليقات على منشورات اللحظات في آخر ٣٠ يوماً');
@@ -3891,10 +3343,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                               var base =
                                   'Social impact in Moments: shared $total times';
                               final parts = <String>[];
-                              if (rp > 0) {
-                                parts.add(
-                                    '$rp red‑packet moments in last 30 days');
-                              }
                               if (c30 > 0) {
                                 parts.add(
                                     '$c30 comments on Moments posts in last 30 days');
@@ -3961,8 +3409,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                         const SizedBox(height: 8),
                                         Text(
                                           isAr
-                                              ? 'يعتمد هذا المؤشر على عدد مرات مشاركة الحساب في اللحظات، وعدد المستخدمين المختلفين الذين قاموا بالمشاركة، مع التركيز على المشاركات التي تحتوي على حزم حمراء.'
-                                              : 'This indicator is based on how often this account is shared in Moments, how many different users share it, and how many of those shares relate to red‑packet campaigns.',
+                                              ? 'يعتمد هذا المؤشر على عدد مرات مشاركة الحساب في اللحظات، وعدد المستخدمين المختلفين الذين قاموا بالمشاركة، والتعليقات.'
+                                              : 'This indicator is based on how often this account is shared in Moments, how many different users share it, and comments.',
                                           style:
                                               t.textTheme.bodySmall?.copyWith(
                                             color: t.colorScheme.onSurface
@@ -3981,58 +3429,6 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                     ],
                   ),
                 ),
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                child: Align(
-                  alignment: AlignmentDirectional.centerStart,
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => RedpacketCampaignsPage(
-                                baseUrl: widget.baseUrl,
-                                accountId: widget.account.id,
-                                accountName: widget.account.name,
-                              ),
-                            ),
-                          );
-                        },
-                        child: Text(
-                          l.isArabic
-                              ? 'عرض حملات الحزم الحمراء في التطبيق'
-                              : 'View red‑packet campaigns in app',
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          final baseUrl = widget.baseUrl;
-                          final accId = widget.account.id;
-                          final url =
-                              '$baseUrl/admin/redpacket_campaigns?account_id=$accId';
-                          try {
-                            final uri = Uri.parse(url);
-                            if (!await canLaunchUrl(uri)) return;
-                            await launchUrl(
-                              uri,
-                              mode: LaunchMode.externalApplication,
-                            );
-                          } catch (_) {}
-                        },
-                        child: Text(
-                          l.isArabic
-                              ? 'فتح لوحة حملات الحزم الحمراء (الويب)'
-                              : 'Open red‑packet campaigns dashboard (web)',
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
               if (_latestMoments.isNotEmpty)
                 Padding(
                   padding:
@@ -5214,7 +4610,7 @@ Widget _buildServiceMenu(
         IconData icon;
         String fallbackLabel;
         VoidCallback onTap;
-		        switch (mid) {
+        switch (mid) {
           case 'payments':
           case 'alias':
           case 'merchant':
@@ -5240,15 +4636,15 @@ Widget _buildServiceMenu(
               } catch (_) {}
             };
             break;
-		          case 'bus':
-		            icon = Icons.directions_bus_filled_outlined;
-		            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
-		            onTap = () => openMod(mid);
-		            break;
-	          default:
-	            icon = Icons.open_in_new;
-	            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
-	            onTap = () => openMod(mid);
+          case 'bus':
+            icon = Icons.directions_bus_filled_outlined;
+            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
+            onTap = () => openMod(mid);
+            break;
+          default:
+            icon = Icons.open_in_new;
+            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
+            onTap = () => openMod(mid);
             break;
         }
         final label = item.label(l, fallbackLabel);
@@ -5283,20 +4679,20 @@ Widget _buildServiceMenu(
   }
 
   // Fallback for older BFFs without menu_items.
-		  if (actions.isEmpty) {
-		    switch (id) {
+  if (actions.isEmpty) {
+    switch (id) {
       case 'payments':
       case 'alias':
       case 'merchant':
         addPayments();
         break;
-		      case 'bus':
-		        addBus();
-		        break;
-	      default:
-	        break;
-	    }
-	  }
+      case 'bus':
+        addBus();
+        break;
+      default:
+        break;
+    }
+  }
 
   if (actions.isEmpty) {
     return const SizedBox.shrink();
@@ -5646,7 +5042,6 @@ class _OfficialFeedItem {
   // Optional livestream URL (e.g. HLS) for
   // Channels-style live items; best-effort.
   final String? liveUrl;
-  final bool isRedpacketCampaign;
 
   _OfficialFeedItem({
     required this.id,
@@ -5658,7 +5053,6 @@ class _OfficialFeedItem {
     this.deeplinkMiniAppId,
     this.deeplinkPayload,
     this.liveUrl,
-    this.isRedpacketCampaign = false,
   });
 
   String get tsLabel {
@@ -5697,14 +5091,6 @@ class _OfficialFeedItem {
       }
     }
 
-    bool isCampaign = false;
-    if (miniAppId == 'payments' &&
-        payload != null &&
-        (payload['section'] ?? '').toString().toLowerCase() == 'redpacket' &&
-        (payload['campaign'] ?? '').toString().trim().isNotEmpty) {
-      isCampaign = true;
-    }
-
     return _OfficialFeedItem(
       id: (j['id'] ?? '').toString(),
       type: (j['type'] ?? 'promo').toString(),
@@ -5721,7 +5107,6 @@ class _OfficialFeedItem {
       deeplinkMiniAppId: miniAppId,
       deeplinkPayload: payload,
       liveUrl: liveUrl,
-      isRedpacketCampaign: isCampaign,
     );
   }
 }
