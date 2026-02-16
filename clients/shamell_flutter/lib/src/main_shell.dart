@@ -8,8 +8,8 @@ class SuperApp extends StatelessWidget {
     final l = L10n.of(context);
     // Debug log to verify HomePage from this repo is running on device.
     debugPrint('HOME_PAGE_BUILD: Shamell');
-    // WeChat-like light theme: flat surfaces + WeChat green accent.
-    const wechatGreen = WeChatPalette.green;
+    // Shamell-like light theme: flat surfaces + Shamell green accent.
+    const shamellGreen = ShamellPalette.green;
     final baseBtnShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(8),
     );
@@ -17,21 +17,21 @@ class SuperApp extends StatelessWidget {
       useMaterial3: true,
       brightness: Brightness.light,
       colorScheme: const ColorScheme.light(
-        primary: wechatGreen,
-        secondary: wechatGreen,
+        primary: shamellGreen,
+        secondary: shamellGreen,
         surface: Colors.white,
         onSurface: Color(0xFF111111),
       ),
-      scaffoldBackgroundColor: WeChatPalette.background,
-      dividerColor: WeChatPalette.divider,
+      scaffoldBackgroundColor: ShamellPalette.background,
+      dividerColor: ShamellPalette.divider,
       dividerTheme: const DividerThemeData(
-        color: WeChatPalette.divider,
+        color: ShamellPalette.divider,
         thickness: 0.5,
         space: 1,
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
         backgroundColor: Colors.white,
-        selectedItemColor: wechatGreen,
+        selectedItemColor: shamellGreen,
         unselectedItemColor: Color(0xFF8A8A8A),
         elevation: 0.5,
       ),
@@ -42,7 +42,7 @@ class SuperApp extends StatelessWidget {
       elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
         elevation: 0,
-        backgroundColor: wechatGreen,
+        backgroundColor: shamellGreen,
         foregroundColor: Colors.white,
         shape: baseBtnShape,
         minimumSize: const Size.fromHeight(48),
@@ -50,7 +50,7 @@ class SuperApp extends StatelessWidget {
       filledButtonTheme: FilledButtonThemeData(
           style: ButtonStyle(
         elevation: const WidgetStatePropertyAll(0),
-        backgroundColor: const WidgetStatePropertyAll(wechatGreen),
+        backgroundColor: const WidgetStatePropertyAll(shamellGreen),
         foregroundColor: const WidgetStatePropertyAll(Colors.white),
         shape: WidgetStatePropertyAll(baseBtnShape),
         minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
@@ -74,7 +74,7 @@ class SuperApp extends StatelessWidget {
             borderSide: const BorderSide(color: Color(0xFFDDDDDD), width: 1.0)),
         focusedBorder: const OutlineInputBorder(
             borderRadius: BorderRadius.all(Radius.circular(16)),
-            borderSide: BorderSide(color: wechatGreen, width: 2.0)),
+            borderSide: BorderSide(color: shamellGreen, width: 2.0)),
         labelStyle: const TextStyle(color: Color(0xFF555555)),
         hintStyle: const TextStyle(color: Color(0xFF999999)),
       ),
@@ -82,7 +82,7 @@ class SuperApp extends StatelessWidget {
         color: Colors.white,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: WeChatPalette.divider)),
+            side: const BorderSide(color: ShamellPalette.divider)),
         elevation: 0,
         shadowColor: Colors.black.withValues(alpha: .05),
       ),
@@ -109,8 +109,8 @@ class SuperApp extends StatelessWidget {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
-        primary: wechatGreen,
-        secondary: wechatGreen,
+        primary: shamellGreen,
+        secondary: shamellGreen,
         surface: Color(0xFF1C1C1E),
         onSurface: Color(0xFFEDEDED),
       ),
@@ -123,7 +123,7 @@ class SuperApp extends StatelessWidget {
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
         backgroundColor: Color(0xFF1C1C1E),
-        selectedItemColor: wechatGreen,
+        selectedItemColor: shamellGreen,
         unselectedItemColor: Color(0xFF9A9A9A),
         elevation: 0.5,
       ),
@@ -136,7 +136,7 @@ class SuperApp extends StatelessWidget {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           elevation: 0,
-          backgroundColor: wechatGreen,
+          backgroundColor: shamellGreen,
           foregroundColor: Colors.white,
           shape: baseBtnShape,
           minimumSize: const Size.fromHeight(48),
@@ -145,7 +145,7 @@ class SuperApp extends StatelessWidget {
       filledButtonTheme: FilledButtonThemeData(
         style: ButtonStyle(
           elevation: const WidgetStatePropertyAll(0),
-          backgroundColor: const WidgetStatePropertyAll(wechatGreen),
+          backgroundColor: const WidgetStatePropertyAll(shamellGreen),
           foregroundColor: const WidgetStatePropertyAll(Colors.white),
           shape: WidgetStatePropertyAll(baseBtnShape),
           minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
@@ -174,7 +174,7 @@ class SuperApp extends StatelessWidget {
         ),
         focusedBorder: const OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
-          borderSide: BorderSide(color: wechatGreen, width: 2.0),
+          borderSide: BorderSide(color: shamellGreen, width: 2.0),
         ),
         labelStyle: const TextStyle(color: Color(0xFFB0B0B0)),
         hintStyle: const TextStyle(color: Color(0xFF8A8A8A)),
@@ -275,28 +275,41 @@ class AppScaffold extends StatelessWidget {
 }
 
 Future<String?> _getCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
-}
-
-Future<void> _setCookie(String v) async {
-  final sp = await SharedPreferences.getInstance();
-  await sp.setString('sa_cookie', v);
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final base = (sp.getString('base_url') ?? '').trim();
+    if (base.isNotEmpty) {
+      return await getSessionCookieHeader(base);
+    }
+  } catch (_) {}
+  final fallbackBase = const String.fromEnvironment(
+    'BASE_URL',
+    defaultValue: 'http://localhost:8080',
+  );
+  return await getSessionCookieHeader(fallbackBase);
 }
 
 Future<void> _clearCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  await sp.remove('sa_cookie');
+  await clearSessionCookie();
 }
 
-Future<Map<String, String>> _hdr({bool json = false}) async {
+Future<Map<String, String>> _hdr({bool json = false, String? baseUrl}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
-  final c = await _getCookie();
-  if (c != null && c.isNotEmpty) {
-    // Custom Header statt Cookie-Header, damit Web-Clients nicht
-    // an Browser-Restriktionen scheitern.
-    h['sa_cookie'] = c;
+  final host = Uri.tryParse((baseUrl ?? '').trim())?.host.toLowerCase();
+  if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
+    // Local dev shortcut: edge-attested client IP is normally injected by
+    // reverse proxy; direct localhost calls provide an explicit loopback IP.
+    h['x-shamell-client-ip'] = '127.0.0.1';
+  }
+  final b = (baseUrl ?? '').trim();
+  if (b.isNotEmpty) {
+    final c = await getSessionCookieHeader(b);
+    if (c != null && c.isNotEmpty) {
+      // Best practice: use real Cookie header so prod/staging can disable
+      // header-based session auth without breaking native clients.
+      h['cookie'] = c;
+    }
   }
   return h;
 }
@@ -309,7 +322,8 @@ class LoginGate extends StatefulWidget {
 
 class _LoginGateState extends State<LoginGate> {
   String? _c;
-  bool _skip = false;
+  bool _checking = true;
+  bool _unlocked = false;
   @override
   void initState() {
     super.initState();
@@ -317,50 +331,41 @@ class _LoginGateState extends State<LoginGate> {
   }
 
   Future<void> _init() async {
-    _c = await _getCookie();
-    // In Hybrid (APP_MODE=auto), always show login; never skip.
-    final defSkip = _envSkipLogin ||
-        (currentAppMode != AppMode.auto &&
-            (currentAppMode == AppMode.operator ||
-                currentAppMode == AppMode.admin));
-    bool skip = defSkip;
-    bool requireBiometrics = false;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      skip = sp.getBool('skip_login') ?? defSkip;
-      requireBiometrics = sp.getBool('require_biometrics') ?? false;
-    } catch (_) {
-      skip = defSkip;
-    }
-    // When a session cookie exists and the user has previously
-    // completed OTP login on this device, optionally gate access
-    // behind biometrics instead of auto-skipping the login screen.
-    if (!kIsWeb &&
-        requireBiometrics &&
-        _c != null &&
-        _c!.isNotEmpty &&
-        (currentAppMode == AppMode.user ||
-            currentAppMode == AppMode.operator ||
-            currentAppMode == AppMode.admin)) {
-      final ok = await _authenticateWithBiometrics();
-      skip = ok;
+    final cookie = await _getCookie();
+    final hasSession = cookie != null && cookie.isNotEmpty;
+    bool unlocked = false;
+    if (hasSession) {
+      unlocked = await _authenticateWithBiometrics();
+      if (unlocked) {
+        // Best-effort: provision biometric re-login for future logins.
+        try {
+          final sp = await SharedPreferences.getInstance();
+          var base = (sp.getString('base_url') ?? '').trim();
+          if (base.isEmpty) {
+            base = const String.fromEnvironment(
+              'BASE_URL',
+              defaultValue: 'http://localhost:8080',
+            );
+          }
+          unawaited(ensureBiometricLoginEnrolled(base));
+        } catch (_) {}
+      }
     }
     if (!mounted) return;
     setState(() {
-      _skip = skip;
+      _c = cookie;
+      _unlocked = unlocked;
+      _checking = false;
     });
   }
 
   Future<bool> _authenticateWithBiometrics() async {
+    if (kIsWeb) return false;
     try {
       final auth = LocalAuthentication();
       final canCheck =
           await auth.canCheckBiometrics || await auth.isDeviceSupported();
-      if (!canCheck) {
-        // If the device no longer supports biometrics, fall back to
-        // normal cookie-based auto-login.
-        return true;
-      }
+      if (!canCheck) return false;
       const reason = 'Authenticate to unlock Shamell';
       final didAuth = await auth.authenticate(
         localizedReason: reason,
@@ -370,25 +375,28 @@ class _LoginGateState extends State<LoginGate> {
       );
       return didAuth;
     } catch (_) {
-      // Never hard-block login because of biometric errors.
-      return true;
+      return false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // In Hybrid mode always force explicit login first.
-    if (currentAppMode == AppMode.auto) {
-      return const LoginPage();
+    if (_checking) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
-    return (_skip || (_c != null && _c!.isNotEmpty))
-        ? const HomePage()
-        : const LoginPage();
+    final hasSession = _c != null && _c!.isNotEmpty;
+    if (hasSession && _unlocked && currentAppMode != AppMode.auto) {
+      return const HomePage();
+    }
+    return LoginPage(hasSession: hasSession);
   }
 }
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final bool hasSession;
+  const LoginPage({super.key, this.hasSession = false});
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
@@ -400,25 +408,37 @@ class _LoginPageState extends State<LoginPage> {
       defaultValue: 'http://localhost:8080',
     ),
   );
-  final nameCtrl = TextEditingController();
-  final phoneCtrl = TextEditingController();
-  final codeCtrl = TextEditingController();
+  late final TextEditingController _deviceLabelCtrl;
   String out = '';
   AppMode _loginMode = AppMode.user;
-  static const List<String> _regionCodes = <String>[
-    '+963',
-    '+971',
-    '+966',
-  ];
-  String _selectedDialCode = '+963';
-  bool _superadminLogin = false;
   bool _driverLogin = false;
-  bool _canBiometricLogin = false;
   bool _showAdvanced = false;
+  bool _busy = false;
+  bool _hasSessionCookie = false;
+  bool _biometricsAvailable = false;
+  bool _hasBiometricEnrollment = false;
+
+  // Linking additional devices: strictly via Device-Login QR (no OTP fallback).
+  String? _deviceLoginToken;
+  String _deviceLoginLabel = '';
+  DateTime? _deviceLoginStartedAt;
+  bool _deviceLoginStarting = false;
+  bool _deviceLoginRedeeming = false;
+  Timer? _deviceLoginPollTimer;
+  int _deviceLoginPollAttempts = 0;
   @override
   void initState() {
     super.initState();
+    _deviceLabelCtrl = TextEditingController(text: _defaultDeviceLabel());
     _loadBase();
+  }
+
+  @override
+  void dispose() {
+    _deviceLoginPollTimer?.cancel();
+    baseCtrl.dispose();
+    _deviceLabelCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadBase() async {
@@ -433,175 +453,649 @@ class _LoginPageState extends State<LoginPage> {
           baseCtrl.text = v;
         }
       }
-      final lastPhone = sp.getString('last_login_phone');
-      String? detectedDialCode;
-      String? localPhonePart;
-      if (lastPhone != null && lastPhone.isNotEmpty) {
-        final v = lastPhone.trim();
-        for (final code in _regionCodes) {
-          if (v.startsWith(code)) {
-            detectedDialCode = code;
-            localPhonePart = v.substring(code.length);
-            break;
-          }
-        }
-        phoneCtrl.text = localPhonePart ?? v;
-      }
-      final lastName = sp.getString('last_login_name');
-      if (lastName != null && lastName.isNotEmpty) {
-        nameCtrl.text = lastName;
-      }
-      final requireBiometrics = sp.getBool('require_biometrics') ?? false;
-      final cookie = await _getCookie();
-      final hasCookie = cookie != null && cookie.isNotEmpty;
-      final canBio = !kIsWeb && requireBiometrics && hasCookie;
-      if (mounted) {
-        setState(() {
-          _canBiometricLogin = canBio;
-          if (detectedDialCode != null && detectedDialCode.isNotEmpty) {
-            _selectedDialCode = detectedDialCode!;
-          }
-        });
-      }
     } catch (_) {}
+    await _refreshBiometricState();
   }
 
-  String _normalizedPhone() {
-    final raw = phoneCtrl.text.trim();
-    if (raw.isEmpty) return raw;
-    if (raw.startsWith('+')) return raw;
-    final code = _selectedDialCode.trim();
-    if (code.isEmpty) return raw;
-    return '$code$raw';
-  }
-
-  Future<void> _request() async {
-    setState(() => out = 'Requesting code…');
-    final uri = Uri.parse('${baseCtrl.text.trim()}/auth/request_code');
-    final resp = await http.post(uri,
-        headers: await _hdr(json: true),
-        body: jsonEncode({'phone': _normalizedPhone()}));
-    try {
-      final j = jsonDecode(resp.body);
-      final code = (j['code'] ?? '').toString();
-      codeCtrl.text = code;
-      if (resp.statusCode == 200) {
-        final ttl = j['ttl'];
-        final ttlText = ttl is int ? 'Valid for ${(ttl / 60).round()} min' : '';
-        setState(
-            () => out = ttlText.isEmpty ? 'Code sent.' : 'Code sent. $ttlText');
-        if (code.isNotEmpty && mounted) {
-          showDialog(
-            context: context,
-            builder: (_) => AlertDialog(
-              title: const Text('Demo OTP'),
-              content: SelectableText(code,
-                  style: const TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.w700)),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: code));
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('OTP copied')));
-                  },
-                  child: const Text('Copy'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _verify();
-                  },
-                  child: const Text('Auto verify'),
-                ),
-              ],
-            ),
-          );
-        }
-      } else if (resp.statusCode == 429) {
-        // Freundliche Backoff-Anzeige (z.B. bei Rate-Limiting)
-        showBackoff(context, resp);
-        setState(() => out = 'Too many attempts. Please wait a moment.');
-      } else {
-        setState(() => out = 'Could not send code (${resp.statusCode}).');
-      }
-    } catch (_) {
-      setState(() => out = 'Unexpected response (${resp.statusCode}).');
-    }
-  }
-
-  Future<void> _verify() async {
-    setState(() => out = 'Verifying…');
-    final uri = Uri.parse('${baseCtrl.text.trim()}/auth/verify');
-    final deviceId = await getOrCreateStableDeviceId();
-    final resp = await http.post(uri,
-        headers: await _hdr(json: true),
-        body: jsonEncode({
-          'phone': _normalizedPhone(),
-          'code': codeCtrl.text.trim(),
-          'name': nameCtrl.text.trim(),
-          'device_id': deviceId,
-        }));
-    // Prefer reading session ID from JSON body (for web):
-    try {
-      final j = jsonDecode(resp.body);
-      final sess = (j['session'] ?? '').toString();
-      if (sess.isNotEmpty) {
-        await _setCookie('sa_session=$sess');
-      }
-    } catch (_) {
-      // Fallback: Set-Cookie header (only works outside the browser)
+  Future<void> _refreshBiometricState() async {
+    bool bioAvailable = false;
+    if (!kIsWeb) {
       try {
-        final sc = resp.headers['set-cookie'];
-        if (sc != null) {
-          final m = RegExp(r'sa_session=([^;]+)').firstMatch(sc);
-          if (m != null) {
-            await _setCookie('sa_session=${m.group(1)}');
-          }
-        }
-      } catch (_) {}
+        final auth = LocalAuthentication();
+        bioAvailable =
+            await auth.canCheckBiometrics || await auth.isDeviceSupported();
+      } catch (_) {
+        bioAvailable = false;
+      }
     }
-    if (resp.statusCode == 200) {
-      setState(() => out = 'Signed in successfully.');
-    } else if (resp.statusCode == 400) {
-      setState(() => out = 'Invalid code. Please try again.');
-    } else if (resp.statusCode == 429) {
-      setState(() => out = 'Too many attempts. Please wait a moment.');
-    } else {
-      setState(() => out = 'Login failed (${resp.statusCode}).');
-    }
+    final tok = await getBiometricLoginTokenForBaseUrl(baseCtrl.text.trim());
+    final enrolled = tok != null && tok.isNotEmpty;
     if (!mounted) return;
-    if (resp.statusCode == 200) {
-      try {
-        final sp = await SharedPreferences.getInstance();
-        await sp.setString('base_url', baseCtrl.text.trim());
-        await sp.setString('last_login_phone', _normalizedPhone());
-        await sp.setString('last_login_name', nameCtrl.text.trim());
-        // Mark this device as eligible for biometric login
-        // after the first successful OTP sign-in.
-        await sp.setBool('require_biometrics', true);
-      } catch (_) {}
-      // Decide post-login destination based on selected login mode.
-      await _handlePostLoginNavigation();
+    setState(() {
+      _biometricsAvailable = bioAvailable;
+      _hasBiometricEnrollment = enrolled;
+    });
+  }
+
+  String _defaultDeviceLabel() {
+    if (kIsWeb) return 'Web';
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.iOS:
+        return 'iOS';
+      case TargetPlatform.android:
+        return 'Android';
+      case TargetPlatform.macOS:
+        return 'macOS';
+      case TargetPlatform.windows:
+        return 'Windows';
+      case TargetPlatform.linux:
+        return 'Linux';
+      case TargetPlatform.fuchsia:
+        return 'Device';
     }
   }
 
-  Future<void> _loginWithBiometrics() async {
-    if (kIsWeb) {
-      setState(() => out = 'Biometric login is not available on web.');
-      return;
-    }
-    setState(() => out = 'Authenticating…');
-    try {
-      final auth = LocalAuthentication();
-      final canCheck =
-          await auth.canCheckBiometrics || await auth.isDeviceSupported();
-      if (!canCheck) {
-        setState(() =>
-            out = 'Biometric authentication is not available on this device.');
+  String? _deviceLoginQrPayload() {
+    final token = (_deviceLoginToken ?? '').trim();
+    if (token.isEmpty) return null;
+    final qp = <String, String>{'token': token};
+    final label = _deviceLoginLabel.trim();
+    if (label.isNotEmpty) qp['label'] = label;
+    return Uri(scheme: 'shamell', host: 'device_login', queryParameters: qp)
+        .toString();
+  }
+
+  void _stopDeviceLoginRedeemPoll() {
+    _deviceLoginPollTimer?.cancel();
+    _deviceLoginPollTimer = null;
+    _deviceLoginPollAttempts = 0;
+  }
+
+  void _startDeviceLoginRedeemPoll() {
+    _stopDeviceLoginRedeemPoll();
+    // Respect server-side rate limits:
+    // - default redeem max per token is 30/300s -> keep well below.
+    const interval = Duration(seconds: 15);
+    const maxAttempts = 20; // 20 * 15s = 300s (matches default TTL)
+    _deviceLoginPollTimer = Timer.periodic(interval, (_) {
+      if (!mounted) return;
+      _deviceLoginPollAttempts++;
+      if (_deviceLoginPollAttempts > maxAttempts) {
+        _stopDeviceLoginRedeemPoll();
+        setState(() {
+          out = L10n.of(context).isArabic
+              ? 'انتهت مهلة تسجيل الدخول. ابدأ رمز QR جديد.'
+              : 'Device login timed out. Start a new QR.';
+        });
         return;
       }
+      unawaited(_tryRedeemDeviceLogin(fromPoll: true));
+    });
+  }
+
+  String _extractApiDetail(String rawBody) {
+    final text = rawBody.trim();
+    if (text.isEmpty) return '';
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        final detail = decoded['detail'];
+        if (detail is String) return detail.trim();
+      }
+    } catch (_) {}
+    return text;
+  }
+
+  Future<void> _startDeviceLoginQr() async {
+    void setOutSafe(String message) {
+      if (!mounted) return;
+      setState(() => out = message);
+    }
+
+    final l = L10n.of(context);
+    if (_deviceLoginStarting || _deviceLoginRedeeming) return;
+    final base = baseCtrl.text.trim();
+    if (base.isEmpty) {
+      setOutSafe(l.isArabic ? 'عنوان الخادم مطلوب.' : 'Server URL is required.');
+      return;
+    }
+    if (!isSecureApiBaseUrl(base)) {
+      setOutSafe(l.isArabic
+          ? 'يجب استخدام HTTPS (باستثناء localhost).'
+          : 'HTTPS is required (except localhost).');
+      return;
+    }
+    setState(() {
+      _deviceLoginStarting = true;
+      out = '';
+    });
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString('base_url', base);
+    } catch (_) {}
+
+    final labelIn = _deviceLabelCtrl.text.trim();
+    final deviceId = await getOrCreateStableDeviceId();
+    final uri = Uri.parse('${base.trim()}/auth/device_login/start');
+    try {
+      final resp = await http.post(
+        uri,
+        headers: await _hdr(json: true, baseUrl: base),
+        body: jsonEncode(<String, Object?>{
+          'label': labelIn.isEmpty ? null : labelIn,
+          'device_id': deviceId.trim().isEmpty ? null : deviceId.trim(),
+        }),
+      );
+      if (resp.statusCode != 200) {
+        setOutSafe(sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        ));
+        if (mounted) setState(() => _deviceLoginStarting = false);
+        return;
+      }
+      final decoded = jsonDecode(resp.body);
+      if (decoded is! Map) {
+        setOutSafe(l.isArabic
+            ? 'استجابة غير صالحة من الخادم.'
+            : 'Invalid server response.');
+        if (mounted) setState(() => _deviceLoginStarting = false);
+        return;
+      }
+      final token = (decoded['token'] ?? '').toString().trim().toLowerCase();
+      if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(token)) {
+        setOutSafe(l.isArabic
+            ? 'رمز تسجيل الدخول غير صالح.'
+            : 'Invalid device-login token.');
+        if (mounted) setState(() => _deviceLoginStarting = false);
+        return;
+      }
+      final labelOut = (decoded['label'] ?? labelIn).toString().trim();
+      _stopDeviceLoginRedeemPoll();
+      if (!mounted) return;
+      setState(() {
+        _deviceLoginToken = token;
+        _deviceLoginLabel = labelOut;
+        _deviceLoginStartedAt = DateTime.now();
+        _deviceLoginStarting = false;
+      });
+      _startDeviceLoginRedeemPoll();
+    } catch (e) {
+      setOutSafe(sanitizeExceptionForUi(error: e, isArabic: l.isArabic));
+      if (mounted) setState(() => _deviceLoginStarting = false);
+    }
+  }
+
+  Future<void> _tryRedeemDeviceLogin({bool fromPoll = false}) async {
+    void setOutSafe(String message) {
+      if (!mounted) return;
+      setState(() => out = message);
+    }
+
+    final l = L10n.of(context);
+    if (_deviceLoginRedeeming) return;
+    final base = baseCtrl.text.trim();
+    final token = (_deviceLoginToken ?? '').trim().toLowerCase();
+    if (base.isEmpty || token.isEmpty) return;
+    if (!isSecureApiBaseUrl(base)) {
+      if (!fromPoll) {
+        setOutSafe(l.isArabic
+            ? 'يجب استخدام HTTPS (باستثناء localhost).'
+            : 'HTTPS is required (except localhost).');
+      }
+      return;
+    }
+    if (!RegExp(r'^[0-9a-f]{32}$').hasMatch(token)) {
+      if (!fromPoll) {
+        setOutSafe(l.isArabic
+            ? 'رمز تسجيل الدخول غير صالح.'
+            : 'Invalid device-login token.');
+      }
+      return;
+    }
+
+    setState(() {
+      _deviceLoginRedeeming = true;
+      if (!fromPoll) {
+        out = l.isArabic ? 'جارٍ التحقق…' : 'Checking…';
+      }
+    });
+
+    final deviceId = await getOrCreateStableDeviceId();
+    final uri = Uri.parse('${base.trim()}/auth/device_login/redeem');
+    try {
+      final resp = await http.post(
+        uri,
+        headers: await _hdr(json: true, baseUrl: base),
+        body: jsonEncode(<String, Object?>{
+          'token': token,
+          'device_id': deviceId.trim().isEmpty ? null : deviceId.trim(),
+        }),
+      );
+
+      if (resp.statusCode == 200) {
+        final sess = extractSessionTokenFromSetCookieHeader(
+          resp.headers['set-cookie'],
+        );
+        if (sess == null || sess.isEmpty) {
+          setOutSafe(l.isArabic
+              ? 'تعذّر استلام جلسة من الخادم.'
+              : 'Could not obtain a server session.');
+          if (mounted) setState(() => _deviceLoginRedeeming = false);
+          return;
+        }
+        await setSessionTokenForBaseUrl(base, sess);
+        _stopDeviceLoginRedeemPoll();
+
+        // Best-effort: enroll biometric re-login now that we have a session.
+        await ensureBiometricLoginEnrolled(base);
+        await _refreshBiometricState();
+
+        if (!mounted) return;
+        setState(() {
+          _hasSessionCookie = true;
+          _deviceLoginToken = null;
+          _deviceLoginLabel = '';
+          _deviceLoginStartedAt = null;
+          _deviceLoginRedeeming = false;
+          out = l.isArabic
+              ? 'تم ربط الجهاز. أكمل تسجيل الدخول بالبصمة.'
+              : 'Device linked. Continue with biometrics.';
+        });
+        return;
+      }
+
+      final detail = _extractApiDetail(resp.body).toLowerCase();
+      if (resp.statusCode == 400 && detail.contains('not approved')) {
+        // Expected while waiting for scan/approval. Keep polling quietly.
+        if (!fromPoll) {
+          setOutSafe(l.isArabic
+              ? 'بانتظار المسح والموافقة على جهاز آخر…'
+              : 'Waiting for scan and approval on another device…');
+        }
+        if (mounted) setState(() => _deviceLoginRedeeming = false);
+        return;
+      }
+      if (resp.statusCode == 400 && detail.contains('expired')) {
+        _stopDeviceLoginRedeemPoll();
+        if (!fromPoll) {
+          setOutSafe(l.isArabic
+              ? 'انتهت صلاحية رمز QR. ابدأ رمزاً جديداً.'
+              : 'QR expired. Start a new one.');
+        }
+        if (mounted) {
+          setState(() {
+            _deviceLoginToken = null;
+            _deviceLoginLabel = '';
+            _deviceLoginStartedAt = null;
+            _deviceLoginRedeeming = false;
+          });
+        }
+        return;
+      }
+      if (resp.statusCode == 404 && detail.contains('not found')) {
+        _stopDeviceLoginRedeemPoll();
+        if (!fromPoll) {
+          setOutSafe(l.isArabic
+              ? 'رمز تسجيل الدخول غير موجود. ابدأ رمزاً جديداً.'
+              : 'Device-login challenge not found. Start a new one.');
+        }
+        if (mounted) {
+          setState(() {
+            _deviceLoginToken = null;
+            _deviceLoginLabel = '';
+            _deviceLoginStartedAt = null;
+            _deviceLoginRedeeming = false;
+          });
+        }
+        return;
+      }
+
+      if (!fromPoll) {
+        setOutSafe(sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        ));
+      }
+      if (mounted) setState(() => _deviceLoginRedeeming = false);
+    } catch (e) {
+      if (!fromPoll) {
+        setOutSafe(sanitizeExceptionForUi(error: e, isArabic: l.isArabic));
+      }
+      if (mounted) setState(() => _deviceLoginRedeeming = false);
+    }
+  }
+
+  Future<void> _createNewAccount() async {
+    void setOutSafe(String message) {
+      if (!mounted) return;
+      setState(() => out = message);
+    }
+
+    final l = L10n.of(context);
+    if (_busy) return;
+    final base = baseCtrl.text.trim();
+    if (base.isEmpty) {
+      setOutSafe(l.isArabic ? 'عنوان الخادم مطلوب.' : 'Server URL is required.');
+      return;
+    }
+    if (!isSecureApiBaseUrl(base)) {
+      setOutSafe(l.isArabic
+          ? 'يجب استخدام HTTPS (باستثناء localhost).'
+          : 'HTTPS is required (except localhost).');
+      return;
+    }
+    if (kIsWeb) {
+      setOutSafe(l.isArabic
+          ? 'إنشاء حساب جديد غير متاح على الويب.'
+          : 'Creating a new account is not available on web.');
+      return;
+    }
+    final isMobilePlatform = defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    if (!isMobilePlatform) {
+      setOutSafe(l.isArabic
+          ? 'إنشاء معرّف جديد متاح فقط على iOS/Android. اربط هذا الجهاز عبر رمز QR.'
+          : 'Creating a new ID is only supported on iOS/Android. Link this device via a Device‑Login QR.');
+      return;
+    }
+    if (!_biometricsAvailable) {
+      setOutSafe(l.loginBiometricRequired);
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      out = l.isArabic ? 'جارٍ إنشاء معرّف جديد…' : 'Creating a new Shamell ID…';
+    });
+
+    try {
+      final auth = LocalAuthentication();
+      const reason = 'Authenticate to create your Shamell ID';
+      final didAuth = await auth.authenticate(
+        localizedReason: reason,
+        options: const AuthenticationOptions(
+          biometricOnly: true,
+        ),
+      );
+      if (!didAuth) {
+        setOutSafe(l.loginAuthCancelled);
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+    } catch (_) {
+      setOutSafe(l.loginBiometricFailed);
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString('base_url', base);
+    } catch (_) {}
+
+    final deviceId = await getOrCreateStableDeviceId();
+    final didTrim = deviceId.trim();
+    String? powSolution;
+    String? challengeToken;
+    String? iosDeviceCheckTokenB64;
+    String? androidPlayIntegrityToken;
+
+    // Best practice: for public account creation, require an attestation layer.
+    // Server policy may enforce:
+    // - PoW (cheap, anti-abuse)
+    // - hardware attestation (stronger anti-fraud / anti-bot)
+    final challengeUri = Uri.parse('${base.trim()}/auth/account/create/challenge');
+    try {
+      Future<bool> prepareAttestation() async {
+        powSolution = null;
+        challengeToken = null;
+        iosDeviceCheckTokenB64 = null;
+        androidPlayIntegrityToken = null;
+
+        final chResp = await http.post(
+          challengeUri,
+          headers: await _hdr(json: true, baseUrl: base),
+          body: jsonEncode(<String, Object?>{
+            'device_id': didTrim.isEmpty ? null : didTrim,
+          }),
+        );
+        if (chResp.statusCode == 404) {
+          // Legacy dev servers may not have attestation endpoints.
+          return true;
+        }
+        if (chResp.statusCode != 200) {
+          setOutSafe(sanitizeHttpError(
+            statusCode: chResp.statusCode,
+            rawBody: chResp.body,
+            isArabic: l.isArabic,
+          ));
+          return false;
+        }
+
+        final decoded = jsonDecode(chResp.body);
+        if (decoded is! Map) {
+          setOutSafe(l.isArabic
+              ? 'استجابة غير صالحة من الخادم.'
+              : 'Invalid server response.');
+          return false;
+        }
+
+        final tok = (decoded['challenge_token'] ?? decoded['token'] ?? '')
+            .toString()
+            .trim();
+        if (tok.isNotEmpty) {
+          challengeToken = tok;
+        }
+
+        final hwEnabled = decoded['hw_attestation_enabled'] == true;
+        final hwRequired = decoded['hw_attestation_required'] == true;
+        final hwNonceB64 =
+            (decoded['hw_attestation_nonce_b64'] ?? '').toString().trim();
+
+        if (hwEnabled) {
+          if (!mounted) return false;
+          setState(() {
+            out = l.isArabic ? 'جارٍ التحقق من الجهاز…' : 'Attesting device…';
+          });
+
+          // Each platform returns its own token; others return null.
+          iosDeviceCheckTokenB64 =
+              await HardwareAttestation.tryGetAppleDeviceCheckTokenB64();
+          androidPlayIntegrityToken =
+              await HardwareAttestation.tryGetPlayIntegrityToken(
+            nonceB64: hwNonceB64,
+          );
+
+          final ok = (iosDeviceCheckTokenB64 != null &&
+                  iosDeviceCheckTokenB64!.trim().isNotEmpty) ||
+              (androidPlayIntegrityToken != null &&
+                  androidPlayIntegrityToken!.trim().isNotEmpty);
+          if (!ok && hwRequired) {
+            setOutSafe(l.isArabic
+                ? 'تعذّر إجراء التحقق من الجهاز.'
+                : 'Device attestation failed.');
+            return false;
+          }
+        }
+
+        final powEnabled = decoded['enabled'] == true;
+        if (powEnabled) {
+          final token = (decoded['token'] ?? '').toString().trim();
+          final nonce = (decoded['nonce'] ?? '').toString().trim();
+          final diffRaw = decoded['difficulty_bits'];
+          final diffBits = diffRaw is num
+              ? diffRaw.toInt()
+              : int.tryParse((diffRaw ?? '').toString()) ?? -1;
+          if (token.isEmpty || nonce.isEmpty || diffBits < 0) {
+            setOutSafe(l.isArabic
+                ? 'فشل إنشاء التحقق. حاول مرة أخرى.'
+                : 'Failed to start attestation. Try again.');
+            return false;
+          }
+          // Keep compatibility: if server only returns `token` when PoW is enabled,
+          // treat it as the challenge token.
+          if (challengeToken == null || challengeToken!.trim().isEmpty) {
+            challengeToken = token;
+          }
+
+          if (!mounted) return false;
+          setState(() {
+            out = l.isArabic ? 'جارٍ التحقق من الجهاز…' : 'Solving attestation…';
+          });
+
+          final sol = await compute(
+            shamellSolveAccountCreatePow,
+            <String, Object?>{
+              'nonce': nonce,
+              'device_id': didTrim,
+              'difficulty_bits': diffBits,
+              'max_millis': 15000,
+              'max_iters': 50000000,
+            },
+          );
+          if (sol == null || sol.trim().isEmpty) {
+            setOutSafe(l.isArabic
+                ? 'تعذّر حل التحقق. حاول مرة أخرى.'
+                : 'Could not solve attestation. Try again.');
+            return false;
+          }
+          powSolution = sol.trim();
+        }
+
+        return true;
+      }
+
+      final ok = await prepareAttestation();
+      if (!ok) {
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+
+      Future<http.Response> doCreate() async {
+        final uri = Uri.parse('${base.trim()}/auth/account/create');
+        return http.post(
+          uri,
+          headers: await _hdr(json: true, baseUrl: base),
+          body: jsonEncode(<String, Object?>{
+            'device_id': didTrim.isEmpty ? null : didTrim,
+            if (challengeToken != null) 'challenge_token': challengeToken,
+            if (challengeToken != null) 'pow_token': challengeToken,
+            if (powSolution != null) 'pow_solution': powSolution,
+            if (iosDeviceCheckTokenB64 != null)
+              'ios_devicecheck_token_b64': iosDeviceCheckTokenB64,
+            if (androidPlayIntegrityToken != null)
+              'android_play_integrity_token': androidPlayIntegrityToken,
+          }),
+        );
+      }
+
+      var resp = await doCreate();
+      if (resp.statusCode == 401) {
+        final detail = _extractApiDetail(resp.body).toLowerCase();
+        if (detail.contains('attestation required')) {
+          // One retry: refresh challenge in case it expired or was invalidated.
+          final ok2 = await prepareAttestation();
+          if (ok2) {
+            resp = await doCreate();
+          }
+        }
+      }
+
+      if (resp.statusCode != 200) {
+        setOutSafe(sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        ));
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+
+      final sess = extractSessionTokenFromSetCookieHeader(resp.headers['set-cookie']);
+      if (sess == null || sess.isEmpty) {
+        setOutSafe(l.isArabic
+            ? 'تعذّر استلام جلسة من الخادم.'
+            : 'Could not obtain a server session.');
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+      await setSessionTokenForBaseUrl(base, sess);
+
+      // Stop any pending device-login polling; this device is now provisioned.
+      _stopDeviceLoginRedeemPoll();
+      _deviceLoginToken = null;
+      _deviceLoginLabel = '';
+      _deviceLoginStartedAt = null;
+
+      // Best-effort: enroll biometric re-login now that we have a session.
+      await ensureBiometricLoginEnrolled(base);
+      await _refreshBiometricState();
+
+      String shamellId = '';
+      try {
+        final decoded = jsonDecode(resp.body);
+        if (decoded is Map) {
+          shamellId = (decoded['shamell_id'] ?? '').toString().trim();
+        }
+      } catch (_) {}
+
+      if (shamellId.isNotEmpty) {
+        setOutSafe(l.isArabic
+            ? 'تم إنشاء معرّف Shamell: $shamellId'
+            : 'Created Shamell ID: $shamellId');
+      }
+
+      await _handlePostLoginNavigation();
+      if (!mounted) return;
+      setState(() {
+        _hasSessionCookie = true;
+        _busy = false;
+      });
+    } catch (e) {
+      setOutSafe(sanitizeExceptionForUi(error: e, isArabic: l.isArabic));
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signInWithBiometrics() async {
+    void setOutSafe(String message) {
+      if (!mounted) return;
+      setState(() => out = message);
+    }
+
+    final l = L10n.of(context);
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      out = l.loginAuthenticating;
+    });
+
+    final base = baseCtrl.text.trim();
+    if (!isSecureApiBaseUrl(base)) {
+      setOutSafe(l.isArabic
+          ? 'يجب استخدام HTTPS (باستثناء localhost).'
+          : 'HTTPS is required (except localhost).');
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+    if (kIsWeb) {
+      setOutSafe(l.loginBiometricWebUnavailable);
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+
+    if (!_biometricsAvailable) {
+      setOutSafe(l.loginBiometricRequired);
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+
+    try {
+      final auth = LocalAuthentication();
       const reason = 'Authenticate to unlock Shamell';
       final didAuth = await auth.authenticate(
         localizedReason: reason,
@@ -610,32 +1104,47 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
       if (!didAuth) {
-        setState(() => out = 'Authentication cancelled.');
+        setOutSafe(l.loginAuthCancelled);
+        if (mounted) setState(() => _busy = false);
         return;
       }
-    } catch (e) {
-      setState(() => out = 'Biometric authentication failed: $e');
+    } catch (_) {
+      setOutSafe(l.loginBiometricFailed);
+      if (mounted) setState(() => _busy = false);
       return;
     }
-    // Reuse stored base URL and phone (if any) and continue
-    // with the same post-login navigation as after OTP login.
+
     try {
       final sp = await SharedPreferences.getInstance();
-      final b = sp.getString('base_url');
-      final lastPhone = sp.getString('last_login_phone');
-      if (b != null && b.isNotEmpty) {
-        baseCtrl.text = b.trim();
-      }
-      if (lastPhone != null && lastPhone.isNotEmpty) {
-        phoneCtrl.text = lastPhone;
-      }
+      await sp.setString('base_url', base);
     } catch (_) {}
+
+    // Ensure a server session exists. If this device has no active session
+    // cookie, fall back to biometric token sign-in.
+    final existingCookie = await getSessionCookieHeader(base);
+    final hasSession = existingCookie != null && existingCookie.isNotEmpty;
+    if (!hasSession) {
+      final ok = await biometricSignIn(base);
+      if (!ok) {
+        setOutSafe(l.loginDeviceNotEnrolled);
+        await _refreshBiometricState();
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+    }
+
+    // Best-effort: keep an enrollment token for future sign-ins.
+    await ensureBiometricLoginEnrolled(base);
+    await _refreshBiometricState();
+
     await _handlePostLoginNavigation();
+    if (!mounted) return;
+    setState(() => _busy = false);
   }
 
   Future<void> _handlePostLoginNavigation() async {
+    final l = L10n.of(context);
     final base = baseCtrl.text.trim();
-    final phone = _normalizedPhone();
     Map<String, dynamic>? snapshot;
     List<String> roles = const <String>[];
     List<String> opDomains = const <String>[];
@@ -646,13 +1155,20 @@ class _LoginPageState extends State<LoginPage> {
       if (snapshot != null) return true;
       try {
         final uri = Uri.parse('$base/me/home_snapshot');
-        final r = await http.get(uri, headers: await _hdr());
+        final r = await http.get(
+          uri,
+          headers: await _hdr(baseUrl: baseCtrl.text.trim()),
+        );
         if (r.statusCode == 404) {
           // Legacy BFF without /me/home_snapshot.
           return false;
         }
         if (r.statusCode != 200) {
-          setState(() => out = 'Could not load profile (${r.statusCode}).');
+          setState(() => out = sanitizeHttpError(
+                statusCode: r.statusCode,
+                rawBody: r.body,
+                isArabic: l.isArabic,
+              ));
           await _clearCookie();
           return false;
         }
@@ -664,30 +1180,19 @@ class _LoginPageState extends State<LoginPage> {
                 ?.map((e) => e.toString())
                 .toList() ??
             const <String>[];
-        isSuper = (body['is_superadmin'] ?? false) == true ||
-            (body['phone'] ?? '') == kSuperadminPhone;
+        isSuper = (body['is_superadmin'] ?? false) == true;
         isAdmin = (body['is_admin'] ?? false) == true ||
             isSuper ||
             roles.contains('admin');
         return true;
       } catch (e) {
-        setState(() => out = 'Error during profile lookup: $e');
+        setState(() => out = sanitizeExceptionForUi(
+              error: e,
+              isArabic: l.isArabic,
+            ));
         await _clearCookie();
         return false;
       }
-    }
-
-    // Superadmin phone: always allow direct Superadmin dashboard
-    // (except in explicit driver login, where we honour driver mode).
-    if (!_driverLogin &&
-        phone == kSuperadminPhone &&
-        _loginMode != AppMode.operator) {
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => SuperadminDashboardPage(base)),
-      );
-      return;
     }
 
     // Driver login: require explicit driver role
@@ -700,7 +1205,7 @@ class _LoginPageState extends State<LoginPage> {
       const driverRole = 'driver';
       if (!roles.contains(driverRole)) {
         setState(() => out =
-            'This phone is not registered as a driver. Please contact an admin.');
+            'This account is not registered as a driver. Please contact an admin.');
         await _clearCookie();
         return;
       }
@@ -738,7 +1243,7 @@ class _LoginPageState extends State<LoginPage> {
       if (_loginMode == AppMode.operator) {
         if (opDomains.isEmpty && !isAdmin) {
           setState(() => out =
-              'This phone is not registered as an operator. Please contact an admin.');
+              'This account is not registered as an operator. Please contact an admin.');
           await _clearCookie();
           return;
         }
@@ -755,7 +1260,7 @@ class _LoginPageState extends State<LoginPage> {
       if (_loginMode == AppMode.admin) {
         if (!isAdmin) {
           setState(() => out =
-              'This phone is not registered as an admin. Please contact a superadmin.');
+              'This account is not registered as an admin. Please contact a superadmin.');
           await _clearCookie();
           return;
         }
@@ -787,30 +1292,18 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
-    final List<DropdownMenuItem<String>> regionItems = _regionCodes.map((code) {
-      String country;
-      switch (code) {
-        case '+963':
-          country = l.isArabic ? 'سوريا' : 'Syria';
-          break;
-        case '+971':
-          country = l.isArabic ? 'الإمارات' : 'UAE';
-          break;
-        case '+966':
-          country = l.isArabic ? 'السعودية' : 'Saudi Arabia';
-          break;
-        default:
-          country = '';
-      }
-      final label = country.isEmpty ? code : '$code · $country';
-      return DropdownMenuItem<String>(
-        value: code,
-        child: Text(label),
-      );
-    }).toList();
-    final String currentDial = _regionCodes.contains(_selectedDialCode)
-        ? _selectedDialCode
-        : _regionCodes.first;
+    const allowAdvancedRelease = bool.fromEnvironment(
+      'SHAMELL_ADVANCED_LOGIN_RELEASE',
+      defaultValue: false,
+    );
+    final allowAdvanced = !kReleaseMode || allowAdvancedRelease;
+    final hasSession = widget.hasSession || _hasSessionCookie;
+    final showDeviceLoginOnboarding =
+        !kIsWeb && !hasSession && !_hasBiometricEnrollment;
+    final isMobilePlatform = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
+    final payload = _deviceLoginQrPayload();
 
     final content = ListView(
       padding: const EdgeInsets.all(16),
@@ -827,14 +1320,14 @@ class _LoginPageState extends State<LoginPage> {
                     l.appTitle,
                     style: theme.textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.w900,
-                      color: WeChatPalette.green,
+                      color: ShamellPalette.green,
                     ),
                   ),
                   const SizedBox(width: 8),
                   const Icon(
                     Icons.chat_bubble_outline,
                     size: 32,
-                    color: WeChatPalette.green,
+                    color: ShamellPalette.green,
                   ),
                 ],
               ),
@@ -850,81 +1343,192 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
         const SizedBox(height: 16),
-        Row(
-          children: [
-            SizedBox(
-              width: 140,
-              child: DropdownButtonFormField<String>(
-                initialValue: currentDial,
-                items: regionItems,
-                decoration: InputDecoration(
-                  labelText: l.isArabic ? 'المقدمة' : 'Code',
-                  prefixIcon: const Icon(Icons.flag_outlined),
+        if (showDeviceLoginOnboarding) ...[
+          if (isMobilePlatform) ...[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      l.isArabic ? 'مستخدم جديد؟' : 'New to Shamell?',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      l.isArabic
+                          ? 'أنشئ معرّف Shamell جديد على هذا الجهاز (بدون رقم هاتف).'
+                          : 'Create a new Shamell ID on this device (no phone number required).',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: .70),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      onPressed: _busy ? null : _createNewAccount,
+                      icon: const Icon(Icons.person_add_alt_1_outlined),
+                      label: Text(
+                        l.isArabic ? 'إنشاء معرّف جديد' : 'Create new ID',
+                      ),
+                    ),
+                  ],
                 ),
-                onChanged: (value) {
-                  if (value == null) return;
-                  setState(() {
-                    _selectedDialCode = value;
-                  });
-                },
               ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: phoneCtrl,
-                keyboardType: TextInputType.phone,
-                decoration: InputDecoration(
-                  labelText: l.loginPhone,
-                  prefixIcon: const Icon(Icons.phone_outlined),
-                ),
-              ),
-            ),
+            const SizedBox(height: 12),
           ],
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: codeCtrl,
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(
-            labelText: l.loginCodeLabel,
-            prefixIcon: const Icon(Icons.verified_user_outlined),
-          ),
-        ),
-        const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: _request,
-          icon: const Icon(Icons.sms),
-          label: Text(l.loginRequestCode),
-        ),
-        const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _verify,
-          icon: const Icon(Icons.login),
-          label: Text(l.loginVerify),
-        ),
-        if (_canBiometricLogin) ...[
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _loginWithBiometrics,
-            icon: const Icon(Icons.fingerprint),
-            label: Text(
-              l.isArabic ? 'تسجيل الدخول بالبصمة' : 'Login with biometrics',
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    l.isArabic ? 'ربط حساب موجود' : 'Link an existing account',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    l.isArabic
+                        ? 'اربط هذا الجهاز عبر رمز QR معتمد من جهاز Shamell آخر.'
+                        : 'Link this device via a Device‑Login QR approved from another Shamell device.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _deviceLabelCtrl,
+                    decoration: InputDecoration(
+                      labelText: l.isArabic
+                          ? 'اسم الجهاز (اختياري)'
+                          : 'Device label (optional)',
+                      prefixIcon: const Icon(Icons.devices_other_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed:
+                              _deviceLoginStarting ? null : _startDeviceLoginQr,
+                          icon: const Icon(Icons.qr_code_2_outlined),
+                          label: Text(l.isArabic ? 'بدء رمز QR' : 'Start QR'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: (payload == null || _deviceLoginRedeeming)
+                              ? null
+                              : () => _tryRedeemDeviceLogin(fromPoll: false),
+                          icon: const Icon(Icons.check_circle_outline),
+                          label: Text(l.isArabic ? 'تحقق' : 'Check'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: Container(
+                      width: 240,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: theme.dividerColor),
+                      ),
+                      child: payload == null
+                          ? SizedBox(
+                              height: 200,
+                              child: Center(
+                                child: Text(
+                                  l.isArabic
+                                      ? 'ابدأ رمز QR لعرضه هنا.'
+                                      : 'Start a QR to show it here.',
+                                  textAlign: TextAlign.center,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: Colors.black87.withValues(alpha: .70),
+                                  ),
+                                ),
+                              ),
+                            )
+                          : QrImageView(
+                              data: payload,
+                              version: QrVersions.auto,
+                              size: 200,
+                              backgroundColor: Colors.white,
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_deviceLoginToken != null)
+                    Text(
+                      l.isArabic
+                          ? 'بانتظار المسح والموافقة على جهاز آخر…'
+                          : 'Waiting for scan and approval on another device…',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                      ),
+                    ),
+                  if (_deviceLoginStartedAt != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        l.isArabic
+                            ? 'ينتهي خلال دقائق قليلة.'
+                            : 'Expires in a few minutes.',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color:
+                              theme.colorScheme.onSurface.withValues(alpha: .60),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
+          const SizedBox(height: 12),
         ],
-        const SizedBox(height: 16),
-        TextButton(
-          onPressed: () {
-            setState(() {
-              _showAdvanced = !_showAdvanced;
-            });
-          },
-          child: Text(
-            l.isArabic ? 'خيارات متقدّمة' : 'Advanced options',
-          ),
+        FilledButton.icon(
+          onPressed: _busy ? null : _signInWithBiometrics,
+          icon: const Icon(Icons.fingerprint),
+          label: Text(l.loginBiometricSignIn),
         ),
-        if (_showAdvanced) ...[
+        const SizedBox(height: 12),
+        if (!kIsWeb && !_biometricsAvailable)
+          StatusBanner.error(
+            l.loginBiometricRequired,
+            dense: true,
+          )
+        else if (!_hasBiometricEnrollment && !hasSession)
+          StatusBanner.info(
+            l.loginDeviceNotEnrolled,
+            dense: true,
+          ),
+        const SizedBox(height: 16),
+        if (allowAdvanced)
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _showAdvanced = !_showAdvanced;
+              });
+            },
+            child: Text(
+              l.isArabic ? 'خيارات متقدّمة' : 'Advanced options',
+            ),
+          ),
+        if (allowAdvanced && _showAdvanced) ...[
           const SizedBox(height: 8),
           TextField(
             controller: baseCtrl,
@@ -943,7 +1547,6 @@ class _LoginPageState extends State<LoginPage> {
                 onTap: () {
                   setState(() {
                     _loginMode = AppMode.user;
-                    _superadminLogin = false;
                     _driverLogin = false;
                   });
                 },
@@ -953,7 +1556,6 @@ class _LoginPageState extends State<LoginPage> {
                 onTap: () {
                   setState(() {
                     _loginMode = AppMode.user;
-                    _superadminLogin = false;
                     _driverLogin = true;
                   });
                 },
@@ -966,7 +1568,6 @@ class _LoginPageState extends State<LoginPage> {
                 onTap: () {
                   setState(() {
                     _loginMode = AppMode.operator;
-                    _superadminLogin = false;
                     _driverLogin = false;
                   });
                 },
@@ -974,36 +1575,15 @@ class _LoginPageState extends State<LoginPage> {
               const SizedBox(width: 8),
               _RoleChip(
                 mode: AppMode.admin,
-                current: _superadminLogin ? AppMode.user : _loginMode,
+                current: _loginMode,
                 onTap: () {
                   setState(() {
                     _loginMode = AppMode.admin;
-                    _superadminLogin = false;
-                    _driverLogin = false;
-                  });
-                },
-              ),
-              const SizedBox(width: 8),
-              _SuperadminChip(
-                selected: _superadminLogin,
-                onTap: () {
-                  setState(() {
-                    _loginMode = AppMode.admin;
-                    _superadminLogin = true;
                     _driverLogin = false;
                   });
                 },
               ),
             ],
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: nameCtrl,
-            keyboardType: TextInputType.name,
-            decoration: InputDecoration(
-              labelText: l.loginFullName,
-              prefixIcon: const Icon(Icons.person_outline),
-            ),
           ),
         ],
         const SizedBox(height: 16),
@@ -1019,13 +1599,6 @@ class _LoginPageState extends State<LoginPage> {
         Text(
           l.loginTerms,
           textAlign: TextAlign.center,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: .60),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          l.loginNoteDemo,
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurface.withValues(alpha: .60),
           ),

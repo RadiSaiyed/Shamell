@@ -4,9 +4,15 @@ enum AppMode { auto, user, operator, admin }
 
 const String _appModeRaw =
     String.fromEnvironment('APP_MODE', defaultValue: 'auto');
-const bool _envSkipLogin =
-    bool.fromEnvironment('SKIP_LOGIN', defaultValue: false);
-const String kSuperadminPhone = '+963996428955';
+const bool _enableDesktopPush =
+    bool.fromEnvironment('ENABLE_DESKTOP_PUSH', defaultValue: false);
+
+bool _isPushSupportedPlatform() {
+  if (kIsWeb) return true;
+  final isMobile = defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+  return isMobile || _enableDesktopPush;
+}
 
 AppMode get currentAppMode {
   switch (_appModeRaw.toLowerCase()) {
@@ -200,31 +206,25 @@ class _SuperadminChip extends StatelessWidget {
 
 class _DriverChip extends StatelessWidget {
   final VoidCallback onTap;
-  final bool enabled;
   final bool selected;
-  const _DriverChip(
-      {required this.onTap, this.enabled = true, this.selected = false});
+  const _DriverChip({required this.onTap, this.selected = false});
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
     final label = l.isArabic ? 'سائق' : 'Driver';
     final icon = Icons.badge_outlined;
-    final isDisabled = !enabled;
     final bg = selected
         ? Tokens.colorBus.withValues(alpha: .18)
-        : (isDisabled
-            ? theme.colorScheme.surface.withValues(alpha: .4)
-            : theme.colorScheme.surface.withValues(alpha: .9));
-    final fg = isDisabled
-        ? theme.colorScheme.onSurface.withValues(alpha: .40)
-        : (theme.brightness == Brightness.dark ? Colors.white : Colors.black87);
+        : theme.colorScheme.surface.withValues(alpha: .9);
+    final fg =
+        theme.brightness == Brightness.dark ? Colors.white : Colors.black87;
     return Expanded(
       child: Semantics(
         button: true,
         label: label,
         child: InkWell(
-          onTap: enabled ? onTap : null,
+          onTap: onTap,
           borderRadius: BorderRadius.circular(999),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -274,36 +274,19 @@ bool _isInDndWindow({
   return cur >= start || cur < end;
 }
 
-String _chatNotificationPayloadUri({
-  String? peerId,
-  String? senderHint,
-  String? groupId,
-  String? messageId,
-}) {
-  final qp = <String, String>{};
-  final pid = (peerId ?? '').trim();
-  final hint = (senderHint ?? '').trim();
-  final gid = (groupId ?? '').trim();
-  final mid = (messageId ?? '').trim();
-  if (pid.isNotEmpty) qp['peer_id'] = pid;
-  if (hint.isNotEmpty) qp['sender_hint'] = hint;
-  if (gid.isNotEmpty) qp['group_id'] = gid;
-  if (mid.isNotEmpty) qp['mid'] = mid;
-  return Uri(scheme: 'shamell', host: 'chat', queryParameters: qp).toString();
-}
+String _chatNotificationPayloadUri() =>
+    Uri(scheme: 'shamell', host: 'chat').toString();
 
 const String _kPendingNotificationPayload = 'ui.pending_notification_payload';
 
-// WeChat-like "Plugins" visibility toggles (default: enabled).
-const String _kWeChatPluginShowMoments = 'wechat.plugins.show_moments';
-const String _kWeChatPluginShowChannels = 'wechat.plugins.show_channels';
-const String _kWeChatPluginShowScan = 'wechat.plugins.show_scan';
-const String _kWeChatPluginShowPeopleNearby =
-    'wechat.plugins.show_people_nearby';
-const String _kWeChatPluginShowMiniPrograms =
-    'wechat.plugins.show_mini_programs';
-const String _kWeChatPluginShowCardsOffers = 'wechat.plugins.show_cards_offers';
-const String _kWeChatPluginShowStickers = 'wechat.plugins.show_stickers';
+// Shamell-like "Plugins" visibility toggles (default: enabled).
+const String _kShamellPluginShowMoments = 'shamell.plugins.show_moments';
+const String _kShamellPluginShowChannels = 'shamell.plugins.show_channels';
+const String _kShamellPluginShowScan = 'shamell.plugins.show_scan';
+const String _kShamellPluginShowMiniPrograms =
+    'shamell.plugins.show_mini_programs';
+const String _kShamellPluginShowCardsOffers =
+    'shamell.plugins.show_cards_offers';
 
 Future<String> _loadStoredBaseUrl() async {
   try {
@@ -371,50 +354,12 @@ Future<void> _handleNotificationPayload(String payload) async {
   }
 
   if (host == 'chat') {
-    final groupId = (uri.queryParameters['group_id'] ?? '').trim();
-    final mid = (uri.queryParameters['mid'] ?? '').trim();
-    if (groupId.isNotEmpty) {
-      String groupName = groupId;
-      try {
-        final cached = await ChatLocalStore().loadGroupName(groupId);
-        if (cached != null && cached.trim().isNotEmpty) {
-          groupName = cached.trim();
-        }
-      } catch (_) {}
-      nav.push(
-        MaterialPageRoute(
-          builder: (_) => GroupChatPage(
-            baseUrl: baseUrl,
-            groupId: groupId,
-            groupName: groupName,
-            initialMessageId: mid.isNotEmpty ? mid : null,
-          ),
-        ),
-      );
-      return;
-    }
-
-    String peerId = (uri.queryParameters['peer_id'] ?? '').trim();
-    final senderHint = (uri.queryParameters['sender_hint'] ?? '').trim();
-    if (peerId.isEmpty && senderHint.isNotEmpty) {
-      try {
-        final contacts = await ChatLocalStore().loadContacts();
-        final match = contacts
-            .where((c) => c.fingerprint == senderHint)
-            .cast<ChatContact?>()
-            .firstWhere((c) => c != null, orElse: () => null);
-        if (match != null && match.id.trim().isNotEmpty) {
-          peerId = match.id.trim();
-        }
-      } catch (_) {}
-    }
-
+    // Hardening: push/notifications must be wakeup-only. Never deep-link into
+    // specific chats/messages/groups from notification payloads (even local).
     nav.push(
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(
+        builder: (_) => ShamellChatPage(
           baseUrl: baseUrl,
-          initialPeerId: peerId.isNotEmpty ? peerId : null,
-          initialMessageId: mid.isNotEmpty ? mid : null,
         ),
       ),
     );
@@ -435,7 +380,7 @@ Future<void> _handleNotificationPayload(String payload) async {
             if (peerId.isEmpty) return;
             _rootNavKey.currentState?.push(
               MaterialPageRoute(
-                builder: (_) => ThreemaChatPage(
+                builder: (_) => ShamellChatPage(
                   baseUrl: baseUrl,
                   initialPeerId: peerId,
                 ),
@@ -464,8 +409,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
   try {
     final data = message.data;
-    final type = (data['type'] ?? '').toString();
-    if (type != 'chat') return;
+    final rawType = (data['type'] ?? '').toString().trim().toLowerCase();
+    if (rawType != 'chat_wakeup') return;
 
     final store = ChatLocalStore();
     final prefs = await store.loadNotifyConfig();
@@ -482,102 +427,12 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final localeCode = PlatformDispatcher.instance.locale.languageCode;
     final isArabic = localeCode.toLowerCase().startsWith('ar');
 
-    final groupId = (data['group_id'] ?? data['groupId'] ?? '').toString();
-    final groupName =
-        (data['group_name'] ?? data['groupName'] ?? '').toString();
-    final senderHint =
-        (data['sender_hint'] ?? data['senderHint'] ?? '').toString();
-    final senderId = (data['sender_id'] ?? data['senderId'] ?? '').toString();
-    final mid = (data['mid'] ?? data['message_id'] ?? '').toString();
-
-    String? resolvedGroupName;
-    if (groupName.trim().isNotEmpty) {
-      resolvedGroupName = groupName.trim();
-    } else if (groupId.trim().isNotEmpty) {
-      try {
-        resolvedGroupName = await store.loadGroupName(groupId.trim());
-      } catch (_) {}
-    }
-
-    String? groupSenderLabel;
-    if (senderId.trim().isNotEmpty) {
-      try {
-        final contacts = await store.loadContacts();
-        final match = contacts
-            .where((c) => c.id.trim() == senderId.trim())
-            .cast<ChatContact?>()
-            .firstWhere((c) => c != null, orElse: () => null);
-        final name = (match?.name ?? '').trim();
-        groupSenderLabel = name.isNotEmpty ? name : senderId.trim();
-      } catch (_) {
-        groupSenderLabel = senderId.trim();
-      }
-    }
-
-    String? resolvedPeerId;
-    String? resolvedPeerName;
-    if (senderHint.trim().isNotEmpty) {
-      try {
-        final contacts = await store.loadContacts();
-        final match = contacts
-            .where((c) => c.fingerprint == senderHint.trim())
-            .cast<ChatContact?>()
-            .firstWhere((c) => c != null, orElse: () => null);
-        if (match != null && match.id.trim().isNotEmpty) {
-          resolvedPeerId = match.id.trim();
-          final name = (match.name ?? '').trim();
-          if (name.isNotEmpty) {
-            resolvedPeerName = name;
-          }
-        }
-      } catch (_) {}
-    }
-
-    final title = () {
-      if (groupId.trim().isNotEmpty) {
-        if (resolvedGroupName != null && resolvedGroupName!.trim().isNotEmpty) {
-          return resolvedGroupName!.trim();
-        }
-        return groupId.trim().isNotEmpty
-            ? groupId.trim()
-            : (isArabic ? 'رسالة مجموعة جديدة' : 'New group message');
-      }
-      if (resolvedPeerName != null && resolvedPeerName!.trim().isNotEmpty) {
-        return resolvedPeerName!.trim();
-      }
-      if (resolvedPeerId != null && resolvedPeerId!.trim().isNotEmpty) {
-        return resolvedPeerId!.trim();
-      }
-      return isArabic ? 'رسالة جديدة' : 'New message';
-    }();
-
-    final body = () {
-      final noPreview = isArabic ? 'رسالة جديدة' : 'New message';
-      if (!prefs.preview) return noPreview;
-      if (groupId.trim().isNotEmpty) {
-        if (groupSenderLabel != null && groupSenderLabel!.trim().isNotEmpty) {
-          return isArabic
-              ? '${groupSenderLabel!.trim()}: رسالة جديدة'
-              : '${groupSenderLabel!.trim()}: New message';
-        }
-        return noPreview;
-      }
-      return isArabic ? 'لديك رسالة جديدة.' : 'You have a new message.';
-    }();
-
-    final payload = _chatNotificationPayloadUri(
-      peerId: resolvedPeerId,
-      senderHint: senderHint,
-      groupId: groupId,
-      messageId: mid,
-    );
-
     await NotificationService.showChatMessage(
-      title: title,
-      body: body,
+      title: 'Shamell',
+      body: isArabic ? 'لديك رسائل جديدة.' : 'You have new messages.',
       playSound: prefs.sound,
       vibrate: prefs.vibrate,
-      deepLink: payload,
+      deepLink: _chatNotificationPayloadUri(),
     );
   } catch (_) {}
 }
@@ -585,6 +440,10 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 final GlobalKey<NavigatorState> _rootNavKey = GlobalKey<NavigatorState>();
 
 Future<void> _initPush() async {
+  if (!_isPushSupportedPlatform()) {
+    debugPrint('PUSH_INIT_SKIP: unsupported platform');
+    return;
+  }
   try {
     await Firebase.initializeApp();
   } catch (_) {}
@@ -592,10 +451,6 @@ Future<void> _initPush() async {
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   } catch (_) {}
   try {
-    final sp = await SharedPreferences.getInstance();
-    final storedBase = sp.getString('base_url') ?? '';
-    final baseUrl =
-        storedBase.isNotEmpty ? storedBase : 'http://localhost:8081';
     final perm = await FirebaseMessaging.instance.requestPermission();
     if (perm.authorizationStatus == AuthorizationStatus.authorized ||
         perm.authorizationStatus == AuthorizationStatus.provisional) {
@@ -608,25 +463,10 @@ Future<void> _initPush() async {
         FirebaseMessaging.onMessageOpenedApp.listen((message) {
           try {
             final data = message.data;
-            final type = (data['type'] ?? '').toString();
-            if (type == 'moments_comment' ||
-                type == 'moments_post_like' ||
-                type == 'moments_comment_like') {
-              final postId = (data['post_id'] ?? '').toString();
-              final commentId = (data['comment_id'] ?? '').toString();
-              final focusComments =
-                  type == 'moments_comment' || commentId.isNotEmpty;
-              _rootNavKey.currentState?.push(
-                MaterialPageRoute(
-                  builder: (_) => MomentsPage(
-                    baseUrl: baseUrl,
-                    initialPostId: postId.isNotEmpty ? postId : null,
-                    focusComments: focusComments,
-                    initialCommentId: commentId.isNotEmpty ? commentId : null,
-                  ),
-                ),
-              );
-            }
+            final rawType = (data['type'] ?? '').toString().trim().toLowerCase();
+            if (rawType != 'chat_wakeup') return;
+            // Push is wakeup-only: never deep-link to specific content from remote payloads.
+            unawaited(_handleNotificationPayload(_chatNotificationPayloadUri()));
           } catch (_) {}
         });
       } catch (_) {}
@@ -634,40 +474,57 @@ Future<void> _initPush() async {
   } catch (_) {}
 }
 
-/// Launches a web URL and, for HTTP(S) endpoints, appends the current
-/// Shamell session (`sa_session`) as query parameter when available.
+/// Launches a web URL and, for trusted same-origin HTTP(S) endpoints,
+/// reuses the current Shamell session via embedded WebView cookies.
 ///
-/// This allows admin / superadmin web consoles to reuse the OTP login
-/// from the Flutter app without relying on browser cookies.
+/// Session material is never appended to URL query parameters.
 Future<void> launchWithSession(Uri uri) async {
-  try {
-    if (uri.scheme == 'http' || uri.scheme == 'https') {
-      final cookie = await _getCookie();
-      if (cookie != null && cookie.isNotEmpty) {
-        String token = cookie;
-        final m = RegExp(r'sa_session=([^;]+)').firstMatch(token);
-        if (m != null && m.group(1) != null) {
-          token = m.group(1)!;
-        }
-        if (token.isNotEmpty) {
-          final qp = Map<String, String>.from(uri.queryParameters);
-          qp.putIfAbsent('sa_session', () => token);
-          uri = uri.replace(queryParameters: qp);
+  final isHttp = uri.scheme == 'http' || uri.scheme == 'https';
+  Uri? trustedBaseUri;
+  bool injectSessionForSameOrigin = false;
+  if (isHttp) {
+    try {
+      final storedBase = (await _loadStoredBaseUrl()).trim();
+      final parsed = Uri.tryParse(storedBase);
+      if (parsed != null &&
+          (parsed.scheme == 'http' || parsed.scheme == 'https')) {
+        final sameHost = parsed.host.toLowerCase() == uri.host.toLowerCase();
+        final sameScheme =
+            parsed.scheme.toLowerCase() == uri.scheme.toLowerCase();
+        final parsedPort = parsed.hasPort
+            ? parsed.port
+            : (parsed.scheme == 'https' ? 443 : 80);
+        final uriPort =
+            uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+        if (sameHost && sameScheme && parsedPort == uriPort) {
+          trustedBaseUri = parsed;
+          // webview_flutter can't set HttpOnly/Secure cookies; only allow
+          // session bridging for localhost dev to avoid leaking bearer tokens
+          // to JS in production WebViews.
+          final host = parsed.host.toLowerCase();
+          final isLocal = host == 'localhost' || host == '127.0.0.1' || host == '::1';
+          injectSessionForSameOrigin = !kReleaseMode && isLocal;
         }
       }
+    } catch (_) {
+      trustedBaseUri = null;
+      injectSessionForSameOrigin = false;
     }
-  } catch (_) {
-    // Fallback: ignore session wiring failures and just open the URL.
   }
   try {
-    if (!kIsWeb &&
-        (uri.scheme == 'http' || uri.scheme == 'https') &&
-        _rootNavKey.currentState != null) {
+    if (!kIsWeb && isHttp && _rootNavKey.currentState != null) {
+      // Best practice: only embed first-party web content. For other origins,
+      // defer to the platform browser instead of an in-app WebView.
+      if (trustedBaseUri == null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        return;
+      }
       _rootNavKey.currentState!.push(
         MaterialPageRoute(
-          builder: (_) => WeChatWebViewPage(
+          builder: (_) => ShamellWebViewPage(
             initialUri: uri,
-            baseUri: Uri.tryParse(uri.origin),
+            baseUri: trustedBaseUri,
+            injectSessionForSameOrigin: injectSessionForSameOrigin,
           ),
         ),
       );
@@ -696,12 +553,6 @@ void main() async {
   } catch (_) {}
   Perf.init();
   await loadUiPrefs();
-  if (kPushProvider.toLowerCase() == 'gotify' ||
-      kPushProvider.toLowerCase() == 'both') {
-    try {
-      await GotifyClient.start();
-    } catch (_) {}
-  }
   runApp(
     MaterialApp(
       navigatorKey: _rootNavKey,

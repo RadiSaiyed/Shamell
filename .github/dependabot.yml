@@ -6,14 +6,14 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "pip"
-    directory: "/"
+  - package-ecosystem: "pub"
+    directory: "/clients/shamell_flutter"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "pub"
-    directory: "/clients/shamell_flutter"
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

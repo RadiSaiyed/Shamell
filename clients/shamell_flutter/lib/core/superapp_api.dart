@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -7,7 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'wechat_webview_page.dart';
+import 'shamell_webview_page.dart';
 
 class GeoPosition {
   final double latitude;
@@ -102,11 +103,8 @@ class SuperappAPI {
     final h = <String, String>{};
     if (json) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie');
-      if (cookie != null && cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(baseUrl);
+      if (cookie != null && cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     if (extra != null && extra.isNotEmpty) {
       h.addAll(extra);
@@ -239,13 +237,27 @@ class SuperappAPI {
       if (!external) {
         final scheme = uri.scheme.toLowerCase();
         if ((scheme == 'http' || scheme == 'https') && _canPushPage) {
-          pushPage(
-            WeChatWebViewPage(
-              initialUri: uri,
-              baseUri: baseUri,
-            ),
-          );
-          return true;
+          // Best practice: keep embedded WebViews first-party and same-origin.
+          if (baseUri != null) {
+            final sameScheme = baseUri.scheme.toLowerCase() == scheme;
+            final sameHost = baseUri.host.toLowerCase() == uri.host.toLowerCase();
+            final basePort = baseUri.hasPort
+                ? baseUri.port
+                : (scheme == 'https' ? 443 : 80);
+            final uriPort = uri.hasPort ? uri.port : (scheme == 'https' ? 443 : 80);
+            final sameOrigin = sameScheme && sameHost && basePort == uriPort;
+            if (sameOrigin) {
+              pushPage(
+                ShamellWebViewPage(
+                  initialUri: uri,
+                  baseUri: baseUri,
+                ),
+              );
+              return true;
+            }
+          }
+          // Non-same-origin: open externally to reduce phishing surface.
+          return await launchUrl(uri, mode: LaunchMode.externalApplication);
         }
       }
       return await launchUrl(

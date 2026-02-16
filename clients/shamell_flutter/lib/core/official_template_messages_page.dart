@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -8,7 +10,7 @@ import 'l10n.dart';
 import 'mini_apps_config.dart';
 import 'call_signaling.dart';
 import '../mini_apps/payments/payments_shell.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 
 class OfficialTemplateMessagesPage extends StatefulWidget {
   final String baseUrl;
@@ -46,10 +48,9 @@ class _OfficialTemplateMessagesPageState
       headers['content-type'] = 'application/json';
     }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -72,7 +73,11 @@ class _OfficialTemplateMessagesPageState
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = 'HTTP ${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -100,7 +105,7 @@ class _OfficialTemplateMessagesPageState
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -149,17 +154,9 @@ class _OfficialTemplateMessagesPageState
         final p = payload;
         if (p != null) {
           final rawSection = p['section'];
-          final rawCampaign = p['campaign'];
           final rawLabel = p['label'];
           if (rawSection is String && rawSection.trim().isNotEmpty) {
-            final sec = rawSection.trim();
-            if (sec.toLowerCase() == 'redpacket' &&
-                rawCampaign is String &&
-                rawCampaign.trim().isNotEmpty) {
-              initialSection = 'redpacket:${rawCampaign.trim()}';
-            } else {
-              initialSection = sec;
-            }
+            initialSection = rawSection.trim();
           }
           if (rawLabel is String && rawLabel.trim().isNotEmpty) {
             contextLabel = rawLabel.trim();
@@ -199,7 +196,7 @@ class _OfficialTemplateMessagesPageState
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final Color bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final hasUnread = _items.any((m) => m.isUnread);
     final q = _search.trim().toLowerCase();
     final items = q.isEmpty
@@ -270,7 +267,7 @@ class _OfficialTemplateMessagesPageState
                     physics: const AlwaysScrollableScrollPhysics(),
                     children: [
                       const SizedBox(height: 8),
-                      WeChatSearchBar(
+                      ShamellSearchBar(
                         hintText: l.isArabic ? 'بحث' : 'Search',
                         controller: _searchCtrl,
                         onChanged: (v) => setState(() => _search = v),
@@ -303,7 +300,7 @@ class _OfficialTemplateMessagesPageState
                           ),
                         )
                       else
-                        WeChatSection(
+                        ShamellSection(
                           dividerIndent: 72,
                           dividerEndIndent: 16,
                           children: [
@@ -349,7 +346,7 @@ class _OfficialTemplateMessagesPageState
                                     leading: Stack(
                                       clipBehavior: Clip.none,
                                       children: [
-                                        WeChatLeadingIcon(
+                                        ShamellLeadingIcon(
                                           icon: leadIcon,
                                           background: leadColor,
                                         ),

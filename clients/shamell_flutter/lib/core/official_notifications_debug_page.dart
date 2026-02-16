@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -38,7 +39,11 @@ class _OfficialNotificationsDebugPageState
       final r = await http.get(uri);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         setState(() {
-          _error = 'HTTP ${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -73,7 +78,7 @@ class _OfficialNotificationsDebugPageState
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     } finally {
       if (mounted) {

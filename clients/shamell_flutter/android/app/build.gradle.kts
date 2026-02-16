@@ -9,6 +9,8 @@ plugins {
 val tomtomApiKey: String by project
 // Optional: Google Maps Android API key (if used by plugins/components).
 val googleMapsApiKey: String by project
+// Optional: Play Integrity Cloud project number (digits).
+val playIntegrityCloudProjectNumber: String by project
 
 android {
     namespace = "online.shamell.app"
@@ -69,6 +71,11 @@ android {
         // Expose the TomTom API key as a BuildConfig field for all build types.
         buildTypes.configureEach {
             buildConfigField("String", "TOMTOM_API_KEY", "\"$tomtomApiKey\"")
+            buildConfigField(
+                "long",
+                "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER",
+                playIntegrityCloudProjectNumber
+            )
         }
     }
 }
@@ -83,4 +90,7 @@ dependencies {
     // TomTom Maps SDK – Map Display module
     val tomTomMapsVersion = "1.26.3"
     implementation("com.tomtom.sdk.maps:map-display:$tomTomMapsVersion")
+
+    // Google Play Integrity API (hardware-backed attestation layer).
+    implementation("com.google.android.play:integrity:1.3.0")
 }

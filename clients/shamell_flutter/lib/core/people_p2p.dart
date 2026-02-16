@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'l10n.dart';
 import 'ui_kit.dart';
 import '../mini_apps/payments/payments_shell.dart';
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
 import 'skeleton.dart';
 
 class PeopleP2PPage extends StatefulWidget {
@@ -39,7 +39,7 @@ class _PeopleP2PPageState extends State<PeopleP2PPage> {
       final sp = await SharedPreferences.getInstance();
       final cached = sp.getStringList('contact_shortlist') ?? const [];
       final list = <Map<String, String>>[];
-      // Load friend aliases (remark names) for WeChat-style display.
+      // Load friend aliases (remark names) for Shamell-style display.
       Map<String, String> aliases = <String, String>{};
       try {
         final rawAliases = sp.getString('friends.aliases') ?? '{}';
@@ -102,7 +102,7 @@ class _PeopleP2PPageState extends State<PeopleP2PPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(baseUrl: widget.baseUrl),
+        builder: (_) => ShamellChatPage(baseUrl: widget.baseUrl),
       ),
     );
   }
@@ -169,8 +169,8 @@ class _PeopleP2PPageState extends State<PeopleP2PPage> {
               FormSection(
                 title: l.isArabic ? 'المحادثات والجهات' : 'Chats & contacts',
                 subtitle: l.isArabic
-                    ? 'افتح Mirsaal للدردشة والاتصال الآمن'
-                    : 'Open Mirsaal for secure chat and contacts',
+                    ? 'افتح Shamell للدردشة والاتصال الآمن'
+                    : 'Open Shamell for secure chat and contacts',
                 children: [
                   ListTile(
                     leading: const Icon(Icons.chat_bubble_outline),

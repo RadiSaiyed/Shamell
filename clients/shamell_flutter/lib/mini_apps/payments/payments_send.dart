@@ -5,15 +5,16 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/glass.dart';
+import '../../core/capabilities.dart';
 import 'payments_utils.dart';
 import '../../core/offline_queue.dart';
 import '../../core/format.dart' show fmtCents;
-import '../../core/contact_picker.dart'; // for contact picker integration
 import '../../core/friends_page.dart';
 import '../../core/l10n.dart';
 import '../../core/perf.dart';
 import '../../core/status_banner.dart';
 import '../../core/ui_kit.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 class FavoritesDropdown extends StatelessWidget {
   final List<Map<String, dynamic>> favorites;
@@ -60,30 +61,6 @@ class QuickAmountChips extends StatelessWidget {
   }
 }
 
-class ContactShortlistChips extends StatelessWidget {
-  final List<Map<String, String>> shortlist;
-  final void Function(String phone) onTap;
-  const ContactShortlistChips(
-      {required this.shortlist, required this.onTap, super.key});
-  @override
-  Widget build(BuildContext context) {
-    if (shortlist.isEmpty) return const SizedBox.shrink();
-    return Wrap(
-      spacing: 10,
-      runSpacing: 6,
-      children: shortlist.map((m) {
-        final name = m['name'] ?? '';
-        final phone = m['phone'] ?? '';
-        return ActionChip(
-          avatar: CircleAvatar(child: Text(name.isNotEmpty ? name[0] : '?')),
-          label: Text('$name  ·  $phone', overflow: TextOverflow.ellipsis),
-          onPressed: () => onTap(phone),
-        );
-      }).toList(),
-    );
-  }
-}
-
 class PaymentSendTab extends StatefulWidget {
   final String baseUrl;
   final String fromWalletId;
@@ -116,9 +93,7 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
   String _curSym = 'SYP';
   List<String> recents = [];
   List<Map<String, dynamic>> favorites = [];
-  List<Map<String, String>> shortlist = [];
   String _toResolvedHint = '';
-  String? _toResolvedWalletId;
   int _sendCooldownSec = 0;
   Timer? _cooldownTimer;
   String _bannerMsg = '';
@@ -152,7 +127,6 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
     await _loadFavorites();
     await _loadWallet();
     _attachResolver();
-    _loadShortlist();
   }
 
   @override
@@ -178,37 +152,24 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
   Future<void> _resolveTarget() async {
     final v = toCtrl.text.trim();
     _toResolvedHint = '';
-    _toResolvedWalletId = null;
     setState(() {});
+    if (v.isEmpty) return;
+    final l = L10n.of(context);
     try {
-      if (v.startsWith('+') || RegExp(r'^\d{6,}$').hasMatch(v)) {
-        final r = await http.get(
-            Uri.parse('${widget.baseUrl}/payments/resolve/phone/' +
-                Uri.encodeComponent(v)),
-            headers: await _hdrPS());
-        if (r.statusCode == 200) {
-          final j = jsonDecode(r.body);
-          _toResolvedWalletId = (j['wallet_id'] ?? '').toString();
-          _toResolvedHint = 'Wallet: ${_toResolvedWalletId}';
-        } else {
-          _toResolvedHint = 'Number not recognized';
-        }
+      final isPhone = v.startsWith('+') || RegExp(r'^\d{6,}$').hasMatch(v);
+      final isAlias = v.startsWith('@') && v.length > 1;
+      if (isPhone) {
+        // Permanently disabled: do not route payments by phone number.
+        _toResolvedHint = l.isArabic
+            ? 'أرقام الهاتف غير مدعومة. استخدم مُعرّف المحفظة أو @اسم.'
+            : 'Phone numbers are not supported. Use a wallet ID or @alias.';
         setState(() {});
-      } else if (v.startsWith('@')) {
-        final r = await http.get(
-            Uri.parse('${widget.baseUrl}/payments/alias/resolve/' +
-                Uri.encodeComponent(v)),
-            headers: await _hdrPS());
-        if (r.statusCode == 200) {
-          final j = jsonDecode(r.body);
-          _toResolvedWalletId = (j['wallet_id'] ?? '').toString();
-          _toResolvedHint =
-              _toResolvedWalletId != null && _toResolvedWalletId!.isNotEmpty
-                  ? 'Alias → ${_toResolvedWalletId}'
-                  : 'Unknown alias';
-        } else {
-          _toResolvedHint = 'Unknown alias';
-        }
+      } else if (isAlias) {
+        // Best practice: do not expose an alias enumeration endpoint.
+        // Alias resolution happens server-side when sending.
+        _toResolvedHint = l.isArabic
+            ? 'سيتم حل @الاسم على الخادم عند الإرسال.'
+            : 'Alias will be resolved on the server when sending.';
         setState(() {});
       }
     } catch (_) {}
@@ -221,7 +182,7 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
       final r = await http.get(
           Uri.parse('${widget.baseUrl}/payments/wallets/' +
               Uri.encodeComponent(myWallet)),
-          headers: await _hdrPS());
+          headers: await _hdrPS(widget.baseUrl));
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         _balanceCents = (j['balance_cents'] ?? 0) as int;
@@ -236,7 +197,7 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
       final r = await http.get(
           Uri.parse('${widget.baseUrl}/payments/favorites?owner_wallet_id=' +
               Uri.encodeComponent(myWallet)),
-          headers: await _hdrPS());
+          headers: await _hdrPS(widget.baseUrl));
       if (r.statusCode == 200) {
         favorites = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
       }
@@ -253,61 +214,6 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
     while (cur.length > 5) cur.removeLast();
     await sp.setStringList('pay_recents', cur);
     setState(() => recents = cur);
-  }
-
-  Future<void> _loadShortlist() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cached = sp.getStringList('contact_shortlist');
-      if (cached != null && cached.isNotEmpty) {
-        // Load friend aliases so the shortlist reflects WeChat-style remarks.
-        final rawAliases = sp.getString('friends.aliases') ?? '{}';
-        Map<String, dynamic> decodedAliases;
-        try {
-          decodedAliases = jsonDecode(rawAliases) as Map<String, dynamic>;
-        } catch (_) {
-          decodedAliases = <String, dynamic>{};
-        }
-        shortlist = cached.map((s) {
-          try {
-            final m = jsonDecode(s) as Map<String, dynamic>;
-            final phone = (m['phone'] ?? '').toString();
-            var name = (m['name'] ?? '').toString();
-            final alias = (decodedAliases[phone] ?? '').toString();
-            if (alias.isNotEmpty) {
-              name = alias;
-            }
-            return {'name': name, 'phone': phone};
-          } catch (_) {
-            return {'name': '', 'phone': s};
-          }
-        }).toList();
-        setState(() {});
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _addToShortlist(String phone) async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final List<String> cur = sp.getStringList('contact_shortlist') ?? [];
-      // store as plain phone string for compatibility, newest first
-      cur.removeWhere((s) => s == phone || s.contains('"phone":"$phone"'));
-      cur.insert(0, phone);
-      while (cur.length > 8) cur.removeLast();
-      await sp.setStringList('contact_shortlist', cur);
-      _loadShortlist();
-    } catch (_) {}
-  }
-
-  void _openContactPicker() {
-    Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => ContactPickerPage(onPicked: (phone) {
-              final clean = phone.replaceAll(' ', '');
-              toCtrl.text = clean;
-              setState(() {});
-              _addToShortlist(clean);
-            })));
   }
 
   void _startCooldown(int secs) {
@@ -349,15 +255,25 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
     }
     final uri = Uri.parse('${widget.baseUrl}/payments/transfer');
     final ikey = 'tw-${DateTime.now().millisecondsSinceEpoch}';
+    final target = buildTransferTarget(to);
+    if (target.isEmpty) {
+      setState(() {
+        _bannerKind = StatusKind.error;
+        _bannerMsg = l.isArabic
+            ? 'الرجاء إدخال مُعرّف محفظة صالح أو @اسم. أرقام الهاتف غير مدعومة.'
+            : 'Enter a valid wallet ID or @alias. Phone numbers are not supported.';
+      });
+      return;
+    }
     final payload = <String, dynamic>{
       'from_wallet_id': myWallet,
       'amount': double.parse(amountMajor.toStringAsFixed(2)),
       if (noteCtrl.text.trim().isNotEmpty) 'reference': noteCtrl.text.trim(),
-      ...buildTransferTarget(to, resolvedWalletId: _toResolvedWalletId)
+      ...target
     };
     final t0 = DateTime.now().millisecondsSinceEpoch;
     try {
-      final headers = (await _hdrPS(json: true))
+      final headers = (await _hdrPS(widget.baseUrl, json: true))
         ..addAll({'Idempotency-Key': ikey, 'X-Device-ID': widget.deviceId});
       final resp =
           await http.post(uri, headers: headers, body: jsonEncode(payload));
@@ -429,7 +345,7 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
         });
       }
     } catch (_) {
-      final headers = (await _hdrPS(json: true))
+      final headers = (await _hdrPS(widget.baseUrl, json: true))
         ..addAll({'Idempotency-Key': ikey, 'X-Device-ID': widget.deviceId});
       await OfflineQueue.enqueue(OfflineTask(
           id: ikey,
@@ -620,29 +536,8 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
                     onTap: _reviewAndSend,
                   ),
                 ),
-                Semantics(
-                  button: true,
-                  label:
-                      l.isArabic ? 'فتح قائمة جهات الاتصال' : 'Open contacts',
-                  child: PayActionButton(
-                    icon: Icons.contacts_outlined,
-                    label: l.payContactsLabel,
-                    onTap: _openContactPicker,
-                  ),
-                ),
               ],
             ),
-            if (shortlist.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: ContactShortlistChips(
-                  shortlist: shortlist,
-                  onTap: (phone) {
-                    toCtrl.text = phone;
-                    setState(() {});
-                  },
-                ),
-              ),
             if (favorites.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
@@ -848,6 +743,7 @@ class _GroupPayPageState extends State<GroupPayPage> {
   bool _submitting = false;
   String _out = '';
   final List<String> _selectedFriends = <String>[];
+  bool _allowFriendsPicker = false;
 
   @override
   void initState() {
@@ -858,6 +754,8 @@ class _GroupPayPageState extends State<GroupPayPage> {
   Future<void> _init() async {
     try {
       final sp = await SharedPreferences.getInstance();
+      final caps = ShamellCapabilities.fromPrefsForBaseUrl(sp, widget.baseUrl);
+      _allowFriendsPicker = caps.friends;
       final localWallet = (sp.getString('wallet_id') ?? '').trim();
       _walletId = localWallet.isNotEmpty ? localWallet : widget.fromWalletId;
     } catch (_) {
@@ -876,7 +774,7 @@ class _GroupPayPageState extends State<GroupPayPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/payments/wallets/' + Uri.encodeComponent(wid));
-      final r = await http.get(uri, headers: await _hdrPS());
+      final r = await http.get(uri, headers: await _hdrPS(widget.baseUrl));
       if (r.statusCode == 200) {
         final body = jsonDecode(r.body);
         if (body is Map<String, dynamic>) {
@@ -947,48 +845,24 @@ class _GroupPayPageState extends State<GroupPayPage> {
       'expires_in_secs': 24 * 3600,
     };
     final raw = to.trim();
-    Uri uri;
+    final isPhone = raw.startsWith('+') || RegExp(r'^[0-9]{6,}$').hasMatch(raw);
+    if (isPhone) return _GroupSendOutcome.failed;
+
+    final uri = Uri.parse('${widget.baseUrl}/payments/requests');
     Map<String, Object?> payload;
-    if (raw.startsWith('+') || RegExp(r'^[0-9]{6,}$').hasMatch(raw)) {
-      uri = Uri.parse('${widget.baseUrl}/payments/requests/by_phone');
+    if (raw.startsWith('@')) {
       payload = {
         ...basePayload,
-        'to_phone': raw,
+        'to_alias': raw,
       };
     } else {
-      String toWallet = raw;
-      if (raw.startsWith('@')) {
-        try {
-          final r = await http.get(
-            Uri.parse('${widget.baseUrl}/payments/alias/resolve/' +
-                Uri.encodeComponent(raw)),
-            headers: await _hdrPS(),
-          );
-          if (r.statusCode == 200) {
-            final body = jsonDecode(r.body);
-            final w = body is Map<String, dynamic>
-                ? (body['wallet_id'] ?? '').toString()
-                : '';
-            if (w.isEmpty) {
-              return _GroupSendOutcome.failed;
-            }
-            toWallet = w;
-          } else {
-            return _GroupSendOutcome.failed;
-          }
-        } catch (_) {
-          return _GroupSendOutcome.failed;
-        }
-      }
-      if (toWallet.isEmpty) return _GroupSendOutcome.failed;
-      uri = Uri.parse('${widget.baseUrl}/payments/requests');
       payload = {
         ...basePayload,
-        'to_wallet_id': toWallet,
+        'to_wallet_id': raw,
       };
     }
     try {
-      final headers = await _hdrPS(json: true);
+      final headers = await _hdrPS(widget.baseUrl, json: true);
       final resp =
           await http.post(uri, headers: headers, body: jsonEncode(payload));
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
@@ -1022,19 +896,29 @@ class _GroupPayPageState extends State<GroupPayPage> {
     final wid =
         _walletId.trim().isEmpty ? widget.fromWalletId : _walletId.trim();
     if (wid.isEmpty) return _GroupSendOutcome.failed;
+    final raw = to.trim();
+    final isPhone = raw.startsWith('+') || RegExp(r'^[0-9]{6,}$').hasMatch(raw);
+    if (isPhone) {
+      // Best practice: do not route transfers by phone number in group flows.
+      return _GroupSendOutcome.failed;
+    }
     final uri = Uri.parse('${widget.baseUrl}/payments/transfer');
     final amountMajor = amountCents / 100.0;
+    final target = buildTransferTarget(raw);
+    if (target.isEmpty) {
+      return _GroupSendOutcome.failed;
+    }
     final payload = <String, dynamic>{
       'from_wallet_id': wid,
       'amount': double.parse(amountMajor.toStringAsFixed(2)),
       if (_noteCtrl.text.trim().isNotEmpty) 'reference': _noteCtrl.text.trim(),
-      ...buildTransferTarget(to),
+      ...target,
     };
     final ikey =
         'twg-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}-${to.hashCode}';
     final t0 = DateTime.now().millisecondsSinceEpoch;
     try {
-      final headers = (await _hdrPS(json: true))
+      final headers = (await _hdrPS(widget.baseUrl, json: true))
         ..addAll({'Idempotency-Key': ikey, 'X-Device-ID': widget.deviceId});
       final resp =
           await http.post(uri, headers: headers, body: jsonEncode(payload));
@@ -1065,7 +949,7 @@ class _GroupPayPageState extends State<GroupPayPage> {
       return _GroupSendOutcome.failed;
     } catch (_) {
       try {
-        final headers = (await _hdrPS(json: true))
+        final headers = (await _hdrPS(widget.baseUrl, json: true))
           ..addAll({'Idempotency-Key': ikey, 'X-Device-ID': widget.deviceId});
         await OfflineQueue.enqueue(OfflineTask(
           id: ikey,
@@ -1091,6 +975,21 @@ class _GroupPayPageState extends State<GroupPayPage> {
     if (recipients.length < 2 || totalCents <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l.payCheckInputs)),
+      );
+      return;
+    }
+    final hasPhone = recipients.any(
+      (r) => r.startsWith('+') || RegExp(r'^[0-9]{6,}$').hasMatch(r),
+    );
+    if (hasPhone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            l.isArabic
+                ? 'أرقام الهاتف غير مدعومة. استخدم مُعرّفات المحافظ أو @أسماء.'
+                : 'Phone numbers are not supported. Use wallet IDs or @aliases.',
+          ),
+        ),
       );
       return;
     }
@@ -1130,11 +1029,11 @@ class _GroupPayPageState extends State<GroupPayPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(l.mirsaalDialogCancel),
+              child: Text(l.shamellDialogCancel),
             ),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(l.mirsaalDialogOk),
+              child: Text(l.shamellDialogOk),
             ),
           ],
         );
@@ -1197,6 +1096,21 @@ class _GroupPayPageState extends State<GroupPayPage> {
       );
       return;
     }
+    final hasPhone = recipients.any(
+      (r) => r.startsWith('+') || RegExp(r'^[0-9]{6,}$').hasMatch(r),
+    );
+    if (hasPhone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            l.isArabic
+                ? 'أرقام الهاتف غير مدعومة. استخدم مُعرّفات المحافظ أو @أسماء.'
+                : 'Phone numbers are not supported. Use wallet IDs or @aliases.',
+          ),
+        ),
+      );
+      return;
+    }
     final splits = _computeSplits(totalCents, recipients.length);
     final totalMajor = totalCents / 100.0;
     final perPreviewMajor = splits.first / 100.0;
@@ -1236,11 +1150,11 @@ class _GroupPayPageState extends State<GroupPayPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(l.mirsaalDialogCancel),
+              child: Text(l.shamellDialogCancel),
             ),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(l.mirsaalDialogOk),
+              child: Text(l.shamellDialogOk),
             ),
           ],
         );
@@ -1453,31 +1367,32 @@ class _GroupPayPageState extends State<GroupPayPage> {
               children: [
                 Row(
                   children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.group_outlined, size: 18),
-                        label: Text(
-                          l.isArabic
-                              ? 'اختيار من الأصدقاء'
-                              : 'Choose from friends',
+                    if (_allowFriendsPicker)
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.group_outlined, size: 18),
+                          label: Text(
+                            l.isArabic
+                                ? 'اختيار من الأصدقاء'
+                                : 'Choose from friends',
+                          ),
+                          onPressed: () async {
+                            final res = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => FriendsPage(widget.baseUrl),
+                              ),
+                            );
+                            if (!mounted) return;
+                            if (res is String && res.trim().isNotEmpty) {
+                              setState(() {
+                                _selectedFriends.add(res.trim());
+                              });
+                            }
+                          },
                         ),
-                        onPressed: () async {
-                          final res = await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => FriendsPage(widget.baseUrl),
-                            ),
-                          );
-                          if (!mounted) return;
-                          if (res is String && res.trim().isNotEmpty) {
-                            setState(() {
-                              _selectedFriends.add(res.trim());
-                            });
-                          }
-                        },
                       ),
-                    ),
-                    const SizedBox(width: 8),
+                    if (_allowFriendsPicker) const SizedBox(width: 8),
                     IconButton(
                       tooltip: l.isArabic ? 'مسح القائمة' : 'Clear list',
                       onPressed: () {
@@ -1516,8 +1431,8 @@ class _GroupPayPageState extends State<GroupPayPage> {
                   maxLines: 4,
                   decoration: InputDecoration(
                     hintText: l.isArabic
-                        ? 'محفظة أو هاتف في كل سطر'
-                        : 'Wallet ID or phone per line',
+                        ? 'معرّف المحفظة أو @اسم في كل سطر'
+                        : 'Wallet ID or @alias per line',
                   ),
                   onChanged: (_) => setState(() {}),
                 ),
@@ -1560,16 +1475,15 @@ class _GroupPayPageState extends State<GroupPayPage> {
 
 enum _GroupSendOutcome { success, queued, failed }
 
-Future<String?> _getCookiePS() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+Future<String?> _getCookiePS(String baseUrl) async {
+  return await getSessionCookieHeader(baseUrl);
 }
 
-Future<Map<String, String>> _hdrPS({bool json = false}) async {
+Future<Map<String, String>> _hdrPS(String baseUrl, {bool json = false}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
-  final c = await _getCookiePS();
-  if (c != null && c.isNotEmpty) h['Cookie'] = c;
+  final c = await _getCookiePS(baseUrl);
+  if (c != null && c.isNotEmpty) h['cookie'] = c;
   return h;
 }
 
