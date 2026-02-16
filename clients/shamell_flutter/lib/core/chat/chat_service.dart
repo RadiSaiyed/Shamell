@@ -2,13 +2,55 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
+import 'package:pinenacl/ed25519.dart' as ed25519;
 import 'package:pinenacl/x25519.dart' as x25519;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'chat_models.dart';
+import 'package:shamell_flutter/core/device_id.dart';
 import 'package:shamell_flutter/core/session_cookie_store.dart';
+
+@visibleForTesting
+const bool shamellDesktopSecureStorageDefault = bool.fromEnvironment(
+  'ENABLE_DESKTOP_SECURE_STORAGE',
+  defaultValue: true,
+);
+
+@visibleForTesting
+const String shamellChatProtocolSendVersion = 'v2_libsignal';
+
+@visibleForTesting
+const bool shamellLibsignalKeyApiDebugDefault = bool.fromEnvironment(
+  'ENABLE_LIBSIGNAL_KEY_API',
+  defaultValue: true,
+);
+
+@visibleForTesting
+const bool shamellLibsignalKeyApiReleaseDefault = bool.fromEnvironment(
+  'ENABLE_LIBSIGNAL_KEY_API_IN_RELEASE',
+  defaultValue: false,
+);
+
+@visibleForTesting
+const bool shamellLibsignalV2OnlyDebugDefault = bool.fromEnvironment(
+  'CHAT_PROTOCOL_V2_ONLY',
+  defaultValue: true,
+);
+
+@visibleForTesting
+const bool shamellLibsignalV2OnlyReleaseDefault = bool.fromEnvironment(
+  'CHAT_PROTOCOL_V2_ONLY_IN_RELEASE',
+  defaultValue: true,
+);
+
+@visibleForTesting
+const int shamellLibsignalPrekeyBatchDefault = int.fromEnvironment(
+  'LIBSIGNAL_PREKEY_BATCH_SIZE',
+  defaultValue: 64,
+);
 
 enum OfficialNotificationMode {
   full, // show message preview
@@ -16,23 +58,170 @@ enum OfficialNotificationMode {
   muted, // no local notification
 }
 
+/// Minimal typed HTTP error for chat calls.
+///
+/// Best practice: keep raw bodies out of exception strings to avoid leaking
+/// server internals into UI logs/crash reports. Callers may still inspect
+/// `statusCode`/`body` for safe error mapping.
+class ChatHttpException implements Exception {
+  final String op;
+  final int statusCode;
+  final String? body;
+
+  const ChatHttpException({
+    required this.op,
+    required this.statusCode,
+    this.body,
+  });
+
+  @override
+  String toString() => 'ChatHttpException($op, HTTP $statusCode)';
+}
+
+@visibleForTesting
+ChatGroupMessage shamellDecryptOrBlockGroupMessage(
+    ChatGroupMessage m, Uint8List key) {
+  final kind = (m.kind ?? '').toLowerCase();
+  if (kind == 'system') return m;
+
+  // Fail closed: group chat must never render unsealed user content.
+  if (kind != 'sealed') {
+    return ChatGroupMessage(
+      id: m.id,
+      groupId: m.groupId,
+      senderId: m.senderId,
+      text: 'Blocked insecure group message',
+      kind: 'system',
+      createdAt: m.createdAt,
+      expireAt: m.expireAt,
+    );
+  }
+  if (m.nonceB64 == null ||
+      m.boxB64 == null ||
+      m.nonceB64!.isEmpty ||
+      m.boxB64!.isEmpty) {
+    // Keep the message but clear any server-provided plaintext fields.
+    return ChatGroupMessage(
+      id: m.id,
+      groupId: m.groupId,
+      senderId: m.senderId,
+      text: '',
+      kind: 'sealed',
+      nonceB64: m.nonceB64,
+      boxB64: m.boxB64,
+      createdAt: m.createdAt,
+      expireAt: m.expireAt,
+    );
+  }
+  try {
+    final nonce = base64Decode(m.nonceB64!);
+    final boxBytes = base64Decode(m.boxB64!);
+    final plain = x25519.SecretBox(
+      key,
+    ).decrypt(x25519.ByteList(boxBytes), nonce: nonce);
+    final raw = utf8.decode(plain);
+    final j = jsonDecode(raw);
+    if (j is Map) {
+      final text = (j['text'] ?? '').toString();
+      final kindRaw = (j['kind'] ?? '').toString().trim();
+      final attB64 = (j['attachment_b64'] ?? '').toString();
+      final attMime = (j['attachment_mime'] ?? '').toString();
+      final voiceSecs = j['voice_secs'] is num
+          ? (j['voice_secs'] as num).toInt()
+          : int.tryParse((j['voice_secs'] ?? '').toString());
+      double? lat;
+      double? lon;
+      final latRaw = j['lat'];
+      final lonRaw = j['lon'];
+      if (latRaw is num) {
+        lat = latRaw.toDouble();
+      } else if (latRaw is String && latRaw.isNotEmpty) {
+        lat = double.tryParse(latRaw);
+      }
+      if (lonRaw is num) {
+        lon = lonRaw.toDouble();
+      } else if (lonRaw is String && lonRaw.isNotEmpty) {
+        lon = double.tryParse(lonRaw);
+      }
+      final contactIdRaw = j['contact_id'] ?? j['contactId'];
+      final contactId = (contactIdRaw ?? '').toString().trim();
+      final contactNameRaw = j['contact_name'] ?? j['contactName'];
+      final contactName = (contactNameRaw ?? '').toString().trim();
+      return ChatGroupMessage(
+        id: m.id,
+        groupId: m.groupId,
+        senderId: m.senderId,
+        text: text,
+        kind: kindRaw.isEmpty ? null : kindRaw,
+        nonceB64: m.nonceB64,
+        boxB64: m.boxB64,
+        attachmentB64: attB64.isEmpty ? null : attB64,
+        attachmentMime: attMime.isEmpty ? null : attMime,
+        voiceSecs: voiceSecs,
+        lat: lat,
+        lon: lon,
+        contactId: contactId.isEmpty ? null : contactId,
+        contactName: contactName.isEmpty ? null : contactName,
+        createdAt: m.createdAt,
+        expireAt: m.expireAt,
+      );
+    }
+  } catch (_) {}
+  // Decryption failed: keep only the ciphertext envelope to avoid showing any
+  // accidental plaintext fields.
+  return ChatGroupMessage(
+    id: m.id,
+    groupId: m.groupId,
+    senderId: m.senderId,
+    text: '',
+    kind: 'sealed',
+    nonceB64: m.nonceB64,
+    boxB64: m.boxB64,
+    createdAt: m.createdAt,
+    expireAt: m.expireAt,
+  );
+}
+
 class ChatService {
-  ChatService(String baseUrl)
+  ChatService(String baseUrl, {http.Client? httpClient})
       : _base = baseUrl.endsWith('/')
             ? baseUrl.substring(0, baseUrl.length - 1)
-            : baseUrl;
+            : baseUrl,
+        _http = httpClient ?? http.Client();
 
   final String _base;
+  final http.Client _http;
   WebSocketChannel? _ws;
   WebSocketChannel? _wsGroups;
 
+  bool _isLocalhostHost(String host) {
+    final h = host.trim().toLowerCase();
+    return h == 'localhost' || h == '127.0.0.1' || h == '::1';
+  }
+
+  void _assertSecureTransportBase() {
+    // Best practice: never send auth tokens over plaintext transports.
+    // Allow only localhost dev on http/ws.
+    final u = Uri.tryParse(_base);
+    if (u == null) {
+      throw StateError('Invalid chat base URL');
+    }
+    final scheme = u.scheme.toLowerCase();
+    final host = u.host.toLowerCase();
+    if (scheme == 'https') return;
+    if (scheme == 'http' && _isLocalhostHost(host)) return;
+    throw StateError('Insecure chat base URL: HTTPS is required');
+  }
+
   Future<ChatContact> registerDevice(ChatIdentity me) async {
+    final clientDeviceId = (await getOrCreateStableDeviceId()).trim();
     final body = jsonEncode({
       'device_id': me.id,
+      if (clientDeviceId.isNotEmpty) 'client_device_id': clientDeviceId,
       'public_key_b64': me.publicKeyB64,
       'name': me.displayName,
     });
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/devices/register'),
       headers: await _headers(json: true, chatDeviceId: me.id),
       body: body,
@@ -45,6 +234,7 @@ class ChatService {
     if (authToken.isNotEmpty) {
       await ChatLocalStore().saveDeviceAuthToken(me.id, authToken);
     }
+    await _bootstrapLibsignalMaterial(me);
     return ChatContact(
       id: (j['device_id'] ?? '') as String,
       publicKeyB64: (j['public_key_b64'] ?? '') as String,
@@ -55,7 +245,7 @@ class ChatService {
   }
 
   Future<ChatContact> resolveDevice(String id) async {
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/devices/${Uri.encodeComponent(id)}'),
       headers: await _headers(),
     );
@@ -73,18 +263,182 @@ class ChatService {
     );
   }
 
+  Future<void> _requireSessionCookieForAccountOps() async {
+    final cookie = (await getSessionCookieHeader(_base) ?? '').trim();
+    if (cookie.isEmpty) {
+      throw StateError('Authentication required');
+    }
+  }
+
+  Future<ChatIdentity> _ensureChatIdentityAndRegistrationForAccountOps() async {
+    final store = ChatLocalStore();
+    var me = await store.loadIdentity();
+    if (me == null ||
+        me.id.trim().isEmpty ||
+        me.publicKeyB64.trim().isEmpty ||
+        me.privateKeyB64.trim().isEmpty) {
+      final sk = x25519.PrivateKey.generate();
+      final pk = sk.publicKey;
+      final pkB64 = base64Encode(pk.asTypedList);
+      me = ChatIdentity(
+        id: generateShortId(),
+        publicKeyB64: pkB64,
+        privateKeyB64: base64Encode(sk.asTypedList),
+        fingerprint: fingerprintForKey(pkB64),
+      );
+      await store.saveIdentity(me);
+    }
+
+    final tok = (await store.loadDeviceAuthToken(me.id) ?? '').trim();
+    if (tok.isEmpty) {
+      // This binds the chat device to the authenticated Shamell account in the backend.
+      await registerDevice(me);
+    } else {
+      // Best-effort: ensure key material exists for upgraded clients without re-registering.
+      await _bootstrapLibsignalMaterial(me);
+    }
+
+    return me;
+  }
+
+  Future<String> createContactInviteToken({int maxUses = 1}) async {
+    await _requireSessionCookieForAccountOps();
+    final me = await _ensureChatIdentityAndRegistrationForAccountOps();
+    final requested = maxUses.clamp(1, 20);
+    final r = await _http.post(
+      _uri('/contacts/invites'),
+      headers: await _headers(json: true, chatDeviceId: me.id),
+      body: jsonEncode(<String, Object?>{'max_uses': requested}),
+    );
+    if (r.statusCode >= 400) {
+      throw Exception('invite create failed: ${r.statusCode}');
+    }
+    final j = jsonDecode(r.body);
+    if (j is! Map) {
+      throw Exception('invite create failed');
+    }
+    final tok = (j['token'] ?? '').toString().trim().toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(tok)) {
+      throw Exception('invite create failed');
+    }
+    return tok;
+  }
+
+  Future<String> redeemContactInviteToken(String rawToken) async {
+    final tok = rawToken.trim().toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(tok)) {
+      throw Exception('invalid invite token');
+    }
+    await _requireSessionCookieForAccountOps();
+    final me = await _ensureChatIdentityAndRegistrationForAccountOps();
+    final r = await _http.post(
+      _uri('/contacts/invites/redeem'),
+      headers: await _headers(json: true, chatDeviceId: me.id),
+      body: jsonEncode(<String, Object?>{'token': tok}),
+    );
+    if (r.statusCode >= 400) {
+      throw Exception('invite redeem failed: ${r.statusCode}');
+    }
+    final j = jsonDecode(r.body);
+    if (j is! Map) {
+      throw Exception('invite redeem failed');
+    }
+    final did = (j['device_id'] ?? '').toString().trim();
+    if (did.isEmpty) {
+      throw Exception('invite redeem failed');
+    }
+    return did;
+  }
+
+  /// Fetches a peer key bundle from the server.
+  /// Note: this may consume one-time prekeys server-side; call only when establishing a new session.
+  Future<ChatKeyBundle> fetchKeyBundle({
+    required String targetDeviceId,
+    String? requesterDeviceId,
+  }) async {
+    final did = targetDeviceId.trim();
+    if (did.isEmpty) {
+      throw ArgumentError.value(targetDeviceId, 'targetDeviceId');
+    }
+    final r = await _http.get(
+      _uri('/chat/keys/bundle/${Uri.encodeComponent(did)}'),
+      headers: await _headers(chatDeviceId: requesterDeviceId),
+    );
+    if (r.statusCode >= 400) {
+      throw Exception('key bundle fetch failed: ${r.statusCode}');
+    }
+    return ChatKeyBundle.fromJson(jsonDecode(r.body) as Map<String, Object?>);
+  }
+
+  Future<void> registerLibsignalBundle({
+    required ChatIdentity me,
+    bool? v2Only,
+    int oneTimePrekeyCount = shamellLibsignalPrekeyBatchDefault,
+  }) async {
+    final signedPrekey = x25519.PrivateKey.generate().publicKey;
+    final signedPrekeyB64 = base64Encode(signedPrekey.asTypedList);
+    final signedPrekeyId = DateTime.now().millisecondsSinceEpoch;
+    final signatureInput = _keyRegisterSignatureInput(
+      deviceId: me.id,
+      identityKeyB64: me.publicKeyB64,
+      signedPrekeyId: signedPrekeyId,
+      signedPrekeyB64: signedPrekeyB64,
+    );
+    final keyRegistrationSignature = _signKeyRegisterInput(
+      identityPrivateKeyB64: me.privateKeyB64,
+      input: signatureInput,
+    );
+    final r = await _http.post(
+      _uri('/chat/keys/register'),
+      headers: await _headers(json: true, chatDeviceId: me.id),
+      body: jsonEncode({
+        'device_id': me.id,
+        'identity_key_b64': me.publicKeyB64,
+        'identity_signing_pubkey_b64':
+            keyRegistrationSignature.identitySigningPubkeyB64,
+        'signed_prekey_id': signedPrekeyId,
+        'signed_prekey_b64': signedPrekeyB64,
+        'signed_prekey_sig_b64': keyRegistrationSignature.signatureB64,
+        'signed_prekey_sig_alg': 'ed25519',
+        'v2_only': v2Only ?? _enableLibsignalV2Only(),
+      }),
+    );
+    if (r.statusCode >= 400) {
+      throw Exception('keys register failed: ${r.statusCode}');
+    }
+
+    final prekeys = _buildOneTimePrekeys(oneTimePrekeyCount);
+    if (prekeys.isEmpty) return;
+    final upload = await _http.post(
+      _uri('/chat/keys/prekeys/upload'),
+      headers: await _headers(json: true, chatDeviceId: me.id),
+      body: jsonEncode({
+        'device_id': me.id,
+        'prekeys': prekeys.map((p) => p.toJson()).toList(),
+      }),
+    );
+    if (upload.statusCode >= 400) {
+      throw Exception('prekeys upload failed: ${upload.statusCode}');
+    }
+  }
+
   Future<ChatMessage> sendMessage({
     required ChatIdentity me,
     required ChatContact peer,
     required String plainText,
     int? expireAfterSeconds,
-    bool sealedSender = false,
+    bool sealedSender = true,
     String? senderHint,
     Uint8List? sessionKey,
     int? keyId,
     int? prevKeyId,
     String? senderDhPubB64,
   }) async {
+    final hint = sealedSender
+        ? ((senderHint ?? '').trim().isNotEmpty
+            ? senderHint!.trim()
+            : me.fingerprint.trim())
+        : '';
     final enc = _encryptMessage(
       me,
       peer,
@@ -95,25 +449,27 @@ class ChatService {
     final body = jsonEncode({
       'sender_id': me.id,
       'recipient_id': peer.id,
+      'protocol_version': _messageProtocolVersion(),
       'sender_pubkey_b64': me.publicKeyB64,
       if (senderDhPubB64 != null) 'sender_dh_pub_b64': senderDhPubB64,
       'nonce_b64': enc.$1,
       'box_b64': enc.$2,
       'sealed_sender': sealedSender,
-      if (sealedSender && senderHint != null) 'sender_hint': senderHint,
-      if (sealedSender && senderHint != null) 'sender_fingerprint': senderHint,
+      if (sealedSender && hint.isNotEmpty) 'sender_hint': hint,
+      if (sealedSender && hint.isNotEmpty) 'sender_fingerprint': hint,
       if (keyId != null) 'key_id': keyId.toString(),
       if (prevKeyId != null) 'prev_key_id': prevKeyId.toString(),
       if (expireAfterSeconds != null)
         'expire_after_seconds': expireAfterSeconds,
     });
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/messages/send'),
       headers: await _headers(json: true, chatDeviceId: me.id),
       body: body,
     );
-    if (r.statusCode >= 400) {
-      throw Exception('send failed: ${r.statusCode}');
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw ChatHttpException(
+          op: 'send', statusCode: r.statusCode, body: r.body);
     }
     final parsed = ChatMessage.fromJson(
       jsonDecode(r.body) as Map<String, Object?>,
@@ -139,8 +495,7 @@ class ChatService {
     if (sinceIso != null && sinceIso.isNotEmpty) {
       qp['since_iso'] = sinceIso;
     }
-    qp.putIfAbsent('sealed_view', () => '1');
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/messages/inbox', qp),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -154,7 +509,7 @@ class ChatService {
   }
 
   Future<void> markRead(String id, {String? deviceId}) async {
-    await http.post(
+    await _http.post(
       _uri('/chat/messages/$id/read'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode({'read': true}),
@@ -167,7 +522,7 @@ class ChatService {
     required bool blocked,
     bool hidden = false,
   }) async {
-    await http.post(
+    await _http.post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/block'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode({
@@ -202,7 +557,7 @@ class ChatService {
     if (muted != null) body['muted'] = muted;
     if (starred != null) body['starred'] = starred;
     if (pinned != null) body['pinned'] = pinned;
-    await http.post(
+    await _http.post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/prefs'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode(body),
@@ -210,7 +565,7 @@ class ChatService {
   }
 
   Future<List<ChatContactPrefs>> fetchPrefs({required String deviceId}) async {
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/prefs'),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -240,7 +595,7 @@ class ChatService {
     final body = <String, Object?>{'group_id': groupId};
     if (muted != null) body['muted'] = muted;
     if (pinned != null) body['pinned'] = pinned;
-    await http.post(
+    await _http.post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/group_prefs'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode(body),
@@ -250,7 +605,7 @@ class ChatService {
   Future<List<ChatGroupPrefs>> fetchGroupPrefs({
     required String deviceId,
   }) async {
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/group_prefs'),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -277,7 +632,7 @@ class ChatService {
     String? platform,
   }) async {
     try {
-      await http.post(
+      await _http.post(
         _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/push_token'),
         headers: await _headers(json: true, chatDeviceId: deviceId),
         body: jsonEncode({
@@ -296,13 +651,14 @@ class ChatService {
     final out = StreamController<List<ChatMessage>>();
     Future<void>(() async {
       try {
+        _assertSecureTransportBase();
         final u = Uri.parse(_base);
         final wsUri = Uri(
           scheme: u.scheme == 'https' ? 'wss' : 'ws',
           host: u.host,
           port: u.hasPort ? u.port : null,
           path: '/ws/chat/inbox',
-          queryParameters: {'device_id': deviceId, 'sealed_view': '1'},
+          queryParameters: {'device_id': deviceId},
         );
         final auth = await _chatAuthContext(chatDeviceId: deviceId);
         final headers = <String, String>{};
@@ -315,7 +671,6 @@ class ChatService {
         final channel = _connectWebSocket(
           wsUri,
           headers: headers,
-          fallbackUri: _chatWsUriWithFallback(wsUri, auth.deviceId, auth.token),
         );
         _ws = channel;
         late final StreamSubscription sub;
@@ -360,6 +715,7 @@ class ChatService {
     final store = ChatLocalStore();
     Future<void>(() async {
       try {
+        _assertSecureTransportBase();
         final u = Uri.parse(_base);
         final wsUri = Uri(
           scheme: u.scheme == 'https' ? 'wss' : 'ws',
@@ -379,7 +735,6 @@ class ChatService {
         final channel = _connectWebSocket(
           wsUri,
           headers: headers,
-          fallbackUri: _chatWsUriWithFallback(wsUri, auth.deviceId, auth.token),
         );
         _wsGroups = channel;
         late final StreamSubscription sub;
@@ -449,7 +804,7 @@ class ChatService {
       if (memberIds.isNotEmpty) 'member_ids': memberIds,
       if (groupId != null && groupId.isNotEmpty) 'group_id': groupId,
     });
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/create'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: body,
@@ -461,7 +816,7 @@ class ChatService {
   }
 
   Future<List<ChatGroup>> listGroups({required String deviceId}) async {
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/groups/list', {'device_id': deviceId}),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -488,7 +843,7 @@ class ChatService {
       if (avatarB64 != null) 'avatar_b64': avatarB64,
       if (avatarMime != null) 'avatar_mime': avatarMime,
     });
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/update'),
       headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
@@ -530,44 +885,33 @@ class ChatService {
 
     final bodyMap = <String, Object?>{
       'sender_id': senderId,
+      'protocol_version': _messageProtocolVersion(),
       if (expireAfterSeconds != null)
         'expire_after_seconds': expireAfterSeconds,
     };
 
-    try {
-      final keyB64 = await ChatLocalStore().loadGroupKey(groupId);
-      if (keyB64 != null && keyB64.isNotEmpty) {
-        final keyBytes = base64Decode(keyB64);
-        if (keyBytes.length == 32) {
-          final rnd = Random.secure();
-          final nonce = Uint8List.fromList(
-            List<int>.generate(24, (_) => rnd.nextInt(256)),
-          );
-          final box = x25519.SecretBox(Uint8List.fromList(keyBytes)).encrypt(
-            Uint8List.fromList(utf8.encode(jsonEncode(payload))),
-            nonce: nonce,
-          );
-          bodyMap['kind'] = 'sealed';
-          bodyMap['nonce_b64'] = base64Encode(box.nonce.asTypedList);
-          bodyMap['box_b64'] = base64Encode(box.cipherText.asTypedList);
-        }
-      }
-    } catch (_) {}
-
-    if (!bodyMap.containsKey('box_b64')) {
-      if (text.isNotEmpty) bodyMap['text'] = text;
-      if (kind != null && kind.isNotEmpty) bodyMap['kind'] = kind;
-      if (attachmentB64 != null && attachmentB64.isNotEmpty) {
-        bodyMap['attachment_b64'] = attachmentB64;
-      }
-      if (attachmentMime != null && attachmentMime.isNotEmpty) {
-        bodyMap['attachment_mime'] = attachmentMime;
-      }
-      if (voiceSecs != null) bodyMap['voice_secs'] = voiceSecs;
+    final keyB64 = await ChatLocalStore().loadGroupKey(groupId);
+    if (keyB64 == null || keyB64.isEmpty) {
+      throw StateError('group encryption key missing');
     }
+    final keyBytes = base64Decode(keyB64);
+    if (keyBytes.length != 32) {
+      throw StateError('group encryption key invalid');
+    }
+    final rnd = Random.secure();
+    final nonce = Uint8List.fromList(
+      List<int>.generate(24, (_) => rnd.nextInt(256)),
+    );
+    final box = x25519.SecretBox(Uint8List.fromList(keyBytes)).encrypt(
+      Uint8List.fromList(utf8.encode(jsonEncode(payload))),
+      nonce: nonce,
+    );
+    bodyMap['kind'] = 'sealed';
+    bodyMap['nonce_b64'] = base64Encode(box.nonce.asTypedList);
+    bodyMap['box_b64'] = base64Encode(box.cipherText.asTypedList);
 
     final body = jsonEncode(bodyMap);
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/messages/send'),
       headers: await _headers(json: true, chatDeviceId: senderId),
       body: body,
@@ -590,7 +934,7 @@ class ChatService {
     if (sinceIso != null && sinceIso.isNotEmpty) {
       qp['since_iso'] = sinceIso;
     }
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/messages/inbox', qp),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -618,7 +962,7 @@ class ChatService {
     required String groupId,
     required String deviceId,
   }) async {
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/members', {
         'device_id': deviceId,
       }),
@@ -640,7 +984,7 @@ class ChatService {
     required List<String> memberIds,
   }) async {
     final body = jsonEncode({'inviter_id': inviterId, 'member_ids': memberIds});
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/invite'),
       headers: await _headers(json: true, chatDeviceId: inviterId),
       body: body,
@@ -656,7 +1000,7 @@ class ChatService {
     required String deviceId,
   }) async {
     final body = jsonEncode({'device_id': deviceId});
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/leave'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: body,
@@ -677,7 +1021,7 @@ class ChatService {
       'target_id': targetId,
       'role': role,
     });
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/set_role'),
       headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
@@ -696,7 +1040,7 @@ class ChatService {
       'device_id': deviceId,
       'limit': '${limit.clamp(1, 200)}',
     };
-    final r = await http.get(
+    final r = await _http.get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/keys/events', qp),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -722,7 +1066,7 @@ class ChatService {
       'actor_id': actorId,
       if (keyFp != null && keyFp.isNotEmpty) 'key_fp': keyFp,
     });
-    final r = await http.post(
+    final r = await _http.post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/keys/rotate'),
       headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
@@ -748,72 +1092,86 @@ class ChatService {
   }
 
   // Helpers
+  Future<void> _bootstrapLibsignalMaterial(ChatIdentity me) async {
+    if (!_enableLibsignalKeyApi()) return;
+    final store = ChatLocalStore();
+    if (await store.isDeviceKeyBootstrapped(me.id)) return;
+    await registerLibsignalBundle(me: me);
+    await store.markDeviceKeyBootstrapped(me.id);
+  }
+
+  bool get libsignalKeyApiEnabled => _enableLibsignalKeyApi();
+
+  bool _enableLibsignalKeyApi() {
+    if (kReleaseMode) return shamellLibsignalKeyApiReleaseDefault;
+    return shamellLibsignalKeyApiDebugDefault;
+  }
+
+  bool _enableLibsignalV2Only() {
+    if (kReleaseMode) return shamellLibsignalV2OnlyReleaseDefault;
+    return shamellLibsignalV2OnlyDebugDefault;
+  }
+
+  String _messageProtocolVersion() {
+    // Enforced: no legacy protocol fallback (break old clients rather than downgrading).
+    return shamellChatProtocolSendVersion;
+  }
+
+  String _keyRegisterSignatureInput({
+    required String deviceId,
+    required String identityKeyB64,
+    required int signedPrekeyId,
+    required String signedPrekeyB64,
+  }) {
+    return 'shamell-key-register-v1\n'
+        '${deviceId.trim()}\n'
+        '${identityKeyB64.trim()}\n'
+        '$signedPrekeyId\n'
+        '${signedPrekeyB64.trim()}\n';
+  }
+
+  Uint8List _deriveKeyRegisterSigningSeed({
+    required String identityPrivateKeyB64,
+  }) {
+    final keyBytes = base64Decode(identityPrivateKeyB64);
+    final context = utf8.encode('shamell-key-register-sign-seed-v1');
+    final digest = crypto.sha256.convert(<int>[...context, ...keyBytes]).bytes;
+    return Uint8List.fromList(digest);
+  }
+
+  ({String signatureB64, String identitySigningPubkeyB64})
+      _signKeyRegisterInput({
+    required String identityPrivateKeyB64,
+    required String input,
+  }) {
+    final seed = _deriveKeyRegisterSigningSeed(
+      identityPrivateKeyB64: identityPrivateKeyB64,
+    );
+    final signingKey = ed25519.SigningKey(seed: seed);
+    final signed = signingKey.sign(Uint8List.fromList(utf8.encode(input)));
+    return (
+      signatureB64: base64Encode(signed.signature.asTypedList),
+      identitySigningPubkeyB64: base64Encode(signingKey.verifyKey.asTypedList),
+    );
+  }
+
+  List<ChatOneTimePrekey> _buildOneTimePrekeys(int requested) {
+    final count = requested.clamp(1, 500);
+    final baseKeyId = DateTime.now().microsecondsSinceEpoch;
+    return List<ChatOneTimePrekey>.generate(count, (i) {
+      final keyId = baseKeyId + i;
+      final keyB64 = base64Encode(
+        x25519.PrivateKey.generate().publicKey.asTypedList,
+      );
+      return ChatOneTimePrekey(keyId: keyId, keyB64: keyB64);
+    });
+  }
+
   ChatGroupMessage _maybeDecryptGroupMessage(
     ChatGroupMessage m,
     Uint8List key,
   ) {
-    if (m.kind != 'sealed' ||
-        m.nonceB64 == null ||
-        m.boxB64 == null ||
-        m.nonceB64!.isEmpty ||
-        m.boxB64!.isEmpty) {
-      return m;
-    }
-    try {
-      final nonce = base64Decode(m.nonceB64!);
-      final boxBytes = base64Decode(m.boxB64!);
-      final plain = x25519.SecretBox(
-        key,
-      ).decrypt(x25519.ByteList(boxBytes), nonce: nonce);
-      final raw = utf8.decode(plain);
-      final j = jsonDecode(raw);
-      if (j is Map) {
-        final text = (j['text'] ?? '').toString();
-        final kindRaw = (j['kind'] ?? '').toString().trim();
-        final attB64 = (j['attachment_b64'] ?? '').toString();
-        final attMime = (j['attachment_mime'] ?? '').toString();
-        final voiceSecs = j['voice_secs'] is num
-            ? (j['voice_secs'] as num).toInt()
-            : int.tryParse((j['voice_secs'] ?? '').toString());
-        double? lat;
-        double? lon;
-        final latRaw = j['lat'];
-        final lonRaw = j['lon'];
-        if (latRaw is num) {
-          lat = latRaw.toDouble();
-        } else if (latRaw is String && latRaw.isNotEmpty) {
-          lat = double.tryParse(latRaw);
-        }
-        if (lonRaw is num) {
-          lon = lonRaw.toDouble();
-        } else if (lonRaw is String && lonRaw.isNotEmpty) {
-          lon = double.tryParse(lonRaw);
-        }
-        final contactIdRaw = j['contact_id'] ?? j['contactId'];
-        final contactId = (contactIdRaw ?? '').toString().trim();
-        final contactNameRaw = j['contact_name'] ?? j['contactName'];
-        final contactName = (contactNameRaw ?? '').toString().trim();
-        return ChatGroupMessage(
-          id: m.id,
-          groupId: m.groupId,
-          senderId: m.senderId,
-          text: text,
-          kind: kindRaw.isEmpty ? null : kindRaw,
-          nonceB64: m.nonceB64,
-          boxB64: m.boxB64,
-          attachmentB64: attB64.isEmpty ? null : attB64,
-          attachmentMime: attMime.isEmpty ? null : attMime,
-          voiceSecs: voiceSecs,
-          lat: lat,
-          lon: lon,
-          contactId: contactId.isEmpty ? null : contactId,
-          contactName: contactName.isEmpty ? null : contactName,
-          createdAt: m.createdAt,
-          expireAt: m.expireAt,
-        );
-      }
-    } catch (_) {}
-    return m;
+    return shamellDecryptOrBlockGroupMessage(m, key);
   }
 
   (String, String) _encryptMessage(
@@ -871,36 +1229,9 @@ class ChatService {
     return (deviceId: did, token: tok);
   }
 
-  bool _allowInsecureWsTokenQueryFallback() {
-    if (kReleaseMode) {
-      return const bool.fromEnvironment(
-        'ALLOW_INSECURE_WS_TOKEN_QUERY_FALLBACK_IN_RELEASE',
-        defaultValue: false,
-      );
-    }
-    return const bool.fromEnvironment(
-      'ALLOW_INSECURE_WS_TOKEN_QUERY_FALLBACK',
-      defaultValue: false,
-    );
-  }
-
-  Uri _chatWsUriWithFallback(Uri wsUri, String? deviceId, String? token) {
-    final qp = <String, String>{...wsUri.queryParameters};
-    final did = (deviceId ?? '').trim();
-    final tok = (token ?? '').trim();
-    if (did.isNotEmpty) {
-      qp['chat_device_id'] = did;
-    }
-    if (tok.isNotEmpty && _allowInsecureWsTokenQueryFallback()) {
-      qp['chat_device_token'] = tok;
-    }
-    return wsUri.replace(queryParameters: qp);
-  }
-
   WebSocketChannel _connectWebSocket(
     Uri wsUri, {
     required Map<String, String> headers,
-    Uri? fallbackUri,
   }) {
     if (headers.isNotEmpty) {
       try {
@@ -915,7 +1246,8 @@ class ChatService {
         }
       } catch (_) {}
     }
-    return WebSocketChannel.connect(fallbackUri ?? wsUri);
+    // Fail closed: never fall back to putting authentication material into the URL.
+    return WebSocketChannel.connect(wsUri);
   }
 
   Future<Map<String, String>> _headers({
@@ -923,12 +1255,11 @@ class ChatService {
     String? chatDeviceId,
     String? chatDeviceToken,
   }) async {
+    _assertSecureTransportBase();
     final h = <String, String>{};
     if (json) h['content-type'] = 'application/json';
-    final cookie = await getSessionCookie();
-    if (cookie != null && cookie.isNotEmpty) {
-      h['sa_cookie'] = cookie;
-    }
+    final cookie = await getSessionCookieHeader(_base);
+    if (cookie != null && cookie.isNotEmpty) h['cookie'] = cookie;
     final auth = await _chatAuthContext(
       chatDeviceId: chatDeviceId,
       chatDeviceToken: chatDeviceToken,
@@ -964,13 +1295,22 @@ class ChatLocalStore {
   static const _groupVoicePlayedPrefix = 'chat.grp.voice.played.';
   static const _draftsKey = 'chat.drafts.v1';
   static const _deviceTokenPrefix = 'chat.device.token.';
-  static const _secureFallbackPrefix = 'chat.sec.fallback.';
+  static const _deviceKeyBootstrapPrefix = 'chat.device.keys.bootstrapped.';
   static const int _voicePlayedMax = 200;
 
   Future<ChatIdentity?> loadIdentity() async {
-    final sp = await SharedPreferences.getInstance();
-    final raw = sp.getString(_idKey);
-    if (raw == null) return null;
+    String? raw = await _secureRead(_idKey);
+    if (raw == null || raw.isEmpty) {
+      try {
+        final sp = await SharedPreferences.getInstance();
+        final legacy = sp.getString(_idKey);
+        if (legacy != null && legacy.isNotEmpty) {
+          raw = legacy;
+          await _secureWrite(_idKey, legacy);
+        }
+      } catch (_) {}
+    }
+    if (raw == null || raw.isEmpty) return null;
     try {
       return ChatIdentity.fromMap((jsonDecode(raw) as Map<String, Object?>));
     } catch (_) {
@@ -979,8 +1319,7 @@ class ChatLocalStore {
   }
 
   Future<void> saveIdentity(ChatIdentity id) async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_idKey, jsonEncode(id.toMap()));
+    await _secureWrite(_idKey, jsonEncode(id.toMap()));
   }
 
   Future<void> saveDeviceAuthToken(String deviceId, String token) async {
@@ -999,18 +1338,58 @@ class ChatLocalStore {
     return token;
   }
 
+  Future<bool> isDeviceKeyBootstrapped(String deviceId) async {
+    final did = deviceId.trim();
+    if (did.isEmpty) return false;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      return sp.getBool('$_deviceKeyBootstrapPrefix$did') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> markDeviceKeyBootstrapped(String deviceId) async {
+    final did = deviceId.trim();
+    if (did.isEmpty) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setBool('$_deviceKeyBootstrapPrefix$did', true);
+    } catch (_) {}
+  }
+
+  Future<void> clearDeviceKeyBootstrapped(String deviceId) async {
+    final did = deviceId.trim();
+    if (did.isEmpty) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove('$_deviceKeyBootstrapPrefix$did');
+    } catch (_) {}
+  }
+
   Future<void> deleteDeviceAuthToken(String deviceId) async {
     final did = deviceId.trim();
     if (did.isEmpty) return;
     await _secureDelete('$_deviceTokenPrefix$did');
+    await clearDeviceKeyBootstrapped(did);
   }
 
   Future<ChatContact?> loadPeer() async {
     final sp = await SharedPreferences.getInstance();
     final raw = sp.getString(_peerKey);
     if (raw == null) return null;
+    final decodedRaw = (await _decryptSensitivePrefsString(raw)) ?? raw;
     try {
-      return ChatContact.fromMap((jsonDecode(raw) as Map<String, Object?>));
+      final out =
+          ChatContact.fromMap((jsonDecode(decodedRaw) as Map<String, Object?>));
+      // Best-effort migration: encrypt legacy plaintext.
+      if (decodedRaw == raw) {
+        final enc = await _encryptSensitivePrefsString(decodedRaw);
+        if (enc != null && enc.isNotEmpty) {
+          await sp.setString(_peerKey, enc);
+        }
+      }
+      return out;
     } catch (_) {
       return null;
     }
@@ -1018,7 +1397,12 @@ class ChatLocalStore {
 
   Future<void> savePeer(ChatContact c) async {
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(_peerKey, jsonEncode(c.toMap()));
+    final raw = jsonEncode(c.toMap());
+    final enc = await _encryptSensitivePrefsString(raw);
+    if (enc == null || enc.isEmpty) {
+      return;
+    }
+    await sp.setString(_peerKey, enc);
   }
 
   Future<void> clearPeer() async {
@@ -1031,10 +1415,18 @@ class ChatLocalStore {
     final raw = sp.getString(_contactsKey);
     if (raw == null) return [];
     try {
-      final arr = (jsonDecode(raw) as List)
+      final decodedRaw = (await _decryptSensitivePrefsString(raw)) ?? raw;
+      final arr = (jsonDecode(decodedRaw) as List)
           .map((m) => ChatContact.fromMap(m as Map<String, Object?>))
           .whereType<ChatContact>()
           .toList();
+      // Best-effort migration: encrypt legacy plaintext.
+      if (decodedRaw == raw) {
+        final enc = await _encryptSensitivePrefsString(decodedRaw);
+        if (enc != null && enc.isNotEmpty) {
+          await sp.setString(_contactsKey, enc);
+        }
+      }
       return arr;
     } catch (_) {
       return [];
@@ -1043,10 +1435,12 @@ class ChatLocalStore {
 
   Future<void> saveContacts(List<ChatContact> contacts) async {
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(
-      _contactsKey,
-      jsonEncode(contacts.map((c) => c.toMap()).toList()),
-    );
+    final raw = jsonEncode(contacts.map((c) => c.toMap()).toList());
+    final enc = await _encryptSensitivePrefsString(raw);
+    if (enc == null || enc.isEmpty) {
+      return;
+    }
+    await sp.setString(_contactsKey, enc);
   }
 
   Future<Map<String, String>> loadDrafts() async {
@@ -1054,7 +1448,8 @@ class ChatLocalStore {
     final raw = sp.getString(_draftsKey);
     if (raw == null || raw.isEmpty) return {};
     try {
-      final decoded = jsonDecode(raw);
+      final decodedRaw = (await _decryptSensitivePrefsString(raw)) ?? raw;
+      final decoded = jsonDecode(decodedRaw);
       if (decoded is Map) {
         final out = <String, String>{};
         decoded.forEach((k, v) {
@@ -1064,6 +1459,13 @@ class ChatLocalStore {
             out[id] = text;
           }
         });
+        // Best-effort migration: encrypt legacy plaintext.
+        if (decodedRaw == raw) {
+          final enc = await _encryptSensitivePrefsString(decodedRaw);
+          if (enc != null && enc.isNotEmpty) {
+            await sp.setString(_draftsKey, enc);
+          }
+        }
         return out;
       }
     } catch (_) {}
@@ -1087,15 +1489,22 @@ class ChatLocalStore {
       await sp.remove(_draftsKey);
       return;
     }
-    await sp.setString(_draftsKey, jsonEncode(cleaned));
+    final raw = jsonEncode(cleaned);
+    final enc = await _encryptSensitivePrefsString(raw);
+    if (enc == null || enc.isEmpty) {
+      return;
+    }
+    await sp.setString(_draftsKey, enc);
   }
 
   Future<void> saveMessages(String peerId, List<ChatMessage> msgs) async {
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(
-      'chat.msgs.$peerId',
-      jsonEncode(msgs.map((m) => m.toMap()).toList()),
-    );
+    final raw = jsonEncode(msgs.map((m) => m.toMap()).toList());
+    final enc = await _encryptSensitivePrefsString(raw);
+    if (enc == null || enc.isEmpty) {
+      return;
+    }
+    await sp.setString('chat.msgs.$peerId', enc);
   }
 
   Future<void> deleteMessages(String peerId) async {
@@ -1108,9 +1517,14 @@ class ChatLocalStore {
     final raw = sp.getString('chat.msgs.$peerId');
     if (raw == null) return [];
     try {
-      final arr = (jsonDecode(raw) as List)
+      final decodedRaw = (await _decryptSensitivePrefsString(raw)) ?? raw;
+      final arr = (jsonDecode(decodedRaw) as List)
           .map((m) => ChatMessage.fromMap(m as Map<String, Object?>))
           .toList();
+      // Best-effort migration: encrypt legacy plaintext.
+      if (decodedRaw == raw) {
+        await saveMessages(peerId, arr);
+      }
       return arr;
     } catch (_) {
       return [];
@@ -1168,29 +1582,31 @@ class ChatLocalStore {
     List<ChatGroupMessage> msgs,
   ) async {
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(
-      'chat.grp.msgs.$groupId',
-      jsonEncode(
-        msgs
-            .map(
-              (m) => {
-                'id': m.id,
-                'group_id': m.groupId,
-                'sender_id': m.senderId,
-                'text': m.text,
-                'kind': m.kind,
-                'nonce_b64': m.nonceB64,
-                'box_b64': m.boxB64,
-                'attachment_b64': m.attachmentB64,
-                'attachment_mime': m.attachmentMime,
-                'voice_secs': m.voiceSecs,
-                'created_at': m.createdAt?.toUtc().toIso8601String(),
-                'expire_at': m.expireAt?.toUtc().toIso8601String(),
-              },
-            )
-            .toList(),
-      ),
+    final raw = jsonEncode(
+      msgs
+          .map(
+            (m) => {
+              'id': m.id,
+              'group_id': m.groupId,
+              'sender_id': m.senderId,
+              'text': m.text,
+              'kind': m.kind,
+              'nonce_b64': m.nonceB64,
+              'box_b64': m.boxB64,
+              'attachment_b64': m.attachmentB64,
+              'attachment_mime': m.attachmentMime,
+              'voice_secs': m.voiceSecs,
+              'created_at': m.createdAt?.toUtc().toIso8601String(),
+              'expire_at': m.expireAt?.toUtc().toIso8601String(),
+            },
+          )
+          .toList(),
     );
+    final enc = await _encryptSensitivePrefsString(raw);
+    if (enc == null || enc.isEmpty) {
+      return;
+    }
+    await sp.setString('chat.grp.msgs.$groupId', enc);
   }
 
   Future<List<ChatGroupMessage>> loadGroupMessages(String groupId) async {
@@ -1198,10 +1614,15 @@ class ChatLocalStore {
     final raw = sp.getString('chat.grp.msgs.$groupId');
     if (raw == null) return [];
     try {
-      final arr = (jsonDecode(raw) as List)
+      final decodedRaw = (await _decryptSensitivePrefsString(raw)) ?? raw;
+      final arr = (jsonDecode(decodedRaw) as List)
           .whereType<Map>()
           .map((m) => ChatGroupMessage.fromJson(m.cast<String, Object?>()))
           .toList();
+      // Best-effort migration: encrypt legacy plaintext.
+      if (decodedRaw == raw) {
+        await saveGroupMessages(groupId, arr);
+      }
       return arr;
     } catch (_) {
       return [];
@@ -1511,6 +1932,58 @@ class ChatLocalStore {
     await _secureWrite(_sessionKeyMap, jsonEncode(map));
   }
 
+  Future<void> saveSessionBootstrapMeta(
+    String peerId, {
+    required String protocolFloor,
+    required int signedPrekeyId,
+    int? oneTimePrekeyId,
+    required bool v2Only,
+    String? identitySigningPubkeyB64,
+  }) async {
+    final pid = peerId.trim();
+    if (pid.isEmpty) return;
+    final signingKey = (identitySigningPubkeyB64 ?? '').trim();
+    await _secureWrite(
+      '$_sessionBootstrapPrefix$pid',
+      jsonEncode({
+        'peer_id': pid,
+        'protocol_floor': protocolFloor,
+        'signed_prekey_id': signedPrekeyId,
+        'one_time_prekey_id': oneTimePrekeyId,
+        'v2_only': v2Only,
+        if (signingKey.isNotEmpty) 'identity_signing_pubkey_b64': signingKey,
+        'bootstrapped_at': DateTime.now().toUtc().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<Map<String, Object?>> loadSessionBootstrapMeta(String peerId) async {
+    final pid = peerId.trim();
+    if (pid.isEmpty) return <String, Object?>{};
+    final raw = await _secureRead('$_sessionBootstrapPrefix$pid');
+    if (raw == null || raw.isEmpty) return <String, Object?>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map((k, v) => MapEntry(k.toString(), v));
+      }
+    } catch (_) {}
+    return <String, Object?>{};
+  }
+
+  Future<String?> loadPinnedIdentitySigningPubkey(String peerId) async {
+    final meta = await loadSessionBootstrapMeta(peerId);
+    final raw = (meta['identity_signing_pubkey_b64'] ?? '').toString().trim();
+    if (raw.isEmpty) return null;
+    return raw;
+  }
+
+  Future<void> deleteSessionBootstrapMeta(String peerId) async {
+    final pid = peerId.trim();
+    if (pid.isEmpty) return;
+    await _secureDelete('$_sessionBootstrapPrefix$pid');
+  }
+
   Future<Map<String, Map<String, Object>>> loadChains() async {
     final raw = await _secureRead(_chainMap);
     if (raw == null || raw.isEmpty) return {};
@@ -1556,39 +2029,122 @@ class ChatLocalStore {
   static const _chainMap = 'chat.session.chain';
   static const _ratchetMap = 'chat.ratchet';
   static const _groupKeyPrefix = 'chat.grp.key.';
-
-  bool _allowLegacySecureFallback() {
-    if (kReleaseMode) {
-      return const bool.fromEnvironment(
-        'ALLOW_LEGACY_CHAT_SECURE_FALLBACK_IN_RELEASE',
-        defaultValue: false,
-      );
-    }
-    return const bool.fromEnvironment(
-      'ALLOW_LEGACY_CHAT_SECURE_FALLBACK',
-      defaultValue: true,
-    );
-  }
+  static const _sessionBootstrapPrefix = 'chat.session.bootstrap.';
 
   bool _useSecureStore() {
-    if (kIsWeb) return true;
+    // Best practice: do not persist E2EE secrets in browser storage.
+    // (flutter_secure_storage_web uses Web Storage, which is not a safe secret store.)
+    if (kIsWeb) return false;
     final isDesktop = defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.windows ||
         defaultTargetPlatform == TargetPlatform.linux;
     if (!isDesktop) return true;
-    if (kReleaseMode) {
-      return const bool.fromEnvironment(
-        'ENABLE_DESKTOP_SECURE_STORAGE',
-        defaultValue: true,
-      );
-    }
-    return const bool.fromEnvironment(
-      'ENABLE_DESKTOP_SECURE_STORAGE',
-      defaultValue: false,
-    );
+    return shamellDesktopSecureStorageDefault;
   }
 
-  String _legacySecureKey(String key) => '$_secureFallbackPrefix$key';
+  static const _prefsCryptoKeyName = 'chat.local.enc_key.v1';
+  static Uint8List? _prefsCryptoKeyCache;
+
+  Future<Uint8List?> _prefsCryptoKey() async {
+    if (!_useSecureStore()) return null;
+    if (_prefsCryptoKeyCache != null && _prefsCryptoKeyCache!.length == 32) {
+      return _prefsCryptoKeyCache;
+    }
+    try {
+      final raw = (await _secureRead(_prefsCryptoKeyName) ?? '').trim();
+      if (raw.isNotEmpty) {
+        final bytes = base64Decode(raw);
+        if (bytes.length == 32) {
+          _prefsCryptoKeyCache = bytes;
+          return bytes;
+        }
+      }
+    } catch (_) {}
+    try {
+      final rng = Random.secure();
+      final bytes = Uint8List(32);
+      for (var i = 0; i < bytes.length; i++) {
+        bytes[i] = rng.nextInt(256);
+      }
+      final encoded = base64Encode(bytes);
+      await _secureWrite(_prefsCryptoKeyName, encoded);
+      final roundTrip = (await _secureRead(_prefsCryptoKeyName) ?? '').trim();
+      if (roundTrip == encoded) {
+        _prefsCryptoKeyCache = bytes;
+        return bytes;
+      }
+      // Fail closed: if we can't persist the key, don't persist ciphertext we
+      // can't decrypt on next app launch.
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> wipeSecrets() async {
+    _prefsCryptoKeyCache = null;
+    if (!_useSecureStore()) return;
+    try {
+      final sec = _sec();
+      final all = await sec.readAll();
+      for (final k in all.keys) {
+        if (!k.startsWith('chat.')) continue;
+        try {
+          await sec.delete(key: k);
+        } catch (_) {}
+      }
+    } catch (_) {
+      // Best-effort fallback: delete high-value keys we can name.
+      try {
+        final sec = _sec();
+        await sec.delete(key: _idKey);
+        await sec.delete(key: _sessionKeyMap);
+        await sec.delete(key: _chainMap);
+        await sec.delete(key: _prefsCryptoKeyName);
+      } catch (_) {}
+    }
+  }
+
+  Future<String?> _encryptSensitivePrefsString(String plaintext) async {
+    try {
+      final key = await _prefsCryptoKey();
+      if (key == null || key.length != 32) return null;
+      final pt = Uint8List.fromList(utf8.encode(plaintext));
+      final enc = x25519.SecretBox(key).encrypt(pt);
+      return jsonEncode(<String, Object?>{
+        'v': 1,
+        'nonce_b64': base64Encode(enc.nonce.asTypedList),
+        'box_b64': base64Encode(enc.cipherText.asTypedList),
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _decryptSensitivePrefsString(String raw) async {
+    final s = raw.trim();
+    if (!s.startsWith('{')) return null;
+    try {
+      final decoded = jsonDecode(s);
+      if (decoded is! Map) return null;
+      final v = decoded['v'];
+      if (v is! num || v.toInt() != 1) return null;
+      final nonceB64 = (decoded['nonce_b64'] ?? '').toString().trim();
+      final boxB64 = (decoded['box_b64'] ?? '').toString().trim();
+      if (nonceB64.isEmpty || boxB64.isEmpty) return null;
+      final key = await _prefsCryptoKey();
+      if (key == null || key.length != 32) return null;
+      final nonce = base64Decode(nonceB64);
+      final box = base64Decode(boxB64);
+      final plain = x25519.SecretBox(key).decrypt(
+        x25519.ByteList(box),
+        nonce: nonce,
+      );
+      return utf8.decode(plain);
+    } catch (_) {
+      return null;
+    }
+  }
 
   Future<String?> _secureRead(String key) async {
     if (_useSecureStore()) {
@@ -1596,33 +2152,17 @@ class ChatLocalStore {
         return await _sec().read(key: key);
       } catch (_) {}
     }
-    if (!_allowLegacySecureFallback()) return null;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      return sp.getString(_legacySecureKey(key));
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   Future<void> _secureWrite(String key, String value) async {
     if (_useSecureStore()) {
       try {
         await _sec().write(key: key, value: value);
-        if (_allowLegacySecureFallback()) {
-          try {
-            final sp = await SharedPreferences.getInstance();
-            await sp.remove(_legacySecureKey(key));
-          } catch (_) {}
-        }
         return;
       } catch (_) {}
     }
-    if (!_allowLegacySecureFallback()) return;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString(_legacySecureKey(key), value);
-    } catch (_) {}
+    // Fail closed: if secure storage isn't available, do not persist secrets.
   }
 
   Future<void> _secureDelete(String key) async {
@@ -1631,11 +2171,6 @@ class ChatLocalStore {
         await _sec().delete(key: key);
       } catch (_) {}
     }
-    if (!_allowLegacySecureFallback()) return;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.remove(_legacySecureKey(key));
-    } catch (_) {}
   }
 
   FlutterSecureStorage _sec() => const FlutterSecureStorage(
@@ -1645,9 +2180,11 @@ class ChatLocalStore {
           // prefer hardware-backed when available
           sharedPreferencesName: 'chat_secure_store',
         ),
-        iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
-        mOptions:
-            MacOsOptions(accessibility: KeychainAccessibility.first_unlock),
+        iOptions: IOSOptions(
+          accessibility: KeychainAccessibility.first_unlock_this_device,
+        ),
+        mOptions: MacOsOptions(
+            accessibility: KeychainAccessibility.first_unlock_this_device),
       );
 }
 
@@ -1659,10 +2196,16 @@ class ChatCallStore {
     final raw = sp.getString(_key);
     if (raw == null || raw.isEmpty) return [];
     try {
-      final arr = (jsonDecode(raw) as List)
+      final store = ChatLocalStore();
+      final decodedRaw = (await store._decryptSensitivePrefsString(raw)) ?? raw;
+      final arr = (jsonDecode(decodedRaw) as List)
           .whereType<Map>()
           .map((m) => ChatCallLogEntry.fromMap(m.cast<String, Object?>()))
           .toList();
+      // Best-effort migration: encrypt legacy plaintext.
+      if (decodedRaw == raw) {
+        await save(arr);
+      }
       return arr;
     } catch (_) {
       return [];
@@ -1671,7 +2214,13 @@ class ChatCallStore {
 
   Future<void> save(List<ChatCallLogEntry> list) async {
     final sp = await SharedPreferences.getInstance();
-    await sp.setString(_key, jsonEncode(list.map((e) => e.toMap()).toList()));
+    final raw = jsonEncode(list.map((e) => e.toMap()).toList());
+    final store = ChatLocalStore();
+    final enc = await store._encryptSensitivePrefsString(raw);
+    if (enc == null || enc.isEmpty) {
+      return;
+    }
+    await sp.setString(_key, enc);
   }
 
   Future<void> append(ChatCallLogEntry entry, {int maxEntries = 100}) async {
