@@ -35,12 +35,20 @@ trim_token() {
   printf '%s' "$token"
 }
 
+to_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+to_upper() {
+  printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
+}
+
 lower_tokens_csv() {
   local csv="$1"
   while IFS= read -r token; do
     token="$(trim_token "$token")"
     if [[ -n "$token" ]]; then
-      printf '%s\n' "${token,,}"
+      printf '%s\n' "$(to_lower "$token")"
     fi
   done < <(printf '%s' "$csv" | tr ',' '\n')
 }
@@ -50,7 +58,7 @@ upper_tokens_csv() {
   while IFS= read -r token; do
     token="$(trim_token "$token")"
     if [[ -n "$token" ]]; then
-      printf '%s\n' "${token^^}"
+      printf '%s\n' "$(to_upper "$token")"
     fi
   done < <(printf '%s' "$csv" | tr ',' '\n')
 }
@@ -70,7 +78,7 @@ header_first_value() {
   local headers_file="$1"
   local name="$2"
   local name_lc
-  name_lc="${name,,}"
+  name_lc="$(to_lower "$name")"
   awk -v wanted="$name_lc" '
     BEGIN { IGNORECASE = 1 }
     {
@@ -149,7 +157,7 @@ expect_cors_preflight() {
 
   local expected_code_lines
   expected_code_lines="$(lower_tokens_csv "$expected_codes")"
-  if ! contains_token "$expected_code_lines" "${code,,}"; then
+  if ! contains_token "$expected_code_lines" "$(to_lower "$code")"; then
     FAILURES=$((FAILURES + 1))
     echo "[FAIL] $label: status=$code expected={$expected_codes}" >&2
     sed -n '1,120p' "$headers_file" >&2 || true
@@ -171,9 +179,9 @@ expect_cors_preflight() {
   allow_methods_raw="$(header_first_value "$headers_file" "access-control-allow-methods")"
   local allow_methods
   allow_methods="$(upper_tokens_csv "$allow_methods_raw")"
-  if ! contains_token "$allow_methods" "${requested_method^^}"; then
+  if ! contains_token "$allow_methods" "$(to_upper "$requested_method")"; then
     FAILURES=$((FAILURES + 1))
-    echo "[FAIL] $label: Access-Control-Allow-Methods missing ${requested_method^^}" >&2
+    echo "[FAIL] $label: Access-Control-Allow-Methods missing $(to_upper "$requested_method")" >&2
     sed -n '1,120p' "$headers_file" >&2 || true
     rm -f "$headers_file"
     return 0
@@ -224,7 +232,7 @@ expect_no_cors_preflight() {
 
   local expected_code_lines
   expected_code_lines="$(lower_tokens_csv "$expected_codes")"
-  if ! contains_token "$expected_code_lines" "${code,,}"; then
+  if ! contains_token "$expected_code_lines" "$(to_lower "$code")"; then
     FAILURES=$((FAILURES + 1))
     echo "[FAIL] $label: status=$code expected={$expected_codes}" >&2
     sed -n '1,120p' "$headers_file" >&2 || true
