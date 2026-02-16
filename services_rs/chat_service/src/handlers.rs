@@ -3705,6 +3705,84 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn keys_register_route_rejects_when_v2_disabled_and_logs_security_event() {
+        let logs = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_current_span(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid")
+            .expect("lazy test pool");
+        let http = Client::builder().build().expect("http client");
+        let state = AppState {
+            pool,
+            db_schema: None,
+            env_name: "test".to_string(),
+            enforce_device_auth: false,
+            fcm_server_key: None,
+            chat_protocol_v2_enabled: false,
+            chat_protocol_v1_write_enabled: false,
+            chat_protocol_v1_read_enabled: false,
+            chat_protocol_require_v2_for_groups: true,
+            chat_mailbox_api_enabled: false,
+            chat_mailbox_inactive_retention_secs: 0,
+            chat_mailbox_consumed_retention_secs: 0,
+            http,
+        };
+        let app = Router::new()
+            .route("/keys/register", post(register_keys))
+            .with_state(state);
+
+        let body = serde_json::json!({
+            "device_id": "DEV12345",
+            "identity_key_b64": "x",
+            "identity_signing_pubkey_b64": "x",
+            "signed_prekey_id": 1,
+            "signed_prekey_b64": "x",
+            "signed_prekey_sig_b64": "x",
+            "signed_prekey_sig_alg": "ed25519",
+            "v2_only": true
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/keys/register")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+
+        let resp = app.oneshot(req).await.expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.expect("body");
+        let out: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            out.get("detail").and_then(|v| v.as_str()),
+            Some("protocol v2 disabled")
+        );
+
+        let log_text = logs.as_string();
+        assert!(
+            log_text.contains("\"security_event\":\"chat_key_register_policy\""),
+            "missing security_event log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"outcome\":\"blocked\""),
+            "missing blocked outcome log: {log_text}"
+        );
+        assert!(
+            log_text.contains("\"reason\":\"protocol_v2_disabled\""),
+            "missing reason log: {log_text}"
+        );
+    }
+
     #[test]
     fn requires_group_ciphertext_envelope() {
         let req = group_req();
