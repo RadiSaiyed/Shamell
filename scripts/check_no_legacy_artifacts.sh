@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 errors=0
+has_rg=0
+if command -v rg >/dev/null 2>&1; then
+  has_rg=1
+fi
 
 fail() {
   echo "[FAIL] $1" >&2
@@ -11,6 +15,25 @@ fail() {
 
 ok() {
   echo "[OK]   $1"
+}
+
+contains_pattern() {
+  local root="$1"
+  local pattern="$2"
+  local fixed="${3:-0}"
+  if (( has_rg == 1 )); then
+    if (( fixed == 1 )); then
+      rg -n -S --glob '!**/*.min.*' -F -- "$pattern" "$root" >/dev/null
+    else
+      rg -n --glob '!**/*.min.*' -- "$pattern" "$root" >/dev/null
+    fi
+  else
+    if (( fixed == 1 )); then
+      grep -R -I -n -F --exclude='*.min.*' -- "$pattern" "$root" >/dev/null
+    else
+      grep -R -I -n -E --exclude='*.min.*' -- "$pattern" "$root" >/dev/null
+    fi
+  fi
 }
 
 BANNED_PATHS=(
@@ -70,7 +93,7 @@ SEARCH_ROOTS=(
 
 for prefix in "${BANNED_ROUTE_PREFIXES[@]}"; do
   for root in "${SEARCH_ROOTS[@]}"; do
-    if [[ -d "$ROOT/$root" ]] && rg -n --glob '!**/*.min.*' -- "$prefix" "$ROOT/$root" >/dev/null; then
+    if [[ -d "$ROOT/$root" ]] && contains_pattern "$ROOT/$root" "$prefix" 0; then
       fail "found banned route prefix '$prefix' under $root"
     fi
   done
@@ -78,13 +101,13 @@ done
 
 for term in "${BANNED_STRINGS[@]}"; do
   for root in "${SEARCH_ROOTS[@]}"; do
-    if [[ -d "$ROOT/$root" ]] && rg -n -S --glob '!**/*.min.*' -- "$term" "$ROOT/$root" >/dev/null; then
+    if [[ -d "$ROOT/$root" ]] && contains_pattern "$ROOT/$root" "$term" 1; then
       fail "found banned string '$term' under $root"
     fi
   done
 done
 
-python_files="$(cd "$ROOT" && rg --files -g '*.py' || true)"
+python_files="$(cd "$ROOT" && git ls-files '*.py' || true)"
 if [[ -n "$python_files" ]]; then
   fail "python files still found:\n$python_files"
 else

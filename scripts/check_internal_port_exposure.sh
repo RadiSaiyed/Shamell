@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 errors=0
+has_rg=0
+if command -v rg >/dev/null 2>&1; then
+  has_rg=1
+fi
 
 fail() {
   echo "[FAIL] $1" >&2
@@ -11,6 +15,16 @@ fail() {
 
 ok() {
   echo "[OK]   $1"
+}
+
+text_matches_regex() {
+  local regex="$1"
+  local text="$2"
+  if (( has_rg == 1 )); then
+    printf '%s\n' "$text" | rg -Eq -- "$regex"
+  else
+    printf '%s\n' "$text" | grep -Eq -- "$regex"
+  fi
 }
 
 compose_files=()
@@ -45,12 +59,12 @@ for rel in "${compose_files[@]}"; do
     lineno="${row%%:*}"
     port="$(echo "$row" | sed -E 's/.*target:[[:space:]]*(808[123]).*/\1/')"
     block="$(sed -n "${lineno},$((lineno+8))p" "$file")"
-    if echo "$block" | rg -Eq 'host_ip:[[:space:]]*(127\.0\.0\.1|localhost|::1|\[::1\]|\$\{[^}]*127\.0\.0\.1[^}]*\})'; then
+    if text_matches_regex 'host_ip:[[:space:]]*(127\.0\.0\.1|localhost|::1|\[::1\]|\$\{[^}]*127\.0\.0\.1[^}]*\})' "$block"; then
       :
     else
       fail "$rel:$lineno long-syntax mapping for ${port} missing localhost host_ip"
     fi
-  done < <(nl -ba "$file" | sed 's/^ *//' | rg 'target:[[:space:]]*808[123]\b' || true)
+  done < <(nl -ba "$file" | sed 's/^ *//' | grep -E 'target:[[:space:]]*808[123]\b' || true)
 done
 
 # On the API host compose files, LiveKit RTC ports should not default to public
@@ -58,7 +72,7 @@ done
 for rel in "./ops/pi/docker-compose.yml" "./ops/pi/docker-compose.postgres.yml"; do
   file="$ROOT/$rel"
   [[ -f "$file" ]] || continue
-  if rg -n --quiet '\$\{LIVEKIT_RTC_PUBLISH_ADDR:-0\.0\.0\.0\}' "$file"; then
+  if grep -Enq '\$\{LIVEKIT_RTC_PUBLISH_ADDR:-0\.0\.0\.0\}' "$file"; then
     fail "$rel defaults LIVEKIT_RTC_PUBLISH_ADDR to 0.0.0.0; keep API host RTC local by default"
   fi
 done

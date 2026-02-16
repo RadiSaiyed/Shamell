@@ -63,6 +63,27 @@ jobs:
         if: steps.detect_rust.outputs.present != 'true'
         run: echo "No Cargo.toml found; skipping Rust CodeQL analysis for this branch."
 
+  codeql-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Initialize CodeQL (Python)
+        uses: github/codeql-action/init@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
+        with:
+          languages: python
+
+      - name: Perform CodeQL Analysis (Python)
+        uses: github/codeql-action/analyze@b5ebac6f4c00c8ccddb7cdcd45fdb248329f808a # v3.32.2
+        with:
+          category: "/language:python"
+
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

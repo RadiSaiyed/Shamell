@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 errors=0
+has_rg=0
+if command -v rg >/dev/null 2>&1; then
+  has_rg=1
+fi
 
 ok() {
   echo "[OK]   $1"
@@ -11,6 +15,36 @@ ok() {
 fail() {
   echo "[FAIL] $1" >&2
   errors=1
+}
+
+file_contains_literal() {
+  local path="$1"
+  local needle="$2"
+  if (( has_rg == 1 )); then
+    rg -F --quiet -- "$needle" "$path"
+  else
+    grep -Fq -- "$needle" "$path"
+  fi
+}
+
+count_literal_in_file() {
+  local path="$1"
+  local needle="$2"
+  if (( has_rg == 1 )); then
+    (rg -F -o -- "$needle" "$path" || true) | wc -l | tr -d '[:space:]'
+  else
+    (grep -F -o -- "$needle" "$path" || true) | wc -l | tr -d '[:space:]'
+  fi
+}
+
+file_contains_multiline_regex() {
+  local path="$1"
+  local regex="$2"
+  if (( has_rg == 1 )); then
+    rg -U --quiet -- "$regex" "$path"
+  else
+    REGEX="$regex" perl -0777 -ne 'my $re = $ENV{REGEX}; exit(($_ =~ /$re/s) ? 0 : 1)' "$path"
+  fi
 }
 
 require_file() {
@@ -26,7 +60,7 @@ require_contains() {
   local path="$1"
   local needle="$2"
   local label="$3"
-  if rg -F --quiet -- "$needle" "$path"; then
+  if file_contains_literal "$path" "$needle"; then
     ok "$path: $label"
   else
     fail "$path: missing $label"
@@ -39,7 +73,7 @@ require_count_at_least() {
   local min_count="$3"
   local label="$4"
   local count
-  count="$(rg -F -o -- "$needle" "$path" | wc -l | tr -d '[:space:]')"
+  count="$(count_literal_in_file "$path" "$needle")"
   if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= min_count )); then
     ok "$path: $label ($count)"
   else
@@ -49,7 +83,7 @@ require_count_at_least() {
 
 require_internal_block() {
   local path="$1"
-  if rg -U --quiet 'location\s+\^~\s+/internal/\s*\{[^}]*return\s+404;' "$path"; then
+  if file_contains_multiline_regex "$path" 'location\s+\^~\s+/internal/\s*\{[^}]*return\s+404;'; then
     ok "$path: blocks public /internal/* routes"
   else
     fail "$path: missing public /internal/* 404 block"
@@ -58,13 +92,13 @@ require_internal_block() {
 
 require_docs_openapi_allowlist() {
   local path="$1"
-  if rg -U --quiet 'location\s+=\s+/openapi\.json\s*\{[^}]*include\s+/etc/nginx/snippets/shamell_docs_allowlist\.local\.conf;[^}]*deny\s+all;' "$path"; then
+  if file_contains_multiline_regex "$path" 'location\s+=\s+/openapi\.json\s*\{[^}]*include\s+/etc/nginx/snippets/shamell_docs_allowlist\.local\.conf;[^}]*deny\s+all;'; then
     ok "$path: /openapi.json uses local allowlist + deny-all"
   else
     fail "$path: missing strict /openapi.json local allowlist + deny-all"
   fi
 
-  if rg -U --quiet 'location\s+=\s+/docs\s*\{[^}]*include\s+/etc/nginx/snippets/shamell_docs_allowlist\.local\.conf;[^}]*deny\s+all;' "$path"; then
+  if file_contains_multiline_regex "$path" 'location\s+=\s+/docs\s*\{[^}]*include\s+/etc/nginx/snippets/shamell_docs_allowlist\.local\.conf;[^}]*deny\s+all;'; then
     ok "$path: /docs uses local allowlist + deny-all"
   else
     fail "$path: missing strict /docs local allowlist + deny-all"
