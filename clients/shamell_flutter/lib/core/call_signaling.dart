@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+
+import 'chat/chat_service.dart';
 
 /// Lightweight WebSocket-based signaling client for future VoIP calls.
 ///
@@ -20,6 +21,11 @@ class CallSignalingClient {
   WebSocketChannel? _ws;
   StreamController<Map<String, dynamic>>? _eventsCtrl;
 
+  bool _isLocalhostHost(String host) {
+    final h = host.trim().toLowerCase();
+    return h == 'localhost' || h == '127.0.0.1' || h == '::1';
+  }
+
   /// Connects to the signaling WebSocket for the given deviceId.
   ///
   /// The backend is expected to expose `/ws/call/signaling` and route
@@ -27,27 +33,38 @@ class CallSignalingClient {
   Stream<Map<String, dynamic>> connect({required String deviceId}) {
     _eventsCtrl?.close();
     _eventsCtrl = StreamController<Map<String, dynamic>>.broadcast();
-    final u = Uri.parse(_base);
-    final wsUri = Uri(
-      scheme: u.scheme == 'https' ? 'wss' : 'ws',
-      host: u.host,
-      port: u.hasPort ? u.port : null,
-      path: '/ws/call/signaling',
-      queryParameters: {'device_id': deviceId},
-    );
-    _ws = WebSocketChannel.connect(wsUri);
-    _ws!.stream.listen((payload) {
-      try {
-        final j = jsonDecode(payload);
-        if (j is Map<String, dynamic>) {
-          _eventsCtrl?.add(j);
-        }
-      } catch (_) {}
-    }, onError: (_) {
+    try {
+      final u = Uri.parse(_base);
+      final scheme = u.scheme.toLowerCase();
+      final host = u.host.toLowerCase();
+      // Best practice: do not connect over plaintext transports to non-local hosts.
+      if (scheme != 'https' && !(scheme == 'http' && _isLocalhostHost(host))) {
+        _eventsCtrl?.add({'type': 'error', 'reason': 'insecure_transport'});
+        return _eventsCtrl!.stream;
+      }
+      final wsUri = Uri(
+        scheme: scheme == 'https' ? 'wss' : 'ws',
+        host: u.host,
+        port: u.hasPort ? u.port : null,
+        path: '/ws/call/signaling',
+        queryParameters: {'device_id': deviceId},
+      );
+      _ws = WebSocketChannel.connect(wsUri);
+      _ws!.stream.listen((payload) {
+        try {
+          final j = jsonDecode(payload);
+          if (j is Map<String, dynamic>) {
+            _eventsCtrl?.add(j);
+          }
+        } catch (_) {}
+      }, onError: (_) {
+        _eventsCtrl?.add({'type': 'error'});
+      }, onDone: () {
+        _eventsCtrl?.add({'type': 'closed'});
+      });
+    } catch (_) {
       _eventsCtrl?.add({'type': 'error'});
-    }, onDone: () {
-      _eventsCtrl?.add({'type': 'closed'});
-    });
+    }
     return _eventsCtrl!.stream;
   }
 
@@ -106,13 +123,8 @@ class CallSignalingClient {
   /// signaling context without duplicating storage logic.
   static Future<String?> loadDeviceId() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('chat.identity');
-      if (raw == null || raw.isEmpty) return null;
-      final j = jsonDecode(raw);
-      if (j is Map && j['id'] is String) {
-        return j['id'] as String;
-      }
+      final id = await ChatLocalStore().loadIdentity();
+      return id?.id;
     } catch (_) {}
     return null;
   }

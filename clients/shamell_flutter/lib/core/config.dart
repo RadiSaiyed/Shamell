@@ -2,8 +2,6 @@ const String kMapProvider =
     String.fromEnvironment('MAP_PROVIDER', defaultValue: 'osm');
 const String kRoutingProvider =
     String.fromEnvironment('ROUTING_PROVIDER', defaultValue: 'google');
-const String kPushProvider =
-    String.fromEnvironment('PUSH_PROVIDER', defaultValue: 'fcm');
 
 const String kOsmTileUrl = String.fromEnvironment(
   'OSM_TILE_URL',
@@ -34,8 +32,3 @@ const String kTomTomMapKey = String.fromEnvironment(
 );
 
 bool get useOsmMaps => kMapProvider.toLowerCase() == 'osm';
-
-const String kGotifyBaseUrl =
-    String.fromEnvironment('GOTIFY_BASE_URL', defaultValue: '');
-const String kGotifyClientToken =
-    String.fromEnvironment('GOTIFY_CLIENT_TOKEN', defaultValue: '');

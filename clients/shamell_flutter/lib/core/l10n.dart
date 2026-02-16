@@ -31,27 +31,27 @@ class L10n {
   // Login
   String get loginTitle => isArabic ? 'تسجيل الدخول' : 'Sign in';
   String get loginBaseUrl => isArabic ? 'رابط خادم الـ BFF' : 'BFF Base URL';
-  String get loginFullName => isArabic ? 'الاسم الكامل' : 'Full name';
-  String get loginPhone => isArabic ? 'رقم الهاتف (+963…)' : 'Phone (+963…)';
-  String get loginRequestCode => isArabic ? 'طلب رمز' : 'Request code';
-  String get loginCodeLabel =>
-      isArabic ? 'رمز مكون من 6 أرقام' : 'Code (6 digits)';
-  String get loginVerify => isArabic ? 'تأكيد' : 'Verify';
-  String get loginNoteDemo => isArabic
-      ? 'ملاحظة: يُعرض رمز الاختبار في مربع حوار (بيئة التطوير فقط).'
-      : 'Note: Demo OTP is shown in a dialog (dev only).';
-  String get loginTooManyAttempts => isArabic
-      ? 'محاولات كثيرة. يرجى الانتظار قليلاً.'
-      : 'Too many attempts. Please wait a moment.';
-  String get loginInvalidCode => isArabic
-      ? 'رمز غير صالح. حاول مرة أخرى.'
-      : 'Invalid code. Please try again.';
-  String get loginSignedIn =>
-      isArabic ? 'تم تسجيل الدخول بنجاح.' : 'Signed in successfully.';
-  String get loginFailed => isArabic ? 'فشل تسجيل الدخول' : 'Login failed';
+  String get loginBiometricSignIn =>
+      isArabic ? 'تسجيل الدخول بالبصمة' : 'Sign in with biometrics';
+  String get loginAuthenticating =>
+      isArabic ? 'جارٍ التحقق…' : 'Authenticating…';
+  String get loginBiometricWebUnavailable => isArabic
+      ? 'تسجيل الدخول بالبصمة غير متاح على الويب.'
+      : 'Biometric sign-in is not available on web.';
+  String get loginBiometricRequired => isArabic
+      ? 'تسجيل الدخول يتطلب المصادقة البيومترية على هذا الجهاز.'
+      : 'Biometric authentication is required on this device.';
+  String get loginBiometricFailed => isArabic
+      ? 'فشلت المصادقة البيومترية.'
+      : 'Biometric authentication failed.';
+  String get loginAuthCancelled =>
+      isArabic ? 'تم إلغاء التحقق.' : 'Authentication cancelled.';
+  String get loginDeviceNotEnrolled => isArabic
+      ? 'لا يوجد حساب على هذا الجهاز بعد. أنشئ معرّف Shamell جديد، أو اربط هذا الجهاز عبر رمز QR لتسجيل الدخول من جهاز آخر.'
+      : 'No account on this device yet. Create a new Shamell ID, or link this device via Device-Login QR from another device.';
   String get loginQrHint => isArabic
-      ? 'لاستخدام مرسال ويب، افتح رمز QR لتسجيل الدخول على الكمبيوتر وامسحه من داخل \"استكشاف > مسح\" في مرسال.'
-      : 'To use Mirsaal Web, open a login QR on your computer and scan it from \"Discover > Scan\" in Mirsaal.';
+      ? 'لاستخدام شامل ويب، افتح رمز QR لتسجيل الدخول على الكمبيوتر وامسحه من داخل \"استكشاف > مسح\" في شامل.'
+      : 'To use Shamell Web, open a login QR on your computer and scan it from \"Discover > Scan\" in Shamell.';
   String get loginTerms => isArabic
       ? 'بمتابعة تسجيل الدخول، فأنت توافق على شروط الخدمة وسياسة الخصوصية.'
       : 'By signing in you agree to the Terms of Service and Privacy Policy.';
@@ -86,7 +86,7 @@ class L10n {
   String get homeRequests => isArabic ? 'الطلبات' : 'Requests';
   String get homeVouchers => isArabic ? 'قسائم' : 'Vouchers';
   String get homeBus => isArabic ? 'الحافلات' : 'Bus';
-  String get homeChat => isArabic ? 'مرسال' : 'Mirsaal';
+  String get homeChat => isArabic ? 'شامل' : 'Shamell';
   String get homeTopup => isArabic ? 'شحن الرصيد' : 'Topup';
 
   // Settings / debug
@@ -125,48 +125,49 @@ class L10n {
       ? 'الوارد (مباشر عبر WS + استعلام)'
       : 'Inbox (live via WS + poll)';
 
-  // Mirsaal Identity / backup / dialogs
-  String get mirsaalIdentityTitle => isArabic ? 'هويتك' : 'Your ID';
-  String get mirsaalIdentityNotCreated =>
+  // Shamell Identity / backup / dialogs
+  String get shamellIdentityTitle => isArabic ? 'معرّف الدردشة' : 'Chat ID';
+  String get shamellIdentityNotCreated =>
       isArabic ? 'لم يتم إنشاء الهوية بعد' : 'Not created yet';
-  String get mirsaalIdentityHint =>
-      isArabic ? 'أنشئ هويتك للبدء.' : 'Create your identity to start.';
-  String get mirsaalDisplayNameOptional =>
+  String get shamellIdentityHint => isArabic
+      ? 'أنشئ هوية الدردشة للبدء.'
+      : 'Create your chat identity to start.';
+  String get shamellDisplayNameOptional =>
       isArabic ? 'اسم العرض (اختياري)' : 'Display name (optional)';
-  String get mirsaalGenerate => isArabic ? 'توليد' : 'Generate';
-  String get mirsaalRegisterWithRelay =>
+  String get shamellGenerate => isArabic ? 'توليد' : 'Generate';
+  String get shamellRegisterWithRelay =>
       isArabic ? 'التسجيل مع الخادم' : 'Register with relay';
-  String get mirsaalShowQrButton => isArabic ? 'إظهار رمز QR' : 'Show QR';
-  String get mirsaalCopyIdButton => isArabic ? 'نسخ المعرف' : 'Copy ID';
-  String get mirsaalIdCopiedSnack => isArabic ? 'تم نسخ المعرف' : 'ID copied';
-  String get mirsaalShareIdButton => isArabic ? 'مشاركة المعرف' : 'Share ID';
-  String get mirsaalBackupPassphraseButton =>
+  String get shamellShowQrButton => isArabic ? 'إظهار رمز QR' : 'Show QR';
+  String get shamellCopyIdButton => isArabic ? 'نسخ المعرف' : 'Copy ID';
+  String get shamellIdCopiedSnack => isArabic ? 'تم نسخ المعرف' : 'ID copied';
+  String get shamellShareIdButton => isArabic ? 'مشاركة المعرف' : 'Share ID';
+  String get shamellBackupPassphraseButton =>
       isArabic ? 'نسخة احتياطية (عبارة سرية)' : 'Backup (passphrase)';
-  String get mirsaalRestoreBackupButton =>
+  String get shamellRestoreBackupButton =>
       isArabic ? 'استعادة النسخة الاحتياطية' : 'Restore backup';
-  String get mirsaalBackupDialogTitle =>
+  String get shamellBackupDialogTitle =>
       isArabic ? 'لصق نص النسخة الاحتياطية' : 'Paste backup text';
-  String get mirsaalBackupDialogLabel =>
+  String get shamellBackupDialogLabel =>
       isArabic ? 'النسخة الاحتياطية' : 'Backup';
-  String get mirsaalDialogCancel => isArabic ? 'إلغاء' : 'Cancel';
-  String get mirsaalDialogOk => isArabic ? 'موافق' : 'OK';
+  String get shamellDialogCancel => isArabic ? 'إلغاء' : 'Cancel';
+  String get shamellDialogOk => isArabic ? 'موافق' : 'OK';
 
-  // Mirsaal settings
-  String get mirsaalSettingsPrivacy => isArabic ? 'الخصوصية' : 'Privacy';
-  String get mirsaalSettingsAppearance => isArabic ? 'المظهر' : 'Appearance';
-  String get mirsaalSettingsNotifications =>
+  // Shamell settings
+  String get shamellSettingsPrivacy => isArabic ? 'الخصوصية' : 'Privacy';
+  String get shamellSettingsAppearance => isArabic ? 'المظهر' : 'Appearance';
+  String get shamellSettingsNotifications =>
       isArabic ? 'الإشعارات' : 'Notifications';
-  String get mirsaalSettingsChat => isArabic ? 'الدردشة' : 'Chat';
-  String get mirsaalSettingsMedia => isArabic ? 'الوسائط' : 'Media';
-  String get mirsaalSettingsStorage =>
+  String get shamellSettingsChat => isArabic ? 'الدردشة' : 'Chat';
+  String get shamellSettingsMedia => isArabic ? 'الوسائط' : 'Media';
+  String get shamellSettingsStorage =>
       isArabic ? 'إدارة التخزين' : 'Storage management';
-  String get mirsaalSettingsPasscode => isArabic ? 'قفل برمز' : 'Passcode lock';
-  String get mirsaalSettingsCalls => isArabic ? 'المكالمات' : 'Calls';
-  String get mirsaalSettingsRate => isArabic ? 'قيّم Mirsaal' : 'Rate Mirsaal';
-  String get mirsaalSettingsInviteFriends =>
+  String get shamellSettingsPasscode => isArabic ? 'قفل برمز' : 'Passcode lock';
+  String get shamellSettingsCalls => isArabic ? 'المكالمات' : 'Calls';
+  String get shamellSettingsRate => isArabic ? 'قيّم Shamell' : 'Rate Shamell';
+  String get shamellSettingsInviteFriends =>
       isArabic ? 'دعوة الأصدقاء' : 'Invite friends';
-  String get mirsaalSettingsSupport => isArabic ? 'الدعم' : 'Support';
-  String get mirsaalSettingsPrivacyPolicy =>
+  String get shamellSettingsSupport => isArabic ? 'الدعم' : 'Support';
+  String get shamellSettingsPrivacyPolicy =>
       isArabic ? 'سياسة الخصوصية' : 'Privacy Policy';
 
   // Mini-apps / Mini-programs
@@ -180,118 +181,117 @@ class L10n {
   String get miniAppsBadgeOfficial => isArabic ? 'رسمي' : 'Official';
   String get miniAppsBadgePartner => isArabic ? 'شريك' : 'Partner';
   String get miniAppsBadgeBeta => isArabic ? 'تجريبي' : 'Beta';
-  String get mirsaalSettingsTerms =>
+  String get shamellSettingsTerms =>
       isArabic ? 'شروط الاستخدام' : 'Terms of Service';
-  String get mirsaalSettingsLicense => isArabic ? 'الترخيص' : 'License';
-  String get mirsaalSettingsAdvanced => isArabic ? 'متقدم' : 'Advanced';
+  String get shamellSettingsLicense => isArabic ? 'الترخيص' : 'License';
+  String get shamellSettingsAdvanced => isArabic ? 'متقدم' : 'Advanced';
 
-  // Mirsaal bottom tabs
-  String get mirsaalTabContacts => isArabic ? 'جهات الاتصال' : 'Contacts';
-  String get mirsaalTabChats => isArabic ? 'الدردشات' : 'Chats';
-  String get mirsaalTabProfile => isArabic ? 'الملف الشخصي' : 'Profile';
-  String get mirsaalTabSettings => isArabic ? 'الإعدادات' : 'Settings';
-  String get mirsaalTabChannel => isArabic ? 'استكشاف' : 'Discover';
+  // Shamell bottom tabs
+  String get shamellTabContacts => isArabic ? 'جهات الاتصال' : 'Contacts';
+  String get shamellTabChats => isArabic ? 'الدردشات' : 'Chats';
+  String get shamellTabProfile => isArabic ? 'الملف الشخصي' : 'Profile';
+  String get shamellTabSettings => isArabic ? 'الإعدادات' : 'Settings';
+  String get shamellTabChannel => isArabic ? 'استكشاف' : 'Discover';
 
-  // Mirsaal chats / contacts
-  String get mirsaalChatsMarkAllRead =>
+  // Shamell chats / contacts
+  String get shamellChatsMarkAllRead =>
       isArabic ? 'وضع الكل كمقروء' : 'Mark all as read';
-  String get mirsaalChatsSelection =>
+  String get shamellChatsSelection =>
       isArabic ? 'تحديد المحادثات' : 'Selection';
-  String get mirsaalChatsPinnedHeader => isArabic ? 'المثبتة' : 'Pinned';
-  String get mirsaalChatsOthersHeader =>
+  String get shamellChatsPinnedHeader => isArabic ? 'المثبتة' : 'Pinned';
+  String get shamellChatsOthersHeader =>
       isArabic ? 'الدردشات الأخرى' : 'Other chats';
-  String get mirsaalMessagePreviewsDisable =>
+  String get shamellMessagePreviewsDisable =>
       isArabic ? 'إيقاف معاينة الرسائل' : 'Disable message previews';
-  String get mirsaalMessagePreviewsEnable =>
+  String get shamellMessagePreviewsEnable =>
       isArabic ? 'تفعيل معاينة الرسائل' : 'Enable message previews';
-  String get mirsaalNoContactsHint => isArabic
+  String get shamellNoContactsHint => isArabic
       ? 'لا توجد جهات اتصال بعد. أضِف جهة عبر مسح رمز QR أو استعلام عن المعرف.'
       : 'No contacts yet. Add one via QR scan or by resolving an ID.';
-  String get mirsaalNoMessagesYet =>
+  String get shamellNoMessagesYet =>
       isArabic ? 'لا توجد رسائل بعد.' : 'No messages yet.';
-  String get mirsaalAddContactFirst => isArabic
+  String get shamellAddContactFirst => isArabic
       ? 'أضِف جهة اتصال لبدء المحادثة.'
       : 'Add a contact to start chatting.';
-  String get mirsaalLastCallBannerPrefix =>
+  String get shamellLastCallBannerPrefix =>
       isArabic ? 'آخر مكالمة' : 'Last call';
-  String get mirsaalNewChatTooltip => isArabic ? 'محادثة جديدة' : 'New chat';
-  String get mirsaalUnrecognizedQr =>
+  String get shamellNewChatTooltip => isArabic ? 'محادثة جديدة' : 'New chat';
+  String get shamellUnrecognizedQr =>
       isArabic ? 'رمز غير معروف.' : 'Unrecognized QR payload.';
-  String get mirsaalFriendQrAlreadyFriends =>
+  String get shamellFriendQrAlreadyFriends =>
       isArabic ? 'أنتم أصدقاء بالفعل.' : 'You are already friends.';
-  String get mirsaalFriendQrPending => isArabic
+  String get shamellFriendQrPending => isArabic
       ? 'طلب الصداقة قيد الانتظار.'
       : 'Friend request already pending.';
-  String get mirsaalFriendQrSent =>
+  String get shamellFriendQrSent =>
       isArabic ? 'تم إرسال طلب الصداقة.' : 'Friend request sent.';
-  String get mirsaalFriendQrSendFailed =>
+  String get shamellFriendQrSendFailed =>
       isArabic ? 'تعذر إرسال طلب الصداقة.' : 'Could not send friend request.';
-  String get mirsaalFriendQrSendError => isArabic
+  String get shamellFriendQrSendError => isArabic
       ? 'حدث خطأ أثناء إرسال طلب الصداقة.'
       : 'Error while sending friend request.';
 
-  String get mirsaalSettingsNotificationsSubtitle => isArabic
-      ? 'إدارة إشعارات الحسابات الرسمية داخل Mirsaal'
-      : 'Manage official‑account notifications inside Mirsaal';
+  String get shamellSettingsNotificationsSubtitle => isArabic
+      ? 'إدارة إشعارات الحسابات الرسمية داخل Shamell'
+      : 'Manage official‑account notifications inside Shamell';
 
-  // Mirsaal contacts tab sections
-  String get mirsaalContactsNewFriends =>
+  // Shamell contacts tab sections
+  String get shamellContactsNewFriends =>
       isArabic ? 'أصدقاء جدد' : 'New friends';
-  String get mirsaalContactsNewFriendsSubtitle => isArabic
+  String get shamellContactsNewFriendsSubtitle => isArabic
       ? 'إضافة صديق جديد عبر Shamell ID أو رمز QR'
       : 'Add a new friend via Shamell ID or QR';
-  String get mirsaalContactsGroups => isArabic ? 'المجموعات' : 'Group chats';
-  String get mirsaalContactsGroupsSubtitle => isArabic
+  String get shamellContactsGroups => isArabic ? 'المجموعات' : 'Group chats';
+  String get shamellContactsGroupsSubtitle => isArabic
       ? 'إنشاء مجموعات محادثة وإدارتها'
       : 'Create and manage group conversations';
-  String get mirsaalContactsServiceAccounts =>
+  String get shamellContactsServiceAccounts =>
       isArabic ? 'حسابات الخدمات' : 'Service accounts';
-  String get mirsaalContactsServiceAccountsSubtitle => isArabic
-      ? 'Shamell Bus, Pay والمزيد'
-      : 'Shamell Bus, Pay and more';
-  String get mirsaalContactsPeopleP2P =>
+  String get shamellContactsServiceAccountsSubtitle =>
+      isArabic ? 'Shamell Bus, Pay والمزيد' : 'Shamell Bus, Pay and more';
+  String get shamellContactsPeopleP2P =>
       isArabic ? 'الأشخاص والمدفوعات' : 'People & P2P';
-  String get mirsaalContactsPeopleP2PSubtitle => isArabic
+  String get shamellContactsPeopleP2PSubtitle => isArabic
       ? 'إرسال أموال بسرعة إلى جهات الاتصال'
       : 'Quickly send money to your contacts';
-  String get mirsaalContactsShamellServicesTitle =>
+  String get shamellContactsShamellServicesTitle =>
       isArabic ? 'حسابات Shamell' : 'Shamell services';
 
-  // Mirsaal Moments / favorites / channel tab
-  String get mirsaalChannelSocial => isArabic ? 'اجتماعي' : 'Social';
-  String get mirsaalChannelDiscover => isArabic ? 'اكتشاف' : 'Discover';
-  String get mirsaalChannelMomentsTitle => isArabic ? 'اللحظات' : 'Moments';
-  String get mirsaalChannelMomentsSubtitle =>
+  // Shamell Moments / favorites / channel tab
+  String get shamellChannelSocial => isArabic ? 'اجتماعي' : 'Social';
+  String get shamellChannelDiscover => isArabic ? 'اكتشاف' : 'Discover';
+  String get shamellChannelMomentsTitle => isArabic ? 'اللحظات' : 'Moments';
+  String get shamellChannelMomentsSubtitle =>
       isArabic ? 'شاهد وشارك لحظات أصدقائك' : 'View and share your Moments';
-  String get mirsaalChannelFavoritesTitle => isArabic ? 'المفضلة' : 'Favorites';
-  String get mirsaalChannelFavoritesSubtitle => isArabic
+  String get shamellChannelFavoritesTitle => isArabic ? 'المفضلة' : 'Favorites';
+  String get shamellChannelFavoritesSubtitle => isArabic
       ? 'وصول سريع إلى العناصر المحفوظة'
       : 'Quick access to saved items';
-  String get mirsaalChannelOfficialAccountsTitle =>
+  String get shamellChannelOfficialAccountsTitle =>
       isArabic ? 'الحسابات الرسمية' : 'Official accounts';
-  String get mirsaalChannelOfficialAccountsSubtitle => isArabic
+  String get shamellChannelOfficialAccountsSubtitle => isArabic
       ? 'تابِع حسابات Shamell والخدمات الشريكة'
       : 'Follow Shamell and partner service accounts';
-  String get mirsaalChannelSubscriptionAccountsTitle =>
+  String get shamellChannelSubscriptionAccountsTitle =>
       isArabic ? 'حسابات الاشتراك' : 'Subscription accounts';
-  String get mirsaalChannelSubscriptionAccountsSubtitle => isArabic
+  String get shamellChannelSubscriptionAccountsSubtitle => isArabic
       ? 'تابع المحتوى التفاعلي من الحسابات الرسمية'
       : 'Follow content updates from official accounts';
-  String get mirsaalChannelScanTitle => isArabic ? 'مسح' : 'Scan';
-  String get mirsaalChannelScanSubtitle => isArabic
-      ? 'مسح رموز QR لتسجيل الدخول إلى مرسال ويب، المدفوعات والبرامج المصغّرة'
-      : 'Scan QR for Mirsaal Web login, payments and mini‑apps';
-  String get mirsaalMomentsAudienceHint => isArabic
-      ? 'استخدم الوسوم مثل \"العائلة\" و\"العمل\" في شاشة الأصدقاء لتحديد من يرى لحظاتك (Only Family/Work بأسلوب WeChat).'
-      : 'Use friend labels like \"Family\" and \"Work\" in the Friends screen to choose who sees this moment (Only Family/Work, WeChat‑style).';
+  String get shamellChannelScanTitle => isArabic ? 'مسح' : 'Scan';
+  String get shamellChannelScanSubtitle => isArabic
+      ? 'مسح رموز QR لتسجيل الدخول إلى شامل ويب، المدفوعات والبرامج المصغّرة'
+      : 'Scan QR for Shamell Web login, payments and mini‑apps';
+  String get shamellMomentsAudienceHint => isArabic
+      ? 'استخدم الوسوم مثل \"العائلة\" و\"العمل\" في شاشة الأصدقاء لتحديد من يرى لحظاتك (Only Family/Work بأسلوب Shamell).'
+      : 'Use friend labels like \"Family\" and \"Work\" in the Friends screen to choose who sees this moment (Only Family/Work, Shamell‑style).';
 
-  // Mirsaal subscriptions feed
-  String get mirsaalSubscriptionsFeedTitle =>
+  // Shamell subscriptions feed
+  String get shamellSubscriptionsFeedTitle =>
       isArabic ? 'خلاصة الاشتراكات' : 'Subscriptions feed';
-  String get mirsaalSubscriptionsFeedEmptySummary => isArabic
+  String get shamellSubscriptionsFeedEmptySummary => isArabic
       ? 'تحديثات مجمّعة من حسابات الاشتراك الرسمية'
       : 'Aggregated updates from subscription official accounts';
-  String mirsaalSubscriptionsFeedSummary(int subs, int unread) {
+  String shamellSubscriptionsFeedSummary(int subs, int unread) {
     if (isArabic) {
       final base = 'اشتراكات: $subs حساباً رسمياً من نوع الاشتراك';
       if (unread > 0) return '$base · $unread غير مقروءة';
@@ -303,10 +303,10 @@ class L10n {
     }
   }
 
-  String get mirsaalSubscriptionsFeedEmptyShort => isArabic
+  String get shamellSubscriptionsFeedEmptyShort => isArabic
       ? 'عرض تحديثات الحسابات الرسمية من نوع الاشتراك'
       : 'Show updates from subscription official accounts';
-  String mirsaalSubscriptionsAccountsSummary(int subs, int unread) {
+  String shamellSubscriptionsAccountsSummary(int subs, int unread) {
     if (isArabic) {
       final base = 'حسابات اشتراك: $subs حساباً رسمياً من نوع الاشتراك';
       if (unread > 0) return '$base · $unread غير مقروءة';
@@ -318,341 +318,323 @@ class L10n {
     }
   }
 
-  String get mirsaalSubscriptionsTitle =>
+  String get shamellSubscriptionsTitle =>
       isArabic ? 'الاشتراكات' : 'Subscriptions';
-  String get mirsaalSubscriptionsEmpty =>
+  String get shamellSubscriptionsEmpty =>
       isArabic ? 'لا توجد تحديثات اشتراك بعد.' : 'No subscription updates yet.';
-  String get mirsaalSubscriptionsFilterAll => isArabic ? 'الكل' : 'All';
-  String get mirsaalSubscriptionsFilterUnread =>
+  String get shamellSubscriptionsFilterAll => isArabic ? 'الكل' : 'All';
+  String get shamellSubscriptionsFilterUnread =>
       isArabic ? 'غير مقروءة' : 'Unread';
-  String get mirsaalSubscriptionsMarkAllRead =>
+  String get shamellSubscriptionsMarkAllRead =>
       isArabic ? 'اعتبار كل التحديثات مقروءة' : 'Mark all updates as read';
 
-  // Mirsaal friends / labels
-  String get mirsaalFriendAliasTitle =>
+  // Shamell friends / labels
+  String get shamellFriendAliasTitle =>
       isArabic ? 'اسم مخصص للصديق' : 'Friend alias';
-  String get mirsaalFriendAliasLabel =>
+  String get shamellFriendAliasLabel =>
       isArabic ? 'الاسم في الدردشة (اختياري)' : 'Chat name (optional)';
-  String get mirsaalFriendAliasHint =>
+  String get shamellFriendAliasHint =>
       isArabic ? 'مثلاً: أحمد (العمل)' : 'e.g. Ali (work)';
-  String get mirsaalFriendTagsLabel =>
+  String get shamellFriendTagsLabel =>
       isArabic ? 'الوسوم (اختياري)' : 'Tags (optional)';
-  String get mirsaalFriendTagsHint =>
+  String get shamellFriendTagsHint =>
       isArabic ? 'مثلاً: العائلة، العمل' : 'e.g. Family, Work';
-  String get mirsaalFriendTagsPrefix => isArabic ? 'الوسوم:' : 'Tags:';
-  String get mirsaalFriendsCloseLabel =>
+  String get shamellFriendTagsPrefix => isArabic ? 'الوسوم:' : 'Tags:';
+  String get shamellFriendsCloseLabel =>
       isArabic ? 'صديق مقرّب' : 'Close friend';
-  String get mirsaalFriendsAccept => isArabic ? 'قبول' : 'Accept';
-  String get mirsaalFriendsAddNewTitle =>
+  String get shamellFriendsAccept => isArabic ? 'قبول' : 'Accept';
+  String get shamellFriendsAddNewTitle =>
       isArabic ? 'إضافة صديق جديد' : 'Add new friend';
-  String get mirsaalFriendsSearchHint =>
-      isArabic ? 'Shamell ID أو رقم الهاتف' : 'Shamell ID or phone number';
-  String get mirsaalFriendsSending => isArabic ? '...جارٍ الإرسال' : 'Sending…';
-  String get mirsaalFriendsSendRequest =>
+  String get shamellFriendsSearchHint =>
+      isArabic ? 'Shamell ID' : 'Shamell ID';
+  String get shamellFriendsSending => isArabic ? '...جارٍ الإرسال' : 'Sending…';
+  String get shamellFriendsSendRequest =>
       isArabic ? 'إرسال طلب صداقة' : 'Send friend request';
-  String get mirsaalFriendsSuggestionsTitle =>
-      isArabic ? 'اقتراحات من دفتر الهاتف' : 'Suggestions from phone contacts';
-  String get mirsaalFriendsSuggestionsEmpty => isArabic
-      ? 'اضغط للمزامنة مع دفتر الهاتف والحصول على اقتراحات أصدقاء على نمط WeChat.'
-      : 'Tap to sync with your address book and get WeChat‑style friend suggestions.';
-  String get mirsaalFriendsSyncContacts =>
-      isArabic ? 'مزامنة دفتر الهاتف' : 'Sync phone contacts';
-  String get mirsaalFriendsRequestsTitle =>
+  String get shamellFriendsSuggestionsTitle =>
+      isArabic ? 'اقتراحات' : 'Suggestions';
+  String get shamellFriendsSuggestionsEmpty => isArabic
+      ? 'استخدم Shamell ID أو رمز QR لإضافة صديق.'
+      : 'Use Shamell ID or QR to add a friend.';
+  String get shamellFriendsSyncContacts =>
+      isArabic ? 'إضافة عبر QR' : 'Add via QR';
+  String get shamellFriendsRequestsTitle =>
       isArabic ? 'طلبات الصداقة' : 'Friend requests';
-  String get mirsaalFriendsSentTitle =>
+  String get shamellFriendsSentTitle =>
       isArabic ? 'طلبات مرسلة' : 'Sent requests';
-  String get mirsaalFriendsListTitle => isArabic ? 'الأصدقاء' : 'Friends';
-  String get mirsaalFriendsEmpty =>
+  String get shamellFriendsListTitle => isArabic ? 'الأصدقاء' : 'Friends';
+  String get shamellFriendsEmpty =>
       isArabic ? 'لا توجد صداقات بعد.' : 'No friends yet.';
-  String get mirsaalFriendsPeopleNearbyTitle =>
-      isArabic ? 'الأشخاص القريبون' : 'People nearby';
-  String get mirsaalFriendsPeopleNearbySubtitle => isArabic
-      ? 'اكتشف مستخدمي وخدمات Shamell القريبة وأضفهم كأصدقاء، بأسلوب WeChat People Nearby.'
-      : 'Discover nearby Shamell users and services to add as friends, similar to WeChat People Nearby.';
-  String get mirsaalScanQr => isArabic ? 'مسح QR' : 'Scan QR';
-  String get mirsaalSyncInbox => isArabic ? 'مزامنة الوارد' : 'Sync inbox';
-  String get mirsaalHideLockedChats =>
+  String get shamellScanQr => isArabic ? 'مسح QR' : 'Scan QR';
+  String get shamellSyncInbox => isArabic ? 'مزامنة الوارد' : 'Sync inbox';
+  String get shamellHideLockedChats =>
       isArabic ? 'إخفاء الدردشات المقفلة' : 'Hide locked chats';
-  String get mirsaalShowLockedChats => isArabic
+  String get shamellShowLockedChats => isArabic
       ? 'إظهار الدردشات المقفلة (يتطلب فتحاً)'
       : 'Show locked chats (requires auth)';
-  String get mirsaalPeerIdLabel => isArabic ? 'معرّف الطرف' : 'Peer ID';
-  String get mirsaalResolve => isArabic ? 'استعلام' : 'Resolve';
-  String get mirsaalVerifiedLabel => isArabic ? 'موثوق' : 'Verified';
-  String get mirsaalMarkVerifiedLabel =>
+  String get shamellPeerIdLabel => isArabic ? 'معرّف الطرف' : 'Peer ID';
+  String get shamellResolve => isArabic ? 'استعلام' : 'Resolve';
+  String get shamellVerifiedLabel => isArabic ? 'موثوق' : 'Verified';
+  String get shamellMarkVerifiedLabel =>
       isArabic ? 'وضع علامة كموثوق' : 'Mark verified';
-  String get mirsaalDisableDisappear =>
+  String get shamellDisableDisappear =>
       isArabic ? 'إيقاف الاختفاء' : 'Disable disappear';
-  String get mirsaalEnableDisappear =>
+  String get shamellEnableDisappear =>
       isArabic ? 'تفعيل الاختفاء' : 'Enable disappear';
-  String get mirsaalDisappearAfter =>
+  String get shamellDisappearAfter =>
       isArabic ? 'الاختفاء بعد' : 'Disappear after';
-  String get mirsaalUnhideChat => isArabic ? 'إظهار المحادثة' : 'Unhide chat';
-  String get mirsaalHideChat => isArabic ? 'إخفاء المحادثة' : 'Hide chat';
-  String get mirsaalUnblock => isArabic ? 'إلغاء الحظر' : 'Unblock';
-  String get mirsaalBlock => isArabic ? 'حظر' : 'Block';
-  String get mirsaalTrustedFingerprint =>
+  String get shamellUnhideChat => isArabic ? 'إظهار المحادثة' : 'Unhide chat';
+  String get shamellHideChat => isArabic ? 'إخفاء المحادثة' : 'Hide chat';
+  String get shamellUnblock => isArabic ? 'إلغاء الحظر' : 'Unblock';
+  String get shamellBlock => isArabic ? 'حظر' : 'Block';
+  String get shamellTrustedFingerprint =>
       isArabic ? 'بصمة موثوقة' : 'Trusted fingerprint';
-  String get mirsaalUnverifiedContact =>
+  String get shamellUnverifiedContact =>
       isArabic ? 'جهة اتصال غير موثوقة' : 'Unverified contact';
-  String get mirsaalPeerFingerprintLabel =>
+  String get shamellPeerFingerprintLabel =>
       isArabic ? 'بصمة الطرف:' : 'Peer FP:';
-  String get mirsaalYourFingerprintLabel => isArabic ? 'بصمتك:' : 'Your FP:';
-  String get mirsaalSafetyLabel => isArabic ? 'السلامة:' : 'Safety:';
-  String get mirsaalResetSessionLabel =>
+  String get shamellYourFingerprintLabel => isArabic ? 'بصمتك:' : 'Your FP:';
+  String get shamellSafetyLabel => isArabic ? 'السلامة:' : 'Safety:';
+  String get shamellResetSessionLabel =>
       isArabic ? 'إعادة تعيين الجلسة' : 'Reset session';
-  String get mirsaalMessagesTitle => isArabic ? 'الرسائل' : 'Messages';
-  String get mirsaalAttachImage => isArabic ? 'إرفاق صورة' : 'Attach image';
-  String get mirsaalTypeMessage => isArabic ? 'اكتب رسالة' : 'Type a message';
-  String get mirsaalImageAttached =>
+  String get shamellMessagesTitle => isArabic ? 'الرسائل' : 'Messages';
+  String get shamellAttachImage => isArabic ? 'إرفاق صورة' : 'Attach image';
+  String get shamellTypeMessage => isArabic ? 'اكتب رسالة' : 'Type a message';
+  String get shamellImageAttached =>
       isArabic ? 'تم إرفاق صورة' : 'Image attached';
-  String get mirsaalRemoveAttachment =>
+  String get shamellRemoveAttachment =>
       isArabic ? 'إزالة المرفق' : 'Remove attachment';
-  String get mirsaalSessionChangedTitle =>
+  String get shamellSessionChangedTitle =>
       isArabic ? 'تم تغيير الجلسة' : 'Session changed';
-  String get mirsaalSessionChangedBody => isArabic
+  String get shamellSessionChangedBody => isArabic
       ? 'تم تغيير مفتاح المرسل. تحقق من رقم الأمان مع جهة الاتصال. أعد تعيين الجلسة إذا لم تكن متأكدًا.'
       : 'Sender key changed. Verify the safety number with your contact. Reset the session if unsure.';
-  String get mirsaalLater => isArabic ? 'لاحقًا' : 'Later';
-  String get mirsaalUnlockHiddenReason =>
+  String get shamellLater => isArabic ? 'لاحقًا' : 'Later';
+  String get shamellUnlockHiddenReason =>
       isArabic ? 'فتح الدردشات المخفية' : 'Unlock hidden chats';
-  String get mirsaalScanContactQrTitle =>
+  String get shamellScanContactQrTitle =>
       isArabic ? 'مسح رمز QR لجهة الاتصال' : 'Scan contact QR';
 
-  // Mirsaal errors / backup / notifications
-  String get mirsaalAttachFailed =>
+  // Shamell errors / backup / notifications
+  String get shamellAttachFailed =>
       isArabic ? 'فشل إرفاق الملف' : 'Attach failed';
-  String get mirsaalShareFailed =>
+  String get shamellShareFailed =>
       isArabic ? 'فشل مشاركة الملف' : 'Share failed';
-  String get mirsaalBackupCreated => isArabic
+  String get shamellBackupCreated => isArabic
       ? 'تم إنشاء النسخة الاحتياطية ونسخها. احتفظ بها بأمان.'
       : 'Backup created and copied. Keep it safe.';
-  String get mirsaalBackupFailed =>
+  String get shamellBackupFailed =>
       isArabic ? 'فشل إنشاء النسخة الاحتياطية' : 'Backup failed';
-  String get mirsaalBackupInvalidFormat =>
+  String get shamellBackupInvalidFormat =>
       isArabic ? 'تنسيق النسخة الاحتياطية غير صالح' : 'Invalid backup format';
-  String get mirsaalBackupMissingFields =>
+  String get shamellBackupMissingFields =>
       isArabic ? 'النسخة الاحتياطية تفتقد حقولاً' : 'Backup missing fields';
-  String get mirsaalBackupCorrupt =>
+  String get shamellBackupCorrupt =>
       isArabic ? 'النسخة الاحتياطية تالفة' : 'Backup corrupt';
-  String get mirsaalRestoreFailed =>
+  String get shamellRestoreFailed =>
       isArabic ? 'فشل الاستعادة' : 'Restore failed';
-  String get mirsaalBackupPassphraseTitleSet =>
+  String get shamellBackupPassphraseTitleSet =>
       isArabic ? 'تعيين عبارة مرور النسخة الاحتياطية' : 'Set backup passphrase';
-  String get mirsaalBackupPassphraseTitleEnter => isArabic
+  String get shamellBackupPassphraseTitleEnter => isArabic
       ? 'إدخال عبارة مرور النسخة الاحتياطية'
       : 'Enter backup passphrase';
-  String get mirsaalBackupPassphraseLabel =>
+  String get shamellBackupPassphraseLabel =>
       isArabic ? 'عبارة المرور' : 'Passphrase';
-  String get mirsaalBackupPassphraseConfirm =>
+  String get shamellBackupPassphraseConfirm =>
       isArabic ? 'تأكيد عبارة المرور' : 'Confirm';
-  String get mirsaalNewMessageTitle => isArabic ? 'رسالة جديدة' : 'New message';
-  String get mirsaalNewMessageBody =>
+  String get shamellNewMessageTitle => isArabic ? 'رسالة جديدة' : 'New message';
+  String get shamellNewMessageBody =>
       isArabic ? 'افتح المحادثة لعرض الرسالة.' : 'Open chat to view.';
-  String get mirsaalRatchetKeyMismatch => isArabic
+  String get shamellRatchetKeyMismatch => isArabic
       ? 'تم اكتشاف عدم تطابق في المفتاح. أعد تعيين الجلسة.'
       : 'Key mismatch detected. Reset session.';
-  String get mirsaalRatchetWindowWarning => isArabic
+  String get shamellRatchetWindowWarning => isArabic
       ? 'الرسالة خارج النافذة. فكّر في إعادة تعيين الجلسة.'
       : 'Message outside window; consider resetting session.';
-  String get mirsaalRatchetAheadWarning => isArabic
+  String get shamellRatchetAheadWarning => isArabic
       ? 'الرسالة بعيدة جدًا للأمام؛ لم يتم تخزين المفاتيح.'
       : 'Message too far ahead; keys not stored.';
-  String get mirsaalPreviewImage => isArabic ? '[صورة]' : '[Image]';
-  String get mirsaalPreviewUnknown => isArabic ? '<رسالة>' : '<message>';
-  String get mirsaalPreviewVoice =>
+  String get shamellPreviewImage => isArabic ? '[صورة]' : '[Image]';
+  String get shamellPreviewUnknown => isArabic ? '<رسالة>' : '<message>';
+  String get shamellPreviewVoice =>
       isArabic ? '[رسالة صوتية]' : '[Voice message]';
-  String get mirsaalStartVoice =>
+  String get shamellStartVoice =>
       isArabic ? 'تسجيل رسالة صوتية' : 'Record voice message';
-  String get mirsaalStopVoice => isArabic ? 'إيقاف التسجيل' : 'Stop recording';
-  String get mirsaalRecordingVoice =>
+  String get shamellStopVoice => isArabic ? 'إيقاف التسجيل' : 'Stop recording';
+  String get shamellRecordingVoice =>
       isArabic ? 'جاري تسجيل رسالة صوتية...' : 'Recording voice note…';
-  String get mirsaalVoiceHoldToTalk =>
+  String get shamellVoiceHoldToTalk =>
       isArabic ? 'اضغط مع الاستمرار للتسجيل' : 'Hold to talk';
-  String get mirsaalVoiceSlideUpToCancel => isArabic
+  String get shamellVoiceSlideUpToCancel => isArabic
       ? 'اسحب للأعلى للإلغاء، اسحب لليمين للقفل'
       : 'Slide up to cancel, slide right to lock';
-  String get mirsaalVoiceReleaseToCancel =>
+  String get shamellVoiceReleaseToCancel =>
       isArabic ? 'حرر للإلغاء' : 'Release to cancel';
-  String get mirsaalVoiceCanceledSnack =>
+  String get shamellVoiceCanceledSnack =>
       isArabic ? 'تم إلغاء الرسالة الصوتية' : 'Voice message canceled';
-  String get mirsaalVoiceTooShort =>
+  String get shamellVoiceTooShort =>
       isArabic ? 'الرسالة الصوتية قصيرة جداً' : 'Voice message too short';
-  String get mirsaalVoiceLocked =>
+  String get shamellVoiceLocked =>
       isArabic ? 'التسجيل مقفل' : 'Recording locked';
-  String mirsaalVoiceMessageLabel(String seconds) => isArabic
+  String shamellVoiceMessageLabel(String seconds) => isArabic
       ? (seconds.isNotEmpty ? 'رسالة صوتية (${seconds} ثوان)' : 'رسالة صوتية')
       : (seconds.isNotEmpty ? 'Voice message (${seconds}s)' : 'Voice message');
-  String get mirsaalVoicePlaybackSoon => isArabic
+  String get shamellVoicePlaybackSoon => isArabic
       ? 'تشغيل الرسائل الصوتية غير متاح على هذا الجهاز.'
       : 'Voice message playback is unavailable on this device.';
-  String get mirsaalVoiceSpeakerMode =>
+  String get shamellVoiceSpeakerMode =>
       isArabic ? 'تشغيل عبر مكبر الصوت' : 'Play via speaker';
-  String get mirsaalVoiceEarpieceMode =>
+  String get shamellVoiceEarpieceMode =>
       isArabic ? 'تشغيل عبر سماعة الأذن' : 'Play via earpiece';
-  String get mirsaalStickers => isArabic ? 'الملصقات' : 'Stickers';
-  String get mirsaalStickersRecent =>
-      isArabic ? 'المستخدمة مؤخراً' : 'Recently used';
-  String get mirsaalStickersYourPacks => isArabic ? 'حزمك' : 'Your packs';
-  String get mirsaalStickersSearchHint =>
-      isArabic ? 'ابحث عن ملصق' : 'Search stickers';
-  String get mirsaalStickersFilterAll => isArabic ? 'كل الحزم' : 'All packs';
-  String get mirsaalStickersFilterInstalled =>
-      isArabic ? 'المثبتة فقط' : 'Installed only';
-  String get mirsaalStickersCategoryLabel =>
-      isArabic ? 'فئات مقترحة' : 'Suggested categories';
-  String get mirsaalMessageActionsTitle =>
+  String get shamellMessageActionsTitle =>
       isArabic ? 'خيارات الرسالة' : 'Message options';
-  String get mirsaalCopyMessage => isArabic ? 'نسخ' : 'Copy';
-  String get mirsaalForwardMessage => isArabic ? 'إعادة التوجيه' : 'Forward';
-  String get mirsaalTranslateMessage => isArabic ? 'ترجمة' : 'Translate';
-  String get mirsaalReplyMessage => isArabic ? 'الرد' : 'Reply';
-  String get mirsaalDeleteForMe => isArabic ? 'حذف' : 'Delete';
-  String get mirsaalRecallMessage => isArabic ? 'استرجاع' : 'Recall';
-  String get mirsaalMessageRecalledByMe =>
+  String get shamellCopyMessage => isArabic ? 'نسخ' : 'Copy';
+  String get shamellForwardMessage => isArabic ? 'إعادة التوجيه' : 'Forward';
+  String get shamellTranslateMessage => isArabic ? 'ترجمة' : 'Translate';
+  String get shamellReplyMessage => isArabic ? 'الرد' : 'Reply';
+  String get shamellDeleteForMe => isArabic ? 'حذف' : 'Delete';
+  String get shamellRecallMessage => isArabic ? 'استرجاع' : 'Recall';
+  String get shamellMessageRecalledByMe =>
       isArabic ? 'لقد استرجعت هذه الرسالة.' : 'You recalled this message.';
-  String get mirsaalMessageRecalledByOther =>
+  String get shamellMessageRecalledByOther =>
       isArabic ? 'تم استرجاع هذه الرسالة.' : 'This message was recalled.';
-  String get mirsaalPinMessage =>
+  String get shamellPinMessage =>
       isArabic ? 'تثبيت الرسالة في الأعلى' : 'Pin message to top';
-  String get mirsaalUnpinMessage =>
+  String get shamellUnpinMessage =>
       isArabic ? 'إلغاء تثبيت الرسالة' : 'Unpin message';
-  String get mirsaalAddToFavorites =>
+  String get shamellAddToFavorites =>
       isArabic ? 'إضافة إلى المفضلة' : 'Add to favorites';
-  String get mirsaalMessageCopiedSnack =>
+  String get shamellMessageCopiedSnack =>
       isArabic ? 'تم نسخ الرسالة' : 'Message copied';
-  String get mirsaalMessageFavoritedSnack =>
+  String get shamellMessageFavoritedSnack =>
       isArabic ? 'تمت إضافة الرسالة إلى المفضلة' : 'Message added to favorites';
-  String get mirsaalPreviewLocation => isArabic ? 'موقع' : 'Location';
-  String get mirsaalSendLocation => isArabic ? 'إرسال الموقع' : 'Send location';
-  String get mirsaalLocationOpenInMap =>
+  String get shamellPreviewLocation => isArabic ? 'موقع' : 'Location';
+  String get shamellSendLocation => isArabic ? 'إرسال الموقع' : 'Send location';
+  String get shamellLocationOpenInMap =>
       isArabic ? 'فتح على الخريطة' : 'Open in map';
-  String get mirsaalLocationFavorite =>
+  String get shamellLocationFavorite =>
       isArabic ? 'إضافة إلى المواقع المفضلة' : 'Add to favorite locations';
-  String get mirsaalLocationFavoritedSnack =>
+  String get shamellLocationFavoritedSnack =>
       isArabic ? 'تم حفظ الموقع في المفضلة' : 'Location saved to favorites';
-  String get mirsaalCallKindVideo => isArabic ? 'فيديو' : 'Video';
-  String get mirsaalCallKindVoice => isArabic ? 'صوت' : 'Voice';
-  String get mirsaalCallDirectionOutgoing => isArabic ? 'صادر' : 'Outgoing';
-  String get mirsaalCallDirectionIncoming => isArabic ? 'وارد' : 'Incoming';
-  String get mirsaalCallStatusMissed =>
+  String get shamellCallKindVideo => isArabic ? 'فيديو' : 'Video';
+  String get shamellCallKindVoice => isArabic ? 'صوت' : 'Voice';
+  String get shamellCallDirectionOutgoing => isArabic ? 'صادر' : 'Outgoing';
+  String get shamellCallDirectionIncoming => isArabic ? 'وارد' : 'Incoming';
+  String get shamellCallStatusMissed =>
       isArabic ? 'مكالمة فائتة' : 'Missed call';
-  String get mirsaalCallStatusMissedShort =>
+  String get shamellCallStatusMissedShort =>
       isArabic ? 'لم يتم الرد' : 'Missed';
-  String get mirsaalCallStatusShort => isArabic ? 'مكالمة قصيرة' : 'Short call';
-  String get mirsaalCallRedial => isArabic ? 'إعادة الاتصال' : 'Redial';
-  String get mirsaalDevicesThisDevice =>
+  String get shamellCallStatusShort => isArabic ? 'مكالمة قصيرة' : 'Short call';
+  String get shamellCallRedial => isArabic ? 'إعادة الاتصال' : 'Redial';
+  String get shamellDevicesThisDevice =>
       isArabic ? 'هذا الجهاز' : 'This device';
-  String get mirsaalDevicesLogoutOthers =>
+  String get shamellDevicesLogoutOthers =>
       isArabic ? 'تسجيل الخروج من الأجهزة الأخرى' : 'Log out of other devices';
-  String get mirsaalDevicesLogoutOthersConfirm => isArabic
+  String get shamellDevicesLogoutOthersConfirm => isArabic
       ? 'سيتم إزالة جميع الأجهزة الأخرى المرتبطة بهذا الحساب. المتابعة؟'
       : 'All other devices linked to this account will be removed. Continue?';
-  String get mirsaalDeviceLoginTitle => isArabic
+  String get shamellDeviceLoginTitle => isArabic
       ? 'تأكيد تسجيل الدخول على جهاز جديد'
       : 'Confirm login on new device';
-  String get mirsaalDeviceLoginBody => isArabic
-      ? 'السماح لهذا الجهاز بتسجيل الدخول إلى مرسال باستخدام حسابك؟'
-      : 'Allow this device to sign in to Mirsaal with your account?';
-  String get mirsaalDeviceLoginApprovedSnack => isArabic
+  String get shamellDeviceLoginBody => isArabic
+      ? 'السماح لهذا الجهاز بتسجيل الدخول إلى شامل باستخدام حسابك؟'
+      : 'Allow this device to sign in to Shamell with your account?';
+  String get shamellDeviceLoginApprovedSnack => isArabic
       ? 'تمت الموافقة على تسجيل الدخول على الجهاز الجديد.'
       : 'Login approved on the new device.';
-  String get mirsaalDeviceLoginErrorExpired => isArabic
+  String get shamellDeviceLoginErrorExpired => isArabic
       ? 'رمز تسجيل الدخول غير صالح أو منتهي الصلاحية.'
       : 'Login code is invalid or has expired.';
-  String get mirsaalPinChat => isArabic ? 'تثبيت الدردشة' : 'Pin chat';
-  String get mirsaalUnpinChat =>
+  String get shamellPinChat => isArabic ? 'تثبيت الدردشة' : 'Pin chat';
+  String get shamellUnpinChat =>
       isArabic ? 'إلغاء تثبيت الدردشة' : 'Unpin chat';
-  String get mirsaalMuteChat =>
+  String get shamellMuteChat =>
       isArabic ? 'كتم إشعارات هذه الدردشة' : 'Mute this chat';
-  String get mirsaalUnmuteChat =>
+  String get shamellUnmuteChat =>
       isArabic ? 'إلغاء كتم هذه الدردشة' : 'Unmute this chat';
-  String get mirsaalMarkUnread =>
+  String get shamellMarkUnread =>
       isArabic ? 'وضع علامة كغير مقروءة' : 'Mark as unread';
-  String get mirsaalMarkRead => isArabic ? 'وضع علامة كمقروءة' : 'Mark as read';
-  String get mirsaalSendMoney => isArabic ? 'إرسال أموال' : 'Send money';
-  String get mirsaalClearChatHistory =>
+  String get shamellMarkRead => isArabic ? 'وضع علامة كمقروءة' : 'Mark as read';
+  String get shamellSendMoney => isArabic ? 'إرسال أموال' : 'Send money';
+  String get shamellClearChatHistory =>
       isArabic ? 'مسح سجل الدردشة' : 'Clear chat history';
-  String get mirsaalDeleteChat => isArabic ? 'حذف الدردشة' : 'Delete chat';
-  String get mirsaalInternetCall => isArabic ? 'مكالمة فيديو' : 'Video call';
-  String get mirsaalPhoneCall => isArabic ? 'مكالمة هاتفية' : 'Phone call';
-  String get mirsaalCallHistory => isArabic ? 'سجل المكالمات' : 'Call history';
-  String get mirsaalNoCallsWithContact => isArabic
+  String get shamellDeleteChat => isArabic ? 'حذف الدردشة' : 'Delete chat';
+  String get shamellInternetCall => isArabic ? 'مكالمة فيديو' : 'Video call';
+  String get shamellPhoneCall => isArabic ? 'مكالمة هاتفية' : 'Phone call';
+  String get shamellCallHistory => isArabic ? 'سجل المكالمات' : 'Call history';
+  String get shamellNoCallsWithContact => isArabic
       ? 'لا يوجد سجل مكالمات مع هذا الحساب بعد.'
       : 'No call history with this contact yet.';
-  String get mirsaalPinnedMessagesTitle =>
+  String get shamellPinnedMessagesTitle =>
       isArabic ? 'رسائل مثبتة' : 'Pinned messages';
-  String get mirsaalSearchFilterAll => isArabic ? 'الكل' : 'All';
-  String get mirsaalSearchFilterMedia => isArabic ? 'الوسائط' : 'Media';
-  String get mirsaalSearchFilterLinks => isArabic ? 'الروابط' : 'Links';
-  String get mirsaalSearchFilterFiles => isArabic ? 'الملفات' : 'Files';
-  String get mirsaalSearchFilterRedPackets =>
-      isArabic ? 'الحزم الحمراء' : 'Red packets';
-  String get mirsaalSearchFilterVoice =>
+  String get shamellSearchFilterAll => isArabic ? 'الكل' : 'All';
+  String get shamellSearchFilterMedia => isArabic ? 'الوسائط' : 'Media';
+  String get shamellSearchFilterLinks => isArabic ? 'الروابط' : 'Links';
+  String get shamellSearchFilterFiles => isArabic ? 'الملفات' : 'Files';
+  String get shamellSearchFilterVoice =>
       isArabic ? 'الرسائل الصوتية' : 'Voice notes';
-  String get mirsaalSearchFilterCalls => isArabic ? 'المكالمات' : 'Calls';
-  String get mirsaalMediaOverviewTitle => isArabic
+  String get shamellSearchFilterCalls => isArabic ? 'المكالمات' : 'Calls';
+  String get shamellMediaOverviewTitle => isArabic
       ? 'الوسائط والروابط في هذه الدردشة'
       : 'Media and links in this chat';
-  String get mirsaalMediaOverviewEmpty => isArabic
+  String get shamellMediaOverviewEmpty => isArabic
       ? 'لا توجد صور أو روابط في هذه الدردشة بعد.'
       : 'No media or links in this chat yet.';
-  String get mirsaalGlobalMediaTitle => isArabic
+  String get shamellGlobalMediaTitle => isArabic
       ? 'الوسائط والملفات في كل الدردشات'
       : 'Media & files across chats';
-  String get mirsaalGlobalMediaEmpty => isArabic
-      ? 'لن تظهر هنا الوسائط والملفات حتى تستخدم مرسال مع أصدقائك.'
-      : 'Media and files will appear here once you use Mirsaal with your friends.';
-  String get mirsaalGlobalMediaSearchHint =>
+  String get shamellGlobalMediaEmpty => isArabic
+      ? 'لن تظهر هنا الوسائط والملفات حتى تستخدم شامل مع أصدقائك.'
+      : 'Media and files will appear here once you use Shamell with your friends.';
+  String get shamellGlobalMediaSearchHint =>
       isArabic ? 'بحث في الوسائط والملفات' : 'Search in media and files';
 
-  // Mirsaal reactions
-  String get mirsaalReactionsTitle =>
+  // Shamell reactions
+  String get shamellReactionsTitle =>
       isArabic ? 'تفاعل مع الرسالة' : 'React to message';
 
-  // Mirsaal contact info / favorites
-  String get mirsaalContactInfoTitle =>
+  // Shamell contact info / favorites
+  String get shamellContactInfoTitle =>
       isArabic ? 'معلومات جهة الاتصال' : 'Contact info';
-  String get mirsaalContactRemarkLabel =>
+  String get shamellContactRemarkLabel =>
       isArabic ? 'ملاحظة (اسم مخصص)' : 'Remark (alias)';
-  String get mirsaalContactChatIdPrefix =>
+  String get shamellContactChatIdPrefix =>
       isArabic ? 'معرّف الدردشة:' : 'Chat ID:';
-  String get mirsaalFavoritesTitle => isArabic ? 'المفضلة' : 'Favorites';
-  String get mirsaalFavoritesNewTitle =>
+  String get shamellFavoritesTitle => isArabic ? 'المفضلة' : 'Favorites';
+  String get shamellFavoritesNewTitle =>
       isArabic ? 'عنصر مفضل جديد' : 'New favorite';
-  String get mirsaalFavoritesHint => isArabic
+  String get shamellFavoritesHint => isArabic
       ? 'احفظ أي شيء تريد الرجوع إليه لاحقاً'
       : 'Save anything you want to revisit later';
-  String get mirsaalFavoritesAdd => isArabic ? 'إضافة' : 'Add';
-  String get mirsaalFavoritesEmpty =>
+  String get shamellFavoritesAdd => isArabic ? 'إضافة' : 'Add';
+  String get shamellFavoritesEmpty =>
       isArabic ? 'لا توجد عناصر مفضلة بعد.' : 'No favorites yet.';
-  String get mirsaalFavoritesTagsPrefix => isArabic ? 'الوسوم:' : 'Tags:';
-  String get mirsaalFavoritesOpenChatTooltip =>
+  String get shamellFavoritesTagsPrefix => isArabic ? 'الوسوم:' : 'Tags:';
+  String get shamellFavoritesOpenChatTooltip =>
       isArabic ? 'فتح الدردشة' : 'Open chat';
-  String get mirsaalFavoritesRemoveTooltip => isArabic ? 'حذف' : 'Remove';
-  String get mirsaalChatThemeTitle => isArabic ? 'سمة الدردشة' : 'Chat theme';
-  String get mirsaalChatThemeDefault => isArabic ? 'افتراضية' : 'Default';
-  String get mirsaalChatThemeDark => isArabic ? 'داكنة' : 'Dark';
-  String get mirsaalChatThemeGreen => isArabic ? 'أخضر' : 'Green';
-  String get mirsaalFavoritesFilterAll => isArabic ? 'كل العناصر' : 'All items';
-  String get mirsaalFavoritesFilterMessages =>
+  String get shamellFavoritesRemoveTooltip => isArabic ? 'حذف' : 'Remove';
+  String get shamellChatThemeTitle => isArabic ? 'سمة الدردشة' : 'Chat theme';
+  String get shamellChatThemeDefault => isArabic ? 'افتراضية' : 'Default';
+  String get shamellChatThemeDark => isArabic ? 'داكنة' : 'Dark';
+  String get shamellChatThemeGreen => isArabic ? 'أخضر' : 'Green';
+  String get shamellFavoritesFilterAll => isArabic ? 'كل العناصر' : 'All items';
+  String get shamellFavoritesFilterMessages =>
       isArabic ? 'رسائل الدردشة' : 'Starred messages';
 
-  // Mirsaal profile
-  String get mirsaalProfileShowQr => isArabic ? 'إظهار رمز QR' : 'Show QR';
-  String get mirsaalProfileShareId =>
-      isArabic ? 'مشاركة معرف Mirsaal' : 'Share Mirsaal ID';
-  String get mirsaalProfileSafe => isArabic ? 'خزنة Mirsaal' : 'Mirsaal safe';
-  String get mirsaalProfileExportId => isArabic ? 'تصدير المعرف' : 'Export ID';
-  String get mirsaalProfileRevocationPass =>
+  // Shamell profile
+  String get shamellProfileShowQr => isArabic ? 'إظهار رمز QR' : 'Show QR';
+  String get shamellProfileShareId =>
+      isArabic ? 'مشاركة معرف Shamell' : 'Share Shamell ID';
+  String get shamellProfileSafe => isArabic ? 'خزنة Shamell' : 'Shamell safe';
+  String get shamellProfileExportId => isArabic ? 'تصدير المعرف' : 'Export ID';
+  String get shamellProfileRevocationPass =>
       isArabic ? 'كلمة مرور إلغاء المعرف' : 'ID revocation passphrase';
-  String get mirsaalProfileLinkedPhone =>
+  String get shamellProfileLinkedPhone =>
       isArabic ? 'رقم هاتف مرتبط' : 'Linked phone number';
-  String get mirsaalProfileLinkedEmail =>
+  String get shamellProfileLinkedEmail =>
       isArabic ? 'بريد إلكتروني مرتبط' : 'Linked email';
-  String get mirsaalProfilePublicKey =>
+  String get shamellProfilePublicKey =>
       isArabic ? 'المفتاح العام' : 'Public key';
-  String get mirsaalProfileDeleteId =>
+  String get shamellProfileDeleteId =>
       isArabic ? 'حذف المعرف والبيانات' : 'Delete ID and data';
 
   // Sonic / Vouchers / Cash
@@ -692,8 +674,21 @@ class L10n {
       isArabic ? 'تبديل وضع التطبيق' : 'Switch app mode';
   String get menuLogout => isArabic ? 'تبديل الحساب' : 'Switch account';
   String get menuLogoutSubtitle => isArabic
-      ? 'تسجيل الخروج من هذا الجهاز وتسجيل الدخول برقم آخر.'
-      : 'Log out from this device and sign in with a different number.';
+      ? 'تسجيل الخروج من هذا الجهاز. يمكنك الرجوع بالبصمة، أو ربط حساب آخر عبر رمز QR.'
+      : 'Log out from this device. You can come back with biometrics, or link a different account via QR.';
+  String get menuLogoutForgetDevice => isArabic
+      ? 'تسجيل الخروج ونسيان هذا الجهاز'
+      : 'Logout & forget this device';
+  String get menuLogoutForgetDeviceSubtitle => isArabic
+      ? 'سيتم حذف تسجيل الدخول عبر القياسات الحيوية ومعرف الجهاز وكلمة المرور المحلية.'
+      : 'Removes biometric sign-in, device ID, and local password.';
+  String get menuLogoutForgetDeviceConfirmTitle =>
+      isArabic ? 'تأكيد' : 'Confirm';
+  String get menuLogoutForgetDeviceConfirmBody => isArabic
+      ? 'سيؤدي ذلك إلى إزالة هذا الجهاز من الحساب ومسح كل بياناته المحلية. ستحتاج إلى ربطه من جديد.'
+      : 'This will remove this device from your account and wipe all local data. You will need to re-enroll this device.';
+  String get menuLogoutForgetDeviceConfirmAction =>
+      isArabic ? 'نسيان الجهاز' : 'Forget device';
   String get menuOperatorConsole =>
       isArabic ? 'لوحة المشغل' : 'Operator console';
   String get menuAdminConsole => isArabic ? 'لوحة المسؤول' : 'Admin console';
@@ -716,8 +711,8 @@ class L10n {
       ? 'إعداد Shamell Pay للمحفظة والفواتير'
       : 'Set up Shamell Pay for wallet and bills';
   String get mePayEntrySubtitleManage => isArabic
-      ? 'إدارة المحفظة، الفواتير والحزم الحمراء'
-      : 'Manage wallet, bills and red packets';
+      ? 'إدارة المحفظة والفواتير'
+      : 'Manage wallet and bills';
 
   // Generic small labels
   String get labelPage => isArabic ? 'صفحة' : 'page';

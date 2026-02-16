@@ -5,12 +5,14 @@ server {
 
     listen 80;
     server_name media.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
     server_name media.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
     ssl_certificate /etc/letsencrypt/live/media.shamell.online/fullchain.pem; # managed by Certbot
     ssl_certificate_key /etc/letsencrypt/live/media.shamell.online/privkey.pem; # managed by Certbot
     include /etc/letsencrypt/options-ssl-nginx.conf;

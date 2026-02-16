@@ -1,0 +1,22 @@
+[Unit]
+Description=Shamell security event report and alert evaluation
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/shamell-security-events-report
+Environment=APP_DIR=/opt/shamell
+ExecStartPre=/usr/bin/install -d -m 0750 /var/lib/shamell-security
+ExecStart=/usr/bin/flock -n /run/shamell-security-events-report.lock /usr/bin/env bash -lc 'set -euo pipefail; APP_DIR="$${APP_DIR:-/opt/shamell}"; REPORT_SCRIPT="$${APP_DIR}/scripts/security_events_report.sh"; [[ -x "$${REPORT_SCRIPT}" ]] || { echo "missing security report script: $${REPORT_SCRIPT}" >&2; exit 1; }; export COMPOSE_FILE="$${COMPOSE_FILE:-$${APP_DIR}/ops/pi/docker-compose.postgres.yml}"; export ENV_FILE="$${ENV_FILE:-$${APP_DIR}/ops/pi/.env}"; export SECURITY_ALERT_STATE_FILE="$${SECURITY_ALERT_STATE_FILE:-/var/lib/shamell-security/security-alert-cooldowns.state}"; cd "$${APP_DIR}"; "$${REPORT_SCRIPT}"'
+# Exit code 2 means thresholds were crossed; keep unit state healthy and rely on webhook + logs.
+SuccessExitStatus=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,7 @@ import '../../core/l10n.dart';
 import 'payments_receive.dart';
 import 'payments_scan.dart';
 
-/// WeChat-style combined "Receive & Pay" screen.
+/// Shamell-style combined "Receive & Pay" screen.
 class ReceivePayPage extends StatelessWidget {
   final String baseUrl;
   final String fromWalletId;

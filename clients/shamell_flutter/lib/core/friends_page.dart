@@ -1,23 +1,23 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'http_error.dart';
 import 'l10n.dart';
-import 'people_nearby_page.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 
-Future<Map<String, String>> _hdrFriends({bool json = false}) async {
+Future<Map<String, String>> _hdrFriends({
+  required String baseUrl,
+  bool json = false,
+}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
   try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie');
-    if (cookie != null && cookie.isNotEmpty) {
-      h['sa_cookie'] = cookie;
-    }
+    final cookie = await getSessionCookieHeader(baseUrl);
+    if (cookie != null && cookie.isNotEmpty) h['cookie'] = cookie;
   } catch (_) {}
   return h;
 }
@@ -57,10 +57,7 @@ class _FriendsPageState extends State<FriendsPage> {
   String _requestOut = '';
   bool _busy = false;
   Map<String, String> _aliases = <String, String>{};
-  bool _contactsLoading = false;
-  List<Map<String, String>> _contactSuggestions = <Map<String, String>>[];
   Map<String, String> _tags = <String, String>{};
-  int _contactMatches = 0;
 
   @override
   void initState() {
@@ -90,7 +87,6 @@ class _FriendsPageState extends State<FriendsPage> {
       await _loadTags();
       if (widget.mode == FriendsPageMode.newFriends) {
         await _loadRequests();
-        await _loadContactSuggestions();
       }
     } catch (_) {}
     if (!mounted) return;
@@ -102,7 +98,10 @@ class _FriendsPageState extends State<FriendsPage> {
   Future<void> _loadFriends() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/friends');
-      final r = await http.get(uri, headers: await _hdrFriends());
+      final r = await http.get(
+        uri,
+        headers: await _hdrFriends(baseUrl: widget.baseUrl),
+      );
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         final arr = (j is Map ? j['friends'] : j) as Object?;
@@ -119,7 +118,10 @@ class _FriendsPageState extends State<FriendsPage> {
   Future<void> _loadRequests() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/friend_requests');
-      final r = await http.get(uri, headers: await _hdrFriends());
+      final r = await http.get(
+        uri,
+        headers: await _hdrFriends(baseUrl: widget.baseUrl),
+      );
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         if (j is Map<String, dynamic>) {
@@ -198,144 +200,20 @@ class _FriendsPageState extends State<FriendsPage> {
       final sp = await SharedPreferences.getInstance();
       await sp.setString('friends.tags', jsonEncode(_tags));
     } catch (_) {}
-
-    // Best-effort sync to backend for each friend/tag set so Moments can use
-    // labels as audience filters, and persist a mapping so chat can show
-    // WeChat-style contact details.
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final chatIdToPhone = <String, String>{};
-      final closeMap = <String, bool>{};
-      for (final f in _friends) {
-        final chatId = _friendChatId(f);
-        if (chatId.isEmpty) continue;
-        final phone = (f['phone'] ?? f['id'] ?? '').toString().trim();
-        if (phone.isEmpty) continue;
-        chatIdToPhone[chatId] = phone;
-        final isClose = (f['close'] as bool?) ?? false;
-        if (isClose) {
-          closeMap[chatId] = true;
-        }
-      }
-      await sp.setString('friends.chat_to_phone', jsonEncode(chatIdToPhone));
-      await sp.setString('friends.close', jsonEncode(closeMap));
-      for (final entry in _tags.entries) {
-        final chatId = entry.key;
-        final tagsText = entry.value.trim();
-        if (tagsText.isEmpty) continue;
-        final phone = (chatIdToPhone[chatId] ?? '').trim();
-        if (phone.isEmpty) continue;
-        final tags = tagsText
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
-        if (tags.isEmpty) continue;
-        try {
-          final uri = Uri.parse('${widget.baseUrl}/me/friends/$phone/tags');
-          await http.post(
-            uri,
-            headers: await _hdrFriends(json: true),
-            body: jsonEncode({'tags': tags}),
-          );
-        } catch (_) {}
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _loadContactSuggestions() async {
-    setState(() {
-      _contactsLoading = true;
-    });
-    try {
-      if (!await FlutterContacts.requestPermission()) {
-        if (!mounted) return;
-        setState(() {
-          _contactsLoading = false;
-          _contactSuggestions = const <Map<String, String>>[];
-        });
-        return;
-      }
-      final contacts = await FlutterContacts.getContacts(withProperties: true);
-      final existing = <String>{};
-      for (final f in _friends) {
-        final p = (f['phone'] ?? f['id'] ?? '').toString().replaceAll(' ', '');
-        if (p.isNotEmpty) existing.add(p);
-      }
-      final sugg = <Map<String, String>>[];
-      final phones = <String>[];
-      for (final c in contacts) {
-        if (c.phones.isEmpty) continue;
-        final phone = c.phones.first.number.replaceAll(' ', '');
-        if (phone.isEmpty) continue;
-        if (existing.contains(phone)) continue;
-        sugg.add({'name': c.displayName, 'phone': phone});
-        phones.add(phone);
-        if (sugg.length >= 16) break;
-      }
-
-      // Ask backend which of these contacts are active Shamell users.
-      final matchedPhones = <String>{};
-      if (phones.isNotEmpty) {
-        try {
-          final uri = Uri.parse('${widget.baseUrl}/me/contacts/sync');
-          final resp = await http.post(
-            uri,
-            headers: await _hdrFriends(json: true),
-            body: jsonEncode({'phones': phones}),
-          );
-          if (resp.statusCode >= 200 && resp.statusCode < 300) {
-            final decoded = jsonDecode(resp.body);
-            List<dynamic>? arr;
-            if (decoded is Map && decoded['matches'] is List) {
-              arr = decoded['matches'] as List;
-            } else if (decoded is List) {
-              arr = decoded;
-            }
-            if (arr != null) {
-              for (final e in arr) {
-                if (e is! Map) continue;
-                final m = e.cast<String, dynamic>();
-                final p = (m['phone'] ?? '').toString().replaceAll(' ', '');
-                if (p.isEmpty) continue;
-                matchedPhones.add(p);
-              }
-            }
-          }
-        } catch (_) {}
-      }
-
-      // Prefer showing only contacts that are known Shamell users; if none
-      // match, fall back to local suggestions.
-      List<Map<String, String>> finalSugg = sugg;
-      if (matchedPhones.isNotEmpty) {
-        finalSugg = sugg
-            .where((c) => matchedPhones.contains((c['phone'] ?? '').toString()))
-            .toList();
-      }
-      if (finalSugg.length > 8) {
-        finalSugg = finalSugg.sublist(0, 8);
-      }
-      if (!mounted) return;
-      setState(() {
-        _contactSuggestions = finalSugg;
-        _contactMatches =
-            matchedPhones.isNotEmpty ? matchedPhones.length : finalSugg.length;
-        _contactsLoading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _contactsLoading = false;
-        _contactSuggestions = const <Map<String, String>>[];
-        _contactMatches = 0;
-      });
-    }
   }
 
   Future<void> _sendRequest() async {
     final target = _addCtrl.text.trim();
     if (target.isEmpty) return;
+    if (_looksLikePhoneIdentifier(target)) {
+      if (!mounted) return;
+      setState(() {
+        _requestOut = L10n.of(context).isArabic
+            ? 'إضافة الأصدقاء عبر رقم الهاتف غير مدعومة. استخدم Shamell ID أو رمز QR.'
+            : 'Adding friends by phone number is not supported. Use Shamell ID or QR.';
+      });
+      return;
+    }
     setState(() {
       _busy = true;
       _requestOut = '';
@@ -344,7 +222,7 @@ class _FriendsPageState extends State<FriendsPage> {
       final uri = Uri.parse('${widget.baseUrl}/friends/request');
       final r = await http.post(
         uri,
-        headers: await _hdrFriends(json: true),
+        headers: await _hdrFriends(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode({'target_id': target}),
       );
       if (r.statusCode >= 200 && r.statusCode < 300) {
@@ -357,50 +235,19 @@ class _FriendsPageState extends State<FriendsPage> {
         }
       } else {
         setState(() {
-          _requestOut = '${r.statusCode}: ${r.body}';
+          _requestOut = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _requestOut = 'error: $e';
-      });
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _sendRequestToPhone(String phone) async {
-    final target = phone.trim();
-    if (target.isEmpty) return;
-    setState(() {
-      _busy = true;
-      _requestOut = '';
-    });
-    try {
-      final uri = Uri.parse('${widget.baseUrl}/friends/request');
-      final r = await http.post(
-        uri,
-        headers: await _hdrFriends(json: true),
-        body: jsonEncode({'target_id': target}),
-      );
-      if (r.statusCode >= 200 && r.statusCode < 300) {
-        await _loadFriends();
-        await _loadRequests();
-        if (mounted) {
-          setState(() {
-            _contactSuggestions = _contactSuggestions
-                .where((c) => (c['phone'] ?? '') != target)
-                .toList();
-          });
-        }
-      } else {
-        setState(() {
-          _requestOut = '${r.statusCode}: ${r.body}';
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _requestOut = 'error: $e';
+        _requestOut = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
       });
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -415,7 +262,7 @@ class _FriendsPageState extends State<FriendsPage> {
       final uri = Uri.parse('${widget.baseUrl}/friends/accept');
       final r = await http.post(
         uri,
-        headers: await _hdrFriends(json: true),
+        headers: await _hdrFriends(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode({'request_id': requestId}),
       );
       if (r.statusCode >= 200 && r.statusCode < 300) {
@@ -423,12 +270,19 @@ class _FriendsPageState extends State<FriendsPage> {
         await _loadRequests();
       } else {
         setState(() {
-          _requestOut = '${r.statusCode}: ${r.body}';
+          _requestOut = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       }
     } catch (e) {
       setState(() {
-        _requestOut = 'error: $e';
+        _requestOut = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
       });
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -437,23 +291,26 @@ class _FriendsPageState extends State<FriendsPage> {
 
   Future<void> _setCloseFriend(
       Map<String, dynamic> friend, bool isClose) async {
-    final phone = (friend['phone'] ?? friend['id'] ?? '').toString().trim();
-    if (phone.isEmpty) return;
+    final chatId = _friendChatId(friend);
+    if (chatId.isEmpty) return;
     setState(() {
       friend['close'] = isClose;
     });
     try {
-      final uri = Uri.parse('${widget.baseUrl}/me/close_friends/$phone');
-      final headers = await _hdrFriends();
-      final r = isClose
-          ? await http.post(uri, headers: headers)
-          : await http.delete(uri, headers: headers);
-      if (r.statusCode < 200 || r.statusCode >= 300) {
-        if (!mounted) return;
-        setState(() {
-          friend['close'] = !isClose;
-        });
+      final sp = await SharedPreferences.getInstance();
+      final rawClose = sp.getString('friends.close') ?? '{}';
+      Map<String, dynamic> decodedClose;
+      try {
+        decodedClose = jsonDecode(rawClose) as Map<String, dynamic>;
+      } catch (_) {
+        decodedClose = <String, dynamic>{};
       }
+      if (isClose) {
+        decodedClose[chatId] = true;
+      } else {
+        decodedClose.remove(chatId);
+      }
+      await sp.setString('friends.close', jsonEncode(decodedClose));
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -462,22 +319,23 @@ class _FriendsPageState extends State<FriendsPage> {
     }
   }
 
+  bool _looksLikePhoneIdentifier(String raw) {
+    final s = raw.trim();
+    if (s.isEmpty) return false;
+    if (RegExp(r'[A-Za-z]').hasMatch(s)) return false;
+    final normalized = s.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (normalized.isEmpty) return false;
+    return RegExp(r'^\+?[0-9]{7,20}$').hasMatch(normalized);
+  }
+
   String _friendChatId(Map<String, dynamic> f) {
     try {
       final deviceId = (f['device_id'] ?? '').toString();
       if (deviceId.isNotEmpty) return deviceId;
     } catch (_) {}
     try {
-      final shamellId = (f['shamell_id'] ?? '').toString();
-      if (shamellId.isNotEmpty) return shamellId;
-    } catch (_) {}
-    try {
       final id = (f['id'] ?? '').toString();
       if (id.isNotEmpty) return id;
-    } catch (_) {}
-    try {
-      final phone = (f['phone'] ?? '').toString();
-      if (phone.isNotEmpty) return phone;
     } catch (_) {}
     return '';
   }
@@ -518,7 +376,7 @@ class _FriendsPageState extends State<FriendsPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    l.mirsaalFriendAliasTitle,
+                    l.shamellFriendAliasTitle,
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -534,16 +392,16 @@ class _FriendsPageState extends State<FriendsPage> {
                   TextField(
                     controller: ctrl,
                     decoration: InputDecoration(
-                      labelText: l.mirsaalFriendAliasLabel,
-                      hintText: l.mirsaalFriendAliasHint,
+                      labelText: l.shamellFriendAliasLabel,
+                      hintText: l.shamellFriendAliasHint,
                     ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
                     controller: tagsCtrl,
                     decoration: InputDecoration(
-                      labelText: l.mirsaalFriendTagsLabel,
-                      hintText: l.mirsaalFriendTagsHint,
+                      labelText: l.shamellFriendTagsLabel,
+                      hintText: l.shamellFriendTagsHint,
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -552,7 +410,7 @@ class _FriendsPageState extends State<FriendsPage> {
                     children: [
                       TextButton(
                         onPressed: () => Navigator.of(ctx).pop(),
-                        child: Text(l.mirsaalDialogCancel),
+                        child: Text(l.shamellDialogCancel),
                       ),
                       const SizedBox(width: 8),
                       TextButton(
@@ -603,19 +461,19 @@ class _FriendsPageState extends State<FriendsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
-    final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
+    final dividerColor = isDark ? theme.dividerColor : ShamellPalette.divider;
 
     String title;
     switch (widget.mode) {
       case FriendsPageMode.newFriends:
-        title = l.mirsaalContactsNewFriends;
+        title = l.shamellContactsNewFriends;
         break;
       case FriendsPageMode.manage:
-        title = l.mirsaalFriendsListTitle;
+        title = l.shamellFriendsListTitle;
         break;
       case FriendsPageMode.picker:
-        title = l.mirsaalTabContacts;
+        title = l.shamellTabContacts;
         break;
     }
 
@@ -711,7 +569,7 @@ class _FriendsPageState extends State<FriendsPage> {
                   children: [
                     if (isClose)
                       Text(
-                        l.mirsaalFriendsCloseLabel,
+                        l.shamellFriendsCloseLabel,
                         style: subtitleStyle,
                       ),
                     if (alias != null && alias.isNotEmpty)
@@ -723,7 +581,7 @@ class _FriendsPageState extends State<FriendsPage> {
                       ),
                     if (tagsText != null && tagsText.isNotEmpty)
                       Text(
-                        '${l.mirsaalFriendTagsPrefix} $tagsText',
+                        '${l.shamellFriendTagsPrefix} $tagsText',
                         style: subtitleStyle.copyWith(fontSize: 11),
                       ),
                   ],
@@ -742,7 +600,7 @@ class _FriendsPageState extends State<FriendsPage> {
                     isClose ? Icons.star : Icons.star_border,
                     size: 20,
                     color: isClose
-                        ? WeChatPalette.green
+                        ? ShamellPalette.green
                         : theme.colorScheme.onSurface.withValues(alpha: .35),
                   ),
                   onPressed: _busy ? null : () => _setCloseFriend(f, !isClose),
@@ -777,7 +635,7 @@ class _FriendsPageState extends State<FriendsPage> {
       return ListTile(
         dense: true,
         contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-        leading: WeChatLeadingIcon(
+        leading: ShamellLeadingIcon(
           icon:
               incoming ? Icons.person_add_alt_1_outlined : Icons.outgoing_mail,
           background:
@@ -804,45 +662,15 @@ class _FriendsPageState extends State<FriendsPage> {
             ? OutlinedButton(
                 onPressed: _busy ? null : () => _acceptRequest(reqId),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: WeChatPalette.green,
-                  side: const BorderSide(color: WeChatPalette.green),
+                  foregroundColor: ShamellPalette.green,
+                  side: const BorderSide(color: ShamellPalette.green),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   minimumSize: const Size(0, 34),
                   textStyle: const TextStyle(fontWeight: FontWeight.w700),
                 ),
-                child: Text(l.mirsaalFriendsAccept),
+                child: Text(l.shamellFriendsAccept),
               )
             : null,
-      );
-    }
-
-    Widget peopleNearbyTile() {
-      return ListTile(
-        dense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-        leading: const WeChatLeadingIcon(
-          icon: Icons.location_on_outlined,
-          background: Color(0xFFF59E0B),
-        ),
-        title: Text(l.mirsaalFriendsPeopleNearbyTitle),
-        subtitle: Text(
-          l.mirsaalFriendsPeopleNearbySubtitle,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: .65),
-          ),
-        ),
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PeopleNearbyPage(
-                baseUrl: widget.baseUrl,
-                recommendedOfficials: const [],
-                recommendedCityLabel: null,
-              ),
-            ),
-          );
-        },
       );
     }
 
@@ -874,7 +702,7 @@ class _FriendsPageState extends State<FriendsPage> {
       final tiles = <Widget>[];
       tiles.add(const SizedBox(height: 10));
       tiles.add(
-        WeChatSearchBar(
+        ShamellSearchBar(
           hintText: l.labelSearch,
           controller: _filterCtrl,
           onChanged: (_) => setState(() {}),
@@ -887,7 +715,7 @@ class _FriendsPageState extends State<FriendsPage> {
           Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              l.mirsaalFriendsEmpty,
+              l.shamellFriendsEmpty,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: .70),
               ),
@@ -907,7 +735,7 @@ class _FriendsPageState extends State<FriendsPage> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               child: Text(
-                l.mirsaalFriendsCloseLabel,
+                l.shamellFriendsCloseLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
                   fontWeight: FontWeight.w700,
                   color: theme.colorScheme.onSurface.withValues(alpha: .65),
@@ -916,7 +744,7 @@ class _FriendsPageState extends State<FriendsPage> {
             ),
           );
           tiles.add(
-            WeChatSection(
+            ShamellSection(
               margin: EdgeInsets.zero,
               backgroundColor:
                   isDark ? theme.colorScheme.surface : Colors.white,
@@ -1045,7 +873,7 @@ class _FriendsPageState extends State<FriendsPage> {
       }
 
       final addFill =
-          isDark ? WeChatPalette.searchFillDark : WeChatPalette.searchFill;
+          isDark ? ShamellPalette.searchFillDark : ShamellPalette.searchFill;
 
       return ListView(
         padding: EdgeInsets.zero,
@@ -1072,7 +900,7 @@ class _FriendsPageState extends State<FriendsPage> {
                           color: theme.colorScheme.onSurface
                               .withValues(alpha: .55),
                         ),
-                        hintText: l.mirsaalFriendsSearchHint,
+                        hintText: l.shamellFriendsSearchHint,
                       ),
                       onSubmitted: (_) {
                         if (_busy) return;
@@ -1091,7 +919,7 @@ class _FriendsPageState extends State<FriendsPage> {
                       onPressed: canSend ? _sendRequest : null,
                       style: TextButton.styleFrom(
                         backgroundColor:
-                            canSend ? WeChatPalette.green : Colors.transparent,
+                            canSend ? ShamellPalette.green : Colors.transparent,
                         foregroundColor: canSend
                             ? Colors.white
                             : theme.colorScheme.onSurface
@@ -1122,94 +950,36 @@ class _FriendsPageState extends State<FriendsPage> {
                 ),
               ),
             ),
-          header(l.mirsaalFriendsSuggestionsTitle),
-          WeChatSection(
+          header(l.isArabic ? 'الخصوصية' : 'Privacy'),
+          ShamellSection(
             margin: EdgeInsets.zero,
             backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
             children: [
               ListTile(
                 dense: true,
-                leading: const WeChatLeadingIcon(
-                  icon: Icons.sync,
+                leading: const ShamellLeadingIcon(
+                  icon: Icons.privacy_tip_outlined,
                   background: Color(0xFF94A3B8),
                 ),
-                title: Text(l.mirsaalFriendsSyncContacts),
-                trailing: _contactsLoading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : (_contactMatches > 0
-                        ? Text(
-                            '$_contactMatches',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: theme.colorScheme.onSurface
-                                  .withValues(alpha: .60),
-                            ),
-                          )
-                        : const Icon(Icons.chevron_right)),
-                onTap: _contactsLoading ? null : _loadContactSuggestions,
+                title: Text(
+                  l.isArabic
+                      ? 'لا نستخدم رقم الهاتف لاكتشاف جهات الاتصال.'
+                      : 'Phone numbers are not used for contact discovery.',
+                ),
+                subtitle: Text(
+                  l.isArabic
+                      ? 'أضف الأصدقاء عبر Shamell ID أو رمز QR.'
+                      : 'Add friends via Shamell ID or QR.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                  ),
+                ),
               ),
-              if (!_contactsLoading && _contactSuggestions.isEmpty)
-                ListTile(
-                  dense: true,
-                  title: Text(
-                    l.mirsaalFriendsSuggestionsEmpty,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: .70),
-                    ),
-                  ),
-                ),
-              for (final c in _contactSuggestions) ...[
-                ListTile(
-                  dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                  leading: const WeChatLeadingIcon(
-                    icon: Icons.person_add_outlined,
-                    background: Color(0xFF60A5FA),
-                  ),
-                  title: Text(
-                    ((c['name'] ?? '').toString().trim().isNotEmpty)
-                        ? (c['name'] ?? '').toString()
-                        : (c['phone'] ?? '').toString(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: Text(
-                    (c['phone'] ?? '').toString(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontSize: 12,
-                      color: theme.colorScheme.onSurface.withValues(alpha: .60),
-                    ),
-                  ),
-                  trailing: TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () =>
-                            _sendRequestToPhone((c['phone'] ?? '').toString()),
-                    style: TextButton.styleFrom(
-                      foregroundColor: WeChatPalette.green,
-                      textStyle: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    child: Text(l.isArabic ? 'إضافة' : 'Add'),
-                  ),
-                  onTap: _busy
-                      ? null
-                      : () =>
-                          _sendRequestToPhone((c['phone'] ?? '').toString()),
-                ),
-              ],
             ],
           ),
           if (_incoming.isNotEmpty || _outgoing.isNotEmpty) ...[
-            header(l.mirsaalFriendsRequestsTitle),
-            WeChatSection(
+            header(l.shamellFriendsRequestsTitle),
+            ShamellSection(
               margin: EdgeInsets.zero,
               backgroundColor:
                   isDark ? theme.colorScheme.surface : Colors.white,
@@ -1219,12 +989,6 @@ class _FriendsPageState extends State<FriendsPage> {
               ],
             ),
           ],
-          header(l.mirsaalFriendsPeopleNearbyTitle),
-          WeChatSection(
-            margin: EdgeInsets.zero,
-            backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
-            children: [peopleNearbyTile()],
-          ),
           const SizedBox(height: 20),
         ],
       );
