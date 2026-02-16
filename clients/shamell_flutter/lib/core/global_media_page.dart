@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 
 import 'chat/chat_models.dart';
 import 'chat/chat_service.dart';
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
 import 'l10n.dart';
 
 class GlobalMediaPage extends StatefulWidget {
@@ -95,7 +96,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -191,7 +192,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                l.mirsaalGlobalMediaEmpty,
+                l.shamellGlobalMediaEmpty,
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .70),
@@ -218,8 +219,8 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
           final title = e.text.isNotEmpty
               ? e.text
               : (e.kind == 'media'
-                  ? l.mirsaalPreviewImage
-                  : l.mirsaalPreviewUnknown);
+                  ? l.shamellPreviewImage
+                  : l.shamellPreviewUnknown);
           final subtitle =
               tsLabel.isEmpty ? e.peerId : '$tsLabel · ${e.peerId}';
           return ListTile(
@@ -248,7 +249,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => ThreemaChatPage(
+                  builder: (_) => ShamellChatPage(
                     baseUrl: widget.baseUrl,
                     initialPeerId: e.peerId,
                     initialMessageId: m.id,
@@ -263,7 +264,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l.mirsaalGlobalMediaTitle),
+        title: Text(l.shamellGlobalMediaTitle),
       ),
       body: Column(
         children: [
@@ -273,7 +274,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
               controller: _searchCtrl,
               decoration: InputDecoration(
                 prefixIcon: const Icon(Icons.search),
-                hintText: l.mirsaalGlobalMediaSearchHint,
+                hintText: l.shamellGlobalMediaSearchHint,
               ),
               textInputAction: TextInputAction.search,
               onChanged: (val) {
@@ -289,7 +290,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
               spacing: 8,
               children: [
                 ChoiceChip(
-                  label: Text(l.mirsaalSearchFilterMedia),
+                  label: Text(l.shamellSearchFilterMedia),
                   selected: _filter == 'media',
                   onSelected: (sel) {
                     if (!sel) return;
@@ -297,7 +298,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
                   },
                 ),
                 ChoiceChip(
-                  label: Text(l.mirsaalSearchFilterFiles),
+                  label: Text(l.shamellSearchFilterFiles),
                   selected: _filter == 'files',
                   onSelected: (sel) {
                     if (!sel) return;
@@ -305,7 +306,7 @@ class _GlobalMediaPageState extends State<GlobalMediaPage> {
                   },
                 ),
                 ChoiceChip(
-                  label: Text(l.mirsaalSearchFilterLinks),
+                  label: Text(l.shamellSearchFilterLinks),
                   selected: _filter == 'links',
                   onSelected: (sel) {
                     if (!sel) return;
