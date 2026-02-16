@@ -227,6 +227,68 @@ void main() {
     expect(inbox.single.sealedSender, isTrue);
   });
 
+  test('peer key bundle guard accepts only strict v2-only bundles', () {
+    const ok = ChatKeyBundle(
+      deviceId: 'peer-1',
+      identityKeyB64: 'AAAA',
+      identitySigningPubkeyB64: 'BBBB',
+      signedPrekeyId: 1,
+      signedPrekeyB64: 'CCCC',
+      signedPrekeySigB64: 'DDDD',
+      protocolFloor: 'v2_libsignal',
+      supportsV2: true,
+      v2Only: true,
+    );
+    expect(shamellAcceptPeerKeyBundle(ok), isTrue);
+
+    const legacy = ChatKeyBundle(
+      deviceId: 'peer-1',
+      identityKeyB64: 'AAAA',
+      identitySigningPubkeyB64: 'BBBB',
+      signedPrekeyId: 1,
+      signedPrekeyB64: 'CCCC',
+      signedPrekeySigB64: 'DDDD',
+      protocolFloor: 'v1_legacy',
+      supportsV2: false,
+      v2Only: false,
+    );
+    expect(shamellAcceptPeerKeyBundle(legacy), isFalse);
+  });
+
+  test('fetchKeyBundle rejects insecure peer bundles', () async {
+    final mock = MockClient((req) async {
+      if (req.url.path == '/chat/keys/bundle/peer-1') {
+        return http.Response(
+          jsonEncode(<String, Object?>{
+            'device_id': 'peer-1',
+            'identity_key_b64': 'AAAA',
+            'identity_signing_pubkey_b64': 'BBBB',
+            'signed_prekey_id': 10,
+            'signed_prekey_b64': 'CCCC',
+            'signed_prekey_sig_b64': 'DDDD',
+            'protocol_floor': 'v1_legacy',
+            'supports_v2': false,
+            'v2_only': false,
+          }),
+          200,
+          headers: const <String, String>{'content-type': 'application/json'},
+        );
+      }
+      return http.Response('not found', 404);
+    });
+    final svc = ChatService('http://127.0.0.1:8080', httpClient: mock);
+    await expectLater(
+      () => svc.fetchKeyBundle(targetDeviceId: 'peer-1'),
+      throwsA(
+        isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('insecure key bundle'),
+        ),
+      ),
+    );
+  });
+
   test('remote inbox JSON cannot enable trusted local plaintext mode', () {
     final m = ChatMessage.fromJson(<String, Object?>{
       'id': 'm-1',

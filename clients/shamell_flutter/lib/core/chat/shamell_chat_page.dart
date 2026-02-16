@@ -91,6 +91,14 @@ class _SigningKeyPinViolation implements Exception {
   String toString() => 'SigningKeyPinViolation($reason)';
 }
 
+class _SessionBootstrapViolation implements Exception {
+  final String reason;
+  const _SessionBootstrapViolation(this.reason);
+
+  @override
+  String toString() => 'SessionBootstrapViolation($reason)';
+}
+
 class ShamellChatPage extends StatefulWidget {
   final String baseUrl;
   final String? initialPeerId;
@@ -3714,6 +3722,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     if (error is _SigningKeyPinViolation) {
       return l.shamellSessionChangedBody;
     }
+    if (error is _SessionBootstrapViolation) {
+      return l.shamellSessionChangedBody;
+    }
     if (error is ChatHttpException && error.op == 'send') {
       // Fail-closed 404: DM first-contact is invite-only and also avoids recipient enumeration.
       if (error.statusCode == 404) {
@@ -6052,9 +6063,13 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         throw const _SigningKeyPinViolation('identity signing key missing');
       }
       final identityKeyB64 = bundle.identityKeyB64.trim();
-      if (identityKeyB64.isEmpty) return peer;
+      if (identityKeyB64.isEmpty) {
+        throw const _SessionBootstrapViolation('identity key missing');
+      }
       final bundleFp = fingerprintForKey(identityKeyB64).trim();
-      if (bundleFp.isEmpty) return peer;
+      if (bundleFp.isEmpty) {
+        throw const _SessionBootstrapViolation('identity fingerprint missing');
+      }
 
       final keyChanged =
           identityKeyB64 != peer.publicKeyB64 || bundleFp != peer.fingerprint;
@@ -6090,8 +6105,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       return updatedPeer;
     } on _SigningKeyPinViolation {
       rethrow;
-    } catch (_) {
-      return peer;
+    } on _SessionBootstrapViolation {
+      rethrow;
+    } catch (e) {
+      throw _SessionBootstrapViolation(e.toString());
     }
   }
 

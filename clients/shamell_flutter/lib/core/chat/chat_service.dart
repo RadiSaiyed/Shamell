@@ -199,6 +199,25 @@ bool shamellAcceptDirectInboxEnvelope(Map<String, Object?> map) {
   return true;
 }
 
+@visibleForTesting
+bool shamellAcceptPeerKeyBundle(ChatKeyBundle bundle) {
+  // Fail closed: peer bundle must advertise strict v2-only semantics.
+  if (bundle.deviceId.trim().isEmpty) return false;
+  if (bundle.protocolFloor.trim() != shamellChatProtocolSendVersion) {
+    return false;
+  }
+  if (!bundle.supportsV2 || !bundle.v2Only) return false;
+  if (bundle.identityKeyB64.trim().isEmpty) return false;
+  if (bundle.identitySigningPubkeyB64 == null ||
+      bundle.identitySigningPubkeyB64!.trim().isEmpty) {
+    return false;
+  }
+  if (bundle.signedPrekeyId <= 0) return false;
+  if (bundle.signedPrekeyB64.trim().isEmpty) return false;
+  if (bundle.signedPrekeySigB64.trim().isEmpty) return false;
+  return true;
+}
+
 class ChatService {
   ChatService(String baseUrl, {http.Client? httpClient})
       : _base = baseUrl.endsWith('/')
@@ -404,7 +423,12 @@ class ChatService {
     if (r.statusCode >= 400) {
       throw Exception('key bundle fetch failed: ${r.statusCode}');
     }
-    return ChatKeyBundle.fromJson(jsonDecode(r.body) as Map<String, Object?>);
+    final bundle =
+        ChatKeyBundle.fromJson(jsonDecode(r.body) as Map<String, Object?>);
+    if (!shamellAcceptPeerKeyBundle(bundle)) {
+      throw StateError('insecure key bundle rejected');
+    }
+    return bundle;
   }
 
   Future<void> registerLibsignalBundle({
