@@ -12,7 +12,7 @@ x-core: &livekit_hardening
 services:
   livekit:
     <<: *livekit_hardening
-    image: livekit/livekit-server:v1.5.2
+    image: livekit/livekit-server:v1.5.2@sha256:fb032a59b5d926efae328ba46e54fba69cce5bd09cd4c8ed64d0302f6ed9c6cf
     command: ["--config", "/etc/livekit/livekit.yaml"]
     environment:
       # Never allow dev defaults: if keys are unset, fail fast.
@@ -25,4 +25,3 @@ services:
       # RTC ports must be publicly reachable for WebRTC media.
       - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_TCP_PORT:-7881}:7881"
       - "${LIVEKIT_RTC_PUBLISH_ADDR:-0.0.0.0}:${LIVEKIT_UDP_PORT:-7882}:7882/udp"
-

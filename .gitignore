@@ -19,12 +19,17 @@ __pycache__/
 **/dist/
 **/*.egg-info/
 
+# Rust build artifacts
+target/
+**/target/
+
 # Workspace root .gitignore mirrors common patterns used here.
 
 # Local run logs
 ops/dev/logs/
 ops/dev/pids/
 ops/gcp/logs/
+ops/dev-proxy/certs/
 
 # Flutter/Android build artifacts
 clients/**/build/
@@ -37,6 +42,7 @@ clients/**/android/.gradle/
 shamell-pi.tar.gz
 backups/
 ops/reports/
+.cache/
 
 # IDE/editor
 **/.idea/

@@ -9,8 +9,10 @@ import 'offline_queue.dart';
 import 'format.dart' show fmtCents;
 import 'ui_kit.dart';
 import 'l10n.dart';
+import 'http_error.dart';
 import 'design_tokens.dart';
 import 'app_shell_widgets.dart' show AppBG; // reuse background only
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 class HistoryPage extends StatefulWidget {
   final String baseUrl;
@@ -43,20 +45,20 @@ class _HistoryPageState extends State<HistoryPage> {
     'topup',
     'cash',
     'sonic',
-    'redpacket',
     'bill',
     'savings',
   ];
   final _dates = const ['all', '7d', '30d', 'custom'];
   String _curSym = 'SYP';
   int _limit = 25;
-  bool _mirsaalOnly = false;
+
   @override
   void initState() {
     super.initState();
     _loadPrefs();
     if (widget.initialKind != null && widget.initialKind!.trim().isNotEmpty) {
-      _kindFilter = widget.initialKind!.trim();
+      final v = widget.initialKind!.trim();
+      _kindFilter = _kinds.contains(v) ? v : 'all';
     }
     if (widget.initialTxns != null) {
       txns = widget.initialTxns!;
@@ -89,7 +91,7 @@ class _HistoryPageState extends State<HistoryPage> {
               Uri.encodeComponent(widget.walletId) +
               '/snapshot')
           .replace(queryParameters: qp);
-      final r = await http.get(u, headers: await _hdr());
+      final r = await http.get(u, headers: await _hdr(widget.baseUrl));
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final arr = j['txns'];
@@ -105,10 +107,17 @@ class _HistoryPageState extends State<HistoryPage> {
           if (cur.isNotEmpty) _curSym = cur;
         }
       } else {
-        out = '${r.statusCode}: ${r.body}';
+        out = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
       }
     } catch (e) {
-      out = '${L10n.of(context).historyErrorPrefix}: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     setState(() => loading = false);
   }
@@ -180,9 +189,6 @@ class _HistoryPageState extends State<HistoryPage> {
               : from != widget.walletId);
       final kind = (t['kind'] ?? '').toString().toLowerCase();
       final kindOkay = _kindFilter == 'all' || kind.contains(_kindFilter);
-      final groupId = (t['group_id'] ?? '').toString().toLowerCase();
-      final mirsaalOnlyActive = _mirsaalOnly && _kindFilter == 'redpacket';
-      final mirsaalOkay = !mirsaalOnlyActive || groupId.startsWith('mirsaal:');
       bool dateOkay = true;
       if (minEpoch != null) {
         try {
@@ -191,7 +197,7 @@ class _HistoryPageState extends State<HistoryPage> {
           if (ts != null) dateOkay = ts >= minEpoch;
         } catch (_) {}
       }
-      return dirOkay && kindOkay && dateOkay && mirsaalOkay;
+      return dirOkay && kindOkay && dateOkay;
     }).toList();
   }
 
@@ -207,7 +213,9 @@ class _HistoryPageState extends State<HistoryPage> {
       if (t != null) _toDate = DateTime.tryParse(t);
       final cs = sp.getString('currency_symbol');
       if (cs != null && cs.isNotEmpty) _curSym = cs;
-      _mirsaalOnly = sp.getBool('ph_mirsaal_only') ?? _mirsaalOnly;
+      if (!_dirs.contains(_dirFilter)) _dirFilter = 'all';
+      if (!_kinds.contains(_kindFilter)) _kindFilter = 'all';
+      if (!_dates.contains(_dateFilter)) _dateFilter = 'all';
       if (mounted) setState(() {});
     } catch (_) {}
   }
@@ -222,7 +230,6 @@ class _HistoryPageState extends State<HistoryPage> {
         await sp.setString('ph_from', _fromDate!.toIso8601String());
       if (_toDate != null)
         await sp.setString('ph_to', _toDate!.toIso8601String());
-      await sp.setBool('ph_mirsaal_only', _mirsaalOnly);
     } catch (_) {}
   }
 
@@ -283,29 +290,18 @@ class _HistoryPageState extends State<HistoryPage> {
       int inCnt = 0, outCnt = 0;
       int savDepC = 0, savWdrC = 0;
       int savDepCnt = 0, savWdrCnt = 0;
-      int rpInC = 0, rpOutC = 0;
-      int rpInCnt = 0, rpOutCnt = 0;
       for (final t in list) {
         final amt = (t['amount_cents'] ?? 0) as int;
         final isOut = (t['from_wallet_id'] ?? '') == widget.walletId;
         final kind = (t['kind'] ?? '').toString().toLowerCase();
         final isSavDep = kind.startsWith('savings_deposit');
         final isSavWdr = kind.startsWith('savings_withdraw');
-        final isRedpacket = kind == 'redpacket';
         if (isOut) {
           outC += amt;
           outCnt++;
-          if (isRedpacket) {
-            rpOutC += amt;
-            rpOutCnt++;
-          }
         } else {
           inC += amt;
           inCnt++;
-          if (isRedpacket) {
-            rpInC += amt;
-            rpInCnt++;
-          }
         }
         if (isSavDep) {
           savDepC += amt;
@@ -321,7 +317,6 @@ class _HistoryPageState extends State<HistoryPage> {
       final totalCents = inC + outC;
       final isBillsView = _kindFilter == 'bill';
       final isSavingsView = _kindFilter == 'savings';
-      final isRedpacketView = _kindFilter == 'redpacket';
       final l = L10n.of(context);
       final theme = Theme.of(context);
       final muted = theme.colorScheme.onSurface.withValues(alpha: .70);
@@ -375,37 +370,6 @@ class _HistoryPageState extends State<HistoryPage> {
               l.isArabic
                   ? 'عدد الحركات: ${savDepCnt + savWdrCnt}'
                   : 'Movements: ${savDepCnt + savWdrCnt}',
-              style: TextStyle(fontSize: 11, color: muted),
-            ),
-          ],
-        );
-      } else if (isRedpacketView) {
-        inner = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              l.isArabic ? 'ملخص الحزم الحمراء' : 'Red packet summary',
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              l.isArabic
-                  ? 'أرسلت: ${fmtCents(rpOutC)} $_curSym'
-                  : 'Sent: ${fmtCents(rpOutC)} $_curSym',
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              l.isArabic
-                  ? 'استلمت: ${fmtCents(rpInC)} $_curSym'
-                  : 'Received: ${fmtCents(rpInC)} $_curSym',
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              l.isArabic
-                  ? 'عدد الحزم: ${rpOutCnt + rpInCnt}'
-                  : 'Packets: ${rpOutCnt + rpInCnt}',
               style: TextStyle(fontSize: 11, color: muted),
             ),
           ],
@@ -502,7 +466,6 @@ class _HistoryPageState extends State<HistoryPage> {
     final kind = kindRaw.toLowerCase();
     final isSavDep = kind.startsWith('savings_deposit');
     final isSavWdr = kind.startsWith('savings_withdraw');
-    final isRedpacket = kind == 'redpacket';
     final isBill = kind.startsWith('bill');
     final sign = isSavDep ? '-' : (isSavWdr ? '+' : (isOut ? '-' : '+'));
     final who = isOut ? toWallet : fromWallet;
@@ -520,23 +483,14 @@ class _HistoryPageState extends State<HistoryPage> {
       subtitleText = createdAt;
     }
 
-    final amountColor = isRedpacket
-        ? Colors.red.shade400
-        : (isBill
-            ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.90)
-            : (sign == '+'
-                ? Tokens.colorPayments
-                : Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.85)));
+    final amountColor = isBill
+        ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.90)
+        : (sign == '+'
+            ? Tokens.colorPayments
+            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.85));
 
     String mainLabel;
-    if (isRedpacket) {
-      mainLabel = l.isArabic
-          ? (isOut ? 'حزمة حمراء مرسلة' : 'حزمة حمراء مستلمة')
-          : (isOut ? 'Red packet sent' : 'Red packet received');
-    } else if (kind.startsWith('transfer')) {
+    if (kind.startsWith('transfer')) {
       mainLabel = l.isArabic ? 'تحويل' : 'Transfer';
     } else if (kind.startsWith('topup')) {
       mainLabel = l.isArabic ? 'شحن رصيد' : 'Top‑up';
@@ -551,24 +505,18 @@ class _HistoryPageState extends State<HistoryPage> {
     } else if (kind.startsWith('savings_withdraw')) {
       mainLabel = l.isArabic ? 'سحب ادخار' : 'Savings withdrawal';
     } else {
-      mainLabel = kindRaw;
+      mainLabel = l.isArabic ? 'حركة' : 'Transaction';
     }
 
     final bool isIncoming = sign == '+';
-    final Color iconColor = isRedpacket
-        ? Colors.red.shade400
-        : (isBill
-            ? Theme.of(context).colorScheme.primary
-            : Tokens.colorPayments);
-    final Color iconBg = isRedpacket
-        ? Colors.red.shade50
-        : (isBill
-            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.06)
-            : Tokens.colorPayments.withValues(alpha: 0.08));
+    final Color iconColor = isBill
+        ? Theme.of(context).colorScheme.primary
+        : Tokens.colorPayments;
+    final Color iconBg = isBill
+        ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.06)
+        : Tokens.colorPayments.withValues(alpha: 0.08);
     final IconData iconData;
-    if (isRedpacket) {
-      iconData = Icons.card_giftcard;
-    } else if (isBill) {
+    if (isBill) {
       iconData = Icons.receipt_long_outlined;
     } else if (isIncoming) {
       iconData = Icons.call_received_rounded;
@@ -581,7 +529,6 @@ class _HistoryPageState extends State<HistoryPage> {
         _showTxnDetailSheet(t, currency, l,
             mainLabel: mainLabel,
             sign: sign,
-            isRedpacket: isRedpacket,
             amountColor: amountColor,
             iconData: iconData,
             iconBg: iconBg);
@@ -648,7 +595,6 @@ class _HistoryPageState extends State<HistoryPage> {
     L10n l, {
     required String mainLabel,
     required String sign,
-    required bool isRedpacket,
     required Color amountColor,
     required IconData iconData,
     required Color iconBg,
@@ -998,31 +944,6 @@ class _HistoryPageState extends State<HistoryPage> {
                 },
               ),
               FilterChip(
-                label: Text(l.isArabic ? 'الحزم الحمراء' : 'Red packets'),
-                selected: _kindFilter == 'redpacket',
-                onSelected: (sel) {
-                  setState(() => _kindFilter = sel ? 'redpacket' : 'all');
-                  _savePrefs();
-                },
-              ),
-              if (_kindFilter == 'redpacket')
-                FilterChip(
-                  label: Text(
-                    l.isArabic
-                        ? (_mirsaalOnly
-                            ? 'كل الحزم الحمراء'
-                            : 'حزم Mirsaal فقط')
-                        : (_mirsaalOnly
-                            ? 'All red packets'
-                            : 'Only Mirsaal red packets'),
-                  ),
-                  selected: _mirsaalOnly,
-                  onSelected: (sel) {
-                    setState(() => _mirsaalOnly = sel);
-                    _savePrefs();
-                  },
-                ),
-              FilterChip(
                 label: Text(l.isArabic ? 'الادخار' : 'Savings'),
                 selected: _kindFilter == 'savings',
                 onSelected: (sel) {
@@ -1153,15 +1074,14 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 }
 
-Future<String?> _getCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+Future<String?> _getCookie(String baseUrl) async {
+  return await getSessionCookieHeader(baseUrl);
 }
 
-Future<Map<String, String>> _hdr({bool json = false}) async {
+Future<Map<String, String>> _hdr(String baseUrl, {bool json = false}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
-  final c = await _getCookie();
-  if (c != null && c.isNotEmpty) h['Cookie'] = c;
+  final c = await _getCookie(baseUrl);
+  if (c != null && c.isNotEmpty) h['cookie'] = c;
   return h;
 }

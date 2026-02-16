@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shamell_flutter/core/http_error.dart';
 
 import '../../core/format.dart' show fmtCents;
 import '../../core/history_page.dart';
@@ -105,10 +107,9 @@ class _BillsPageState extends State<BillsPage> {
 
   Future<Map<String, String>> _hdr() async {
     final h = <String, String>{'content-type': 'application/json'};
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
+    final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      h['Cookie'] = cookie;
+      h['cookie'] = cookie;
     }
     h['X-Device-ID'] = widget.deviceId;
     return h;
@@ -235,11 +236,11 @@ class _BillsPageState extends State<BillsPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(l.mirsaalDialogCancel),
+              child: Text(l.shamellDialogCancel),
             ),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(l.mirsaalDialogOk),
+              child: Text(l.shamellDialogOk),
             ),
           ],
         );
@@ -347,15 +348,11 @@ class _BillsPageState extends State<BillsPage> {
               l.isArabic ? 'تم دفع الفاتورة بنجاح' : 'Bill paid successfully';
         });
       } else {
-        String msg = l.paySendFailed;
-        try {
-          final body = jsonDecode(resp.body);
-          final detail =
-              body is Map<String, dynamic> ? body['detail']?.toString() : null;
-          if (detail != null && detail.isNotEmpty) {
-            msg = detail;
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        );
         setState(() {
           _bannerError = true;
           _banner = msg;
@@ -364,7 +361,7 @@ class _BillsPageState extends State<BillsPage> {
     } catch (e) {
       setState(() {
         _bannerError = true;
-        _banner = e.toString();
+        _banner = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       });
     } finally {
       if (mounted) {

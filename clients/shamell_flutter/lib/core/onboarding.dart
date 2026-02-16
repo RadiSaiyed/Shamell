@@ -25,8 +25,8 @@ class OnboardingPage extends StatelessWidget {
               children: [
                 Text(
                   l.isArabic
-                      ? '١) افتح التطبيق وحدّد \"مستخدم\" في الأعلى.\n٢) أدخل رقم هاتفك واضغط على \"طلب رمز\".\n٣) أدخل رمز الـ SMS وستتم عملية تسجيل الدخول.'
-                      : '1) At the top, select the role \"User\".\n2) Enter your phone number and tap \"Request code\".\n3) Type the SMS code – then you are signed in.',
+                      ? '١) افتح Shamell وحدّد \"مستخدم\" في الأعلى.\n٢) اضغط \"تسجيل الدخول\" ثم أكّد عبر Face ID / Touch ID.\n٣) إذا كان هذا الجهاز غير مُسجّل بعد، اربطه عبر تسجيل دخول الجهاز (QR) أو اطلب من المشرف تفعيل الوصول.'
+                      : '1) Open Shamell and select the role \"User\".\n2) Tap \"Sign in\" and approve Face ID / Touch ID.\n3) If this device is not enrolled yet, pair it via QR device login or ask an admin to provision access.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],

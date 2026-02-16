@@ -12,6 +12,7 @@ class _ContactPickerPageState extends State<ContactPickerPage> {
   List<Contact> all = [];
   List<Contact> filtered = [];
   bool loading = true;
+  bool permissionDenied = false;
   final qCtrl = TextEditingController();
   @override
   void initState() {
@@ -22,6 +23,13 @@ class _ContactPickerPageState extends State<ContactPickerPage> {
 
   Future<void> _load() async {
     try {
+      final ok = await FlutterContacts.requestPermission(readonly: true);
+      if (!ok) {
+        permissionDenied = true;
+        loading = false;
+        if (mounted) setState(() {});
+        return;
+      }
       final withProps = await FlutterContacts.getContacts(
           withProperties: true, withPhoto: false);
       all = withProps.where((c) => (c.phones.isNotEmpty)).toList();
@@ -56,6 +64,16 @@ class _ContactPickerPageState extends State<ContactPickerPage> {
         appBar: AppBar(title: const Text('Select contact')),
         body: loading
             ? const Center(child: CircularProgressIndicator())
+            : permissionDenied
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'Contacts permission is required to pick a recipient from your address book.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  )
             : Column(children: [
                 Padding(
                     padding: const EdgeInsets.all(8),

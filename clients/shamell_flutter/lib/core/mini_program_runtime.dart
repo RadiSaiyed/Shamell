@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -10,20 +11,22 @@ import 'l10n.dart';
 import 'mini_app_registry.dart';
 import 'mini_program_models.dart';
 import 'moments_page.dart';
-import 'wechat_ui.dart';
-import 'wechat_webview_page.dart';
+import 'shamell_ui.dart';
+import 'shamell_webview_page.dart';
 import '../mini_apps/payments/payments_shell.dart';
 
-Future<Map<String, String>> _hdrMiniProgram({bool json = false}) async {
+Future<Map<String, String>> _hdrMiniProgram({
+  required String baseUrl,
+  bool json = false,
+}) async {
   final headers = <String, String>{};
   if (json) {
     headers['content-type'] = 'application/json';
   }
   try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
+    final cookie = await getSessionCookieHeader(baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
+      headers['cookie'] = cookie;
     }
   } catch (_) {}
   return headers;
@@ -76,7 +79,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   int _momentsUniqueSharers30d = 0;
   String? _ownerContact;
   bool _pinned = false;
-  bool _wechatMiniProgramUi = true;
+  bool _shamellMiniProgramUi = true;
 
   bool get _hasPaymentsScope {
     final scopesLower = _scopes.map((s) => s.toLowerCase()).toList();
@@ -339,7 +342,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/moments_stats');
-      final resp = await http.get(uri, headers: await _hdrMiniProgram());
+      final resp = await http.get(uri,
+          headers: await _hdrMiniProgram(baseUrl: widget.baseUrl));
       if (resp.statusCode < 200 || resp.statusCode >= 300) return;
       final decoded = jsonDecode(resp.body);
       if (decoded is! Map) return;
@@ -366,7 +370,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/rate');
       final body = jsonEncode({'rating': val});
       final resp = await http.post(uri,
-          headers: await _hdrMiniProgram(json: true), body: body);
+          headers: await _hdrMiniProgram(baseUrl: widget.baseUrl, json: true),
+          body: body);
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -463,10 +468,10 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     }
     final bool hasPaymentsScope = _hasPaymentsScope;
 
-    if (_wechatMiniProgramUi) {
+    if (_shamellMiniProgramUi) {
       final isDark = theme.brightness == Brightness.dark;
       final Color bgColor =
-          isDark ? theme.colorScheme.surface : WeChatPalette.background;
+          isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
       Icon chevron() => Icon(
             isArabic ? Icons.chevron_left : Icons.chevron_right,
@@ -575,7 +580,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         actionTiles.add(
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.account_balance_wallet_outlined,
               background: Tokens.colorPayments,
             ),
@@ -612,7 +617,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           case MiniProgramActionKind.openMod:
           default:
             icon = Icons.widgets_outlined;
-            bg = WeChatPalette.green;
+            bg = ShamellPalette.green;
             break;
         }
         final allow =
@@ -620,7 +625,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         actionTiles.add(
           ListTile(
             dense: true,
-            leading: WeChatLeadingIcon(icon: icon, background: bg),
+            leading: ShamellLeadingIcon(icon: icon, background: bg),
             title: Text(a.label(isArabic: isArabic)),
             trailing: chevron(),
             onTap: allow ? () => _handleAction(context, a) : null,
@@ -631,7 +636,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       final List<Widget> infoTiles = <Widget>[
         ListTile(
           dense: true,
-          leading: const WeChatLeadingIcon(
+          leading: const ShamellLeadingIcon(
             icon: Icons.star_outline,
             background: Color(0xFFF59E0B),
           ),
@@ -656,7 +661,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         infoTiles.add(
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.verified_user_outlined,
               background: Color(0xFF64748B),
             ),
@@ -704,7 +709,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         infoTiles.add(
           ListTile(
             dense: true,
-            leading: const WeChatLeadingIcon(
+            leading: const ShamellLeadingIcon(
               icon: Icons.insights_outlined,
               background: Color(0xFF3B82F6),
             ),
@@ -721,7 +726,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       final List<Widget> momentsTiles = <Widget>[
         ListTile(
           dense: true,
-          leading: const WeChatLeadingIcon(
+          leading: const ShamellLeadingIcon(
             icon: Icons.tag_outlined,
             background: Color(0xFFF97316),
           ),
@@ -731,9 +736,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         ),
         ListTile(
           dense: true,
-          leading: const WeChatLeadingIcon(
+          leading: const ShamellLeadingIcon(
             icon: Icons.share_outlined,
-            background: WeChatPalette.green,
+            background: ShamellPalette.green,
           ),
           title: Text(isArabic ? 'مشاركة في اللحظات' : 'Share to Moments'),
           trailing: chevron(),
@@ -828,7 +833,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           child: ListView(
             padding: const EdgeInsets.only(top: 8, bottom: 24),
             children: [
-              WeChatSection(
+              ShamellSection(
                 margin: const EdgeInsets.only(top: 0),
                 dividerIndent: 16,
                 children: [
@@ -867,8 +872,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                           children: [
                             pill(
                               isArabic ? 'برنامج مصغر' : 'Mini Program',
-                              background: WeChatPalette.searchFill,
-                              foreground: WeChatPalette.textSecondary,
+                              background: ShamellPalette.searchFill,
+                              foreground: ShamellPalette.textSecondary,
                             ),
                             if (hasPaymentsScope)
                               pill(
@@ -983,9 +988,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                     ),
                   ),
                 ),
-              if (actionTiles.isNotEmpty) WeChatSection(children: actionTiles),
-              if (infoTiles.isNotEmpty) WeChatSection(children: infoTiles),
-              WeChatSection(children: momentsTiles),
+              if (actionTiles.isNotEmpty) ShamellSection(children: actionTiles),
+              if (infoTiles.isNotEmpty) ShamellSection(children: infoTiles),
+              ShamellSection(children: momentsTiles),
             ],
           ),
         ),
@@ -1593,8 +1598,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
               const SizedBox(height: 4),
               Text(
                 isArabic
-                    ? 'معاينة لبرامج مصغّرة على نمط WeChat داخل Shamell.'
-                    : 'Preview of WeChat‑style mini‑programs inside Shamell.',
+                    ? 'معاينة لبرامج مصغّرة على نمط Shamell داخل Shamell.'
+                    : 'Preview of Shamell‑style mini‑programs inside Shamell.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .6),
                 ),
@@ -1791,7 +1796,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                 '';
             await Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => WeChatWebViewPage(
+                builder: (_) => ShamellWebViewPage(
                   initialUri: uri,
                   baseUri: baseUri,
                   initialTitle: title.trim().isEmpty ? null : title.trim(),
@@ -1967,7 +1972,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                         final resp = await http.post(
                                           uri,
                                           headers:
-                                              await _hdrMiniProgram(json: true),
+                                              await _hdrMiniProgram(
+                                                  baseUrl: widget.baseUrl,
+                                                  json: true),
                                           body: jsonEncode(
                                             <String, dynamic>{
                                               'rating': selected,

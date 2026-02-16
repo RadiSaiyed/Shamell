@@ -5,9 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
 import 'l10n.dart';
-import 'wechat_ui.dart';
+import 'shamell_ui.dart';
 
 Future<void> addFavoriteItemQuick(
   String text, {
@@ -228,7 +228,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
   void _openChat(String chatId, {String? msgId}) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(
+        builder: (_) => ShamellChatPage(
           baseUrl: widget.baseUrl,
           initialPeerId: chatId,
           initialMessageId: (msgId != null && msgId.isNotEmpty) ? msgId : null,
@@ -343,7 +343,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                 minLines: 3,
                 maxLines: 6,
                 decoration: InputDecoration(
-                  hintText: l.mirsaalFavoritesHint,
+                  hintText: l.shamellFavoritesHint,
                 ),
               ),
               const SizedBox(height: 12),
@@ -352,7 +352,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => Navigator.of(ctx).pop(),
-                      child: Text(l.mirsaalDialogCancel),
+                      child: Text(l.shamellDialogCancel),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -479,7 +479,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
               const Divider(height: 16),
               actionTile(
                 icon: Icons.copy_outlined,
-                title: l.mirsaalCopyMessage,
+                title: l.shamellCopyMessage,
                 onTap: () async {
                   Navigator.of(ctx).pop();
                   await _copyText(text);
@@ -488,7 +488,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
               if (chatId.isNotEmpty)
                 actionTile(
                   icon: Icons.chat_bubble_outline,
-                  title: l.mirsaalFavoritesOpenChatTooltip,
+                  title: l.shamellFavoritesOpenChatTooltip,
                   onTap: () {
                     Navigator.of(ctx).pop();
                     _openChat(chatId, msgId: msgId);
@@ -497,7 +497,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
               if (isLocation && lat != null && lon != null)
                 actionTile(
                   icon: Icons.map_outlined,
-                  title: l.mirsaalLocationOpenInMap,
+                  title: l.shamellLocationOpenInMap,
                   onTap: () async {
                     Navigator.of(ctx).pop();
                     await _openMap(lat, lon);
@@ -505,7 +505,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                 ),
               actionTile(
                 icon: Icons.delete_outline,
-                title: l.mirsaalFavoritesRemoveTooltip,
+                title: l.shamellFavoritesRemoveTooltip,
                 color: theme.colorScheme.error.withValues(alpha: .95),
                 onTap: () async {
                   Navigator.of(ctx).pop();
@@ -523,7 +523,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                   dense: true,
                   title: Center(
                     child: Text(
-                      l.mirsaalDialogCancel,
+                      l.shamellDialogCancel,
                       style: TextStyle(
                         fontWeight: FontWeight.w700,
                         color: theme.colorScheme.onSurface,
@@ -568,7 +568,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: selected ? WeChatPalette.green : color,
+                    color: selected ? ShamellPalette.green : color,
                     borderRadius: BorderRadius.circular(10),
                     boxShadow: selected
                         ? [
@@ -630,7 +630,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
     final String? chatIdFilter = widget.chatIdFilter?.trim().isNotEmpty == true
         ? widget.chatIdFilter!.trim()
@@ -725,7 +725,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
       if (chatId.isNotEmpty && tagsText.isNotEmpty) {
         subtitleLines.add(
           Text(
-            '${l.mirsaalFavoritesTagsPrefix} $tagsText',
+            '${l.shamellFavoritesTagsPrefix} $tagsText',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -753,7 +753,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
           dense: true,
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          leading: WeChatLeadingIcon(
+          leading: ShamellLeadingIcon(
             icon: leadIcon,
             background: leadColor,
           ),
@@ -812,7 +812,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
     }
 
     final title =
-        inChatView ? l.mirsaalFavoritesFilterMessages : l.mirsaalFavoritesTitle;
+        inChatView ? l.shamellFavoritesFilterMessages : l.shamellFavoritesTitle;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -837,13 +837,13 @@ class _FavoritesPageState extends State<FavoritesPage> {
           : ListView(
               children: [
                 const SizedBox(height: 8),
-                WeChatSearchBar(
+                ShamellSearchBar(
                   hintText: l.isArabic ? 'بحث' : 'Search',
                   controller: _searchCtrl,
                   onChanged: (_) => setState(() {}),
                 ),
                 if (!inChatView && q.isEmpty)
-                  WeChatSection(
+                  ShamellSection(
                     children: [
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
@@ -908,7 +908,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                             ? (l.isArabic
                                 ? 'لا توجد نتائج.'
                                 : 'No results found.')
-                            : l.mirsaalFavoritesEmpty,
+                            : l.shamellFavoritesEmpty,
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium?.copyWith(
                           color: theme.colorScheme.onSurface
@@ -918,7 +918,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                     ),
                   )
                 else
-                  WeChatSection(
+                  ShamellSection(
                     margin: const EdgeInsets.only(top: 12),
                     children: [for (final p in filteredItems) listRow(p)],
                   ),
