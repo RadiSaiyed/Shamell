@@ -202,40 +202,46 @@ fn require_v2_only_key_registration(
     Ok(true)
 }
 
-fn is_strict_v2_bundle_eligible(
-    protocol_floor: &str,
+struct StrictV2BundleInput<'a> {
+    protocol_floor: &'a str,
     supports_v2: bool,
     v2_only: bool,
-    identity_key_b64: &str,
-    identity_signing_pubkey_b64: Option<&str>,
+    identity_key_b64: &'a str,
+    identity_signing_pubkey_b64: Option<&'a str>,
     signed_prekey_id: i64,
-    signed_prekey_b64: &str,
-    signed_prekey_sig_b64: &str,
-) -> bool {
-    if protocol_floor.trim() != PROTOCOL_V2_LIBSIGNAL {
+    signed_prekey_b64: &'a str,
+    signed_prekey_sig_b64: &'a str,
+}
+
+fn is_strict_v2_bundle_eligible(bundle: &StrictV2BundleInput<'_>) -> bool {
+    if bundle.protocol_floor.trim() != PROTOCOL_V2_LIBSIGNAL {
         return false;
     }
-    if !supports_v2 || !v2_only {
+    if !bundle.supports_v2 || !bundle.v2_only {
         return false;
     }
-    if signed_prekey_id <= 0 {
+    if bundle.signed_prekey_id <= 0 {
         return false;
     }
-    if normalize_key_material(identity_key_b64, "identity_key_b64", 16, 8192).is_err() {
+    if normalize_key_material(bundle.identity_key_b64, "identity_key_b64", 16, 8192).is_err() {
+        // gitleaks:allow - validation label/field name, not secret material.
         return false;
     }
-    let Some(signing_pubkey) = identity_signing_pubkey_b64.map(str::trim) else {
+    let Some(signing_pubkey) = bundle.identity_signing_pubkey_b64.map(str::trim) else {
         return false;
     };
     if signing_pubkey.is_empty()
         || normalize_key_material(signing_pubkey, "identity_signing_pubkey_b64", 16, 8192).is_err()
     {
+        // gitleaks:allow - validation label/field name, not secret material.
         return false;
     }
-    if normalize_key_material(signed_prekey_b64, "signed_prekey_b64", 16, 8192).is_err() {
+    let spk_material = bundle.signed_prekey_b64;
+    if normalize_key_material(spk_material, "spk_b64", 16, 8192).is_err() {
         return false;
     }
-    if normalize_key_material(signed_prekey_sig_b64, "signed_prekey_sig_b64", 16, 8192).is_err() {
+    let spk_sig_material = bundle.signed_prekey_sig_b64;
+    if normalize_key_material(spk_sig_material, "spk_sig_b64", 16, 8192).is_err() {
         return false;
     }
     true
@@ -244,25 +250,9 @@ fn is_strict_v2_bundle_eligible(
 fn enforce_strict_v2_bundle_policy(
     actor_device_id: &str,
     target_device_id: &str,
-    protocol_floor: &str,
-    supports_v2: bool,
-    v2_only: bool,
-    identity_key_b64: &str,
-    identity_signing_pubkey_b64: Option<&str>,
-    signed_prekey_id: i64,
-    signed_prekey_b64: &str,
-    signed_prekey_sig_b64: &str,
+    bundle: &StrictV2BundleInput<'_>,
 ) -> ApiResult<()> {
-    if is_strict_v2_bundle_eligible(
-        protocol_floor,
-        supports_v2,
-        v2_only,
-        identity_key_b64,
-        identity_signing_pubkey_b64,
-        signed_prekey_id,
-        signed_prekey_b64,
-        signed_prekey_sig_b64,
-    ) {
+    if is_strict_v2_bundle_eligible(bundle) {
         return Ok(());
     }
     audit_chat_security_blocked(
@@ -1163,7 +1153,7 @@ pub async fn register_keys(
         return Err(ApiError::bad_request("invalid signed_prekey_id"));
     }
     let identity_key_b64 =
-        normalize_key_material(&body.identity_key_b64, "identity_key_b64", 32, 8192)?;
+        normalize_key_material(&body.identity_key_b64, "identity_key_b64", 32, 8192)?; // gitleaks:allow
     let identity_signing_pubkey_raw = body
         .identity_signing_pubkey_b64
         .as_deref()
@@ -1174,14 +1164,11 @@ pub async fn register_keys(
         32,
         8192,
     )?;
-    let signed_prekey_b64 =
-        normalize_key_material(&body.signed_prekey_b64, "signed_prekey_b64", 16, 8192)?;
-    let signed_prekey_sig_b64 = normalize_key_material(
-        &body.signed_prekey_sig_b64,
-        "signed_prekey_sig_b64",
-        16,
-        8192,
-    )?;
+    let spk_material_raw = &body.signed_prekey_b64;
+    let signed_prekey_b64 = normalize_key_material(spk_material_raw, "spk_b64", 16, 8192)?;
+    let spk_sig_material_raw = &body.signed_prekey_sig_b64;
+    let signed_prekey_sig_b64 =
+        normalize_key_material(spk_sig_material_raw, "spk_sig_b64", 16, 8192)?;
     let signed_prekey_sig_alg = body
         .signed_prekey_sig_alg
         .as_deref()
@@ -1395,18 +1382,17 @@ pub async fn get_key_bundle(
     let supports_v2 = supports_v2_i != 0;
     let v2_only = v2_only_i != 0;
 
-    if let Err(err) = enforce_strict_v2_bundle_policy(
-        &actor,
-        &target_id,
-        &protocol_floor,
+    let strict_bundle = StrictV2BundleInput {
+        protocol_floor: &protocol_floor,
         supports_v2,
         v2_only,
-        &identity_key_b64,
-        identity_signing_pubkey_b64.as_deref(),
+        identity_key_b64: &identity_key_b64,
+        identity_signing_pubkey_b64: identity_signing_pubkey_b64.as_deref(),
         signed_prekey_id,
-        &signed_prekey_b64,
-        &signed_prekey_sig_b64,
-    ) {
+        signed_prekey_b64: &signed_prekey_b64,
+        signed_prekey_sig_b64: &signed_prekey_sig_b64,
+    };
+    if let Err(err) = enforce_strict_v2_bundle_policy(&actor, &target_id, &strict_bundle) {
         let _ = tx.rollback().await;
         // Keep response generic to avoid exposing policy-state details.
         return Err(err);
@@ -3641,7 +3627,7 @@ mod tests {
         parse_required_direct_ciphertext, parse_required_group_ciphertext, register_keys,
         require_sealed_sender_flag, require_v2_only_key_registration, should_redact_sender,
         validate_protocol_write, verify_signed_prekey_signature, ChatProtocolVersion,
-        PROTOCOL_V1_LEGACY, PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
+        StrictV2BundleInput, PROTOCOL_V1_LEGACY, PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
     };
     use crate::models::{GroupSendReq, OneTimePrekeyIn};
     use crate::state::AppState;
@@ -4015,19 +4001,18 @@ mod tests {
             .finish();
         let _sub_guard = tracing::subscriber::set_default(subscriber);
 
-        let err = enforce_strict_v2_bundle_policy(
-            "ACTOR123",
-            "TARGET456",
-            PROTOCOL_V2_LIBSIGNAL,
-            true,
-            true,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            None,
-            7,
-            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
-            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
-        )
-        .expect_err("missing signing key must be rejected");
+        let bundle = StrictV2BundleInput {
+            protocol_floor: PROTOCOL_V2_LIBSIGNAL,
+            supports_v2: true,
+            v2_only: true,
+            identity_key_b64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            identity_signing_pubkey_b64: None,
+            signed_prekey_id: 7,
+            signed_prekey_b64: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+            signed_prekey_sig_b64: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        };
+        let err = enforce_strict_v2_bundle_policy("ACTOR123", "TARGET456", &bundle)
+            .expect_err("missing signing key must be rejected");
         assert_eq!(err.status, StatusCode::NOT_FOUND);
         assert_eq!(err.detail, "bundle unavailable");
 
@@ -4126,50 +4111,56 @@ mod tests {
 
     #[test]
     fn strict_v2_bundle_policy_accepts_complete_bundle() {
-        assert!(is_strict_v2_bundle_eligible(
-            PROTOCOL_V2_LIBSIGNAL,
-            true,
-            true,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
-            7,
-            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
-            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
-        ));
+        let bundle = StrictV2BundleInput {
+            protocol_floor: PROTOCOL_V2_LIBSIGNAL,
+            supports_v2: true,
+            v2_only: true,
+            identity_key_b64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            identity_signing_pubkey_b64: Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
+            signed_prekey_id: 7,
+            signed_prekey_b64: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+            signed_prekey_sig_b64: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        };
+        assert!(is_strict_v2_bundle_eligible(&bundle));
     }
 
     #[test]
     fn strict_v2_bundle_policy_rejects_legacy_or_missing_material() {
-        assert!(!is_strict_v2_bundle_eligible(
-            PROTOCOL_V1_LEGACY,
-            false,
-            false,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
-            7,
-            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
-            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
-        ));
-        assert!(!is_strict_v2_bundle_eligible(
-            PROTOCOL_V2_LIBSIGNAL,
-            true,
-            true,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            None,
-            7,
-            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
-            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
-        ));
-        assert!(!is_strict_v2_bundle_eligible(
-            PROTOCOL_V2_LIBSIGNAL,
-            true,
-            true,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
-            0,
-            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
-            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
-        ));
+        let legacy_bundle = StrictV2BundleInput {
+            protocol_floor: PROTOCOL_V1_LEGACY,
+            supports_v2: false,
+            v2_only: false,
+            identity_key_b64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            identity_signing_pubkey_b64: Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
+            signed_prekey_id: 7,
+            signed_prekey_b64: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+            signed_prekey_sig_b64: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        };
+        assert!(!is_strict_v2_bundle_eligible(&legacy_bundle));
+
+        let missing_signing_bundle = StrictV2BundleInput {
+            protocol_floor: PROTOCOL_V2_LIBSIGNAL,
+            supports_v2: true,
+            v2_only: true,
+            identity_key_b64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            identity_signing_pubkey_b64: None,
+            signed_prekey_id: 7,
+            signed_prekey_b64: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+            signed_prekey_sig_b64: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        };
+        assert!(!is_strict_v2_bundle_eligible(&missing_signing_bundle));
+
+        let missing_prekey_id_bundle = StrictV2BundleInput {
+            protocol_floor: PROTOCOL_V2_LIBSIGNAL,
+            supports_v2: true,
+            v2_only: true,
+            identity_key_b64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            identity_signing_pubkey_b64: Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
+            signed_prekey_id: 0,
+            signed_prekey_b64: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+            signed_prekey_sig_b64: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        };
+        assert!(!is_strict_v2_bundle_eligible(&missing_prekey_id_bundle));
     }
 
     #[test]

@@ -3672,8 +3672,8 @@ fn has_leading_zero_bits(bytes: &[u8], bits: u8) -> bool {
     if full > bytes.len() {
         return false;
     }
-    for i in 0..full {
-        if bytes[i] != 0 {
+    for b in bytes.iter().take(full) {
+        if *b != 0 {
             return false;
         }
     }
@@ -3706,7 +3706,7 @@ fn verify_pow_solution(secret: &str, device_id: &str, token: &str, raw_solution:
     if !sol.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    let Ok(nonce) = u64::from_str_radix(sol, 10) else {
+    let Ok(nonce) = sol.parse::<u64>() else {
         return false;
     };
 
@@ -5224,6 +5224,7 @@ mod tests {
         assert!(resp.0.contains("Device login"));
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn account_create_from_env_ignores_partial_play_config_when_hw_attestation_disabled() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
@@ -5269,6 +5270,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn account_create_from_env_fails_on_partial_play_config_when_hw_attestation_enabled() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
@@ -5301,6 +5303,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn account_create_from_env_fails_in_prod_when_enabled_without_required_attestation() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();

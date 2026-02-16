@@ -456,9 +456,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
 
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
@@ -496,9 +499,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
         env::remove_var("BFF_ROLE_HEADER_SECRET");
@@ -527,9 +533,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
 
         let err = Config::from_env().expect_err("must reject disabled internal secret in prod");
@@ -558,13 +567,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::remove_var("AUTH_DEVICE_LOGIN_WEB_ENABLED");
 
         let cfg = Config::from_env().expect("config");
@@ -591,9 +603,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
         env::remove_var("AUTH_DEVICE_LOGIN_WEB_ENABLED");
@@ -625,9 +640,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
         env::remove_var("BFF_ROLE_HEADER_SECRET");
@@ -665,9 +683,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
         env::remove_var("BFF_ROLE_HEADER_SECRET");
@@ -705,13 +726,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::remove_var("BFF_MAX_UPSTREAM_BODY_BYTES");
         env::remove_var("BFF_EXPOSE_UPSTREAM_ERRORS");
 
@@ -740,13 +764,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
         let err = Config::from_env().expect_err("route authz must not be disabled in prod");
         assert!(err.contains("BFF_ENFORCE_ROUTE_AUTHZ must be true in prod/staging"));
@@ -775,13 +802,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::remove_var("BFF_MAX_UPSTREAM_BODY_BYTES");
         env::remove_var("BFF_EXPOSE_UPSTREAM_ERRORS");
 
@@ -812,10 +842,13 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
         env::remove_var("BFF_ROLE_HEADER_SECRET");
@@ -845,9 +878,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
         env::remove_var("BFF_ROLE_HEADER_SECRET");
@@ -880,13 +916,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::remove_var("CSRF_GUARD_ENABLED");
 
         let cfg = Config::from_env().expect("config");
@@ -913,9 +952,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
         env::remove_var("CSRF_GUARD_ENABLED");
@@ -946,13 +988,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("CSRF_GUARD_ENABLED", "false");
 
         let err = Config::from_env().expect_err("csrf guard must not be disabled in prod");
@@ -982,13 +1027,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("CSRF_GUARD_ENABLED", "true");
         env::set_var("ALLOWED_ORIGINS", "*");
 
@@ -1019,13 +1067,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("CSRF_GUARD_ENABLED", "true");
         env::set_var("ALLOWED_ORIGINS", "http://online.shamell.online");
 
@@ -1055,13 +1106,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::remove_var("AUTH_ACCEPT_LEGACY_SESSION_COOKIE");
 
         let cfg = Config::from_env().expect("config");
@@ -1090,13 +1144,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
         env::remove_var("BFF_REQUIRE_INTERNAL_SECRET");
         env::remove_var("BFF_ENFORCE_ROUTE_AUTHZ");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("AUTH_ACCEPT_LEGACY_SESSION_COOKIE", "true");
 
         let err = Config::from_env()
@@ -1124,9 +1181,12 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "false");
         env::remove_var("AUTH_ACCEPT_LEGACY_SESSION_COOKIE");
@@ -1156,12 +1216,15 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("AUTH_ALLOW_HEADER_SESSION_AUTH", "false");
 
         let err = Config::from_env().expect_err("removed env toggle must fail");
@@ -1189,12 +1252,15 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "false");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("AUTH_BLOCK_BROWSER_HEADER_SESSION", "true");
 
         let err = Config::from_env().expect_err("removed env toggle must fail");
@@ -1222,13 +1288,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "true");
-        env::set_var("INTERNAL_API_SECRET", "change-me-super-secret-value");
+        env::set_var("INTERNAL_API_SECRET", "change-me");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
         assert!(Config::from_env().is_err());
     }
@@ -1255,13 +1324,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("ALLOWED_HOSTS", "*");
 
         let err = Config::from_env().expect_err("wildcard hosts must be rejected in prod");
@@ -1290,13 +1362,16 @@ mod tests {
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::set_var("CHAT_BASE_URL", "http://chat:8081");
         env::set_var("BUS_BASE_URL", "http://bus:8083");
-        env::set_var("INTERNAL_API_SECRET", "bff-secret-0123456789");
-        env::set_var("PAYMENTS_INTERNAL_SECRET", "pay-secret-0123456789");
-        env::set_var("CHAT_INTERNAL_SECRET", "chat-secret-0123456789");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("INTERNAL_API_SECRET", "dddddddddddddddddddddddddddddddd");
+        env::set_var(
+            "PAYMENTS_INTERNAL_SECRET",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        env::set_var("CHAT_INTERNAL_SECRET", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("BFF_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("BFF_ENFORCE_ROUTE_AUTHZ", "true");
-        env::set_var("BFF_ROLE_HEADER_SECRET", "edge-secret-0123456789");
+        env::set_var("BFF_ROLE_HEADER_SECRET", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         env::set_var("SHAMELL_DEPLOYMENT_PROFILE", "root-dev");
 
         let err =

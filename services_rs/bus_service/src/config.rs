@@ -313,7 +313,7 @@ mod tests {
         ]);
 
         env::set_var("BUS_DB_URL", "sqlite:////tmp/bus.db");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_TICKET_SECRET", "ffffffffffffffffffffffffffffffff");
         // Avoid unrelated failures on internal secret.
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
 
@@ -350,9 +350,9 @@ mod tests {
 
         env::set_var("ENV", "prod");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_TICKET_SECRET", "ffffffffffffffffffffffffffffffff");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::remove_var("BUS_PAYMENTS_INTERNAL_SECRET");
 
@@ -377,9 +377,9 @@ mod tests {
 
         env::set_var("ENV", "prod");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_TICKET_SECRET", "ffffffffffffffffffffffffffffffff");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("ALLOWED_HOSTS", "*");
 
         let err = Config::from_env().expect_err("wildcard hosts must be rejected in prod");
@@ -401,9 +401,9 @@ mod tests {
 
         env::set_var("ENV", "prod");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_TICKET_SECRET", "ffffffffffffffffffffffffffffffff");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
-        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("BUS_INTERNAL_SECRET", "cccccccccccccccccccccccccccccccc");
         env::set_var("ALLOWED_ORIGINS", "http://online.shamell.online");
 
         let err = Config::from_env().expect_err("non-https origins must be rejected in prod");
@@ -423,7 +423,7 @@ mod tests {
 
         env::set_var("ENV", "prod");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_TICKET_SECRET", "ffffffffffffffffffffffffffffffff");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
 
         let err = Config::from_env().expect_err("must reject disabled internal secret in prod");
@@ -443,7 +443,7 @@ mod tests {
 
         env::set_var("ENV", "dev");
         env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_TICKET_SECRET", "ffffffffffffffffffffffffffffffff");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
 
         env::set_var("BUS_MAX_BODY_BYTES", "1");
