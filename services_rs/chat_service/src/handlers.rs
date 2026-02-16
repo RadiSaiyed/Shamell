@@ -189,6 +189,19 @@ fn validate_protocol_write(
     Ok(())
 }
 
+fn require_v2_only_key_registration(
+    chat_protocol_v2_enabled: bool,
+    v2_only: Option<bool>,
+) -> ApiResult<bool> {
+    if !chat_protocol_v2_enabled {
+        return Err(ApiError::bad_request("protocol v2 disabled"));
+    }
+    if v2_only != Some(true) {
+        return Err(ApiError::bad_request("v2_only=true required"));
+    }
+    Ok(true)
+}
+
 fn is_strict_v2_bundle_eligible(
     protocol_floor: &str,
     supports_v2: bool,
@@ -1102,15 +1115,26 @@ pub async fn register_keys(
         return Err(ApiError::not_found("unknown device"));
     }
 
-    let v2_only = body.v2_only.unwrap_or(false);
-    if v2_only && !state.chat_protocol_v2_enabled {
-        return Err(ApiError::bad_request("protocol v2 disabled"));
-    }
-    let protocol_floor = if v2_only {
-        PROTOCOL_V2_LIBSIGNAL
-    } else {
-        PROTOCOL_V1_LEGACY
-    };
+    let v2_only =
+        match require_v2_only_key_registration(state.chat_protocol_v2_enabled, body.v2_only) {
+            Ok(v2_only) => v2_only,
+            Err(err) => {
+                let reason = if state.chat_protocol_v2_enabled {
+                    "v2_only_required"
+                } else {
+                    "protocol_v2_disabled"
+                };
+                audit_chat_security_blocked(
+                    "chat_key_register_policy",
+                    reason,
+                    Some(&did),
+                    None,
+                    None,
+                );
+                return Err(err);
+            }
+        };
+    let protocol_floor = PROTOCOL_V2_LIBSIGNAL;
     let now = now_iso();
 
     let chat_identity_keys = state.table("chat_identity_keys");
@@ -3542,9 +3566,9 @@ mod tests {
         build_push_data, is_strict_v2_bundle_eligible, is_valid_device_id, normalize_key_material,
         normalize_mailbox_token, normalize_prekey_batch, parse_protocol_version,
         parse_required_direct_ciphertext, parse_required_group_ciphertext,
-        require_sealed_sender_flag, should_redact_sender, validate_protocol_write,
-        verify_signed_prekey_signature, ChatProtocolVersion, PROTOCOL_V1_LEGACY,
-        PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
+        require_sealed_sender_flag, require_v2_only_key_registration, should_redact_sender,
+        validate_protocol_write, verify_signed_prekey_signature, ChatProtocolVersion,
+        PROTOCOL_V1_LEGACY, PROTOCOL_V2_LIBSIGNAL, PUSH_TYPE_CHAT_WAKEUP,
     };
     use crate::models::{GroupSendReq, OneTimePrekeyIn};
     use axum::http::StatusCode;
@@ -3678,6 +3702,34 @@ mod tests {
             err.detail,
             "group messages require protocol_version v2_libsignal"
         );
+    }
+
+    #[test]
+    fn key_register_policy_requires_v2_enabled() {
+        let err = require_v2_only_key_registration(false, Some(true))
+            .expect_err("must reject when v2 is disabled");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.detail, "protocol v2 disabled");
+    }
+
+    #[test]
+    fn key_register_policy_requires_explicit_v2_only_true() {
+        let err = require_v2_only_key_registration(true, None)
+            .expect_err("missing v2_only must be rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.detail, "v2_only=true required");
+
+        let err = require_v2_only_key_registration(true, Some(false))
+            .expect_err("v2_only=false must be rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.detail, "v2_only=true required");
+    }
+
+    #[test]
+    fn key_register_policy_accepts_explicit_v2_only_true() {
+        let v2_only =
+            require_v2_only_key_registration(true, Some(true)).expect("v2_only=true should pass");
+        assert!(v2_only);
     }
 
     #[test]

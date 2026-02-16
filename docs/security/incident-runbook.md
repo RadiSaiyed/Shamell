@@ -208,6 +208,7 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
   - `auth_rate_limit_exceeded.blocked`
   - `chat_protocol_downgrade.blocked`
   - `chat_key_bundle_policy.blocked`
+  - `chat_key_register_policy.blocked`
 - Run log-based alert evaluation on host (cron/systemd timer recommended):
   - `./scripts/security_events_report.sh`
   - or `./scripts/ops.sh pipg security-report`
@@ -233,6 +234,7 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
   - `auth_rate_limit_exceeded`
   - `chat_protocol_downgrade`
   - `chat_key_bundle_policy`
+  - `chat_key_register_policy`
   - `blocked` outcomes should page on sustained spikes.
 - Legacy payments edge alert actions (if still configured):
   - `payments_transfer_wallet_mismatch`
