@@ -182,6 +182,23 @@ ChatGroupMessage shamellDecryptOrBlockGroupMessage(
   );
 }
 
+@visibleForTesting
+bool shamellAcceptDirectInboxEnvelope(Map<String, Object?> map) {
+  // Fail closed: direct-chat envelopes must remain on the strict v2 sealed path.
+  final protocol = (map['protocol_version'] ?? '').toString().trim();
+  if (protocol != shamellChatProtocolSendVersion) return false;
+  final sealedRaw = map['sealed_sender'];
+  final sealed = sealedRaw is bool
+      ? sealedRaw
+      : sealedRaw != null &&
+          sealedRaw.toString().trim().toLowerCase() == 'true';
+  if (!sealed) return false;
+  final nonceB64 = (map['nonce_b64'] ?? '').toString().trim();
+  final boxB64 = (map['box_b64'] ?? '').toString().trim();
+  if (nonceB64.isEmpty || boxB64.isEmpty) return false;
+  return true;
+}
+
 class ChatService {
   ChatService(String baseUrl, {http.Client? httpClient})
       : _base = baseUrl.endsWith('/')
@@ -193,6 +210,26 @@ class ChatService {
   final http.Client _http;
   WebSocketChannel? _ws;
   WebSocketChannel? _wsGroups;
+
+  List<ChatMessage> _parseDirectInboxMessages(List raw) {
+    final out = <ChatMessage>[];
+    for (final item in raw) {
+      Map<String, Object?>? messageMap;
+      if (item is Map<String, Object?>) {
+        messageMap = item;
+      } else if (item is Map) {
+        messageMap = item.cast<String, Object?>();
+      }
+      if (messageMap == null) continue;
+      if (!shamellAcceptDirectInboxEnvelope(messageMap)) {
+        continue;
+      }
+      try {
+        out.add(ChatMessage.fromJson(messageMap));
+      } catch (_) {}
+    }
+    return out;
+  }
 
   bool _isLocalhostHost(String host) {
     final h = host.trim().toLowerCase();
@@ -503,9 +540,7 @@ class ChatService {
       throw Exception('inbox failed: ${r.statusCode}');
     }
     final arr = jsonDecode(r.body) as List;
-    return arr
-        .map((m) => ChatMessage.fromJson(m as Map<String, Object?>))
-        .toList();
+    return _parseDirectInboxMessages(arr);
   }
 
   Future<void> markRead(String id, {String? deviceId}) async {
@@ -679,9 +714,7 @@ class ChatService {
             try {
               final j = jsonDecode(payload);
               if (j is Map && j['type'] == 'inbox' && j['messages'] is List) {
-                final msgs = (j['messages'] as List)
-                    .map((m) => ChatMessage.fromJson(m as Map<String, Object?>))
-                    .toList();
+                final msgs = _parseDirectInboxMessages(j['messages'] as List);
                 out.add(msgs);
                 return;
               }

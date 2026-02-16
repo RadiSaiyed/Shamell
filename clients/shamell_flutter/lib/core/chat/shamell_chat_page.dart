@@ -3098,7 +3098,7 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         id: msgId,
         senderId: peer.id,
         recipientId: me.id,
-        senderPubKeyB64: 'invalid_base64', // force decrypt() fallback
+        senderPubKeyB64: 'invalid_base64',
         nonceB64: '',
         boxB64: base64Encode(utf8.encode(welcomeText)),
         createdAt: now,
@@ -3110,6 +3110,7 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         keyId: null,
         prevKeyId: null,
         senderDhPubB64: null,
+        trustedLocalPlaintext: true,
       );
       if (!mounted) return;
       setState(() {
@@ -3177,6 +3178,7 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         keyId: null,
         prevKeyId: null,
         senderDhPubB64: null,
+        trustedLocalPlaintext: true,
       );
       if (!mounted) return;
       setState(() {
@@ -5428,38 +5430,28 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
   String _decrypt(ChatMessage m) {
     final me = _me;
     if (me == null) return '<no identity>';
-    // Try sealed-session secretbox first
-    if (m.sealedSender) {
-      final key = _sessionKeyForMessage(m);
-      if (key != null) {
-        try {
-          final box = x25519.SecretBox(key);
-          final cipher = x25519.ByteList(base64Decode(m.boxB64));
-          final nonce = base64Decode(m.nonceB64);
-          final plain = box.decrypt(cipher, nonce: nonce);
-          return utf8.decode(plain);
-        } catch (_) {}
-      }
-    }
-    try {
-      final sk = x25519.PrivateKey(base64Decode(me.privateKeyB64));
-      final senderPkB64 = m.senderPubKeyB64.isNotEmpty
-          ? m.senderPubKeyB64
-          : _peer?.publicKeyB64 ?? '';
-      if (senderPkB64.isEmpty) throw Exception('missing sender pk');
-      final pkSender = x25519.PublicKey(base64Decode(senderPkB64));
-      final cipher = base64Decode(m.boxB64);
-      final nonce = base64Decode(m.nonceB64);
-      final plain = x25519.Box(myPrivateKey: sk, theirPublicKey: pkSender)
-          .decrypt(x25519.ByteList(cipher), nonce: Uint8List.fromList(nonce));
-      return utf8.decode(plain);
-    } catch (_) {
+    if (m.trustedLocalPlaintext) {
       try {
         return utf8.decode(base64Decode(m.boxB64));
       } catch (_) {
         return '<encrypted>';
       }
     }
+    if (!m.sealedSender) {
+      return '<encrypted>';
+    }
+    // Try sealed-session secretbox first
+    final key = _sessionKeyForMessage(m);
+    if (key != null) {
+      try {
+        final box = x25519.SecretBox(key);
+        final cipher = x25519.ByteList(base64Decode(m.boxB64));
+        final nonce = base64Decode(m.nonceB64);
+        final plain = box.decrypt(cipher, nonce: nonce);
+        return utf8.decode(plain);
+      } catch (_) {}
+    }
+    return '<encrypted>';
   }
 
   bool _isIncoming(ChatMessage m) => _me != null && m.senderId != _me!.id;

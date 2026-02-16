@@ -136,6 +136,126 @@ void main() {
     expect(shamellChatProtocolSendVersion, 'v2_libsignal');
   });
 
+  test('direct inbox envelope guard accepts only sealed v2 envelopes', () {
+    expect(
+      shamellAcceptDirectInboxEnvelope(<String, Object?>{
+        'protocol_version': 'v2_libsignal',
+        'sealed_sender': true,
+        'nonce_b64': 'AQ==',
+        'box_b64': 'Ag==',
+      }),
+      isTrue,
+    );
+
+    expect(
+      shamellAcceptDirectInboxEnvelope(<String, Object?>{
+        'protocol_version': 'v1_legacy',
+        'sealed_sender': true,
+        'nonce_b64': 'AQ==',
+        'box_b64': 'Ag==',
+      }),
+      isFalse,
+    );
+    expect(
+      shamellAcceptDirectInboxEnvelope(<String, Object?>{
+        'protocol_version': 'v2_libsignal',
+        'sealed_sender': false,
+        'nonce_b64': 'AQ==',
+        'box_b64': 'Ag==',
+      }),
+      isFalse,
+    );
+    expect(
+      shamellAcceptDirectInboxEnvelope(<String, Object?>{
+        'protocol_version': 'v2_libsignal',
+        'sealed_sender': true,
+        'nonce_b64': '',
+        'box_b64': 'Ag==',
+      }),
+      isFalse,
+    );
+  });
+
+  test('fetchInbox drops non-v2 or unsealed direct envelopes', () async {
+    final mock = MockClient((req) async {
+      if (req.url.path == '/chat/messages/inbox') {
+        return http.Response(
+          jsonEncode(<Map<String, Object?>>[
+            <String, Object?>{
+              'id': 'legacy-1',
+              'sender_id': 'peer-1',
+              'recipient_id': 'me-1',
+              'sender_pubkey_b64': '',
+              'nonce_b64': 'AQ==',
+              'box_b64': 'Ag==',
+              'protocol_version': 'v1_legacy',
+              'sealed_sender': true,
+            },
+            <String, Object?>{
+              'id': 'unsealed-1',
+              'sender_id': 'peer-1',
+              'recipient_id': 'me-1',
+              'sender_pubkey_b64': '',
+              'nonce_b64': 'AQ==',
+              'box_b64': 'Ag==',
+              'protocol_version': 'v2_libsignal',
+              'sealed_sender': false,
+            },
+            <String, Object?>{
+              'id': 'ok-v2',
+              'sender_id': 'peer-1',
+              'recipient_id': 'me-1',
+              'sender_pubkey_b64': '',
+              'nonce_b64': 'AQ==',
+              'box_b64': 'Ag==',
+              'protocol_version': 'v2_libsignal',
+              'sealed_sender': true,
+              'created_at': DateTime.now().toUtc().toIso8601String(),
+            },
+          ]),
+          200,
+          headers: const <String, String>{'content-type': 'application/json'},
+        );
+      }
+      return http.Response('not found', 404);
+    });
+
+    final svc = ChatService('http://127.0.0.1:8080', httpClient: mock);
+    final inbox = await svc.fetchInbox(deviceId: 'me-1');
+    expect(inbox, hasLength(1));
+    expect(inbox.single.id, 'ok-v2');
+    expect(inbox.single.sealedSender, isTrue);
+  });
+
+  test('remote inbox JSON cannot enable trusted local plaintext mode', () {
+    final m = ChatMessage.fromJson(<String, Object?>{
+      'id': 'm-1',
+      'sender_id': 'peer-1',
+      'recipient_id': 'me-1',
+      'sender_pubkey_b64': 'AAAA',
+      'nonce_b64': 'AQ==',
+      'box_b64': 'Ag==',
+      'protocol_version': 'v2_libsignal',
+      'sealed_sender': true,
+      'trustedLocalPlaintext': true,
+    });
+    expect(m.trustedLocalPlaintext, isFalse);
+  });
+
+  test('trusted local plaintext flag is persisted only via local map path', () {
+    final local = ChatMessage(
+      id: 'm-local',
+      senderId: 'peer-1',
+      recipientId: 'me-1',
+      senderPubKeyB64: 'AAAA',
+      nonceB64: '',
+      boxB64: base64Encode(utf8.encode('local-only')),
+      trustedLocalPlaintext: true,
+    );
+    final restored = ChatMessage.fromMap(local.toMap());
+    expect(restored.trustedLocalPlaintext, isTrue);
+  });
+
   test('ChatHttpException.toString never includes the raw response body', () {
     final e = ChatHttpException(
       op: 'send',
