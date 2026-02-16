@@ -110,7 +110,7 @@ impl Config {
                     .to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "INTERNAL_API_SECRET",
             internal_secret.as_deref(),
@@ -162,7 +162,7 @@ impl Config {
                     .to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "BFF_ROLE_HEADER_SECRET",
             role_header_secret.as_deref(),
@@ -293,19 +293,19 @@ impl Config {
                 "BUS_INTERNAL_SECRET must be set in prod/staging for BFF gateway".to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "PAYMENTS_INTERNAL_SECRET",
             payments_internal_secret.as_deref(),
             false,
         )?;
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "CHAT_INTERNAL_SECRET",
             chat_internal_secret.as_deref(),
             false,
         )?;
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "BUS_INTERNAL_SECRET",
             bus_internal_secret.as_deref(),

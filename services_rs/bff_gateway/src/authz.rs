@@ -15,13 +15,13 @@ struct ErrorBody<'a> {
 }
 
 fn role_headers_trusted(state: &AppState, headers: &HeaderMap) -> bool {
-    let configured_secret = state
+    let configured_auth_token = state
         .role_header_secret
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let Some(secret) = configured_secret else {
+    let Some(expected_auth_token) = configured_auth_token else {
         return false;
     };
 
@@ -33,7 +33,11 @@ fn role_headers_trusted(state: &AppState, headers: &HeaderMap) -> bool {
     if provided.is_empty() {
         return false;
     }
-    provided.as_bytes().ct_eq(secret.as_bytes()).unwrap_u8() == 1
+    provided
+        .as_bytes()
+        .ct_eq(expected_auth_token.as_bytes())
+        .unwrap_u8()
+        == 1
 }
 
 fn parse_roles(state: &AppState, headers: &HeaderMap) -> HashSet<String> {

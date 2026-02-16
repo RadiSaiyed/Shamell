@@ -136,7 +136,7 @@ impl Config {
                     .to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "INTERNAL_API_SECRET",
             internal_secret.as_deref(),
@@ -169,7 +169,7 @@ impl Config {
         {
             return Err("BUS_PAYMENTS_INTERNAL_SECRET must be set in prod/staging".to_string());
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "BUS_PAYMENTS_INTERNAL_SECRET",
             bus_payments_internal_secret.as_deref(),

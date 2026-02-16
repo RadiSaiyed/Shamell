@@ -142,6 +142,17 @@ fn city_code_for_trip_id(name: &str) -> String {
     cleaned.chars().take(10).collect::<String>().to_uppercase()
 }
 
+fn optional_trimmed_capped(raw: Option<String>, max_len: usize) -> Option<String> {
+    let value = raw?.trim().to_string();
+    if value.is_empty() {
+        return None;
+    }
+    if value.len() > max_len {
+        return Some(value.chars().take(max_len).collect::<String>());
+    }
+    Some(value)
+}
+
 async fn generate_trip_id(
     tx: &mut Transaction<'_, sqlx::Postgres>,
     state: &AppState,
@@ -299,10 +310,7 @@ pub async fn create_city(
     if name.len() > 120 {
         return Err(ApiError::bad_request("name too long"));
     }
-    let country = body
-        .country
-        .map(|c| c.trim().to_string())
-        .filter(|c| !c.is_empty());
+    let country = optional_trimmed_capped(body.country, 64);
     let id = Uuid::new_v4().to_string();
 
     let cities = state.table("cities");
@@ -415,10 +423,7 @@ pub async fn create_operator(
     if name.len() > 120 {
         return Err(ApiError::bad_request("name too long"));
     }
-    let wallet_id = body
-        .wallet_id
-        .map(|w| w.trim().to_string())
-        .filter(|w| !w.is_empty());
+    let wallet_id = optional_trimmed_capped(body.wallet_id, 64);
     let id = Uuid::new_v4().to_string();
 
     let ops = state.table("bus_operators");
@@ -461,14 +466,8 @@ pub async fn create_route(
             "origin_city_id, dest_city_id and operator_id are required",
         ));
     }
-    let bus_model = body
-        .bus_model
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let features = body
-        .features
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let bus_model = optional_trimmed_capped(body.bus_model, 120);
+    let features = optional_trimmed_capped(body.features, 1024);
 
     let routes = state.table("routes");
     let sql = format!(
@@ -817,16 +816,14 @@ pub async fn operator_trips(
     if !matches!(order.as_str(), "asc" | "desc") {
         return Err(ApiError::bad_request("invalid order (asc|desc)"));
     }
-    let status = params
-        .status
-        .map(|s| s.trim().to_lowercase())
-        .and_then(|s| {
-            if s.is_empty() || s == "all" {
-                None
-            } else {
-                Some(s)
-            }
-        });
+    let status = params.status.and_then(|s| {
+        let s = s.trim().to_lowercase();
+        if s.is_empty() || s == "all" {
+            None
+        } else {
+            Some(s.chars().take(32).collect::<String>())
+        }
+    });
     if let Some(s) = status.as_deref() {
         if !matches!(s, "draft" | "published" | "canceled") {
             return Err(ApiError::bad_request("invalid status"));
@@ -1236,8 +1233,8 @@ async fn payments_transfer(
         }))
         .header("Content-Type", "application/json");
 
-    if let Some(secret) = state.bus_payments_internal_secret.as_deref() {
-        req = req.header("X-Bus-Payments-Internal-Secret", secret);
+    if let Some(auth_header_value) = state.bus_payments_internal_secret.as_deref() {
+        req = req.header("X-Bus-Payments-Internal-Secret", auth_header_value);
     }
     let caller = state.internal_service_id.trim();
     if !caller.is_empty() {
@@ -2976,7 +2973,7 @@ mod tests {
         (format!("http://{}", addr), rx)
     }
 
-    fn test_state(base_url: &str, bus_secret: Option<&str>) -> AppState {
+    fn test_state(base_url: &str, auth_token: Option<&str>) -> AppState {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgresql://shamell:shamell@localhost:5432/shamell_bus")
             .expect("lazy pool");
@@ -2989,7 +2986,7 @@ mod tests {
             env_lower: "test".to_string(),
             internal_service_id: "bus".to_string(),
             payments_base_url: Some(base_url.to_string()),
-            bus_payments_internal_secret: bus_secret.map(ToString::to_string),
+            bus_payments_internal_secret: auth_token.map(ToString::to_string),
             http,
         }
     }

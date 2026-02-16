@@ -116,7 +116,7 @@ impl Config {
         let prod_like = matches!(env_lower.as_str(), "prod" | "production" | "staging");
 
         let ticket_secret = env_or("BUS_TICKET_SECRET", "change-me-bus-ticket");
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "BUS_TICKET_SECRET",
             Some(ticket_secret.as_str()),
@@ -141,7 +141,7 @@ impl Config {
                     .to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "BUS_INTERNAL_SECRET",
             internal_secret.as_deref(),
@@ -235,7 +235,7 @@ impl Config {
                     .to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "BUS_PAYMENTS_INTERNAL_SECRET",
             bus_payments_internal_secret.as_deref(),

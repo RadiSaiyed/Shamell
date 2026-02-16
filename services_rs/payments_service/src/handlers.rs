@@ -36,15 +36,21 @@ fn parse_bus_booking_action(raw: Option<&str>) -> Result<&'static str, ApiError>
 }
 
 fn require_bus_booking_secret(state: &AppState, headers: &HeaderMap) -> ApiResult<()> {
-    let Some(expected) = state
+    if state
         .bus_payments_internal_secret
         .as_deref()
         .map(str::trim)
         .filter(|v| !v.is_empty())
-    else {
-        tracing::error!("BUS_PAYMENTS_INTERNAL_SECRET is not configured");
+        .is_none()
+    {
         return Err(ApiError::forbidden("internal caller not allowed"));
-    };
+    }
+    let expected = state
+        .bus_payments_internal_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
 
     let provided = headers
         .get(BUS_BOOKING_SECRET_HEADER)
@@ -1415,9 +1421,12 @@ pub async fn create_request(
 
     let id = Uuid::new_v4().to_string();
     let now = now_iso();
-    let expires_at = body
-        .expires_in_secs
-        .map(|secs| (Utc::now() + Duration::seconds(secs)).to_rfc3339());
+    #[allow(clippy::manual_map)]
+    let expires_at = if let Some(secs) = body.expires_in_secs {
+        Some((Utc::now() + Duration::seconds(secs)).to_rfc3339())
+    } else {
+        None
+    };
 
     sqlx::query(&format!(
         "INSERT INTO {requests} (id,from_wallet_id,to_wallet_id,amount_cents,currency,message,status,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"

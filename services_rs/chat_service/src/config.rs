@@ -139,7 +139,7 @@ impl Config {
                     .to_string(),
             );
         }
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             &env_name,
             "INTERNAL_API_SECRET",
             internal_secret.as_deref(),

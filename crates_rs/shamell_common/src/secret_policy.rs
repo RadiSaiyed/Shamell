@@ -3,7 +3,7 @@ pub fn is_production_like(env_name: &str) -> bool {
     matches!(env.as_str(), "prod" | "production" | "staging")
 }
 
-pub fn validate_secret_for_env(
+pub fn enforce_value_policy_for_env(
     env_name: &str,
     key: &str,
     value: Option<&str>,
@@ -76,25 +76,34 @@ fn looks_like_placeholder(secret: &str) -> bool {
     banned_fragments.iter().any(|v| s.contains(v))
 }
 
+pub fn validate_secret_for_env(
+    env_name: &str,
+    key: &str,
+    value: Option<&str>,
+    required_in_prod: bool,
+) -> Result<(), String> {
+    enforce_value_policy_for_env(env_name, key, value, required_in_prod)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn non_prod_skips_validation() {
-        let res = validate_secret_for_env("dev", "INTERNAL_API_SECRET", Some("short"), true);
+        let res = enforce_value_policy_for_env("dev", "INTERNAL_API_SECRET", Some("short"), true);
         assert!(res.is_ok());
     }
 
     #[test]
     fn prod_rejects_short_secret() {
-        let res = validate_secret_for_env("prod", "INTERNAL_API_SECRET", Some("short"), true);
+        let res = enforce_value_policy_for_env("prod", "INTERNAL_API_SECRET", Some("short"), true);
         assert!(res.is_err());
     }
 
     #[test]
     fn prod_rejects_placeholder_like_secret() {
-        let res = validate_secret_for_env(
+        let res = enforce_value_policy_for_env(
             "prod",
             "INTERNAL_API_SECRET",
             Some("change-me-super-secret-value"),
@@ -105,7 +114,7 @@ mod tests {
 
     #[test]
     fn prod_accepts_strong_secret() {
-        let res = validate_secret_for_env(
+        let res = enforce_value_policy_for_env(
             "prod",
             "INTERNAL_API_SECRET",
             Some("p9s7Qk_4w-vN2xT8kP6m"),

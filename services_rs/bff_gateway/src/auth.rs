@@ -13,6 +13,7 @@ use qrcode::render::svg;
 use qrcode::QrCode;
 use rand::Rng;
 use rand::RngCore;
+use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -336,7 +337,7 @@ impl AuthRuntime {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             env_name,
             "AUTH_ACCOUNT_CREATE_POW_SECRET",
             account_create_pow_secret.as_deref(),
@@ -366,7 +367,7 @@ impl AuthRuntime {
         };
         // Re-validate: the HMAC secret is required in prod/staging when either PoW or
         // hardware attestation is enabled (challenge token binding / nonce binding).
-        secret_policy::validate_secret_for_env(
+        secret_policy::enforce_value_policy_for_env(
             env_name,
             "AUTH_ACCOUNT_CREATE_POW_SECRET",
             account_create_pow_secret.as_deref(),
@@ -545,6 +546,7 @@ impl AuthRuntime {
                 let _ = EncodingKey::from_rsa_pem(private_key.as_bytes()).map_err(|_| {
                     "Play Integrity service account private_key invalid PEM".to_string()
                 })?;
+                let token_uri = validate_play_integrity_token_uri(&token_uri)?;
                 Some(PlayIntegrityConfig {
                     allowed_package_names,
                     service_account_email: client_email,
@@ -2463,10 +2465,14 @@ pub async fn me_mobility_history(
         .ok_or_else(|| ApiError::internal("payments user response missing wallet_id"))?
         .to_string();
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let status_filter = q
-        .status
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let status_filter = q.status.and_then(|s| {
+        let s = s.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.chars().take(32).collect::<String>())
+        }
+    });
 
     let rows = call_upstream_json(
         &state,
@@ -2572,7 +2578,7 @@ async fn call_upstream_json(
     body: Option<Value>,
     headers: &HeaderMap,
 ) -> ApiResult<Value> {
-    let (base_url, internal_secret, upstream_name) = match upstream {
+    let (base_url, auth_header_value, upstream_name) = match upstream {
         Upstream::Payments => (
             state.payments_base_url.as_str(),
             state.payments_internal_secret.as_deref(),
@@ -2586,8 +2592,8 @@ async fn call_upstream_json(
     };
     let url = format!("{}{}", base_url.trim_end_matches('/'), path);
     let mut req = state.http.request(method, url);
-    if let Some(secret) = internal_secret.map(str::trim).filter(|s| !s.is_empty()) {
-        req = req.header("X-Internal-Secret", secret);
+    if let Some(auth_header_value) = auth_header_value.map(str::trim).filter(|s| !s.is_empty()) {
+        req = req.header("X-Internal-Secret", auth_header_value);
     }
     let caller = state.internal_service_id.trim();
     if !caller.is_empty() {
@@ -3815,6 +3821,25 @@ struct GoogleServiceAccountJwtClaims<'a> {
     scope: &'a str,
 }
 
+fn validate_play_integrity_token_uri(raw: &str) -> Result<String, String> {
+    let parsed =
+        Url::parse(raw).map_err(|_| "Play Integrity token_uri must be a valid URL".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("Play Integrity token_uri must use https".to_string());
+    }
+    let host = parsed.host_str().unwrap_or("").trim().to_ascii_lowercase();
+    if host != "oauth2.googleapis.com" && host != "www.googleapis.com" {
+        return Err(
+            "Play Integrity token_uri host must be oauth2.googleapis.com or www.googleapis.com"
+                .to_string(),
+        );
+    }
+    if parsed.path() != "/token" {
+        return Err("Play Integrity token_uri path must be /token".to_string());
+    }
+    Ok(parsed.to_string())
+}
+
 async fn google_service_account_access_token(
     http: &reqwest::Client,
     cfg: &PlayIntegrityConfig,
@@ -4974,6 +4999,10 @@ mod tests {
         }
     }
 
+    fn ephemeral_test_secret() -> String {
+        format!("test-secret-{:016x}", rand::random::<u64>())
+    }
+
     #[test]
     fn json_no_store_sets_cache_control_header() {
         let resp = json_no_store(json!({"ok": true}));
@@ -5122,7 +5151,7 @@ mod tests {
 
     #[test]
     fn account_create_pow_token_roundtrip_and_rejects_tamper() {
-        let secret = "test-secret";
+        let secret = ephemeral_test_secret();
         let payload = AccountCreatePowPayload {
             v: 1,
             device_id: "dev_1234".to_string(),
@@ -5130,8 +5159,8 @@ mod tests {
             difficulty: 4,
             exp: unix_now_secs().saturating_add(300),
         };
-        let token = encode_pow_token(secret, &payload).expect("token");
-        let decoded = decode_pow_token(secret, &token).expect("decode must succeed");
+        let token = encode_pow_token(&secret, &payload).expect("token");
+        let decoded = decode_pow_token(&secret, &token).expect("decode must succeed");
         assert_eq!(decoded.v, 1);
         assert_eq!(decoded.device_id, payload.device_id);
         assert_eq!(decoded.nonce, payload.nonce);
@@ -5142,12 +5171,12 @@ mod tests {
         if let Some(last) = bad.pop() {
             bad.push(if last == 'A' { 'B' } else { 'A' });
         }
-        assert!(decode_pow_token(secret, &bad).is_none());
+        assert!(decode_pow_token(&secret, &bad).is_none());
     }
 
     #[test]
     fn account_create_pow_verification_rejects_expired_or_mismatched_device() {
-        let secret = "test-secret";
+        let secret = ephemeral_test_secret();
         let now = unix_now_secs();
         let payload = AccountCreatePowPayload {
             v: 1,
@@ -5156,8 +5185,8 @@ mod tests {
             difficulty: 0,
             exp: now.saturating_sub(1),
         };
-        let token = encode_pow_token(secret, &payload).expect("token");
-        assert!(!verify_pow_solution(secret, "dev_1234", &token, "0"));
+        let token = encode_pow_token(&secret, &payload).expect("token");
+        assert!(!verify_pow_solution(&secret, "dev_1234", &token, "0"));
 
         let payload = AccountCreatePowPayload {
             v: 1,
@@ -5166,10 +5195,10 @@ mod tests {
             difficulty: 0,
             exp: now.saturating_add(300),
         };
-        let token = encode_pow_token(secret, &payload).expect("token");
-        assert!(!verify_pow_solution(secret, "other_device", &token, "0"));
+        let token = encode_pow_token(&secret, &payload).expect("token");
+        assert!(!verify_pow_solution(&secret, "other_device", &token, "0"));
         assert!(!verify_pow_solution(
-            secret,
+            &secret,
             "dev_1234",
             &token,
             "not-a-number"

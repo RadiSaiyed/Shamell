@@ -124,6 +124,20 @@ fn json_object(body: Value) -> ApiResult<Map<String, Value>> {
     }
 }
 
+fn optional_query_value(
+    raw: Option<&str>,
+    field: &'static str,
+    max_len: usize,
+) -> ApiResult<Option<String>> {
+    let Some(v) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if v.len() > max_len {
+        return Err(ApiError::bad_request(format!("{field} too long")));
+    }
+    Ok(Some(v.to_string()))
+}
+
 pub async fn health(State(state): State<AppState>) -> axum::Json<HealthOut> {
     axum::Json(HealthOut {
         status: "ok",
@@ -166,7 +180,7 @@ pub async fn security_alert_ingest(
         ));
     }
 
-    let mut alerts = Vec::with_capacity(payload.alerts.len().min(64));
+    let mut alerts = Vec::new();
     if payload.alerts.is_empty() {
         return Err(ApiError::bad_request(
             "alerts must contain at least one item",
@@ -1854,18 +1868,8 @@ pub async fn admin_roles_check(
     Query(q): Query<AdminRolesCheckQuery>,
 ) -> ApiResult<axum::Json<Value>> {
     let role = required_query(q.role.as_deref(), "role required", "role")?;
-    let account_id = q
-        .account_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string);
-    let phone = q
-        .phone
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string);
+    let account_id = optional_query_value(q.account_id.as_deref(), "account_id", 128)?;
+    let phone = optional_query_value(q.phone.as_deref(), "phone", 32)?;
     if account_id.is_none() && phone.is_none() {
         return Err(ApiError::bad_request("account_id or phone required"));
     }
@@ -1940,10 +1944,10 @@ async fn proxy_chat_stream(
 ) -> ApiResult<Response> {
     require_chat_guardrails_if_configured(state, headers, path, &query, None).await?;
     let mut req = state.http.request(Method::GET, state.chat_url(path));
-    if let Some(secret) = state.chat_internal_secret.as_deref() {
-        let secret = secret.trim();
-        if !secret.is_empty() {
-            req = req.header("X-Internal-Secret", secret);
+    if let Some(auth_header_value) = state.chat_internal_secret.as_deref() {
+        let auth_header_value = auth_header_value.trim();
+        if !auth_header_value.is_empty() {
+            req = req.header("X-Internal-Secret", auth_header_value);
         }
     }
     let caller = state.internal_service_id.trim();
@@ -2042,7 +2046,7 @@ async fn proxy_upstream(
         forward_headers,
     } = spec;
 
-    let (url, upstream_name, secret) = match upstream {
+    let (url, upstream_name, auth_header_value) = match upstream {
         Upstream::Payments => (
             state.payments_url(path),
             "payments",
@@ -2062,8 +2066,8 @@ async fn proxy_upstream(
 
     let mut req = state.http.request(method, url);
 
-    if let Some(secret) = secret.map(str::trim).filter(|s| !s.is_empty()) {
-        req = req.header("X-Internal-Secret", secret);
+    if let Some(auth_header_value) = auth_header_value.map(str::trim).filter(|s| !s.is_empty()) {
+        req = req.header("X-Internal-Secret", auth_header_value);
     }
     let caller = state.internal_service_id.trim();
     if !caller.is_empty() {

@@ -2070,10 +2070,13 @@ pub async fn write_mailbox(
     }
 
     let created_at = now_iso();
-    let expire_at = body.expire_after_seconds.map(|secs| {
+    #[allow(clippy::manual_map)]
+    let expire_at = if let Some(secs) = body.expire_after_seconds {
         let ttl = secs.clamp(60, 7 * 24 * 3600);
-        (Utc::now() + Duration::seconds(ttl)).to_rfc3339_opts(SecondsFormat::Secs, true)
-    });
+        Some((Utc::now() + Duration::seconds(ttl)).to_rfc3339_opts(SecondsFormat::Secs, true))
+    } else {
+        None
+    };
     let id = Uuid::new_v4().to_string();
 
     let chat_mailbox_messages = state.table("chat_mailbox_messages");
