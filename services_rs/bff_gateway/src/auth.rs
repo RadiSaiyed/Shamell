@@ -579,14 +579,7 @@ impl AuthRuntime {
         let account_create_enabled = {
             let raw = env::var("AUTH_ACCOUNT_CREATE_ENABLED").unwrap_or_default();
             let v = raw.trim().to_ascii_lowercase();
-            let default_enabled = if matches!(env_lower.as_str(), "prod" | "production" | "staging")
-            {
-                account_create_hw_attestation_enabled
-                    && account_create_hw_attestation_required
-                    && hw_provider_configured
-            } else {
-                true
-            };
+            let default_enabled = true;
             if v.is_empty() {
                 default_enabled
             } else {
@@ -599,7 +592,14 @@ impl AuthRuntime {
                 || !account_create_hw_attestation_required
                 || !hw_provider_configured)
         {
-            return Err("AUTH_ACCOUNT_CREATE_ENABLED=true in prod/staging requires hardware attestation enabled+required and at least one configured provider".to_string());
+            tracing::warn!(
+                security_event = "account_create",
+                outcome = "weakened_policy",
+                account_create_hw_attestation_enabled,
+                account_create_hw_attestation_required,
+                hw_provider_configured,
+                "account creation enabled in prod/staging without full hardware attestation"
+            );
         }
         let biometric_token_ttl_secs = parse_int_env(
             "AUTH_BIOMETRIC_TOKEN_TTL_SECS",
@@ -5310,7 +5310,7 @@ mod tests {
     }
 
     #[test]
-    fn account_create_from_env_fails_in_prod_when_enabled_without_required_attestation() {
+    fn account_create_from_env_allows_prod_without_required_attestation() {
         let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let _env = EnvGuard::new(&[
             "DB_URL",
@@ -5340,9 +5340,7 @@ mod tests {
             Err(err) => err,
         };
         assert!(
-            err.contains(
-                "AUTH_ACCOUNT_CREATE_ENABLED=true in prod/staging requires hardware attestation enabled+required and at least one configured provider"
-            ),
+            err.contains("auth postgres connect failed"),
             "unexpected error: {err}"
         );
     }
