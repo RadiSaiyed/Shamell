@@ -259,6 +259,7 @@ services:
       BUS_INTERNAL_SERVICE_ID: "${BUS_INTERNAL_SERVICE_ID:-bus}"
       BUS_MAX_BODY_BYTES: "${BUS_MAX_BODY_BYTES:-1048576}"
       PAYMENTS_BASE_URL: "${PAYMENTS_BASE_URL:-http://payments:8082}"
+      PAYMENTS_INTERNAL_SECRET: "${PAYMENTS_INTERNAL_SECRET:?set PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
       BUS_PAYMENTS_INTERNAL_SECRET: "${BUS_PAYMENTS_INTERNAL_SECRET:?set BUS_PAYMENTS_INTERNAL_SECRET in ops/pi/.env}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-api.shamell.online,online.shamell.online}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://online.shamell.online,https://shamell.online}"
