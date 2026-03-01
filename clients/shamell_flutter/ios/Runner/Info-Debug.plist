@@ -32,6 +32,13 @@
 		<true/>
 		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>
+		<key>NSLocalNetworkUsageDescription</key>
+		<string>Local network connections are required for the debug connection (Flutter/Dart VM Service).</string>
+		<key>NSBonjourServices</key>
+		<array>
+			<string>_dartobservatory._tcp</string>
+			<string>_flutter-run._tcp</string>
+		</array>
 		<key>NSCameraUsageDescription</key>
 		<string>Camera is used to scan payment QR codes.</string>
 		<key>NSMicrophoneUsageDescription</key>

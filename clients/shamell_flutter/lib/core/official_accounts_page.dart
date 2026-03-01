@@ -24,6 +24,9 @@ import 'mini_program_runtime.dart';
 import 'shamell_ui.dart';
 import 'perf.dart';
 import 'http_error.dart';
+import 'safe_set_state.dart';
+
+const Duration _officialRequestTimeout = Duration(seconds: 15);
 
 class OfficialAccountsPage extends StatefulWidget {
   final String baseUrl;
@@ -43,7 +46,8 @@ class OfficialAccountsPage extends StatefulWidget {
   State<OfficialAccountsPage> createState() => _OfficialAccountsPageState();
 }
 
-class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
+class _OfficialAccountsPageState extends State<OfficialAccountsPage>
+    with SafeSetStateMixin<OfficialAccountsPage> {
   bool _loading = true;
   String _error = '';
   List<_OfficialAccount> _accounts = const [];
@@ -97,7 +101,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'true'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         final list = <_OfficialAccount>[];
@@ -158,7 +164,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         final list = <_OfficialAccount>[];
@@ -258,7 +266,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
           'limit': '20',
         },
       );
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -356,7 +366,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
           final uri = Uri.parse(
                   '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(id)}/moments_stats')
               .replace(queryParameters: const {});
-          final r = await http.get(uri, headers: await _hdr());
+          final r = await http
+              .get(uri, headers: await _hdr())
+              .timeout(_officialRequestTimeout);
           if (r.statusCode < 200 || r.statusCode >= 300) continue;
           final decoded = jsonDecode(r.body);
           if (decoded is! Map) continue;
@@ -890,9 +902,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                                   final per1k = per1kRaw is num
                                       ? per1kRaw.toDouble()
                                       : 0.0;
-                                  if (total >= 10 ||
-                                      s30 >= 3 ||
-                                      per1k >= 5.0) {
+                                  if (total >= 10 || s30 >= 3 || per1k >= 5.0) {
                                     hot.add(a);
                                   }
                                 }
@@ -1645,7 +1655,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
               OfficialNotificationMode.muted => 'muted',
             }
           });
-          await http.post(uri, headers: await _hdr(jsonBody: true), body: body);
+          await http
+              .post(uri, headers: await _hdr(jsonBody: true), body: body)
+              .timeout(_officialRequestTimeout);
         } catch (_) {}
       }
       if (!mounted) return;
@@ -1674,7 +1686,8 @@ class OfficialAccountDeepLinkPage extends StatefulWidget {
 }
 
 class _OfficialAccountDeepLinkPageState
-    extends State<OfficialAccountDeepLinkPage> {
+    extends State<OfficialAccountDeepLinkPage>
+    with SafeSetStateMixin<OfficialAccountDeepLinkPage> {
   bool _loading = true;
   String _error = '';
   OfficialAccountHandle? _account;
@@ -1703,7 +1716,9 @@ class _OfficialAccountDeepLinkPageState
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         final list = <OfficialAccountHandle>[];
@@ -1809,7 +1824,8 @@ class OfficialFeedItemDeepLinkPage extends StatefulWidget {
 }
 
 class _OfficialFeedItemDeepLinkPageState
-    extends State<OfficialFeedItemDeepLinkPage> {
+    extends State<OfficialFeedItemDeepLinkPage>
+    with SafeSetStateMixin<OfficialFeedItemDeepLinkPage> {
   bool _loading = true;
   String _error = '';
   OfficialAccountHandle? _account;
@@ -1838,10 +1854,12 @@ class _OfficialFeedItemDeepLinkPageState
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts');
-      final r = await http.get(
-        uri.replace(queryParameters: const {'followed_only': 'false'}),
-        headers: await _hdr(),
-      );
+      final r = await http
+          .get(
+            uri.replace(queryParameters: const {'followed_only': 'false'}),
+            headers: await _hdr(),
+          )
+          .timeout(_officialRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         final list = <OfficialAccountHandle>[];
@@ -1875,7 +1893,9 @@ class _OfficialFeedItemDeepLinkPageState
         final feedUri =
             Uri.parse('${widget.baseUrl}/official_accounts/${acc.id}/feed')
                 .replace(queryParameters: const {'limit': '50'});
-        final fr = await http.get(feedUri, headers: await _hdr());
+        final fr = await http
+            .get(feedUri, headers: await _hdr())
+            .timeout(_officialRequestTimeout);
         if (fr.statusCode >= 200 && fr.statusCode < 300) {
           final fd = jsonDecode(fr.body);
           _OfficialFeedItem? found;
@@ -2108,8 +2128,9 @@ class _OfficialFeedItemDeepLinkPageState
                           try {
                             final uri = Uri.tryParse(thumb);
                             if (uri != null) {
-                              final resp =
-                                  await http.get(uri, headers: await _hdr());
+                              final resp = await http
+                                  .get(uri, headers: await _hdr())
+                                  .timeout(_officialRequestTimeout);
                               if (resp.statusCode >= 200 &&
                                   resp.statusCode < 300 &&
                                   resp.bodyBytes.isNotEmpty) {
@@ -2164,8 +2185,9 @@ class _OfficialFeedItemDeepLinkPageState
                           try {
                             final uri = Uri.tryParse(thumb);
                             if (uri != null) {
-                              final resp =
-                                  await http.get(uri, headers: await _hdr());
+                              final resp = await http
+                                  .get(uri, headers: await _hdr())
+                                  .timeout(_officialRequestTimeout);
                               if (resp.statusCode >= 200 &&
                                   resp.statusCode < 300 &&
                                   resp.bodyBytes.isNotEmpty) {
@@ -2288,7 +2310,8 @@ class OfficialAccountFeedPage extends StatefulWidget {
       _OfficialAccountFeedPageState();
 }
 
-class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
+class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage>
+    with SafeSetStateMixin<OfficialAccountFeedPage> {
   bool _loading = true;
   String _error = '';
   List<_OfficialFeedItem> _items = const [];
@@ -2334,7 +2357,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
       final uri = Uri.parse(
               '${widget.baseUrl}/official_accounts/${widget.account.id}/feed')
           .replace(queryParameters: const {'limit': '20'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         final list = <_OfficialFeedItem>[];
@@ -2350,7 +2375,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           final locUri = Uri.parse(
                   '${widget.baseUrl}/official_accounts/${widget.account.id}/locations')
               .replace(queryParameters: const {'limit': '50'});
-          final lr = await http.get(locUri, headers: await _hdr());
+          final lr = await http
+              .get(locUri, headers: await _hdr())
+              .timeout(_officialRequestTimeout);
           if (lr.statusCode >= 200 && lr.statusCode < 300) {
             final ld = jsonDecode(lr.body);
             if (ld is Map && ld['locations'] is List) {
@@ -2370,7 +2397,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         try {
           final statsUri = Uri.parse(
               '${widget.baseUrl}/official_accounts/${widget.account.id}/moments_stats');
-          final sr = await http.get(statsUri, headers: await _hdr());
+          final sr = await http
+              .get(statsUri, headers: await _hdr())
+              .timeout(_officialRequestTimeout);
           if (sr.statusCode >= 200 && sr.statusCode < 300) {
             final sd = jsonDecode(sr.body);
             if (sd is Map) {
@@ -2474,7 +2503,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           'official_account_id': accId,
         },
       );
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -2510,7 +2541,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           'official_account_id': widget.account.id,
         },
       );
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -2568,7 +2601,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
             OfficialNotificationMode.muted => 'muted',
           }
         });
-        await http.post(uri, headers: await _hdr(jsonBody: true), body: body);
+        await http
+            .post(uri, headers: await _hdr(jsonBody: true), body: body)
+            .timeout(_officialRequestTimeout);
       } catch (_) {}
       if (!mounted) return;
       setState(() {
@@ -2943,7 +2978,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -4313,7 +4350,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/official_accounts/$id/$endpoint');
-      final r = await http.post(uri, headers: await _hdr(jsonBody: true));
+      final r = await http
+          .post(uri, headers: await _hdr(jsonBody: true))
+          .timeout(_officialRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         if (!mounted) return;
         setState(() {

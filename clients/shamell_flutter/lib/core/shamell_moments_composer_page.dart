@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'http_error.dart';
 import 'l10n.dart';
 import 'shamell_ui.dart';
+import 'safe_set_state.dart';
 
 class ShamellMomentDraft {
   final String text;
@@ -60,9 +61,10 @@ class _ShamellComposerImage {
   const _ShamellComposerImage({required this.bytes, required this.mime});
 }
 
-class _ShamellMomentsComposerPageState
-    extends State<ShamellMomentsComposerPage> {
+class _ShamellMomentsComposerPageState extends State<ShamellMomentsComposerPage>
+    with SafeSetStateMixin<ShamellMomentsComposerPage> {
   static const int _kMaxImages = 9;
+  static const Duration _momentsComposerRequestTimeout = Duration(seconds: 15);
   late final TextEditingController _ctrl =
       TextEditingController(text: widget.initialText);
   final List<_ShamellComposerImage> _images = <_ShamellComposerImage>[];
@@ -1078,7 +1080,8 @@ class _ShamellLocationPickerPageState
         'addressdetails': '1',
       },
     );
-    final resp = await http.get(uri, headers: _nominatimHeaders(l));
+    final resp = await http.get(uri, headers: _nominatimHeaders(l)).timeout(
+        _ShamellMomentsComposerPageState._momentsComposerRequestTimeout);
     if (resp.statusCode < 200 || resp.statusCode >= 300) return null;
     final decoded = jsonDecode(resp.body);
     if (decoded is! Map) return null;
@@ -1182,7 +1185,8 @@ class _ShamellLocationPickerPageState
           'limit': '20',
         },
       );
-      final resp = await http.get(uri, headers: _nominatimHeaders(l));
+      final resp = await http.get(uri, headers: _nominatimHeaders(l)).timeout(
+          _ShamellMomentsComposerPageState._momentsComposerRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -1225,7 +1229,8 @@ class _ShamellLocationPickerPageState
       if (!mounted) return;
       setState(() {
         _loadingSearch = false;
-        _searchError = l.isArabic ? 'تعذّر تنفيذ البحث.' : 'Could not run search.';
+        _searchError =
+            l.isArabic ? 'تعذّر تنفيذ البحث.' : 'Could not run search.';
         _results = const <_ShamellLocationEntry>[];
       });
     }
@@ -1591,7 +1596,8 @@ class _ShamellRemindPickerPageState extends State<_ShamellRemindPickerPage> {
       } catch (_) {}
 
       final uri = Uri.parse('${widget.baseUrl}/me/friends');
-      final resp = await http.get(uri, headers: await _authHeaders());
+      final resp = await http.get(uri, headers: await _authHeaders()).timeout(
+          _ShamellMomentsComposerPageState._momentsComposerRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -1651,7 +1657,8 @@ class _ShamellRemindPickerPageState extends State<_ShamellRemindPickerPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _friendsError = l.isArabic ? 'تعذّر تحميل الأصدقاء.' : 'Could not load friends.';
+        _friendsError =
+            l.isArabic ? 'تعذّر تحميل الأصدقاء.' : 'Could not load friends.';
         _loadingFriends = false;
       });
     }

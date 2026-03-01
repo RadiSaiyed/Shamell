@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'chat/chat_service.dart';
+import 'session_cookie_store.dart';
 
 /// Lightweight WebSocket-based signaling client for future VoIP calls.
 ///
@@ -20,6 +22,7 @@ class CallSignalingClient {
   final String _base;
   WebSocketChannel? _ws;
   StreamController<Map<String, dynamic>>? _eventsCtrl;
+  int _connectGeneration = 0;
 
   bool _isLocalhostHost(String host) {
     final h = host.trim().toLowerCase();
@@ -31,16 +34,35 @@ class CallSignalingClient {
   /// The backend is expected to expose `/ws/call/signaling` and route
   /// events between participants based on `device_id`.
   Stream<Map<String, dynamic>> connect({required String deviceId}) {
-    _eventsCtrl?.close();
+    _connectGeneration += 1;
+    final generation = _connectGeneration;
+    _ws?.sink.close();
+    _ws = null;
+    unawaited(_eventsCtrl?.close());
     _eventsCtrl = StreamController<Map<String, dynamic>>.broadcast();
+    unawaited(_connectInternal(
+      deviceId: deviceId.trim(),
+      generation: generation,
+    ));
+    return _eventsCtrl!.stream;
+  }
+
+  Future<void> _connectInternal({
+    required String deviceId,
+    required int generation,
+  }) async {
+    if (deviceId.isEmpty) {
+      _emit({'type': 'error', 'reason': 'missing_device_id'});
+      return;
+    }
     try {
       final u = Uri.parse(_base);
       final scheme = u.scheme.toLowerCase();
       final host = u.host.toLowerCase();
       // Best practice: do not connect over plaintext transports to non-local hosts.
       if (scheme != 'https' && !(scheme == 'http' && _isLocalhostHost(host))) {
-        _eventsCtrl?.add({'type': 'error', 'reason': 'insecure_transport'});
-        return _eventsCtrl!.stream;
+        _emit({'type': 'error', 'reason': 'insecure_transport'});
+        return;
       }
       final wsUri = Uri(
         scheme: scheme == 'https' ? 'wss' : 'ws',
@@ -49,23 +71,86 @@ class CallSignalingClient {
         path: '/ws/call/signaling',
         queryParameters: {'device_id': deviceId},
       );
-      _ws = WebSocketChannel.connect(wsUri);
-      _ws!.stream.listen((payload) {
+
+      final headers = await _wsHeaders(deviceId);
+      if (generation != _connectGeneration) return;
+
+      final ws = _connectWebSocket(wsUri, headers: headers);
+      if (generation != _connectGeneration) {
         try {
-          final j = jsonDecode(payload);
-          if (j is Map<String, dynamic>) {
-            _eventsCtrl?.add(j);
-          }
+          ws.sink.close();
         } catch (_) {}
-      }, onError: (_) {
-        _eventsCtrl?.add({'type': 'error'});
-      }, onDone: () {
-        _eventsCtrl?.add({'type': 'closed'});
-      });
+        return;
+      }
+      _ws = ws;
+      ws.stream.listen(
+        (payload) {
+          if (generation != _connectGeneration) return;
+          try {
+            final j = jsonDecode(payload.toString());
+            if (j is Map<String, dynamic>) {
+              _emit(j);
+            }
+          } catch (_) {}
+        },
+        onError: (_) {
+          if (generation != _connectGeneration) return;
+          _emit({'type': 'error'});
+        },
+        onDone: () {
+          if (generation != _connectGeneration) return;
+          _emit({'type': 'closed'});
+        },
+      );
     } catch (_) {
-      _eventsCtrl?.add({'type': 'error'});
+      _emit({'type': 'error'});
     }
-    return _eventsCtrl!.stream;
+  }
+
+  Future<Map<String, String>> _wsHeaders(String deviceId) async {
+    final headers = <String, String>{};
+    final cookie = await getSessionCookieHeader(_base);
+    if (cookie != null && cookie.isNotEmpty) {
+      headers['cookie'] = cookie;
+    }
+    final token = (await ChatLocalStore().loadDeviceAuthToken(deviceId)) ?? '';
+    if (token.trim().isNotEmpty) {
+      headers['X-Chat-Device-Id'] = deviceId;
+      headers['X-Chat-Device-Token'] = token.trim();
+    }
+    return headers;
+  }
+
+  WebSocketChannel _connectWebSocket(
+    Uri wsUri, {
+    required Map<String, String> headers,
+  }) {
+    if (headers.isNotEmpty) {
+      try {
+        final dynamic connector = WebSocketChannel.connect;
+        final dynamic ch = Function.apply(
+          connector,
+          <Object?>[wsUri],
+          <Symbol, Object?>{#headers: headers},
+        );
+        if (ch is WebSocketChannel) {
+          return ch;
+        }
+      } catch (_) {
+        // On non-web platforms we expect explicit header support; fail closed
+        // instead of silently retrying without auth/session headers.
+        if (!kIsWeb) rethrow;
+      }
+    }
+    return WebSocketChannel.connect(wsUri);
+  }
+
+  void _emit(Map<String, dynamic> event) {
+    final ctrl = _eventsCtrl;
+    if (ctrl == null || ctrl.isClosed) return;
+    try {
+      ctrl.add(event);
+    } catch (_) {}
   }
 
   /// Sends a raw signaling message (e.g. invite, answer, hangup, webrtc_offer).
@@ -97,11 +182,13 @@ class CallSignalingClient {
   Future<void> sendAnswer({
     required String callId,
     required String fromDeviceId,
+    String? toDeviceId,
   }) async {
     await send({
       'type': 'answer',
       'call_id': callId,
       'from': fromDeviceId,
+      if (toDeviceId != null && toDeviceId.isNotEmpty) 'to': toDeviceId,
     });
   }
 
@@ -109,11 +196,13 @@ class CallSignalingClient {
   Future<void> sendHangup({
     required String callId,
     required String fromDeviceId,
+    String? toDeviceId,
   }) async {
     await send({
       'type': 'hangup',
       'call_id': callId,
       'from': fromDeviceId,
+      if (toDeviceId != null && toDeviceId.isNotEmpty) 'to': toDeviceId,
     });
   }
 
@@ -130,9 +219,10 @@ class CallSignalingClient {
   }
 
   void close() {
+    _connectGeneration += 1;
     _ws?.sink.close();
     _ws = null;
-    _eventsCtrl?.close();
+    unawaited(_eventsCtrl?.close());
     _eventsCtrl = null;
   }
 }

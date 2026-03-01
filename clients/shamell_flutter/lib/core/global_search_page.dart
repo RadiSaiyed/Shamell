@@ -15,6 +15,9 @@ import 'channels_page.dart' show ChannelsPage;
 import 'global_media_page.dart';
 import 'http_error.dart';
 import 'shamell_ui.dart';
+import 'safe_set_state.dart';
+
+const Duration _globalSearchRequestTimeout = Duration(seconds: 15);
 
 class GlobalSearchPage extends StatefulWidget {
   final String baseUrl;
@@ -35,7 +38,7 @@ class GlobalSearchPage extends StatefulWidget {
 }
 
 class _GlobalSearchPageState extends State<GlobalSearchPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, SafeSetStateMixin<GlobalSearchPage> {
   final TextEditingController _qCtrl = TextEditingController();
   Timer? _searchDebounce;
   int _searchSeq = 0;
@@ -126,7 +129,9 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/topics/trending')
           .replace(queryParameters: const {'limit': '8'});
-      final resp = await http.get(uri, headers: await _hdr());
+      final resp = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_globalSearchRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         return;
       }
@@ -173,7 +178,9 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
         'q': q,
         'limit': '30',
       });
-      final resp = await http.get(uri, headers: await _hdr());
+      final resp = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_globalSearchRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted || seq != _searchSeq) return;
         setState(() {

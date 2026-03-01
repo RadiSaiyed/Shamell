@@ -9,7 +9,10 @@ import 'l10n.dart';
 import 'device_id.dart';
 import 'http_error.dart';
 import 'logout_wipe.dart';
+import 'safe_set_state.dart';
 import '../main.dart' show LoginPage;
+
+const Duration _devicesRequestTimeout = Duration(seconds: 15);
 
 class DevicesPage extends StatefulWidget {
   final String baseUrl;
@@ -20,7 +23,8 @@ class DevicesPage extends StatefulWidget {
   State<DevicesPage> createState() => _DevicesPageState();
 }
 
-class _DevicesPageState extends State<DevicesPage> {
+class _DevicesPageState extends State<DevicesPage>
+    with SafeSetStateMixin<DevicesPage> {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _devices = const [];
@@ -59,7 +63,9 @@ class _DevicesPageState extends State<DevicesPage> {
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/auth/devices');
-      final resp = await http.get(uri, headers: await _hdr());
+      final resp = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_devicesRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         setState(() {
           _error = sanitizeHttpError(
@@ -132,7 +138,7 @@ class _DevicesPageState extends State<DevicesPage> {
         headers: {
           if (cookie.isNotEmpty) 'cookie': cookie,
         },
-      );
+      ).timeout(_devicesRequestTimeout);
     } catch (_) {}
     await wipeLocalAccountData(preserveDevicePrefs: true);
     if (!mounted) return;
@@ -186,7 +192,7 @@ class _DevicesPageState extends State<DevicesPage> {
           headers: {
             if (cookie.isNotEmpty) 'cookie': cookie,
           },
-        );
+        ).timeout(_devicesRequestTimeout);
       } catch (_) {}
     }
 
@@ -198,7 +204,7 @@ class _DevicesPageState extends State<DevicesPage> {
         headers: {
           if (cookie.isNotEmpty) 'cookie': cookie,
         },
-      );
+      ).timeout(_devicesRequestTimeout);
     } catch (_) {}
 
     await wipeLocalForForgetDevice();
@@ -498,7 +504,9 @@ class _DevicesPageState extends State<DevicesPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/auth/devices/${Uri.encodeComponent(deviceId)}');
-      final resp = await http.delete(uri, headers: await _hdr());
+      final resp = await http
+          .delete(uri, headers: await _hdr())
+          .timeout(_devicesRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

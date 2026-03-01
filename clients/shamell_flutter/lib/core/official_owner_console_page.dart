@@ -16,6 +16,7 @@ import 'channels_page.dart' show ChannelsPage;
 import 'official_moments_comments_page.dart';
 import 'official_service_inbox_page.dart';
 import 'app_shell_widgets.dart' show AppBG;
+import 'safe_set_state.dart';
 
 class OfficialOwnerConsolePage extends StatefulWidget {
   final String baseUrl;
@@ -34,7 +35,9 @@ class OfficialOwnerConsolePage extends StatefulWidget {
       _OfficialOwnerConsolePageState();
 }
 
-class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
+class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage>
+    with SafeSetStateMixin<OfficialOwnerConsolePage> {
+  static const Duration _officialOwnerRequestTimeout = Duration(seconds: 15);
   bool _loading = true;
   String _error = '';
   OfficialAccountHandle? _account;
@@ -71,7 +74,9 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
       try {
         final uri = Uri.parse('${widget.baseUrl}/official_accounts')
             .replace(queryParameters: const {'followed_only': 'false'});
-        final r = await http.get(uri, headers: await _hdr());
+        final r = await http
+            .get(uri, headers: await _hdr())
+            .timeout(_officialOwnerRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           final list = <OfficialAccountHandle>[];
@@ -106,7 +111,9 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
         final uri = Uri.parse(
           '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(widget.accountId)}/moments_stats',
         );
-        final r = await http.get(uri, headers: await _hdr());
+        final r = await http
+            .get(uri, headers: await _hdr())
+            .timeout(_officialOwnerRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           if (decoded is Map) {
@@ -119,7 +126,9 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
         final uri = Uri.parse(
           '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/auto_replies',
         );
-        final r = await http.get(uri, headers: await _hdr());
+        final r = await http
+            .get(uri, headers: await _hdr())
+            .timeout(_officialOwnerRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           if (decoded is Map && decoded['rules'] is List) {
@@ -378,10 +387,7 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
               ),
             ),
           ),
-        if (totalShares > 0 ||
-            shares30 > 0 ||
-            followers > 0 ||
-            comments30 > 0)
+        if (totalShares > 0 || shares30 > 0 || followers > 0 || comments30 > 0)
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -965,11 +971,14 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                                 ? thumbCtrl.text.trim()
                                                 : null,
                                       };
-                                      final r = await http.post(
-                                        uri,
-                                        headers: await _hdr(jsonBody: true),
-                                        body: jsonEncode(payload),
-                                      );
+                                      final r = await http
+                                          .post(
+                                            uri,
+                                            headers: await _hdr(jsonBody: true),
+                                            body: jsonEncode(payload),
+                                          )
+                                          .timeout(
+                                              _officialOwnerRequestTimeout);
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
                                         final msg = sanitizeHttpError(
@@ -1000,7 +1009,8 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       if (!mounted) return;
                                       setModalState(() {
                                         submitting = false;
-                                        error = sanitizeExceptionForUi(error: e);
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1181,27 +1191,33 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                         final uri = Uri.parse(
                                           '${widget.baseUrl}/admin/official_auto_replies/$id',
                                         );
-                                        r = await http.patch(
-                                          uri,
-                                          headers: headers,
-                                          body: jsonEncode({
-                                            'text': text,
-                                            'enabled': enabled,
-                                          }),
-                                        );
+                                        r = await http
+                                            .patch(
+                                              uri,
+                                              headers: headers,
+                                              body: jsonEncode({
+                                                'text': text,
+                                                'enabled': enabled,
+                                              }),
+                                            )
+                                            .timeout(
+                                                _officialOwnerRequestTimeout);
                                       } else {
                                         final uri = Uri.parse(
                                           '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/auto_replies',
                                         );
-                                        r = await http.post(
-                                          uri,
-                                          headers: headers,
-                                          body: jsonEncode({
-                                            'kind': 'welcome',
-                                            'text': text,
-                                            'enabled': enabled,
-                                          }),
-                                        );
+                                        r = await http
+                                            .post(
+                                              uri,
+                                              headers: headers,
+                                              body: jsonEncode({
+                                                'kind': 'welcome',
+                                                'text': text,
+                                                'enabled': enabled,
+                                              }),
+                                            )
+                                            .timeout(
+                                                _officialOwnerRequestTimeout);
                                       }
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
@@ -1234,7 +1250,8 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       if (!mounted) return;
                                       setModalState(() {
                                         submitting = false;
-                                        error = sanitizeExceptionForUi(error: e);
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1421,30 +1438,36 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                         final uri = Uri.parse(
                                           '${widget.baseUrl}/admin/official_auto_replies/$id',
                                         );
-                                        r = await http.patch(
-                                          uri,
-                                          headers: headers,
-                                          body: jsonEncode({
-                                            'kind': 'keyword',
-                                            'keyword': kw,
-                                            'text': txt,
-                                            'enabled': enabled,
-                                          }),
-                                        );
+                                        r = await http
+                                            .patch(
+                                              uri,
+                                              headers: headers,
+                                              body: jsonEncode({
+                                                'kind': 'keyword',
+                                                'keyword': kw,
+                                                'text': txt,
+                                                'enabled': enabled,
+                                              }),
+                                            )
+                                            .timeout(
+                                                _officialOwnerRequestTimeout);
                                       } else {
                                         final uri = Uri.parse(
                                           '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/auto_replies',
                                         );
-                                        r = await http.post(
-                                          uri,
-                                          headers: headers,
-                                          body: jsonEncode({
-                                            'kind': 'keyword',
-                                            'keyword': kw,
-                                            'text': txt,
-                                            'enabled': enabled,
-                                          }),
-                                        );
+                                        r = await http
+                                            .post(
+                                              uri,
+                                              headers: headers,
+                                              body: jsonEncode({
+                                                'kind': 'keyword',
+                                                'keyword': kw,
+                                                'text': txt,
+                                                'enabled': enabled,
+                                              }),
+                                            )
+                                            .timeout(
+                                                _officialOwnerRequestTimeout);
                                       }
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
@@ -1477,7 +1500,8 @@ class _OfficialOwnerConsolePageState extends State<OfficialOwnerConsolePage> {
                                       if (!mounted) return;
                                       setModalState(() {
                                         submitting = false;
-                                        error = sanitizeExceptionForUi(error: e);
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },

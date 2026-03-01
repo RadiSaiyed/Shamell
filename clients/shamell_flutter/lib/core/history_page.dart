@@ -13,6 +13,9 @@ import 'http_error.dart';
 import 'design_tokens.dart';
 import 'app_shell_widgets.dart' show AppBG; // reuse background only
 import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'safe_set_state.dart';
+
+const Duration _historyRequestTimeout = Duration(seconds: 15);
 
 class HistoryPage extends StatefulWidget {
   final String baseUrl;
@@ -29,7 +32,8 @@ class HistoryPage extends StatefulWidget {
   State<HistoryPage> createState() => _HistoryPageState();
 }
 
-class _HistoryPageState extends State<HistoryPage> {
+class _HistoryPageState extends State<HistoryPage>
+    with SafeSetStateMixin<HistoryPage> {
   List<dynamic> txns = [];
   String out = '';
   bool loading = true;
@@ -91,7 +95,9 @@ class _HistoryPageState extends State<HistoryPage> {
               Uri.encodeComponent(widget.walletId) +
               '/snapshot')
           .replace(queryParameters: qp);
-      final r = await http.get(u, headers: await _hdr(widget.baseUrl));
+      final r = await http
+          .get(u, headers: await _hdr(widget.baseUrl))
+          .timeout(_historyRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final arr = j['txns'];
@@ -167,8 +173,12 @@ class _HistoryPageState extends State<HistoryPage> {
       Share.share(csv, subject: subject);
     } catch (e) {
       final l = L10n.of(context);
+      final detail = sanitizeExceptionForUi(
+        error: e,
+        isArabic: l.isArabic,
+      );
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${l.historyCsvErrorPrefix}: $e')),
+        SnackBar(content: Text('${l.historyCsvErrorPrefix}: $detail')),
       );
     }
   }
@@ -509,9 +519,8 @@ class _HistoryPageState extends State<HistoryPage> {
     }
 
     final bool isIncoming = sign == '+';
-    final Color iconColor = isBill
-        ? Theme.of(context).colorScheme.primary
-        : Tokens.colorPayments;
+    final Color iconColor =
+        isBill ? Theme.of(context).colorScheme.primary : Tokens.colorPayments;
     final Color iconBg = isBill
         ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.06)
         : Tokens.colorPayments.withValues(alpha: 0.08);

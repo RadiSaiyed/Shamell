@@ -7,6 +7,9 @@ import 'package:http/http.dart' as http;
 import 'l10n.dart';
 import 'chat/shamell_chat_page.dart';
 import 'http_error.dart';
+import 'safe_set_state.dart';
+
+const Duration _officialServiceInboxRequestTimeout = Duration(seconds: 15);
 
 class OfficialServiceInboxPage extends StatefulWidget {
   final String baseUrl;
@@ -25,7 +28,8 @@ class OfficialServiceInboxPage extends StatefulWidget {
       _OfficialServiceInboxPageState();
 }
 
-class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
+class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage>
+    with SafeSetStateMixin<OfficialServiceInboxPage> {
   bool _loading = true;
   String? _error;
   List<_ServiceSession> _items = const <_ServiceSession>[];
@@ -62,7 +66,9 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
       ).replace(queryParameters: const <String, String>{
         'limit': '100',
       });
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialServiceInboxRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -107,7 +113,9 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox/${s.id}/mark_read',
       );
-      await http.post(uri, headers: await _hdr(jsonBody: true));
+      await http
+          .post(uri, headers: await _hdr(jsonBody: true))
+          .timeout(_officialServiceInboxRequestTimeout);
     } catch (_) {
       // Best-effort; UI is optimistic.
     }
@@ -119,7 +127,9 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox/${s.id}/close',
       );
-      final r = await http.post(uri, headers: await _hdr(jsonBody: true));
+      final r = await http
+          .post(uri, headers: await _hdr(jsonBody: true))
+          .timeout(_officialServiceInboxRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -141,12 +151,13 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
             .toList();
       });
     } catch (e) {
+      final detail = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             l.isArabic
-                ? 'تعذّر إغلاق الجلسة: $e'
-                : 'Failed to close session: $e',
+                ? 'تعذّر إغلاق الجلسة: $detail'
+                : 'Failed to close session: $detail',
           ),
         ),
       );
@@ -237,14 +248,17 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                     final uri = Uri.parse(
                                       '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox/${s.id}/template_messages',
                                     );
-                                    final r = await http.post(
-                                      uri,
-                                      headers: await _hdr(jsonBody: true),
-                                      body: jsonEncode(<String, dynamic>{
-                                        'title': title,
-                                        'body': body,
-                                      }),
-                                    );
+                                    final r = await http
+                                        .post(
+                                          uri,
+                                          headers: await _hdr(jsonBody: true),
+                                          body: jsonEncode(<String, dynamic>{
+                                            'title': title,
+                                            'body': body,
+                                          }),
+                                        )
+                                        .timeout(
+                                            _officialServiceInboxRequestTimeout);
                                     if (r.statusCode < 200 ||
                                         r.statusCode >= 300) {
                                       setStateSB(() {

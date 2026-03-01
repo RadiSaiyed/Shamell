@@ -14,6 +14,7 @@ import 'moments_page.dart';
 import 'shamell_ui.dart';
 import 'shamell_webview_page.dart';
 import '../mini_apps/payments/payments_shell.dart';
+import 'safe_set_state.dart';
 
 Future<Map<String, String>> _hdrMiniProgram({
   required String baseUrl,
@@ -57,7 +58,9 @@ class MiniProgramPage extends StatefulWidget {
   State<MiniProgramPage> createState() => _MiniProgramPageState();
 }
 
-class _MiniProgramPageState extends State<MiniProgramPage> {
+class _MiniProgramPageState extends State<MiniProgramPage>
+    with SafeSetStateMixin<MiniProgramPage> {
+  static const Duration _miniProgramRequestTimeout = Duration(seconds: 15);
   MiniProgramManifest? _localManifest;
   String? _remoteTitleEn;
   String? _remoteTitleAr;
@@ -174,7 +177,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/track_open');
-      await http.post(uri);
+      await http.post(uri).timeout(_miniProgramRequestTimeout);
     } catch (_) {
       // best-effort only
     }
@@ -203,7 +206,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}');
-      final resp = await http.get(uri);
+      final resp = await http.get(uri).timeout(_miniProgramRequestTimeout);
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         final decoded = jsonDecode(resp.body);
         if (decoded is Map<String, dynamic>) {
@@ -342,8 +345,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/moments_stats');
-      final resp = await http.get(uri,
-          headers: await _hdrMiniProgram(baseUrl: widget.baseUrl));
+      final resp = await http
+          .get(uri, headers: await _hdrMiniProgram(baseUrl: widget.baseUrl))
+          .timeout(_miniProgramRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) return;
       final decoded = jsonDecode(resp.body);
       if (decoded is! Map) return;
@@ -369,9 +373,12 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/rate');
       final body = jsonEncode({'rating': val});
-      final resp = await http.post(uri,
-          headers: await _hdrMiniProgram(baseUrl: widget.baseUrl, json: true),
-          body: body);
+      final resp = await http
+          .post(uri,
+              headers:
+                  await _hdrMiniProgram(baseUrl: widget.baseUrl, json: true),
+              body: body)
+          .timeout(_miniProgramRequestTimeout);
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1969,18 +1976,20 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                         final uri = Uri.parse(
                                           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/rate',
                                         );
-                                        final resp = await http.post(
-                                          uri,
-                                          headers:
-                                              await _hdrMiniProgram(
+                                        final resp = await http
+                                            .post(
+                                              uri,
+                                              headers: await _hdrMiniProgram(
                                                   baseUrl: widget.baseUrl,
                                                   json: true),
-                                          body: jsonEncode(
-                                            <String, dynamic>{
-                                              'rating': selected,
-                                            },
-                                          ),
-                                        );
+                                              body: jsonEncode(
+                                                <String, dynamic>{
+                                                  'rating': selected,
+                                                },
+                                              ),
+                                            )
+                                            .timeout(
+                                                _miniProgramRequestTimeout);
                                         if (resp.statusCode < 200 ||
                                             resp.statusCode >= 300) {
                                           setModalState(() {

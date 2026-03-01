@@ -10,6 +10,7 @@ import 'mini_apps_config.dart';
 import 'moments_page.dart';
 import 'mini_program_runtime.dart';
 import 'ui_kit.dart';
+import 'safe_set_state.dart';
 
 class MiniAppsPage extends StatefulWidget {
   final String baseUrl;
@@ -29,7 +30,9 @@ class MiniAppsPage extends StatefulWidget {
   State<MiniAppsPage> createState() => _MiniAppsPageState();
 }
 
-class _MiniAppsPageState extends State<MiniAppsPage> {
+class _MiniAppsPageState extends State<MiniAppsPage>
+    with SafeSetStateMixin<MiniAppsPage> {
+  static const Duration _miniAppsRequestTimeout = Duration(seconds: 15);
   final TextEditingController _searchCtrl = TextEditingController();
   String _query = '';
   List<String> _recent = const [];
@@ -95,7 +98,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
   Future<void> _loadRemoteApps() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_apps');
-      final resp = await http.get(uri);
+      final resp = await http.get(uri).timeout(_miniAppsRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) return;
       final decoded = jsonDecode(resp.body);
       final list = <MiniAppDescriptor>[];
@@ -111,8 +114,9 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
       }
       // Bus-only build: ignore remote mini-apps that are not allow-listed.
       const allowedIds = <String>{'bus'};
-      final filtered =
-          list.where((m) => allowedIds.contains(m.id.trim().toLowerCase())).toList();
+      final filtered = list
+          .where((m) => allowedIds.contains(m.id.trim().toLowerCase()))
+          .toList();
       if (!mounted || filtered.isEmpty) return;
       setState(() {
         _remoteApps = filtered;
@@ -219,17 +223,20 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                     try {
                                       final uri = Uri.parse(
                                           '${widget.baseUrl}/mini_apps/${Uri.encodeComponent(m.id)}/rate');
-                                      final resp = await http.post(
-                                        uri,
-                                        headers: const {
-                                          'content-type': 'application/json',
-                                        },
-                                        body: jsonEncode(
-                                          <String, dynamic>{
-                                            'rating': selected,
-                                          },
-                                        ),
-                                      );
+                                      final resp = await http
+                                          .post(
+                                            uri,
+                                            headers: const {
+                                              'content-type':
+                                                  'application/json',
+                                            },
+                                            body: jsonEncode(
+                                              <String, dynamic>{
+                                                'rating': selected,
+                                              },
+                                            ),
+                                          )
+                                          .timeout(_miniAppsRequestTimeout);
                                       if (resp.statusCode < 200 ||
                                           resp.statusCode >= 300) {
                                         setModalState(() {

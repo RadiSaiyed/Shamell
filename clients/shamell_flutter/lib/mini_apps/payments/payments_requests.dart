@@ -10,6 +10,9 @@ import '../../core/format.dart' show fmtCents;
 import '../../core/design_tokens.dart';
 import 'package:shamell_flutter/core/session_cookie_store.dart';
 import '../../core/http_error.dart';
+import '../../core/safe_set_state.dart';
+
+const Duration _paymentsRequestsRequestTimeout = Duration(seconds: 15);
 
 class IncomingRequestBanner extends StatelessWidget {
   final Map<String, dynamic> req;
@@ -67,7 +70,8 @@ class RequestsPage extends StatefulWidget {
   State<RequestsPage> createState() => _RequestsPageState();
 }
 
-class _RequestsPageState extends State<RequestsPage> {
+class _RequestsPageState extends State<RequestsPage>
+    with SafeSetStateMixin<RequestsPage> {
   List<Map<String, dynamic>> incoming = [];
   List<Map<String, dynamic>> outgoing = [];
   String out = '';
@@ -101,7 +105,9 @@ class _RequestsPageState extends State<RequestsPage> {
         '&kind=' +
         kind +
         '&limit=100');
-    final r = await http.get(u, headers: await _hdrPR(widget.baseUrl));
+    final r = await http
+        .get(u, headers: await _hdrPR(widget.baseUrl))
+        .timeout(_paymentsRequestsRequestTimeout);
     if (r.statusCode != 200) {
       throw Exception(
         sanitizeHttpError(
@@ -115,11 +121,13 @@ class _RequestsPageState extends State<RequestsPage> {
   }
 
   Future<void> _accept(String id) async {
-    final r = await http.post(
-        Uri.parse('${widget.baseUrl}/payments/requests/' +
-            Uri.encodeComponent(id) +
-            '/accept'),
-        headers: await _hdrPR(widget.baseUrl));
+    final r = await http
+        .post(
+            Uri.parse('${widget.baseUrl}/payments/requests/' +
+                Uri.encodeComponent(id) +
+                '/accept'),
+            headers: await _hdrPR(widget.baseUrl))
+        .timeout(_paymentsRequestsRequestTimeout);
     if (!mounted) return;
     if (r.statusCode == 200) {
       _loadAll();
@@ -135,11 +143,13 @@ class _RequestsPageState extends State<RequestsPage> {
   }
 
   Future<void> _cancel(String id) async {
-    final r = await http.post(
-        Uri.parse('${widget.baseUrl}/payments/requests/' +
-            Uri.encodeComponent(id) +
-            '/cancel'),
-        headers: await _hdrPR(widget.baseUrl));
+    final r = await http
+        .post(
+            Uri.parse('${widget.baseUrl}/payments/requests/' +
+                Uri.encodeComponent(id) +
+                '/cancel'),
+            headers: await _hdrPR(widget.baseUrl))
+        .timeout(_paymentsRequestsRequestTimeout);
     if (!mounted) return;
     if (r.statusCode == 200) {
       _loadAll();

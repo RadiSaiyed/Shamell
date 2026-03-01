@@ -47,11 +47,11 @@ class L10n {
   String get loginAuthCancelled =>
       isArabic ? 'تم إلغاء التحقق.' : 'Authentication cancelled.';
   String get loginDeviceNotEnrolled => isArabic
-      ? 'لا يوجد حساب على هذا الجهاز بعد. أنشئ معرّف Shamell جديد، أو اربط هذا الجهاز عبر رمز QR لتسجيل الدخول من جهاز آخر.'
-      : 'No account on this device yet. Create a new Shamell ID, or link this device via Device-Login QR from another device.';
+      ? 'لا يوجد حساب على هذا الجهاز بعد. سيتم إعداد معرّف Shamell تلقائياً عند أول تشغيل.'
+      : 'No account on this device yet. Shamell sets up your ID automatically on first launch.';
   String get loginQrHint => isArabic
-      ? 'لاستخدام شامل ويب، افتح رمز QR لتسجيل الدخول على الكمبيوتر وامسحه من داخل \"استكشاف > مسح\" في شامل.'
-      : 'To use Shamell Web, open a login QR on your computer and scan it from \"Discover > Scan\" in Shamell.';
+      ? 'إذا انقطع الإعداد، اترك التطبيق متصلاً وسيكمل تلقائياً.'
+      : 'If setup is interrupted, keep the app online and it will continue automatically.';
   String get loginTerms => isArabic
       ? 'بمتابعة تسجيل الدخول، فأنت توافق على شروط الخدمة وسياسة الخصوصية.'
       : 'By signing in you agree to the Terms of Service and Privacy Policy.';

@@ -8,10 +8,13 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with SafeSetStateMixin<HomePage> {
+  static const Duration _startupDataRequestTimeout = Duration(seconds: 10);
+  static const Duration _sessionMgmtRequestTimeout = Duration(seconds: 10);
+
   String _baseUrl = const String.fromEnvironment(
     'BASE_URL',
-    defaultValue: 'http://localhost:8080',
+    defaultValue: 'https://api.shamell.online',
   );
   // Shamell-like bottom navigation tabs:
   // 0 = Chats, 1 = Contacts, 2 = Discover/Services, 3 = Me.
@@ -61,6 +64,11 @@ class _HomePageState extends State<HomePage> {
   int? _busRevenueTodayCents;
   CallSignalingClient? _callClient;
   StreamSubscription<Map<String, dynamic>>? _callSub;
+  bool _callSignalingInitInFlight = false;
+  String? _callSignalingBaseUrl;
+  String? _callSignalingDeviceId;
+  Timer? _callSignalingReconnectTimer;
+  int _callSignalingReconnectAttempt = 0;
   bool _hasUnreadMoments = false;
   int _officialServiceMoments = 0;
   int _officialSubscriptionMoments = 0;
@@ -94,6 +102,9 @@ class _HomePageState extends State<HomePage> {
   String _profileName = '';
   String _profilePhone = '';
   String _profileShamellId = '';
+  bool _sessionBootstrapInFlight = false;
+  DateTime? _sessionBootstrapLastAttemptAt;
+  DateTime? _sessionBootstrapLastSuccessAt;
 
   static String _randId() {
     const chars = 'abcdef0123456789';
@@ -113,7 +124,9 @@ class _HomePageState extends State<HomePage> {
         'device_type': kIsWeb ? 'web' : 'mobile',
         'platform': Theme.of(context).platform.name,
       });
-      unawaited(http.post(uri, headers: headers, body: body));
+      await http
+          .post(uri, headers: headers, body: body)
+          .timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
 
@@ -165,7 +178,9 @@ class _HomePageState extends State<HomePage> {
       // Friends
       try {
         final uri = Uri.parse('$_baseUrl/me/friends');
-        final r = await http.get(uri, headers: await _hdr());
+        final r = await http
+            .get(uri, headers: await _hdr())
+            .timeout(_startupDataRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           List<dynamic>? arr;
@@ -201,7 +216,9 @@ class _HomePageState extends State<HomePage> {
       // Pending friend requests (incoming only)
       try {
         final uri = Uri.parse('$_baseUrl/me/friend_requests');
-        final r = await http.get(uri, headers: await _hdr());
+        final r = await http
+            .get(uri, headers: await _hdr())
+            .timeout(_startupDataRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           List<dynamic>? arr;
@@ -267,7 +284,9 @@ class _HomePageState extends State<HomePage> {
     });
     try {
       final uri = Uri.parse('$_baseUrl/me/friends');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         List<dynamic>? arr;
@@ -280,20 +299,31 @@ class _HomePageState extends State<HomePage> {
             .whereType<Map>()
             .map((e) => e.cast<String, dynamic>())
             .toList();
+        final merged = await _mergeContactsRosterWithLocal(list);
         if (!mounted) return;
         setState(() {
-          _contactsRoster = list;
+          _contactsRoster = merged;
+          _contactsRosterError = null;
         });
       } else {
+        final localOnly = await _localContactsRoster();
         if (!mounted) return;
         setState(() {
-          _contactsRosterError = 'HTTP ${r.statusCode}';
+          _contactsRoster = localOnly;
+          _contactsRosterError =
+              localOnly.isEmpty ? 'HTTP ${r.statusCode}' : null;
         });
       }
     } catch (e) {
+      final localOnly = await _localContactsRoster();
+      final safeDetail = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
       if (!mounted) return;
       setState(() {
-        _contactsRosterError = '$e';
+        _contactsRoster = localOnly;
+        _contactsRosterError = localOnly.isEmpty ? safeDetail : null;
       });
     } finally {
       if (mounted) {
@@ -302,6 +332,74 @@ class _HomePageState extends State<HomePage> {
         });
       }
     }
+  }
+
+  String _contactsRosterKey(Map<String, dynamic> entry) {
+    final deviceId = (entry['device_id'] ?? '').toString().trim();
+    if (deviceId.isNotEmpty) return deviceId;
+    final id = (entry['id'] ?? '').toString().trim();
+    if (id.isNotEmpty) return id;
+    final phone = (entry['phone'] ?? '').toString().trim();
+    if (phone.isNotEmpty) return phone;
+    return '';
+  }
+
+  Future<List<Map<String, dynamic>>> _localContactsRoster() async {
+    try {
+      final local = await _chatStore.loadContacts();
+      return local
+          .where((c) => c.id.trim().isNotEmpty)
+          .map((c) => <String, dynamic>{
+                'id': c.id,
+                'name': (c.name ?? '').trim(),
+                'device_id': c.id,
+                'close': c.starred,
+              })
+          .toList();
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _mergeContactsRosterWithLocal(
+      List<Map<String, dynamic>> serverRoster) async {
+    final mergedByKey = <String, Map<String, dynamic>>{};
+
+    for (final raw in serverRoster) {
+      final item = Map<String, dynamic>.from(raw);
+      final key = _contactsRosterKey(item);
+      if (key.isEmpty) continue;
+      mergedByKey[key] = item;
+    }
+
+    final localRoster = await _localContactsRoster();
+    for (final local in localRoster) {
+      final key = _contactsRosterKey(local);
+      if (key.isEmpty) continue;
+      final existing = mergedByKey[key];
+      if (existing == null) {
+        mergedByKey[key] = Map<String, dynamic>.from(local);
+        continue;
+      }
+
+      // Keep server fields authoritative, but fill obvious local gaps.
+      final localName = (local['name'] ?? '').toString().trim();
+      if ((existing['name'] ?? '').toString().trim().isEmpty &&
+          localName.isNotEmpty) {
+        existing['name'] = localName;
+      }
+      final localDeviceId = (local['device_id'] ?? '').toString().trim();
+      if ((existing['device_id'] ?? '').toString().trim().isEmpty &&
+          localDeviceId.isNotEmpty) {
+        existing['device_id'] = localDeviceId;
+      }
+      final localClose = (local['close'] == true);
+      if (localClose && existing['close'] != true) {
+        existing['close'] = true;
+      }
+    }
+
+    return mergedByKey.values.toList();
   }
 
   Future<void> _loadDefaultOfficialAccountFlag() async {
@@ -317,19 +415,76 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _initCallSignaling() async {
+    if (_callSignalingInitInFlight) return;
+    _callSignalingInitInFlight = true;
     try {
+      final base = _baseUrl.trim();
+      if (base.isEmpty || !isSecureApiBaseUrl(base)) {
+        _scheduleCallSignalingReconnect();
+        return;
+      }
+      // Keep incoming-call signaling resilient on iOS: if a device identity
+      // was not initialized yet, bootstrap account+chat first.
+      try {
+        await ChatService(base).ensureAccountChatReady();
+      } catch (_) {}
       final devId = await CallSignalingClient.loadDeviceId();
       if (!mounted) return;
       if (devId == null || devId.isEmpty) {
+        _scheduleCallSignalingReconnect();
         return;
       }
-      final client = CallSignalingClient(_baseUrl);
+      final alreadyConnected = _callClient != null &&
+          _callSignalingBaseUrl == base &&
+          _callSignalingDeviceId == devId;
+      if (alreadyConnected) {
+        _callSignalingReconnectAttempt = 0;
+        return;
+      }
+      await _callSub?.cancel();
+      _callSub = null;
+      _callClient?.close();
+      _callClient = null;
+
+      final client = CallSignalingClient(base);
       final stream = client.connect(deviceId: devId);
       _callClient = client;
-      _callSub = stream.listen(_handleCallSignal);
+      _callSub = stream.listen((msg) {
+        final type = (msg['type'] ?? '').toString().trim().toLowerCase();
+        if (type == 'closed' || type == 'error') {
+          _scheduleCallSignalingReconnect();
+          return;
+        }
+        _handleCallSignal(msg);
+      }, onError: (_) {
+        _scheduleCallSignalingReconnect();
+      }, onDone: () {
+        _scheduleCallSignalingReconnect();
+      });
+      _callSignalingBaseUrl = base;
+      _callSignalingDeviceId = devId;
+      _callSignalingReconnectAttempt = 0;
     } catch (_) {
-      // Call signaling is best-effort; ignore failures here.
+      _scheduleCallSignalingReconnect();
+    } finally {
+      _callSignalingInitInFlight = false;
     }
+  }
+
+  void _scheduleCallSignalingReconnect() {
+    if (!mounted) return;
+    final attempt = _callSignalingReconnectAttempt.clamp(0, 5);
+    final delayMs = 600 * (1 << attempt);
+    _callSignalingReconnectAttempt =
+        (_callSignalingReconnectAttempt + 1).clamp(0, 8);
+    _callSignalingReconnectTimer?.cancel();
+    _callSignalingReconnectTimer = Timer(
+      Duration(milliseconds: delayMs),
+      () {
+        if (!mounted) return;
+        unawaited(_initCallSignaling());
+      },
+    );
   }
 
   void _handleCallSignal(Map<String, dynamic> msg) {
@@ -365,7 +520,9 @@ class _HomePageState extends State<HomePage> {
       var justFollowed = false;
       if (!alreadyFollowed) {
         final uri = Uri.parse('$_baseUrl/official_accounts/$officialId/follow');
-        final r = await http.post(uri, headers: await _hdr(json: true));
+        final r = await http
+            .post(uri, headers: await _hdr(json: true))
+            .timeout(_startupDataRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           await sp.setBool(followKey, true);
           justFollowed = true;
@@ -438,7 +595,9 @@ class _HomePageState extends State<HomePage> {
       final miniUpdates = <_MiniOfficialUpdate>[];
       final uri = Uri.parse('$_baseUrl/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         final list = <OfficialAccountHandle>[];
@@ -678,7 +837,9 @@ class _HomePageState extends State<HomePage> {
     try {
       final uri = Uri.parse('$_baseUrl/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         List<dynamic> raw = const [];
@@ -737,7 +898,9 @@ class _HomePageState extends State<HomePage> {
               final uri = Uri.parse(
                   '$_baseUrl/official_accounts/$accId/notification_mode');
               final body = jsonEncode({'mode': modeStr});
-              await http.post(uri, headers: await _hdr(json: true), body: body);
+              await http
+                  .post(uri, headers: await _hdr(json: true), body: body)
+                  .timeout(_startupDataRequestTimeout);
             } catch (_) {}
           }
         }
@@ -1915,7 +2078,8 @@ class _HomePageState extends State<HomePage> {
     }
     try {
       final svc = ChatService(_baseUrl);
-      final tok = await svc.createContactInviteToken(maxUses: 1);
+      await _ensureSessionForOnlineOps(baseUrl: _baseUrl);
+      final tok = await svc.createContactInviteTokenEnsured(maxUses: 1);
       final payload = Uri(
         scheme: 'shamell',
         host: 'invite',
@@ -3844,7 +4008,8 @@ class _HomePageState extends State<HomePage> {
                 );
               },
             ),
-          if (_caps.officialAccounts && _followedOfficialsPreview.isNotEmpty) ...[
+          if (_caps.officialAccounts &&
+              _followedOfficialsPreview.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
               l.isArabic ? 'الخدمات المميزة' : 'Starred services',
@@ -4251,10 +4416,8 @@ class _HomePageState extends State<HomePage> {
                     : 'Share moments with friends and official accounts';
                 String out = base;
                 if (_trendingTopicsShort.isNotEmpty) {
-                  final tags = _trendingTopicsShort
-                      .take(3)
-                      .map((t) => '#$t')
-                      .join(', ');
+                  final tags =
+                      _trendingTopicsShort.take(3).map((t) => '#$t').join(', ');
                   final extraTopics = l.isArabic
                       ? ' · مواضيع شائعة: $tags'
                       : ' · Trending topics: $tags';
@@ -4941,7 +5104,9 @@ class _HomePageState extends State<HomePage> {
       final sp = await SharedPreferences.getInstance();
       final seenRaw = (sp.getString('moments.comments_seen_ts') ?? '').trim();
       final uri = Uri.parse('$_baseUrl/moments/notifications');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
@@ -4973,7 +5138,9 @@ class _HomePageState extends State<HomePage> {
     if (!_caps.officialAccounts) return;
     try {
       final uri = Uri.parse('$_baseUrl/me/official_moments_stats');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
@@ -4997,7 +5164,9 @@ class _HomePageState extends State<HomePage> {
     try {
       final uri = Uri.parse('$_baseUrl/moments/topics/trending')
           .replace(queryParameters: const {'limit': '3'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -5026,7 +5195,9 @@ class _HomePageState extends State<HomePage> {
     try {
       final uri = Uri.parse('$_baseUrl/mini_programs')
           .replace(queryParameters: const {'limit': '20'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -5093,7 +5264,9 @@ class _HomePageState extends State<HomePage> {
         'unread_only': 'true',
         'limit': '1',
       });
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -5121,7 +5294,9 @@ class _HomePageState extends State<HomePage> {
     if (!_caps.miniPrograms) return;
     try {
       final uri = Uri.parse('$_baseUrl/mini_programs/developer_json');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -5203,7 +5378,27 @@ class _HomePageState extends State<HomePage> {
     final storedRoles = sp.getStringList('roles') ?? const [];
     final storedOpDomains = sp.getStringList('operator_domains') ?? const [];
     final storedMode = sp.getString('app_mode');
-    final storedBaseUrl = sp.getString('base_url') ?? _baseUrl;
+    final fallbackBaseUrl = const String.fromEnvironment(
+      'BASE_URL',
+      defaultValue: 'https://api.shamell.online',
+    ).trim();
+    final fallbackHost = Uri.tryParse(fallbackBaseUrl)?.host ?? '';
+    final hasReachableFallback = fallbackBaseUrl.isNotEmpty &&
+        isSecureApiBaseUrl(fallbackBaseUrl) &&
+        !isLocalhostHost(fallbackHost);
+
+    var storedBaseUrl = (sp.getString('base_url') ?? '').trim();
+    final storedHost = Uri.tryParse(storedBaseUrl)?.host ?? '';
+    final shouldPinToFallback = storedBaseUrl.isEmpty ||
+        !isSecureApiBaseUrl(storedBaseUrl) ||
+        (hasReachableFallback && storedBaseUrl != fallbackBaseUrl) ||
+        (hasReachableFallback && isLocalhostHost(storedHost));
+    if (shouldPinToFallback) {
+      storedBaseUrl = fallbackBaseUrl;
+      try {
+        await sp.setString('base_url', fallbackBaseUrl);
+      } catch (_) {}
+    }
     final storedProfileName = sp.getString('last_login_name') ?? '';
     final storedProfilePhone = sp.getString('last_login_phone') ?? '';
     final shamellUserId = await getOrCreateShamellUserId(sp: sp);
@@ -5273,6 +5468,14 @@ class _HomePageState extends State<HomePage> {
     final metricsRemote = sp.getBool('metrics_remote') ?? false;
     Perf.configure(
         baseUrl: _baseUrl, deviceId: deviceId, remote: metricsRemote);
+    // Ensure we have an authenticated session for account-scoped endpoints
+    // (contacts invite QR, profile snapshots, etc.).
+    await _ensureSessionForOnlineOps(
+      baseUrl: storedBaseUrl,
+    );
+    // Retry signaling init after session/chat bootstrap. On fresh installs,
+    // chat identity may not exist during early initState signaling setup.
+    unawaited(_initCallSignaling());
     // 1) Optional: Cached Snapshot aus vorheriger Session anwenden, damit Home
     //    sofort etwas sinnvolles anzeigt, auch bevor das Netz greift.
     try {
@@ -5284,10 +5487,12 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {}
     // ensure Wallet/Rollen + erste KPIs via Aggregat-Endpunkt (idempotent)
     try {
-      final r = await http.get(
-        Uri.parse('$_baseUrl/me/home_snapshot'),
-        headers: await _hdr(),
-      );
+      final r = await http
+          .get(
+            Uri.parse('$_baseUrl/me/home_snapshot'),
+            headers: await _hdr(),
+          )
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode == 200) {
         Perf.action('home_snapshot_ok');
         final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -5325,6 +5530,58 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _ensureSessionForOnlineOps({
+    required String baseUrl,
+    bool force = false,
+  }) async {
+    final base = baseUrl.trim();
+    if (base.isEmpty || !isSecureApiBaseUrl(base)) return;
+    if (_sessionBootstrapInFlight) return;
+
+    final now = DateTime.now();
+    final lastAttempt = _sessionBootstrapLastAttemptAt;
+    if (!force &&
+        lastAttempt != null &&
+        now.difference(lastAttempt) < const Duration(seconds: 3)) {
+      return;
+    }
+    final lastSuccess = _sessionBootstrapLastSuccessAt;
+    if (!force &&
+        lastSuccess != null &&
+        now.difference(lastSuccess) < const Duration(seconds: 20)) {
+      return;
+    }
+
+    _sessionBootstrapInFlight = true;
+    _sessionBootstrapLastAttemptAt = now;
+
+    try {
+      var hasSession =
+          (await getSessionCookieHeader(base) ?? '').trim().isNotEmpty;
+      if (force || !hasSession) {
+        hasSession = await ensureSessionCookieViaAccountCreate(
+          baseUrl: base,
+          forceCreate: force,
+        );
+      }
+
+      if (!hasSession) return;
+
+      // Ensure the authenticated account always has an active chat device
+      // binding, so Shamell-ID contact lookup and invite flows work on first run.
+      try {
+        await ChatService(base).ensureAccountChatReady();
+      } catch (_) {}
+      _sessionBootstrapLastSuccessAt = DateTime.now();
+      // Best-effort: once chat identity is ensured, (re)bind signaling.
+      unawaited(_initCallSignaling());
+    } catch (_) {
+      // Keep flow resilient: later user actions can retry bootstrap.
+    } finally {
+      _sessionBootstrapInFlight = false;
+    }
+  }
+
   Future<void> _applyHomeSnapshot(
     Map<String, dynamic> j,
     SharedPreferences sp,
@@ -5332,7 +5589,8 @@ class _HomePageState extends State<HomePage> {
     required bool persist,
   }) async {
     final phone = (j['phone'] ?? '').toString();
-    final shamellIdRaw = (j['shamell_id'] ?? '').toString().trim().toUpperCase();
+    final shamellIdRaw =
+        (j['shamell_id'] ?? '').toString().trim().toUpperCase();
     final isSuperFlag = (j['is_superadmin'] ?? false) == true;
     if (persist) {
       if (phone.isNotEmpty) {
@@ -5465,6 +5723,7 @@ class _HomePageState extends State<HomePage> {
     _contactsIndexHintTimer?.cancel();
     _contactsScrollCtrl.removeListener(_updateContactsStickyHeader);
     _contactsScrollCtrl.dispose();
+    _callSignalingReconnectTimer?.cancel();
     try {
       _callSub?.cancel();
     } catch (_) {}
@@ -5484,7 +5743,9 @@ class _HomePageState extends State<HomePage> {
               Uri.encodeComponent(_walletId) +
               '/snapshot')
           .replace(queryParameters: const {'limit': '1'});
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode == 200) {
         Perf.action('wallet_snapshot_ok');
         final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -5513,7 +5774,9 @@ class _HomePageState extends State<HomePage> {
   Future<void> _loadBusSummary() async {
     try {
       final uri = Uri.parse('$_baseUrl/bus/admin/summary');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final trips = j['trips_today'] ?? 0;
@@ -5629,11 +5892,13 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final uri = Uri.parse('$_baseUrl/auth/device_login/approve');
-      final resp = await http.post(
-        uri,
-        headers: await _hdr(json: true, baseUrl: _baseUrl),
-        body: jsonEncode(<String, Object?>{'token': t}),
-      );
+      final resp = await http
+          .post(
+            uri,
+            headers: await _hdr(json: true, baseUrl: _baseUrl),
+            body: jsonEncode(<String, Object?>{'token': t}),
+          )
+          .timeout(_sessionMgmtRequestTimeout);
       if (!mounted) return;
       if (resp.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -5679,9 +5944,17 @@ class _HomePageState extends State<HomePage> {
           if (token.isEmpty) return;
           final l = L10n.of(context);
           try {
+            await _ensureSessionForOnlineOps(
+              baseUrl: _baseUrl,
+              force: true,
+            );
             final svc = ChatService(_baseUrl);
-            final peerId = await svc.redeemContactInviteToken(token);
+            final peerId = await svc.redeemContactInviteTokenEnsured(token);
             if (peerId.isEmpty) return;
+            try {
+              final peer = await svc.resolveDevice(peerId);
+              await _chatStore.upsertContact(peer);
+            } catch (_) {}
             _navPush(
               ShamellChatPage(
                 baseUrl: _baseUrl,
@@ -5692,8 +5965,8 @@ class _HomePageState extends State<HomePage> {
             if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content:
-                    Text(sanitizeExceptionForUi(error: e, isArabic: l.isArabic)),
+                content: Text(
+                    sanitizeExceptionForUi(error: e, isArabic: l.isArabic)),
               ),
             );
           }
@@ -5965,8 +6238,9 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _loadRoles() async {
     try {
-      final r = await http.get(Uri.parse('$_baseUrl/me/roles'),
-          headers: await _hdr());
+      final r = await http
+          .get(Uri.parse('$_baseUrl/me/roles'), headers: await _hdr())
+          .timeout(_startupDataRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final phone = (j['phone'] ?? '').toString();
@@ -6008,7 +6282,9 @@ class _HomePageState extends State<HomePage> {
     // Native modules: keep Payments + Chat fully integrated.
     if (id == 'chat') {
       if (!_caps.chat) {
-        blocked(en: 'Chat is disabled on this server.', ar: 'الدردشة معطّلة على هذا الخادم.');
+        blocked(
+            en: 'Chat is disabled on this server.',
+            ar: 'الدردشة معطّلة على هذا الخادم.');
         return;
       }
       if (mounted) {
@@ -6031,7 +6307,9 @@ class _HomePageState extends State<HomePage> {
     }
     if (id == 'bus') {
       if (!_caps.bus) {
-        blocked(en: 'Bus is disabled on this server.', ar: 'خدمة الحافلات معطّلة على هذا الخادم.');
+        blocked(
+            en: 'Bus is disabled on this server.',
+            ar: 'خدمة الحافلات معطّلة على هذا الخادم.');
         return;
       }
     }
@@ -6285,7 +6563,11 @@ class _HomePageState extends State<HomePage> {
     try {
       final uri = Uri.parse(
           '$_baseUrl/mini_apps/${Uri.encodeComponent(moduleId)}/track_open');
-      unawaited(http.post(uri));
+      unawaited(() async {
+        try {
+          await http.post(uri).timeout(const Duration(seconds: 5));
+        } catch (_) {}
+      }());
     } catch (_) {}
   }
 
@@ -6617,7 +6899,8 @@ class _HomePageState extends State<HomePage> {
     try {
       cookie = await _getCookie();
       final uri = Uri.parse('$_baseUrl/auth/logout');
-      await http.post(uri, headers: {'Cookie': cookie ?? ''});
+      await http.post(uri, headers: {'Cookie': cookie ?? ''}).timeout(
+          _sessionMgmtRequestTimeout);
     } catch (_) {}
     await wipeLocalAccountData(preserveDevicePrefs: true);
     if (!mounted) return;
@@ -6669,7 +6952,7 @@ class _HomePageState extends State<HomePage> {
           headers: {
             if (cookie.isNotEmpty) 'cookie': cookie,
           },
-        );
+        ).timeout(_sessionMgmtRequestTimeout);
       }
     } catch (_) {}
 
@@ -6681,7 +6964,7 @@ class _HomePageState extends State<HomePage> {
         headers: {
           if (cookie.isNotEmpty) 'cookie': cookie,
         },
-      );
+      ).timeout(_sessionMgmtRequestTimeout);
     } catch (_) {}
 
     await wipeLocalForForgetDevice();

@@ -1,5 +1,7 @@
 part of '../main.dart';
 
+const Duration _opsRequestTimeout = Duration(seconds: 15);
+
 class RolesInfoPage extends StatelessWidget {
   const RolesInfoPage({super.key});
   @override
@@ -115,7 +117,8 @@ class TopupPage extends StatefulWidget {
   State<TopupPage> createState() => _TopupPageState();
 }
 
-class _TopupPageState extends State<TopupPage> {
+class _TopupPageState extends State<TopupPage>
+    with SafeSetStateMixin<TopupPage> {
   final amtCtrl = TextEditingController(text: '10000');
   final walletCtrl = TextEditingController();
   String out = '';
@@ -158,7 +161,9 @@ class _TopupPageState extends State<TopupPage> {
           'Idempotency-Key': 'top-${DateTime.now().millisecondsSinceEpoch}'
         });
       final body = jsonEncode({'amount': double.parse(amt.toStringAsFixed(2))});
-      final r = await http.post(uri, headers: headers, body: body);
+      final r = await http
+          .post(uri, headers: headers, body: body)
+          .timeout(_opsRequestTimeout);
       setState(() {
         final isAr = L10n.of(context).isArabic;
         out = r.statusCode >= 200 && r.statusCode < 300
@@ -251,7 +256,9 @@ class _TopupPageState extends State<TopupPage> {
           'sig': map['sig'],
           'to_wallet_id': toWallet
         });
-        final r = await http.post(uri, headers: headers, body: body);
+        final r = await http
+            .post(uri, headers: headers, body: body)
+            .timeout(_opsRequestTimeout);
         setState(() {
           final isAr = L10n.of(context).isArabic;
           out = r.statusCode >= 200 && r.statusCode < 300
@@ -446,7 +453,8 @@ class OperatorDashboardPage extends StatefulWidget {
   State<OperatorDashboardPage> createState() => _OperatorDashboardPageState();
 }
 
-class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
+class _OperatorDashboardPageState extends State<OperatorDashboardPage>
+    with SafeSetStateMixin<OperatorDashboardPage> {
   List<String> _domains = const [];
   bool _loading = true;
   String _error = '';
@@ -469,7 +477,9 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
     }
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/home_snapshot');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       if (r.statusCode == 200) {
         final body = jsonDecode(r.body) as Map<String, dynamic>;
         final opDomains = (body['operator_domains'] as List?)
@@ -496,7 +506,10 @@ class _OperatorDashboardPageState extends State<OperatorDashboardPage> {
       }
     } catch (e) {
       setState(() {
-        _error = 'Error loading operator profile: $e';
+        _error = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
         _loading = false;
       });
     }
@@ -653,7 +666,8 @@ class SuperadminDashboardPage extends StatefulWidget {
       _SuperadminDashboardPageState();
 }
 
-class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
+class _SuperadminDashboardPageState extends State<SuperadminDashboardPage>
+    with SafeSetStateMixin<SuperadminDashboardPage> {
   String _financeRange = '24h'; // 24h, 7d, 30d
 
   String get baseUrl => widget.baseUrl;
@@ -661,7 +675,9 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
   Future<Map<String, dynamic>> _fetchStats() async {
     try {
       final uri = Uri.parse('$baseUrl/admin/stats');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         return j;
@@ -695,7 +711,9 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
       };
       final uri = Uri.parse('$baseUrl/admin/finance_stats')
           .replace(queryParameters: params);
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         return j;
@@ -1167,7 +1185,8 @@ class _SuperadminDashboardPageState extends State<SuperadminDashboardPage> {
   }
 }
 
-class _TopupKioskPageState extends State<TopupKioskPage> {
+class _TopupKioskPageState extends State<TopupKioskPage>
+    with SafeSetStateMixin<TopupKioskPage> {
   int _denom = 10000; // SYP major
   final _countCtrl = TextEditingController(text: '10');
   final _noteCtrl = TextEditingController();
@@ -1186,13 +1205,16 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
         return;
       }
       final uri = Uri.parse('${widget.baseUrl}/topup/batch_create');
-      final r = await http.post(uri,
-          headers: await _hdr(json: true),
-          body: jsonEncode({
-            'amount': _denom,
-            'count': count,
-            'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim()
-          }));
+      final r = await http
+          .post(uri,
+              headers: await _hdr(json: true),
+              body: jsonEncode({
+                'amount': _denom,
+                'count': count,
+                'note':
+                    _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim()
+              }))
+          .timeout(_opsRequestTimeout);
       final j = jsonDecode(r.body);
       if (r.statusCode == 200) {
         _batchId = (j['batch_id'] ?? '').toString();
@@ -1221,7 +1243,9 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/topup/batches?limit=50' +
           (_mineOnly ? '' : '&seller_id='));
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       _batches = jsonDecode(r.body) as List? ?? [];
       if (mounted) setState(() {});
     } catch (_) {}
@@ -1230,10 +1254,12 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
   Future<void> _openBatch(String bid) async {
     setState(() => out = '...');
     try {
-      final r = await http.get(
-          Uri.parse(
-              '${widget.baseUrl}/topup/batches/' + Uri.encodeComponent(bid)),
-          headers: await _hdr());
+      final r = await http
+          .get(
+              Uri.parse('${widget.baseUrl}/topup/batches/' +
+                  Uri.encodeComponent(bid)),
+              headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       _batchId = bid;
       _items = jsonDecode(r.body) as List? ?? [];
       setState(() => out = 'Loaded $bid');
@@ -1299,21 +1325,21 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
                                     child: payload.isEmpty
                                         ? const Icon(Icons.qr_code_2,
                                             size: 64, color: Colors.black54)
-                                          : QrImageView(
-                                              data: payload,
-                                              version: QrVersions.auto,
-                                              backgroundColor: Colors.white,
-                                              eyeStyle: const QrEyeStyle(
-                                                eyeShape: QrEyeShape.square,
-                                                color: Colors.black,
-                                              ),
-                                              dataModuleStyle:
-                                                  const QrDataModuleStyle(
-                                                dataModuleShape:
-                                                    QrDataModuleShape.square,
-                                                color: Colors.black,
-                                              ),
-                                            )))),
+                                        : QrImageView(
+                                            data: payload,
+                                            version: QrVersions.auto,
+                                            backgroundColor: Colors.white,
+                                            eyeStyle: const QrEyeStyle(
+                                              eyeShape: QrEyeShape.square,
+                                              color: Colors.black,
+                                            ),
+                                            dataModuleStyle:
+                                                const QrDataModuleStyle(
+                                              dataModuleShape:
+                                                  QrDataModuleShape.square,
+                                              color: Colors.black,
+                                            ),
+                                          )))),
                         const SizedBox(height: 6),
                         Text(code, style: const TextStyle(fontSize: 12)),
                         Text(
@@ -1452,11 +1478,13 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
   Future<void> _voidVoucher(String code) async {
     setState(() => out = '...');
     try {
-      final r = await http.post(
-          Uri.parse('${widget.baseUrl}/topup/vouchers/' +
-              Uri.encodeComponent(code) +
-              '/void'),
-          headers: await _hdr());
+      final r = await http
+          .post(
+              Uri.parse('${widget.baseUrl}/topup/vouchers/' +
+                  Uri.encodeComponent(code) +
+                  '/void'),
+              headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       if (r.statusCode == 200) {
         setState(() => out = 'Voided $code');
         if (_batchId.isNotEmpty) await _openBatch(_batchId);
@@ -1487,7 +1515,8 @@ class SystemStatusPage extends StatefulWidget {
   State<SystemStatusPage> createState() => _SystemStatusPageState();
 }
 
-class _SystemStatusPageState extends State<SystemStatusPage> {
+class _SystemStatusPageState extends State<SystemStatusPage>
+    with SafeSetStateMixin<SystemStatusPage> {
   Map<String, dynamic>? _data;
   String _error = '';
   bool _loading = true;
@@ -1503,7 +1532,9 @@ class _SystemStatusPageState extends State<SystemStatusPage> {
     _error = '';
     try {
       final uri = Uri.parse('${widget.baseUrl}/upstreams/health');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       if (r.statusCode == 200) {
         Perf.action('system_status_ok');
         final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -1697,7 +1728,8 @@ class SettingsPage extends StatefulWidget {
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
-class _SettingsPageState extends State<SettingsPage> {
+class _SettingsPageState extends State<SettingsPage>
+    with SafeSetStateMixin<SettingsPage> {
   late final TextEditingController baseUrlCtrl;
   late final TextEditingController walletCtrl;
   bool _debugSkeletonLong = false;
@@ -1822,7 +1854,8 @@ class SonicPayPage extends StatefulWidget {
   State<SonicPayPage> createState() => _SonicPayPageState();
 }
 
-class _SonicPayPageState extends State<SonicPayPage> {
+class _SonicPayPageState extends State<SonicPayPage>
+    with SafeSetStateMixin<SonicPayPage> {
   final fromCtrl = TextEditingController();
   final toCtrl = TextEditingController();
   final amtCtrl = TextEditingController(text: '1000');
@@ -1831,13 +1864,14 @@ class _SonicPayPageState extends State<SonicPayPage> {
   Future<void> _issue() async {
     setState(() => out = '...');
     try {
-      final r =
-          await http.post(Uri.parse('${widget.baseUrl}/payments/sonic/issue'),
+      final r = await http
+          .post(Uri.parse('${widget.baseUrl}/payments/sonic/issue'),
               headers: await _hdr(json: true),
               body: jsonEncode({
                 'from_wallet_id': fromCtrl.text.trim(),
                 'amount_cents': int.tryParse(amtCtrl.text.trim()) ?? 0,
-              }));
+              }))
+          .timeout(_opsRequestTimeout);
       out = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
           : sanitizeHttpError(
@@ -1873,14 +1907,15 @@ class _SonicPayPageState extends State<SonicPayPage> {
         }
       } catch (_) {}
       final token = map['token'] ?? payload;
-      final r =
-          await http.post(Uri.parse('${widget.baseUrl}/payments/sonic/redeem'),
+      final r = await http
+          .post(Uri.parse('${widget.baseUrl}/payments/sonic/redeem'),
               headers: await _hdr(json: true),
               body: jsonEncode({
                 'token': token,
                 'to_wallet_id':
                     toCtrl.text.trim().isEmpty ? null : toCtrl.text.trim(),
-              }));
+              }))
+          .timeout(_opsRequestTimeout);
       out = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
           : sanitizeHttpError(
@@ -1943,7 +1978,8 @@ class CashMandatePage extends StatefulWidget {
   State<CashMandatePage> createState() => _CashMandatePageState();
 }
 
-class _CashMandatePageState extends State<CashMandatePage> {
+class _CashMandatePageState extends State<CashMandatePage>
+    with SafeSetStateMixin<CashMandatePage> {
   final amtCtrl = TextEditingController(text: '1000');
   final phraseCtrl = TextEditingController();
   final codeCtrl = TextEditingController();
@@ -1964,7 +2000,9 @@ class _CashMandatePageState extends State<CashMandatePage> {
     });
     try {
       final headers = await _hdr(json: true);
-      final r = await http.post(uri, headers: headers, body: body);
+      final r = await http
+          .post(uri, headers: headers, body: body)
+          .timeout(_opsRequestTimeout);
       out = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
           : sanitizeHttpError(
@@ -2006,9 +2044,10 @@ class _CashMandatePageState extends State<CashMandatePage> {
   Future<void> _status() async {
     setState(() => out = '...');
     try {
-      final r = await http.get(Uri.parse(
-          '${widget.baseUrl}/payments/cash/status/' +
-              Uri.encodeComponent(codeCtrl.text.trim())));
+      final r = await http
+          .get(Uri.parse('${widget.baseUrl}/payments/cash/status/' +
+              Uri.encodeComponent(codeCtrl.text.trim())))
+          .timeout(_opsRequestTimeout);
       out = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
           : sanitizeHttpError(
@@ -2028,10 +2067,11 @@ class _CashMandatePageState extends State<CashMandatePage> {
   Future<void> _cancel() async {
     setState(() => out = '...');
     try {
-      final r = await http.post(
-          Uri.parse('${widget.baseUrl}/payments/cash/cancel'),
-          headers: await _hdr(json: true),
-          body: jsonEncode({'code': codeCtrl.text.trim()}));
+      final r = await http
+          .post(Uri.parse('${widget.baseUrl}/payments/cash/cancel'),
+              headers: await _hdr(json: true),
+              body: jsonEncode({'code': codeCtrl.text.trim()}))
+          .timeout(_opsRequestTimeout);
       out = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
           : sanitizeHttpError(
@@ -2056,8 +2096,8 @@ class _CashMandatePageState extends State<CashMandatePage> {
         final sp = await SharedPreferences.getInstance();
         myWallet = sp.getString('wallet_id');
       } catch (_) {}
-      final r =
-          await http.post(Uri.parse('${widget.baseUrl}/payments/cash/redeem'),
+      final r = await http
+          .post(Uri.parse('${widget.baseUrl}/payments/cash/redeem'),
               headers: await _hdr(json: true),
               body: jsonEncode({
                 'code': codeCtrl.text.trim(),
@@ -2065,7 +2105,8 @@ class _CashMandatePageState extends State<CashMandatePage> {
                     ? null
                     : phraseCtrl.text.trim(),
                 'to_wallet_id': myWallet,
-              }));
+              }))
+          .timeout(_opsRequestTimeout);
       out = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم.' : 'OK.')
           : sanitizeHttpError(
@@ -2147,7 +2188,8 @@ class ModuleHealthPage extends StatefulWidget {
   State<ModuleHealthPage> createState() => _ModuleHealthPageState();
 }
 
-class _ModuleHealthPageState extends State<ModuleHealthPage> {
+class _ModuleHealthPageState extends State<ModuleHealthPage>
+    with SafeSetStateMixin<ModuleHealthPage> {
   String out = '';
   int? _statusCode;
 
@@ -2157,8 +2199,10 @@ class _ModuleHealthPageState extends State<ModuleHealthPage> {
       _statusCode = null;
     });
     try {
-      final r = await http.get(Uri.parse('${widget.baseUrl}${widget.path}'),
-          headers: await _hdr());
+      final r = await http
+          .get(Uri.parse('${widget.baseUrl}${widget.path}'),
+              headers: await _hdr())
+          .timeout(_opsRequestTimeout);
       setState(() {
         _statusCode = r.statusCode;
         if (r.statusCode >= 200 && r.statusCode < 300) {

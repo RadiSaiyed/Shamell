@@ -5,6 +5,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'l10n.dart';
 import 'call_signaling.dart';
+import 'safe_set_state.dart';
 import 'chat/chat_service.dart';
 import 'chat/chat_models.dart' show ChatCallLogEntry, generateShortId;
 
@@ -26,7 +27,8 @@ class VoipCallPage extends StatefulWidget {
   State<VoipCallPage> createState() => _VoipCallPageState();
 }
 
-class _VoipCallPageState extends State<VoipCallPage> {
+class _VoipCallPageState extends State<VoipCallPage>
+    with SafeSetStateMixin<VoipCallPage> {
   bool _active = true;
   Duration _elapsed = Duration.zero;
   Timer? _timer;
@@ -45,6 +47,7 @@ class _VoipCallPageState extends State<VoipCallPage> {
   bool _videoEnabled = true;
   bool _speakerOn = false;
   bool _logged = false;
+  bool _offerSent = false;
 
   bool get _isVideoCall => widget.mode.toLowerCase() == 'video';
 
@@ -101,6 +104,7 @@ class _VoipCallPageState extends State<VoipCallPage> {
       setState(() {
         _connected = true;
       });
+      unawaited(_sendOfferIfNeeded());
     } else if (type == 'hangup' || type == 'reject') {
       setState(() {
         _active = false;
@@ -111,6 +115,11 @@ class _VoipCallPageState extends State<VoipCallPage> {
       if (pc != null && sdp.isNotEmpty) {
         final desc = RTCSessionDescription(sdp, 'answer');
         pc.setRemoteDescription(desc);
+      }
+      if (!_connected && mounted) {
+        setState(() {
+          _connected = true;
+        });
       }
     } else if (type == 'ice_candidate') {
       final cand = msg['candidate'];
@@ -164,7 +173,11 @@ class _VoipCallPageState extends State<VoipCallPage> {
     if (client != null && devId != null && devId.isNotEmpty) {
       // Best-effort hangup; ignore failures.
       client
-          .sendHangup(callId: _callId, fromDeviceId: devId)
+          .sendHangup(
+            callId: _callId,
+            fromDeviceId: devId,
+            toDeviceId: widget.peerId,
+          )
           .catchError((_) {});
     }
     _logCallAndPop(accepted: _connected);
@@ -172,6 +185,7 @@ class _VoipCallPageState extends State<VoipCallPage> {
 
   Future<void> _logCallAndPop({required bool accepted}) async {
     if (_logged) {
+      if (!mounted) return;
       Navigator.of(context).pop();
       return;
     }
@@ -189,6 +203,7 @@ class _VoipCallPageState extends State<VoipCallPage> {
       );
       await store.append(entry);
     } catch (_) {}
+    if (!mounted) return;
     Navigator.of(context).pop();
   }
 
@@ -436,22 +451,33 @@ class _VoipCallPageState extends State<VoipCallPage> {
           },
         });
       };
-      final offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      final client = _client;
-      if (client != null) {
-        await client.send({
-          'type': 'webrtc_offer',
-          'call_id': _callId,
-          'from': deviceId,
-          'to': widget.peerId,
-          'sdp': offer.sdp,
-          'sdp_type': offer.type,
-        });
-      }
+      await _sendOfferIfNeeded();
     } catch (_) {
       // If WebRTC setup fails, keep signaling-only call UI.
     }
+  }
+
+  Future<void> _sendOfferIfNeeded() async {
+    if (_offerSent || !_connected) return;
+    final pc = _pc;
+    final client = _client;
+    final devId = _deviceId;
+    if (pc == null || client == null || devId == null || devId.isEmpty) {
+      return;
+    }
+    try {
+      final offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await client.send({
+        'type': 'webrtc_offer',
+        'call_id': _callId,
+        'from': devId,
+        'to': widget.peerId,
+        'sdp': offer.sdp,
+        'sdp_type': offer.type,
+      });
+      _offerSent = true;
+    } catch (_) {}
   }
 
   Widget _roundButton({

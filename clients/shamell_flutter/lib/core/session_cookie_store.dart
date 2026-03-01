@@ -12,14 +12,13 @@ const String _sessionCookieName = '__Host-sa_session';
 
 const FlutterSecureStorage _sessionStorage = FlutterSecureStorage(
   aOptions: AndroidOptions(
-    encryptedSharedPreferences: true,
     resetOnError: true,
     sharedPreferencesName: 'shamell_secure_store',
   ),
   iOptions:
       IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
-  mOptions:
-      MacOsOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
+  mOptions: MacOsOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device),
 );
 
 String? _volatileSessionState;
@@ -104,6 +103,18 @@ Future<void> _writeSessionState(_SessionState st) async {
   if (_useSecureSessionStore()) {
     try {
       await _sessionStorage.write(key: _sessionStateKey, value: encoded);
+      if (_allowLegacySessionFallback()) {
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString(_sessionStateKey, encoded);
+        } catch (_) {}
+      } else {
+        try {
+          final sp = await SharedPreferences.getInstance();
+          await sp.remove(_sessionStateKey);
+        } catch (_) {}
+      }
+      return;
     } catch (_) {
       _volatileSessionState = encoded;
       if (_allowLegacySessionFallback()) {
@@ -124,13 +135,24 @@ Future<void> _writeSessionState(_SessionState st) async {
     _volatileSessionState = encoded;
     return;
   }
-  try {
-    final sp = await SharedPreferences.getInstance();
-    await sp.remove(_sessionStateKey);
-  } catch (_) {}
 }
 
 bool _allowLegacySessionFallback() {
+  if (kIsWeb) return false;
+  final isMobile = defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+  if (isMobile) {
+    if (kReleaseMode) {
+      return const bool.fromEnvironment(
+        'ALLOW_LEGACY_SESSION_FALLBACK_ON_MOBILE_IN_RELEASE',
+        defaultValue: false,
+      );
+    }
+    return const bool.fromEnvironment(
+      'ALLOW_LEGACY_SESSION_FALLBACK_ON_MOBILE',
+      defaultValue: true,
+    );
+  }
   if (kReleaseMode) {
     return const bool.fromEnvironment(
       'ALLOW_LEGACY_SESSION_FALLBACK_IN_RELEASE',
@@ -245,10 +267,9 @@ Future<String?> getSessionTokenForBaseUrl(String baseUrl) async {
   if (kIsWeb) return null;
   final u = _parseBaseUrl(baseUrl);
   if (u == null) return null;
-  final scheme = u.scheme.toLowerCase();
   final host = u.host.trim().toLowerCase();
   // Never send sessions over plaintext to non-local hosts.
-  if (scheme != 'https' && !_isLocalhost(host)) {
+  if (!_isSecureSessionBaseUri(u)) {
     return null;
   }
   final st = await _readSessionState();
@@ -278,11 +299,19 @@ String? extractSessionTokenFromSetCookieHeader(String? setCookie) {
 
 Future<void> setSessionTokenForBaseUrl(String baseUrl, String token) async {
   if (kIsWeb) return;
-  final host = _normalizedHostFromBaseUrl(baseUrl);
+  final u = _parseBaseUrl(baseUrl);
+  if (u == null || !_isSecureSessionBaseUri(u)) return;
+  final host = u.host.trim().toLowerCase();
   final t = token.trim().toLowerCase();
-  if (host == null || host.isEmpty) return;
+  if (host.isEmpty) return;
   if (!_isValidToken(t)) return;
   await _writeSessionState(_SessionState(host: host, token: t));
+}
+
+bool _isSecureSessionBaseUri(Uri u) {
+  final scheme = u.scheme.toLowerCase();
+  final host = u.host.trim().toLowerCase();
+  return scheme == 'https' || (scheme == 'http' && _isLocalhost(host));
 }
 
 Future<void> clearSessionCookie() async {

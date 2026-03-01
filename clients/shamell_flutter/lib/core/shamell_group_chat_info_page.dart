@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_flags.dart' show kEnduserOnly;
 import 'l10n.dart';
+import 'safe_set_state.dart';
 import 'shamell_ui.dart';
 
 class ShamellGroupMemberDisplay {
@@ -70,7 +71,8 @@ class ShamellGroupChatInfoPage extends StatefulWidget {
       _ShamellGroupChatInfoPageState();
 }
 
-class _ShamellGroupChatInfoPageState extends State<ShamellGroupChatInfoPage> {
+class _ShamellGroupChatInfoPageState extends State<ShamellGroupChatInfoPage>
+    with SafeSetStateMixin<ShamellGroupChatInfoPage> {
   bool _busy = false;
   late bool _muted;
   late bool _pinned;
@@ -86,26 +88,52 @@ class _ShamellGroupChatInfoPageState extends State<ShamellGroupChatInfoPage> {
     _loadNotice();
   }
 
-  Future<void> _runBusy(Future<void> Function() op) async {
-    if (_busy) return;
+  Future<bool> _runBusy(Future<void> Function() op) async {
+    if (_busy) return false;
+    var ok = true;
     setState(() => _busy = true);
     try {
       await op();
+    } catch (_) {
+      ok = false;
+      if (mounted) {
+        final l = L10n.of(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l.isArabic
+                  ? 'تعذّر إكمال العملية.'
+                  : 'Could not complete action.',
+            ),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() => _busy = false);
       }
     }
+    return ok;
   }
 
   Future<void> _toggleMuted(bool value) async {
-    setState(() => _muted = value);
-    await _runBusy(() => widget.onToggleMuted(value));
+    final prev = _muted;
+    final next = value;
+    setState(() => _muted = next);
+    final ok = await _runBusy(() => widget.onToggleMuted(next));
+    if (!ok && mounted) {
+      setState(() => _muted = prev);
+    }
   }
 
   Future<void> _togglePinned(bool value) async {
-    setState(() => _pinned = value);
-    await _runBusy(() => widget.onTogglePinned(value));
+    final prev = _pinned;
+    final next = value;
+    setState(() => _pinned = next);
+    final ok = await _runBusy(() => widget.onTogglePinned(next));
+    if (!ok && mounted) {
+      setState(() => _pinned = prev);
+    }
   }
 
   static String _noticePrefKey(String groupId) =>
@@ -838,7 +866,8 @@ class _ShamellGroupNoticePage extends StatefulWidget {
   });
 
   @override
-  State<_ShamellGroupNoticePage> createState() => _ShamellGroupNoticePageState();
+  State<_ShamellGroupNoticePage> createState() =>
+      _ShamellGroupNoticePageState();
 }
 
 class _ShamellGroupNoticePageState extends State<_ShamellGroupNoticePage> {

@@ -5,9 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'chat/chat_models.dart';
+import 'chat/chat_service.dart';
 import 'http_error.dart';
 import 'l10n.dart';
+import 'safe_set_state.dart';
 import 'shamell_ui.dart';
+
+const Duration _friendsRequestTimeout = Duration(seconds: 15);
 
 Future<Map<String, String>> _hdrFriends({
   required String baseUrl,
@@ -43,7 +48,8 @@ class FriendsPage extends StatefulWidget {
   State<FriendsPage> createState() => _FriendsPageState();
 }
 
-class _FriendsPageState extends State<FriendsPage> {
+class _FriendsPageState extends State<FriendsPage>
+    with SafeSetStateMixin<FriendsPage> {
   bool _loading = true;
   List<Map<String, dynamic>> _friends = [];
   List<Map<String, dynamic>> _incoming = [];
@@ -82,6 +88,11 @@ class _FriendsPageState extends State<FriendsPage> {
       _loading = true;
     });
     try {
+      // Keep account-scoped contacts endpoints available even if the app was
+      // started without an active cookie yet.
+      try {
+        await ChatService(widget.baseUrl).ensureAccountChatReady();
+      } catch (_) {}
       await _loadFriends();
       await _loadAliases();
       await _loadTags();
@@ -96,12 +107,15 @@ class _FriendsPageState extends State<FriendsPage> {
   }
 
   Future<void> _loadFriends() async {
+    var loadedFromServer = false;
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/friends');
-      final r = await http.get(
-        uri,
-        headers: await _hdrFriends(baseUrl: widget.baseUrl),
-      );
+      final r = await http
+          .get(
+            uri,
+            headers: await _hdrFriends(baseUrl: widget.baseUrl),
+          )
+          .timeout(_friendsRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         final arr = (j is Map ? j['friends'] : j) as Object?;
@@ -110,18 +124,34 @@ class _FriendsPageState extends State<FriendsPage> {
               .whereType<Map>()
               .map((e) => e.cast<String, dynamic>())
               .toList();
+          loadedFromServer = true;
         }
       }
+    } catch (_) {}
+    if (loadedFromServer) return;
+    try {
+      final local = await ChatLocalStore().loadContacts();
+      _friends = local
+          .where((c) => c.id.trim().isNotEmpty)
+          .map((c) => <String, dynamic>{
+                'id': c.id,
+                'name': (c.name ?? '').trim(),
+                'device_id': c.id,
+                'close': c.starred,
+              })
+          .toList();
     } catch (_) {}
   }
 
   Future<void> _loadRequests() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/friend_requests');
-      final r = await http.get(
-        uri,
-        headers: await _hdrFriends(baseUrl: widget.baseUrl),
-      );
+      final r = await http
+          .get(
+            uri,
+            headers: await _hdrFriends(baseUrl: widget.baseUrl),
+          )
+          .timeout(_friendsRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         if (j is Map<String, dynamic>) {
@@ -219,30 +249,27 @@ class _FriendsPageState extends State<FriendsPage> {
       _requestOut = '';
     });
     try {
-      final uri = Uri.parse('${widget.baseUrl}/friends/request');
-      final r = await http.post(
-        uri,
-        headers: await _hdrFriends(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode({'target_id': target}),
-      );
-      if (r.statusCode >= 200 && r.statusCode < 300) {
-        _addCtrl.clear();
-        await _loadRequests();
-        if (mounted) {
-          setState(() {
-            _requestOut = '';
-          });
-        }
+      final svc = ChatService(widget.baseUrl);
+      final token = _extractInviteToken(target);
+      late final String peerId;
+      if (token.isNotEmpty) {
+        peerId = await svc.redeemContactInviteTokenEnsured(token);
       } else {
-        setState(() {
-          _requestOut = sanitizeHttpError(
-            statusCode: r.statusCode,
-            rawBody: r.body,
-            isArabic: L10n.of(context).isArabic,
-          );
-        });
+        await svc.ensureAccountChatReady();
+        peerId = await svc.resolveContactByShamellId(target);
       }
+      final peer = await svc.resolveDevice(peerId);
+      await _upsertLocalContact(peer);
+      await _loadFriends();
+      if (!mounted) return;
+      _addCtrl.clear();
+      setState(() {
+        _requestOut = L10n.of(context).isArabic
+            ? 'تمت إضافة جهة الاتصال.'
+            : 'Contact added.';
+      });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _requestOut = sanitizeExceptionForUi(
           error: e,
@@ -254,17 +281,42 @@ class _FriendsPageState extends State<FriendsPage> {
     }
   }
 
+  String _extractInviteToken(String raw) {
+    final input = raw.trim();
+    if (input.isEmpty) return '';
+    if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(input)) {
+      return input.toLowerCase();
+    }
+    final uri = Uri.tryParse(input);
+    if (uri != null &&
+        uri.scheme.toLowerCase() == 'shamell' &&
+        uri.host.toLowerCase() == 'invite') {
+      final token = (uri.queryParameters['token'] ?? '').trim();
+      if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(token)) {
+        return token.toLowerCase();
+      }
+    }
+    return '';
+  }
+
+  Future<void> _upsertLocalContact(ChatContact peer) async {
+    final store = ChatLocalStore();
+    await store.upsertContact(peer);
+  }
+
   Future<void> _acceptRequest(String requestId) async {
     setState(() {
       _busy = true;
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/friends/accept');
-      final r = await http.post(
-        uri,
-        headers: await _hdrFriends(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode({'request_id': requestId}),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrFriends(baseUrl: widget.baseUrl, json: true),
+            body: jsonEncode({'request_id': requestId}),
+          )
+          .timeout(_friendsRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         await _loadFriends();
         await _loadRequests();
@@ -807,6 +859,7 @@ class _FriendsPageState extends State<FriendsPage> {
 
       final list = ListView(
         controller: _friendsScrollCtrl,
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.zero,
         children: tiles,
       );
@@ -876,6 +929,7 @@ class _FriendsPageState extends State<FriendsPage> {
           isDark ? ShamellPalette.searchFillDark : ShamellPalette.searchFill;
 
       return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.zero,
         children: [
           const SizedBox(height: 10),
@@ -1003,6 +1057,13 @@ class _FriendsPageState extends State<FriendsPage> {
       body = friendsListBody(selectable: false, showCloseToggle: true);
     } else {
       body = friendsListBody(selectable: true, showCloseToggle: false);
+    }
+
+    if (!_loading) {
+      body = RefreshIndicator(
+        onRefresh: _load,
+        child: body,
+      );
     }
 
     return Scaffold(

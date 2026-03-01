@@ -7,7 +7,8 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {
+class _ProfilePageState extends State<ProfilePage>
+    with SafeSetStateMixin<ProfilePage> {
   String phone = '';
   String walletId = '';
   String name = '';
@@ -41,8 +42,15 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  Future<String> _createInviteTokenWithBootstrap() async {
+    return ChatService(widget.baseUrl).createContactInviteTokenEnsured(
+      maxUses: 1,
+    );
+  }
+
   void _showInviteQr() {
     final l = L10n.of(context);
+    final inviteFuture = _createInviteTokenWithBootstrap();
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -51,7 +59,7 @@ class _ProfilePageState extends State<ProfilePage> {
         return Padding(
           padding: const EdgeInsets.all(20),
           child: FutureBuilder<String>(
-            future: ChatService(widget.baseUrl).createContactInviteToken(maxUses: 1),
+            future: inviteFuture,
             builder: (ctx, snap) {
               final token = (snap.data ?? '').toString().trim();
               final payload =

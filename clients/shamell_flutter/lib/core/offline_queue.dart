@@ -1,7 +1,59 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+const Duration _offlineQueueRequestTimeout = Duration(seconds: 10);
+
+// Never persist authentication material in SharedPreferences.
+const Set<String> _offlineSensitiveHeaders = <String>{
+  'cookie',
+  'authorization',
+  'set-cookie',
+  'x-chat-device-token',
+  'x-internal-secret',
+  'x-bus-payments-internal-secret',
+};
+
+@visibleForTesting
+bool isOfflineSensitiveHeader(String name) =>
+    _offlineSensitiveHeaders.contains(name.trim().toLowerCase());
+
+@visibleForTesting
+Map<String, String> sanitizeOfflineHeadersForStorage(
+    Map<String, String> headers) {
+  final out = <String, String>{};
+  headers.forEach((key, value) {
+    final k = key.trim();
+    final v = value.trim();
+    if (k.isEmpty || v.isEmpty) return;
+    if (isOfflineSensitiveHeader(k)) return;
+    out[k] = v;
+  });
+  return out;
+}
+
+@visibleForTesting
+String? offlineAuthBaseFromTaskUrl(String rawUrl) {
+  final uri = Uri.tryParse(rawUrl.trim());
+  if (uri == null || uri.scheme.isEmpty || uri.host.trim().isEmpty) {
+    return null;
+  }
+  final scheme = uri.scheme.toLowerCase();
+  final host = uri.host.toLowerCase();
+  if (uri.hasPort) return '$scheme://$host:${uri.port}';
+  return '$scheme://$host';
+}
+
+bool _sameHeaders(Map<String, String> a, Map<String, String> b) {
+  if (a.length != b.length) return false;
+  for (final e in a.entries) {
+    if (b[e.key] != e.value) return false;
+  }
+  return true;
+}
 
 class OfflineTask {
   final String id;
@@ -55,13 +107,100 @@ class OfflineQueue {
   static List<OfflineTask> _items = [];
   static bool _flushing = false;
 
+  static OfflineTask _copyWithHeaders(
+    OfflineTask t,
+    Map<String, String> headers,
+  ) {
+    return OfflineTask(
+      id: t.id,
+      method: t.method,
+      url: t.url,
+      headers: headers,
+      body: t.body,
+      tag: t.tag,
+      createdAt: t.createdAt,
+      retries: t.retries,
+      nextAt: t.nextAt,
+    );
+  }
+
+  static OfflineTask _sanitizeTaskHeaders(OfflineTask t) {
+    final sanitized = sanitizeOfflineHeadersForStorage(t.headers);
+    if (_sameHeaders(sanitized, t.headers)) return t;
+    return _copyWithHeaders(t, sanitized);
+  }
+
+  static Future<Map<String, String>> _effectiveHeadersForTask(
+      OfflineTask t) async {
+    final out = sanitizeOfflineHeadersForStorage(t.headers);
+    final base = offlineAuthBaseFromTaskUrl(t.url);
+    if (base != null) {
+      try {
+        final cookie = await getSessionCookieHeader(base);
+        if (cookie != null && cookie.isNotEmpty) {
+          out['cookie'] = cookie;
+        }
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  static Future<http.Response> _sendTask(OfflineTask t) async {
+    final uri = Uri.parse(t.url);
+    final headers = await _effectiveHeadersForTask(t);
+    switch (t.method.toUpperCase()) {
+      case 'POST':
+        return http
+            .post(uri, headers: headers, body: t.body)
+            .timeout(_offlineQueueRequestTimeout);
+      case 'PUT':
+        return http
+            .put(uri, headers: headers, body: t.body)
+            .timeout(_offlineQueueRequestTimeout);
+      case 'PATCH':
+        return http
+            .patch(uri, headers: headers, body: t.body)
+            .timeout(_offlineQueueRequestTimeout);
+      case 'DELETE':
+        return http
+            .delete(uri, headers: headers, body: t.body)
+            .timeout(_offlineQueueRequestTimeout);
+      default:
+        return http
+            .post(uri, headers: headers, body: t.body)
+            .timeout(_offlineQueueRequestTimeout);
+    }
+  }
+
   static Future<void> init() async {
     try {
       final sp = await SharedPreferences.getInstance();
       final raw = sp.getStringList(_key) ?? [];
-      _items = raw
-          .map((s) => OfflineTask.fromJson(jsonDecode(s)))
-          .toList(growable: true);
+      final restored = <OfflineTask>[];
+      var normalized = false;
+      for (final s in raw) {
+        try {
+          final decoded = jsonDecode(s);
+          if (decoded is! Map) {
+            normalized = true;
+            continue;
+          }
+          final task = OfflineTask.fromJson(
+            decoded.map((k, v) => MapEntry(k.toString(), v)),
+          );
+          final sanitized = _sanitizeTaskHeaders(task);
+          if (!identical(task, sanitized)) {
+            normalized = true;
+          }
+          restored.add(sanitized);
+        } catch (_) {
+          normalized = true;
+        }
+      }
+      _items = restored;
+      if (normalized) {
+        await _persist();
+      }
     } catch (_) {
       _items = [];
     }
@@ -82,8 +221,9 @@ class OfflineQueue {
 
   static Future<void> enqueue(OfflineTask t) async {
     // initialize nextAt to now for first attempt
-    t.nextAt = DateTime.now().millisecondsSinceEpoch;
-    _items.add(t);
+    final queued = _sanitizeTaskHeaders(t);
+    queued.nextAt = DateTime.now().millisecondsSinceEpoch;
+    _items.add(queued);
     await _persist();
   }
 
@@ -101,20 +241,7 @@ class OfflineQueue {
           continue;
         }
         try {
-          http.Response r;
-          if (t.method.toUpperCase() == 'POST') {
-            r = await http
-                .post(Uri.parse(t.url), headers: t.headers, body: t.body)
-                .timeout(const Duration(seconds: 10));
-          } else if (t.method.toUpperCase() == 'PUT') {
-            r = await http
-                .put(Uri.parse(t.url), headers: t.headers, body: t.body)
-                .timeout(const Duration(seconds: 10));
-          } else {
-            r = await http
-                .post(Uri.parse(t.url), headers: t.headers, body: t.body)
-                .timeout(const Duration(seconds: 10));
-          }
+          final r = await _sendTask(t);
           if (r.statusCode >= 200 && r.statusCode < 300) {
             _items.removeAt(i);
             delivered++;
@@ -166,20 +293,7 @@ class OfflineQueue {
     if (idx < 0) return false;
     final t = _items[idx];
     try {
-      http.Response r;
-      if (t.method.toUpperCase() == 'POST') {
-        r = await http
-            .post(Uri.parse(t.url), headers: t.headers, body: t.body)
-            .timeout(const Duration(seconds: 10));
-      } else if (t.method.toUpperCase() == 'PUT') {
-        r = await http
-            .put(Uri.parse(t.url), headers: t.headers, body: t.body)
-            .timeout(const Duration(seconds: 10));
-      } else {
-        r = await http
-            .post(Uri.parse(t.url), headers: t.headers, body: t.body)
-            .timeout(const Duration(seconds: 10));
-      }
+      final r = await _sendTask(t);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         _items.removeAt(idx);
         await _persist();

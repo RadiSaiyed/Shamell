@@ -15,6 +15,9 @@ import '../../core/perf.dart';
 import '../../core/status_banner.dart';
 import '../../core/ui_kit.dart';
 import 'package:shamell_flutter/core/session_cookie_store.dart';
+import '../../core/safe_set_state.dart';
+
+const Duration _paymentsSendRequestTimeout = Duration(seconds: 15);
 
 class FavoritesDropdown extends StatelessWidget {
   final List<Map<String, dynamic>> favorites;
@@ -83,7 +86,8 @@ class PaymentSendTab extends StatefulWidget {
   State<PaymentSendTab> createState() => _PaymentSendTabState();
 }
 
-class _PaymentSendTabState extends State<PaymentSendTab> {
+class _PaymentSendTabState extends State<PaymentSendTab>
+    with SafeSetStateMixin<PaymentSendTab> {
   final toCtrl = TextEditingController();
   final amtCtrl = TextEditingController();
   final noteCtrl = TextEditingController();
@@ -179,10 +183,12 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
     if (myWallet.isEmpty) return;
     setState(() => _loadingWallet = true);
     try {
-      final r = await http.get(
-          Uri.parse('${widget.baseUrl}/payments/wallets/' +
-              Uri.encodeComponent(myWallet)),
-          headers: await _hdrPS(widget.baseUrl));
+      final r = await http
+          .get(
+              Uri.parse('${widget.baseUrl}/payments/wallets/' +
+                  Uri.encodeComponent(myWallet)),
+              headers: await _hdrPS(widget.baseUrl))
+          .timeout(_paymentsSendRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         _balanceCents = (j['balance_cents'] ?? 0) as int;
@@ -194,10 +200,13 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
   Future<void> _loadFavorites() async {
     if (myWallet.isEmpty) return;
     try {
-      final r = await http.get(
-          Uri.parse('${widget.baseUrl}/payments/favorites?owner_wallet_id=' +
-              Uri.encodeComponent(myWallet)),
-          headers: await _hdrPS(widget.baseUrl));
+      final r = await http
+          .get(
+              Uri.parse(
+                  '${widget.baseUrl}/payments/favorites?owner_wallet_id=' +
+                      Uri.encodeComponent(myWallet)),
+              headers: await _hdrPS(widget.baseUrl))
+          .timeout(_paymentsSendRequestTimeout);
       if (r.statusCode == 200) {
         favorites = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
       }
@@ -275,8 +284,9 @@ class _PaymentSendTabState extends State<PaymentSendTab> {
     try {
       final headers = (await _hdrPS(widget.baseUrl, json: true))
         ..addAll({'Idempotency-Key': ikey, 'X-Device-ID': widget.deviceId});
-      final resp =
-          await http.post(uri, headers: headers, body: jsonEncode(payload));
+      final resp = await http
+          .post(uri, headers: headers, body: jsonEncode(payload))
+          .timeout(_paymentsSendRequestTimeout);
       if (resp.statusCode == 429) {
         try {
           final j = jsonDecode(resp.body);
@@ -732,7 +742,8 @@ class GroupPayPage extends StatefulWidget {
   State<GroupPayPage> createState() => _GroupPayPageState();
 }
 
-class _GroupPayPageState extends State<GroupPayPage> {
+class _GroupPayPageState extends State<GroupPayPage>
+    with SafeSetStateMixin<GroupPayPage> {
   final TextEditingController _recipientsCtrl = TextEditingController();
   final TextEditingController _amountCtrl = TextEditingController();
   final TextEditingController _noteCtrl = TextEditingController();
@@ -774,7 +785,9 @@ class _GroupPayPageState extends State<GroupPayPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/payments/wallets/' + Uri.encodeComponent(wid));
-      final r = await http.get(uri, headers: await _hdrPS(widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrPS(widget.baseUrl))
+          .timeout(_paymentsSendRequestTimeout);
       if (r.statusCode == 200) {
         final body = jsonDecode(r.body);
         if (body is Map<String, dynamic>) {
@@ -863,8 +876,9 @@ class _GroupPayPageState extends State<GroupPayPage> {
     }
     try {
       final headers = await _hdrPS(widget.baseUrl, json: true);
-      final resp =
-          await http.post(uri, headers: headers, body: jsonEncode(payload));
+      final resp = await http
+          .post(uri, headers: headers, body: jsonEncode(payload))
+          .timeout(_paymentsSendRequestTimeout);
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         Perf.action('pay_group_req_ok');
         return _GroupSendOutcome.success;
@@ -920,8 +934,9 @@ class _GroupPayPageState extends State<GroupPayPage> {
     try {
       final headers = (await _hdrPS(widget.baseUrl, json: true))
         ..addAll({'Idempotency-Key': ikey, 'X-Device-ID': widget.deviceId});
-      final resp =
-          await http.post(uri, headers: headers, body: jsonEncode(payload));
+      final resp = await http
+          .post(uri, headers: headers, body: jsonEncode(payload))
+          .timeout(_paymentsSendRequestTimeout);
       if (resp.statusCode == 429) {
         Perf.action('pay_group_send_rate_limited');
         return _GroupSendOutcome.failed;

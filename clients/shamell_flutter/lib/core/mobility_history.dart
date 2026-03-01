@@ -9,6 +9,9 @@ import 'http_error.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'l10n.dart';
+import 'safe_set_state.dart';
+
+const Duration _mobilityHistoryRequestTimeout = Duration(seconds: 15);
 
 class MobilityHistoryPage extends StatefulWidget {
   final String baseUrl;
@@ -20,7 +23,8 @@ class MobilityHistoryPage extends StatefulWidget {
   State<MobilityHistoryPage> createState() => _MobilityHistoryPageState();
 }
 
-class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
+class _MobilityHistoryPageState extends State<MobilityHistoryPage>
+    with SafeSetStateMixin<MobilityHistoryPage> {
   bool _loading = true;
   String _statusFilter = 'all';
   final List<String> _statuses = const ['all', 'completed', 'canceled'];
@@ -101,7 +105,7 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
       final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       final r = await http.get(uri, headers: {
         if (cookie.isNotEmpty) 'cookie': cookie,
-      });
+      }).timeout(_mobilityHistoryRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final bs = j['bus'];

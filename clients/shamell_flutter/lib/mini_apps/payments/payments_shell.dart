@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import '../../core/safe_set_state.dart';
 
 import 'payments_send.dart';
 import 'payments_receive.dart';
@@ -10,6 +12,8 @@ import 'payments_scan.dart';
 import 'payments_requests.dart';
 import 'payments_overview.dart';
 import '../../core/l10n.dart';
+
+const Duration _paymentsShellRequestTimeout = Duration(seconds: 15);
 
 class PaymentsPage extends StatelessWidget {
   final String baseUrl;
@@ -71,7 +75,8 @@ class _PaymentsShell extends StatefulWidget {
   State<_PaymentsShell> createState() => _PaymentsShellState();
 }
 
-class _PaymentsShellState extends State<_PaymentsShell> {
+class _PaymentsShellState extends State<_PaymentsShell>
+    with SafeSetStateMixin<_PaymentsShell> {
   String myWallet = '';
   Timer? _reqTimer;
   Set<String> _seenReqs = {};
@@ -122,12 +127,24 @@ class _PaymentsShellState extends State<_PaymentsShell> {
     } catch (_) {}
   }
 
+  Future<Map<String, String>> _hdr() async {
+    final headers = <String, String>{};
+    try {
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) headers['cookie'] = cookie;
+    } catch (_) {}
+    return headers;
+  }
+
   Future<void> _pollIncoming() async {
     try {
-      final r = await http.get(Uri.parse(
-          '${widget.baseUrl}/payments/requests?wallet_id=' +
-              Uri.encodeComponent(myWallet) +
-              '&kind=incoming&limit=50'));
+      final r = await http
+          .get(
+              Uri.parse('${widget.baseUrl}/payments/requests?wallet_id=' +
+                  Uri.encodeComponent(myWallet) +
+                  '&kind=incoming&limit=50'),
+              headers: await _hdr())
+          .timeout(_paymentsShellRequestTimeout);
       if (r.statusCode != 200) return;
       final arr = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
       for (final e in arr) {
@@ -144,9 +161,13 @@ class _PaymentsShellState extends State<_PaymentsShell> {
 
   Future<void> _acceptReq(String id) async {
     try {
-      await http.post(Uri.parse('${widget.baseUrl}/payments/requests/' +
-          Uri.encodeComponent(id) +
-          '/accept'));
+      await http
+          .post(
+              Uri.parse('${widget.baseUrl}/payments/requests/' +
+                  Uri.encodeComponent(id) +
+                  '/accept'),
+              headers: await _hdr())
+          .timeout(_paymentsShellRequestTimeout);
     } catch (_) {}
     if (mounted) setState(() => _bannerReq = null);
   }

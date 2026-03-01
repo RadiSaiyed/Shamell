@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 import '../../core/glass.dart';
 import '../../core/l10n.dart';
 import '../../core/http_error.dart';
+import '../../core/safe_set_state.dart';
+import '../../core/session_cookie_store.dart';
 import 'payments_send.dart' show PayActionButton; // reuse styled button
 import '../../core/scan_page.dart';
 
@@ -22,7 +24,9 @@ class PaymentScanTab extends StatefulWidget {
   State<PaymentScanTab> createState() => _PaymentScanTabState();
 }
 
-class _PaymentScanTabState extends State<PaymentScanTab> {
+class _PaymentScanTabState extends State<PaymentScanTab>
+    with SafeSetStateMixin<PaymentScanTab> {
+  static const Duration _paymentsScanRequestTimeout = Duration(seconds: 15);
   final toCtrl = TextEditingController();
   final aliasCtrl = TextEditingController();
   final amtCtrl = TextEditingController();
@@ -31,6 +35,18 @@ class _PaymentScanTabState extends State<PaymentScanTab> {
   bool _scanned = false;
   bool _showAmountPrompt = false;
   String _targetLabel = '';
+
+  Future<Map<String, String>> _hdr({bool json = false}) async {
+    final headers = <String, String>{};
+    if (json) headers['content-type'] = 'application/json';
+    try {
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) {
+        headers['cookie'] = cookie;
+      }
+    } catch (_) {}
+    return headers;
+  }
 
   @override
   void didChangeDependencies() {
@@ -66,8 +82,16 @@ class _PaymentScanTabState extends State<PaymentScanTab> {
       await _confirmAndPay();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Scan error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            sanitizeExceptionForUi(
+              error: e,
+              isArabic: L10n.of(context).isArabic,
+            ),
+          ),
+        ),
+      );
     }
   }
 
@@ -172,10 +196,13 @@ class _PaymentScanTabState extends State<PaymentScanTab> {
       else
         body['to_alias'] = toAlias;
       if (note.isNotEmpty) body['reference'] = note;
-      final r = await http.post(
-          Uri.parse('${widget.baseUrl}/payments/transfer'),
-          headers: {'content-type': 'application/json'},
-          body: jsonEncode(body));
+      final r = await http
+          .post(
+            Uri.parse('${widget.baseUrl}/payments/transfer'),
+            headers: await _hdr(json: true),
+            body: jsonEncode(body),
+          )
+          .timeout(_paymentsScanRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         setState(() {
           out = L10n.of(context).isArabic ? 'تم إرسال الدفع.' : 'Payment sent.';

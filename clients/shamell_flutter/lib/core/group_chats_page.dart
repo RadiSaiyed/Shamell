@@ -26,6 +26,7 @@ import 'glass.dart';
 import 'chat/chat_models.dart';
 import 'chat/chat_service.dart';
 import 'chat/shamell_chat_page.dart';
+import 'safe_set_state.dart';
 import 'shamell_ui.dart';
 import 'shamell_group_chat_info_page.dart';
 
@@ -39,7 +40,8 @@ class GroupChatsPage extends StatefulWidget {
   State<GroupChatsPage> createState() => _GroupChatsPageState();
 }
 
-class _GroupChatsPageState extends State<GroupChatsPage> {
+class _GroupChatsPageState extends State<GroupChatsPage>
+    with SafeSetStateMixin<GroupChatsPage> {
   final TextEditingController _nameCtrl = TextEditingController();
   final TextEditingController _searchCtrl = TextEditingController();
   bool _loading = true;
@@ -475,7 +477,8 @@ class GroupChatPage extends StatefulWidget {
   State<GroupChatPage> createState() => _GroupChatPageState();
 }
 
-class _GroupChatPageState extends State<GroupChatPage> {
+class _GroupChatPageState extends State<GroupChatPage>
+    with SafeSetStateMixin<GroupChatPage> {
   final TextEditingController _msgCtrl = TextEditingController();
   final FocusNode _msgFocus = FocusNode();
   final ScrollController _scrollCtrl = ScrollController();
@@ -2939,7 +2942,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           });
                         } catch (e) {
                           if (!mounted) return;
-                          setState(() => _error = sanitizeExceptionForUi(error: e));
+                          setState(
+                              () => _error = sanitizeExceptionForUi(error: e));
                         }
                       },
                     ),
@@ -3866,7 +3870,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
     } catch (e) {
       final l = L10n.of(context);
-      setState(() => _error = '${l.shamellAttachFailed}: $e');
+      setState(
+        () => _error =
+            '${l.shamellAttachFailed}: ${sanitizeExceptionForUi(error: e, isArabic: l.isArabic)}',
+      );
     }
   }
 
@@ -4201,7 +4208,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               );
                               await _refreshMembers();
                             } catch (e) {
-                              setState(() => _error = sanitizeExceptionForUi(error: e));
+                              setState(() =>
+                                  _error = sanitizeExceptionForUi(error: e));
                             }
                           },
                           child: Text(
@@ -4445,7 +4453,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                       } catch (_) {}
                                       await _refreshMembers();
                                     } catch (e) {
-                                      setState(() => _error = sanitizeExceptionForUi(error: e));
+                                      setState(() => _error =
+                                          sanitizeExceptionForUi(error: e));
                                     }
                                   },
                           ),
@@ -4484,6 +4493,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Future<void> _setGroupMuted(bool muted) async {
     final did = _deviceId;
     if (did == null || did.isEmpty) return;
+    final prev = _groupMuted;
     setState(() => _groupMuted = muted);
     try {
       await _service.setGroupPrefs(
@@ -4491,21 +4501,33 @@ class _GroupChatPageState extends State<GroupChatPage> {
         groupId: widget.groupId,
         muted: muted,
       );
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        setState(() => _groupMuted = prev);
+      }
+      rethrow;
+    }
   }
 
   Future<void> _setGroupPinned(bool pinned) async {
     final did = _deviceId;
     if (did == null || did.isEmpty) return;
+    final prev = _groupPinned;
     setState(() => _groupPinned = pinned);
-    unawaited(_updatePinnedChatOrderForGroup(pinned));
+    await _updatePinnedChatOrderForGroup(pinned);
     try {
       await _service.setGroupPrefs(
         deviceId: did,
         groupId: widget.groupId,
         pinned: pinned,
       );
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        setState(() => _groupPinned = prev);
+      }
+      unawaited(_updatePinnedChatOrderForGroup(prev));
+      rethrow;
+    }
   }
 
   Future<void> _clearGroupChatHistory() async {
@@ -5400,6 +5422,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                                 alpha: isDark ? .25 : .55,
                                               );
                                     return Container(
+                                      width: double.infinity,
                                       height: 40,
                                       alignment: Alignment.center,
                                       padding: const EdgeInsets.symmetric(
@@ -5430,6 +5453,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               )
                             : Container(
                                 key: const ValueKey('text'),
+                                width: double.infinity,
                                 constraints:
                                     const BoxConstraints(minHeight: 40),
                                 padding: const EdgeInsets.symmetric(
@@ -5470,11 +5494,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 ),
                               ),
                       ),
-	                    ),
-	                    const SizedBox(width: 6),
-	                    ValueListenableBuilder<TextEditingValue>(
-	                      valueListenable: _msgCtrl,
-	                      builder: (context, value, _) {
+                    ),
+                    const SizedBox(width: 6),
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _msgCtrl,
+                      builder: (context, value, _) {
                         final showSend = value.text.trim().isNotEmpty ||
                             _attachedBytes != null;
                         final canSend = !_loading &&
@@ -5517,14 +5541,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           icon: const Icon(Icons.add_circle_outline, size: 26),
                         );
                       },
-	                    ),
-	                  ],
-	                ),
-	              ),
-	              if (_composerPanel == _ShamellGroupComposerPanel.more)
-	                _buildMorePanel(theme, l),
-	            ],
-	          );
+                    ),
+                  ],
+                ),
+              ),
+              if (_composerPanel == _ShamellGroupComposerPanel.more)
+                _buildMorePanel(theme, l),
+            ],
+          );
 
     final title =
         _groupName.isEmpty ? (l.isArabic ? 'مجموعة' : 'Group') : _groupName;

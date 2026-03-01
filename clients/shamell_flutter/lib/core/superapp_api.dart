@@ -10,6 +10,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'shamell_webview_page.dart';
 
+const Duration _superappApiRequestTimeout = Duration(seconds: 20);
+
 class GeoPosition {
   final double latitude;
   final double longitude;
@@ -113,7 +115,7 @@ class SuperappAPI {
   }
 
   Future<http.Response> getUri(Uri uri, {Map<String, String>? headers}) {
-    return http.get(uri, headers: headers);
+    return http.get(uri, headers: headers).timeout(_superappApiRequestTimeout);
   }
 
   Future<http.Response> postUri(
@@ -122,7 +124,9 @@ class SuperappAPI {
     Object? body,
     Encoding? encoding,
   }) {
-    return http.post(uri, headers: headers, body: body, encoding: encoding);
+    return http
+        .post(uri, headers: headers, body: body, encoding: encoding)
+        .timeout(_superappApiRequestTimeout);
   }
 
   Future<http.Response> patchUri(
@@ -131,7 +135,9 @@ class SuperappAPI {
     Object? body,
     Encoding? encoding,
   }) {
-    return http.patch(uri, headers: headers, body: body, encoding: encoding);
+    return http
+        .patch(uri, headers: headers, body: body, encoding: encoding)
+        .timeout(_superappApiRequestTimeout);
   }
 
   Future<http.Response> deleteUri(
@@ -140,7 +146,9 @@ class SuperappAPI {
     Object? body,
     Encoding? encoding,
   }) {
-    return http.delete(uri, headers: headers, body: body, encoding: encoding);
+    return http
+        .delete(uri, headers: headers, body: body, encoding: encoding)
+        .timeout(_superappApiRequestTimeout);
   }
 
   Future<String?> kvGetString(String key) async {
@@ -240,11 +248,12 @@ class SuperappAPI {
           // Best practice: keep embedded WebViews first-party and same-origin.
           if (baseUri != null) {
             final sameScheme = baseUri.scheme.toLowerCase() == scheme;
-            final sameHost = baseUri.host.toLowerCase() == uri.host.toLowerCase();
-            final basePort = baseUri.hasPort
-                ? baseUri.port
-                : (scheme == 'https' ? 443 : 80);
-            final uriPort = uri.hasPort ? uri.port : (scheme == 'https' ? 443 : 80);
+            final sameHost =
+                baseUri.host.toLowerCase() == uri.host.toLowerCase();
+            final basePort =
+                baseUri.hasPort ? baseUri.port : (scheme == 'https' ? 443 : 80);
+            final uriPort =
+                uri.hasPort ? uri.port : (scheme == 'https' ? 443 : 80);
             final sameOrigin = sameScheme && sameHost && basePort == uriPort;
             if (sameOrigin) {
               pushPage(

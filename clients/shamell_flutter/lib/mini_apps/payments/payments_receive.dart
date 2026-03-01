@@ -10,9 +10,12 @@ import '../../core/offline_queue.dart';
 import '../../core/format.dart' show fmtCents;
 import '../../core/l10n.dart';
 import '../../core/http_error.dart';
+import '../../core/safe_set_state.dart';
 import 'package:shamell_flutter/core/session_cookie_store.dart';
 // WaterButton removed from Payments; no main import required
 import 'payments_send.dart' show PayActionButton; // reuse button style
+
+const Duration _paymentsReceiveRequestTimeout = Duration(seconds: 15);
 
 class ShareQrPanel extends StatelessWidget {
   final String payload;
@@ -47,7 +50,8 @@ class PaymentReceiveTab extends StatefulWidget {
   State<PaymentReceiveTab> createState() => _PaymentReceiveTabState();
 }
 
-class _PaymentReceiveTabState extends State<PaymentReceiveTab> {
+class _PaymentReceiveTabState extends State<PaymentReceiveTab>
+    with SafeSetStateMixin<PaymentReceiveTab> {
   String myWallet = '';
   String _curSym = 'SYP';
   int? _balanceCents;
@@ -82,10 +86,12 @@ class _PaymentReceiveTabState extends State<PaymentReceiveTab> {
     if (myWallet.isEmpty) return;
     setState(() => _loadingWallet = true);
     try {
-      final r = await http.get(
-          Uri.parse('${widget.baseUrl}/payments/wallets/' +
-              Uri.encodeComponent(myWallet)),
-          headers: await _hdrPRC(widget.baseUrl));
+      final r = await http
+          .get(
+              Uri.parse('${widget.baseUrl}/payments/wallets/' +
+                  Uri.encodeComponent(myWallet)),
+              headers: await _hdrPRC(widget.baseUrl))
+          .timeout(_paymentsReceiveRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
         _balanceCents = (j['balance_cents'] ?? 0) as int;
@@ -136,7 +142,9 @@ class _PaymentReceiveTabState extends State<PaymentReceiveTab> {
         'code': code,
         'secret_phrase': secret,
       });
-      final r = await http.post(uri, headers: headers, body: body);
+      final r = await http
+          .post(uri, headers: headers, body: body)
+          .timeout(_paymentsReceiveRequestTimeout);
       setState(() {
         cashOut = r.statusCode >= 200 && r.statusCode < 300
             ? (l.isArabic ? 'تم استبدال الرمز.' : 'Redeemed.')
@@ -175,7 +183,9 @@ class _PaymentReceiveTabState extends State<PaymentReceiveTab> {
         'amount': double.parse(v.toStringAsFixed(2))
       });
       final headers = await _hdrPRC(widget.baseUrl, json: true);
-      final r = await http.post(uri, headers: headers, body: body);
+      final r = await http
+          .post(uri, headers: headers, body: body)
+          .timeout(_paymentsReceiveRequestTimeout);
       sonicOut = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم إصدار توكن.' : 'Issued token.')
           : sanitizeHttpError(
@@ -238,7 +248,9 @@ class _PaymentReceiveTabState extends State<PaymentReceiveTab> {
       final uri = Uri.parse('${widget.baseUrl}/payments/sonic/redeem');
       final headers = await _hdrPRC(widget.baseUrl, json: true);
       final body = jsonEncode({'token': token});
-      final r = await http.post(uri, headers: headers, body: body);
+      final r = await http
+          .post(uri, headers: headers, body: body)
+          .timeout(_paymentsReceiveRequestTimeout);
       sonicOut = r.statusCode >= 200 && r.statusCode < 300
           ? (L10n.of(context).isArabic ? 'تم الاستبدال.' : 'Redeemed.')
           : sanitizeHttpError(

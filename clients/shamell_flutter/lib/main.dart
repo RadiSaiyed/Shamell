@@ -9,7 +9,6 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:http/http.dart' as http;
-import 'package:local_auth/local_auth.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,6 +22,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'core/notification_service.dart';
 import 'core/capabilities.dart';
 import 'core/glass.dart';
+import 'core/safe_set_state.dart';
 import 'core/home_routes.dart';
 import 'core/chat/shamell_chat_page.dart';
 import 'core/group_chats_page.dart';
@@ -43,6 +43,7 @@ import 'core/shamell_new_message_notification_page.dart'
     as shamell_settings_notif;
 import 'core/device_id.dart';
 import 'core/account_create_pow.dart';
+import 'core/account_session_bootstrap.dart';
 import 'core/hardware_attestation.dart';
 import 'core/shamell_user_id.dart';
 import 'core/logout_wipe.dart';
@@ -92,7 +93,6 @@ import 'core/friend_tags_page.dart';
 import 'core/official_owner_console_page.dart';
 import 'core/global_media_page.dart';
 import 'core/session_cookie_store.dart';
-import 'core/biometric_login.dart';
 import 'core/base_url.dart';
 
 // Offline background worker removed

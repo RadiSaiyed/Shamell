@@ -12,6 +12,9 @@ import '../../core/l10n.dart';
 import '../../core/ui_kit.dart';
 import '../../core/perf.dart';
 import '../../core/design_tokens.dart';
+import '../../core/safe_set_state.dart';
+
+const Duration _paymentsBillsRequestTimeout = Duration(seconds: 15);
 
 class BillsPage extends StatefulWidget {
   final String baseUrl;
@@ -28,7 +31,8 @@ class BillsPage extends StatefulWidget {
   State<BillsPage> createState() => _BillsPageState();
 }
 
-class _BillsPageState extends State<BillsPage> {
+class _BillsPageState extends State<BillsPage>
+    with SafeSetStateMixin<BillsPage> {
   final _amountCtrl = TextEditingController();
   final _accountCtrl = TextEditingController();
   final _billerAccountCtrl = TextEditingController();
@@ -121,7 +125,9 @@ class _BillsPageState extends State<BillsPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/wallets/${Uri.encodeComponent(wid)}');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_paymentsBillsRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final bal = j['balance_cents'];
@@ -138,7 +144,9 @@ class _BillsPageState extends State<BillsPage> {
   Future<void> _loadBillers() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/payments/billers');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_paymentsBillsRequestTimeout);
       if (r.statusCode == 200) {
         final body = jsonDecode(r.body);
         if (body is List) {
@@ -336,8 +344,9 @@ class _BillsPageState extends State<BillsPage> {
     try {
       final headers = await _hdr();
       headers['Idempotency-Key'] = ikey;
-      final resp =
-          await http.post(uri, headers: headers, body: jsonEncode(payload));
+      final resp = await http
+          .post(uri, headers: headers, body: jsonEncode(payload))
+          .timeout(_paymentsBillsRequestTimeout);
       final dt = DateTime.now().millisecondsSinceEpoch - t0;
       Perf.sample('bills_pay_ms', dt);
       if (resp.statusCode >= 200 && resp.statusCode < 300) {

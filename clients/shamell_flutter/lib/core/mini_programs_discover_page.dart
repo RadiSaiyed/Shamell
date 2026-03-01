@@ -15,6 +15,7 @@ import 'mini_program_runtime.dart';
 import 'mini_programs_my_page.dart';
 import 'shamell_ui.dart';
 import 'http_error.dart';
+import 'safe_set_state.dart';
 
 class _IconSpec {
   final IconData icon;
@@ -46,7 +47,10 @@ class MiniProgramsDiscoverPage extends StatefulWidget {
       _MiniProgramsDiscoverPageState();
 }
 
-class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
+class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage>
+    with SafeSetStateMixin<MiniProgramsDiscoverPage> {
+  static const Duration _miniProgramsDiscoverRequestTimeout =
+      Duration(seconds: 15);
   final TextEditingController _searchCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
   final FocusNode _searchFocus = FocusNode();
@@ -1010,7 +1014,9 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
 
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs');
-      final resp = await http.get(uri, headers: await _authHeaders());
+      final resp = await http
+          .get(uri, headers: await _authHeaders())
+          .timeout(_miniProgramsDiscoverRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
         final merged = _mergeWithLocal(_programs);
@@ -1160,7 +1166,9 @@ class _MiniProgramsDiscoverPageState extends State<MiniProgramsDiscoverPage> {
   Future<void> _loadDeveloperSummary() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs/developer_json');
-      final resp = await http.get(uri, headers: await _authHeaders());
+      final resp = await http
+          .get(uri, headers: await _authHeaders())
+          .timeout(_miniProgramsDiscoverRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         return;
       }

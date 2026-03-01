@@ -13,6 +13,7 @@ import 'chat/chat_service.dart';
 import 'chat/shamell_chat_page.dart';
 import 'http_error.dart';
 import 'l10n.dart';
+import 'safe_set_state.dart';
 
 class ShamellPhotoViewerPage extends StatefulWidget {
   final String? baseUrl;
@@ -45,7 +46,9 @@ enum _ShamellPhotoAction {
   share,
 }
 
-class _ShamellPhotoViewerPageState extends State<ShamellPhotoViewerPage> {
+class _ShamellPhotoViewerPageState extends State<ShamellPhotoViewerPage>
+    with SafeSetStateMixin<ShamellPhotoViewerPage> {
+  static const Duration _photoViewerRequestTimeout = Duration(seconds: 15);
   late final List<_ShamellPhotoItem> _items = (() {
     final cleaned = <_ShamellPhotoItem>[];
     final tags = widget.heroTags ?? const <String>[];
@@ -162,7 +165,9 @@ class _ShamellPhotoViewerPageState extends State<ShamellPhotoViewerPage> {
     try {
       Uint8List bytes;
       if (_isUrl(src)) {
-        final resp = await http.get(Uri.parse(src));
+        final resp = await http
+            .get(Uri.parse(src))
+            .timeout(_ShamellPhotoViewerPageState._photoViewerRequestTimeout);
         if (resp.statusCode < 200 || resp.statusCode >= 300) return null;
         bytes = resp.bodyBytes;
       } else {
@@ -422,12 +427,13 @@ class _ShamellPhotoViewerPageState extends State<ShamellPhotoViewerPage> {
         );
     } catch (e) {
       if (!mounted) return;
+      final detail = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(
           SnackBar(
             content: Text(
-              l.isArabic ? 'تعذّر حفظ الصورة: $e' : 'Save failed: $e',
+              l.isArabic ? 'تعذّر حفظ الصورة: $detail' : 'Save failed: $detail',
             ),
           ),
         );
@@ -452,12 +458,13 @@ class _ShamellPhotoViewerPageState extends State<ShamellPhotoViewerPage> {
       await Share.shareXFiles([file]);
     } catch (e) {
       if (!mounted) return;
+      final detail = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(
           SnackBar(
             content: Text(
-              l.isArabic ? 'فشل المشاركة: $e' : 'Share failed: $e',
+              l.isArabic ? 'فشل المشاركة: $detail' : 'Share failed: $detail',
             ),
           ),
         );
@@ -743,7 +750,9 @@ class _ShamellSendToChatSheetState extends State<_ShamellSendToChatSheet> {
     final sp = await SharedPreferences.getInstance();
     final aliases = _decodeStringMap(sp.getString('friends.aliases') ?? '{}');
     final uri = Uri.parse('${widget.baseUrl}/me/friends');
-    final resp = await http.get(uri, headers: await _authHeaders());
+    final resp = await http
+        .get(uri, headers: await _authHeaders())
+        .timeout(_ShamellPhotoViewerPageState._photoViewerRequestTimeout);
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       throw Exception(
         sanitizeHttpError(

@@ -9,6 +9,7 @@ import '../../core/perf.dart';
 import '../../core/l10n.dart';
 import '../../core/ui_kit.dart';
 import '../../core/glass.dart';
+import '../../core/safe_set_state.dart';
 import 'payments_bills.dart';
 import 'payments_receive_pay.dart';
 import 'payments_send.dart' show PayActionButton, GroupPayPage;
@@ -31,7 +32,9 @@ class PaymentOverviewTab extends StatefulWidget {
   State<PaymentOverviewTab> createState() => _PaymentOverviewTabState();
 }
 
-class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
+class _PaymentOverviewTabState extends State<PaymentOverviewTab>
+    with SafeSetStateMixin<PaymentOverviewTab> {
+  static const Duration _paymentsOverviewRequestTimeout = Duration(seconds: 15);
   bool _loading = true;
   int? _balanceCents;
   String _curSym = 'SYP';
@@ -85,7 +88,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
               Uri.encodeComponent(widget.walletId) +
               '/snapshot')
           .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdrPO(widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrPO(widget.baseUrl))
+          .timeout(_paymentsOverviewRequestTimeout);
       if (r.statusCode == 200) {
         Perf.action('payments_overview_snapshot_ok');
         final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -103,7 +108,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
         if (widget.walletId.isNotEmpty) {
           final suri = Uri.parse(
               '${widget.baseUrl}/payments/savings/overview?wallet_id=${Uri.encodeComponent(widget.walletId)}');
-          final sr = await http.get(suri, headers: await _hdrPO(widget.baseUrl));
+          final sr = await http
+              .get(suri, headers: await _hdrPO(widget.baseUrl))
+              .timeout(_paymentsOverviewRequestTimeout);
           if (sr.statusCode == 200) {
             final sj = jsonDecode(sr.body) as Map<String, dynamic>;
             final sb = sj['savings_balance_cents'];
@@ -1070,7 +1077,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = sanitizeExceptionForUi(error: e);
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1098,7 +1106,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     final payload = <String, Object?>{
       'amount': double.parse(amountMajor.toStringAsFixed(2)),
     };
-    final r = await http.post(uri, headers: headers, body: jsonEncode(payload));
+    final r = await http
+        .post(uri, headers: headers, body: jsonEncode(payload))
+        .timeout(_paymentsOverviewRequestTimeout);
     if (r.statusCode >= 200 && r.statusCode < 300) {
       await _loadSnapshot();
       if (mounted) {
@@ -1269,7 +1279,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                       } catch (e) {
                                         setStateSB(() {
                                           submitting = false;
-                                          error = sanitizeExceptionForUi(error: e);
+                                          error =
+                                              sanitizeExceptionForUi(error: e);
                                         });
                                       }
                                     },
@@ -1306,7 +1317,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     if (recipientPhone != null && recipientPhone.trim().isNotEmpty) {
       payload['recipient_phone'] = recipientPhone.trim();
     }
-    final r = await http.post(uri, headers: headers, body: jsonEncode(payload));
+    final r = await http
+        .post(uri, headers: headers, body: jsonEncode(payload))
+        .timeout(_paymentsOverviewRequestTimeout);
     if (r.statusCode >= 200 && r.statusCode < 300) {
       try {
         final body = jsonDecode(r.body);
@@ -1719,7 +1732,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = sanitizeExceptionForUi(error: e);
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1750,8 +1764,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
       'amount': double.parse(amountMajor.toStringAsFixed(2)),
     };
     try {
-      final r =
-          await http.post(uri, headers: headers, body: jsonEncode(payload));
+      final r = await http
+          .post(uri, headers: headers, body: jsonEncode(payload))
+          .timeout(_paymentsOverviewRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         // Refresh wallet + savings overview so the UI stays in sync.
         await _loadSnapshot();
@@ -1881,9 +1896,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
       subtitleText = ts;
     }
 
-    final Color amountColor = sign == '+'
-        ? Tokens.colorPayments
-        : onSurface.withValues(alpha: .85);
+    final Color amountColor =
+        sign == '+' ? Tokens.colorPayments : onSurface.withValues(alpha: .85);
     final Color iconColor = Tokens.colorPayments;
     final Color iconBg = Tokens.colorPayments.withValues(alpha: .08);
     final IconData iconData =

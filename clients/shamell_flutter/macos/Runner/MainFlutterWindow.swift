@@ -2,7 +2,6 @@ import Cocoa
 import FlutterMacOS
 import app_links
 import audio_session
-import connectivity_plus
 import file_selector_macos
 import firebase_core
 import firebase_messaging
@@ -26,7 +25,6 @@ private func registerShamellPlugins(
 ) {
   AppLinksMacosPlugin.register(with: registry.registrar(forPlugin: "AppLinksMacosPlugin"))
   AudioSessionPlugin.register(with: registry.registrar(forPlugin: "AudioSessionPlugin"))
-  ConnectivityPlusPlugin.register(with: registry.registrar(forPlugin: "ConnectivityPlusPlugin"))
   FileSelectorPlugin.register(with: registry.registrar(forPlugin: "FileSelectorPlugin"))
   if includeFirebase {
     FLTFirebaseCorePlugin.register(with: registry.registrar(forPlugin: "FLTFirebaseCorePlugin"))

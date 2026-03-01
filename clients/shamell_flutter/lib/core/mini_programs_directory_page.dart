@@ -8,6 +8,7 @@ import 'design_tokens.dart';
 import 'http_error.dart';
 import 'l10n.dart';
 import 'mini_program_runtime.dart';
+import 'safe_set_state.dart';
 
 class MiniProgramsDirectoryPage extends StatefulWidget {
   final String baseUrl;
@@ -28,7 +29,10 @@ class MiniProgramsDirectoryPage extends StatefulWidget {
       _MiniProgramsDirectoryPageState();
 }
 
-class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
+class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage>
+    with SafeSetStateMixin<MiniProgramsDirectoryPage> {
+  static const Duration _miniProgramsDirectoryRequestTimeout =
+      Duration(seconds: 15);
   final TextEditingController _searchCtrl = TextEditingController();
   bool _loading = false;
   String? _error;
@@ -128,7 +132,8 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs');
-      final resp = await http.get(uri);
+      final resp =
+          await http.get(uri).timeout(_miniProgramsDirectoryRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         setState(() {
           _error = sanitizeHttpError(
@@ -158,8 +163,8 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
       // Bus-only build: only show allow-listed mini-programs.
       const allowedIds = <String>{'bus'};
       final filtered = list
-          .where((p) => allowedIds.contains(
-              (p['app_id'] ?? '').toString().trim().toLowerCase()))
+          .where((p) => allowedIds
+              .contains((p['app_id'] ?? '').toString().trim().toLowerCase()))
           .toList();
       setState(() {
         _programs = filtered;

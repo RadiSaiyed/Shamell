@@ -11,6 +11,9 @@ import 'mini_apps_config.dart';
 import 'call_signaling.dart';
 import '../mini_apps/payments/payments_shell.dart';
 import 'shamell_ui.dart';
+import 'safe_set_state.dart';
+
+const Duration _officialTemplateMessagesRequestTimeout = Duration(seconds: 15);
 
 class OfficialTemplateMessagesPage extends StatefulWidget {
   final String baseUrl;
@@ -23,7 +26,8 @@ class OfficialTemplateMessagesPage extends StatefulWidget {
 }
 
 class _OfficialTemplateMessagesPageState
-    extends State<OfficialTemplateMessagesPage> {
+    extends State<OfficialTemplateMessagesPage>
+    with SafeSetStateMixin<OfficialTemplateMessagesPage> {
   bool _loading = true;
   String _error = '';
   List<_TemplateMessage> _items = const <_TemplateMessage>[];
@@ -68,7 +72,9 @@ class _OfficialTemplateMessagesPageState
       ).replace(queryParameters: const <String, String>{
         'unread_only': 'false',
       });
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialTemplateMessagesRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -123,7 +129,9 @@ class _OfficialTemplateMessagesPageState
       final uri = Uri.parse(
         '${widget.baseUrl}/me/official_template_messages/${msg.id}/read',
       );
-      await http.post(uri, headers: await _hdr());
+      await http
+          .post(uri, headers: await _hdr())
+          .timeout(_officialTemplateMessagesRequestTimeout);
     } catch (_) {
       // Best-effort; UI is updated optimistically.
     }

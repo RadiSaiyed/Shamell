@@ -4,10 +4,14 @@ import 'package:shamell_flutter/core/session_cookie_store.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'http_error.dart';
 import 'l10n.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'app_shell_widgets.dart' show AppBG;
+import 'safe_set_state.dart';
+
+const Duration _orderCenterRequestTimeout = Duration(seconds: 15);
 
 class OrderCenterPage extends StatefulWidget {
   final String baseUrl;
@@ -17,7 +21,8 @@ class OrderCenterPage extends StatefulWidget {
   State<OrderCenterPage> createState() => _OrderCenterPageState();
 }
 
-class _OrderCenterPageState extends State<OrderCenterPage> {
+class _OrderCenterPageState extends State<OrderCenterPage>
+    with SafeSetStateMixin<OrderCenterPage> {
   bool _loading = true;
   String _error = '';
   List<Map<String, dynamic>> _bus = [];
@@ -43,11 +48,7 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
       _loading = true;
       _error = '';
     });
-    try {
-      await _loadMobility();
-    } catch (e) {
-      _error = 'Error: $e';
-    }
+    await _loadMobility();
     if (!mounted) return;
     setState(() {
       _loading = false;
@@ -59,7 +60,9 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
       final qp = <String, String>{'limit': '20'};
       final uri = Uri.parse('${widget.baseUrl}/me/mobility_history')
           .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_orderCenterRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final bs = j['bus'];
@@ -68,8 +71,19 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
             : <Map<String, dynamic>>[];
         bus.sort((a, b) => _extractTs(b).compareTo(_extractTs(a)));
         _bus = bus.take(5).toList();
+      } else {
+        _error = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
       }
-    } catch (_) {}
+    } catch (e) {
+      _error = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
+    }
   }
 
   DateTime _extractTs(Map<String, dynamic> r) {

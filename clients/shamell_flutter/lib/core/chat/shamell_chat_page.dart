@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:image_picker/image_picker.dart';
@@ -51,6 +52,7 @@ import '../official_accounts_page.dart';
 import '../devices_page.dart';
 import '../http_error.dart';
 import '../call_signaling.dart';
+import '../safe_set_state.dart';
 import '../voip_call_page_stub.dart'
     if (dart.library.io) '../voip_call_page.dart';
 import 'package:shamell_flutter/core/session_cookie_store.dart';
@@ -127,7 +129,10 @@ class ShamellChatPage extends StatefulWidget {
   State<ShamellChatPage> createState() => _ShamellChatPageState();
 }
 
-class _ShamellChatPageState extends State<ShamellChatPage> {
+class _ShamellChatPageState extends State<ShamellChatPage>
+    with SafeSetStateMixin<ShamellChatPage> {
+  static const int _curveKeyBytes = 32;
+  static const Duration _chatRequestTimeout = Duration(seconds: 15);
   late final ChatService _service;
   final _store = ChatLocalStore();
   ChatIdentity? _me;
@@ -173,6 +178,7 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
   String? _attachedMime;
   String? _attachedName;
   bool _loading = false;
+  bool _sending = false;
   StreamSubscription<List<ChatMessage>>? _wsSub;
   StreamSubscription<ChatGroupInboxUpdate>? _grpWsSub;
   StreamSubscription<RemoteMessage>? _pushSub;
@@ -278,6 +284,22 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
   Map<String, String> _chatThemes = const <String, String>{};
   List<String> _pinnedChatOrder = const <String>[];
   final Map<String, String> _messageReactions = <String, String>{};
+
+  @override
+  void setState(VoidCallback fn) {
+    if (!mounted) return;
+    final binding = SchedulerBinding.instance;
+    final phase = binding.schedulerPhase;
+    if (phase == SchedulerPhase.persistentCallbacks ||
+        phase == SchedulerPhase.midFrameMicrotasks) {
+      binding.addPostFrameCallback((_) {
+        if (!mounted) return;
+        super.setState(fn);
+      });
+      return;
+    }
+    super.setState(fn);
+  }
 
   String _displayNameForPeer(ChatContact c) {
     final id = c.id;
@@ -1824,6 +1846,39 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     _bootstrap();
   }
 
+  bool _isCurveKey(Uint8List key) => key.length == _curveKeyBytes;
+
+  Uint8List? _decodeCurveKeyB64(String? raw) {
+    final value = (raw ?? '').trim();
+    if (value.isEmpty) return null;
+    try {
+      final decoded = base64Decode(value);
+      if (!_isCurveKey(decoded)) return null;
+      return decoded;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isValidRatchetState(RatchetState st) {
+    if (!_isCurveKey(st.rootKey) ||
+        !_isCurveKey(st.sendChainKey) ||
+        !_isCurveKey(st.recvChainKey) ||
+        !_isCurveKey(st.dhPriv) ||
+        !_isCurveKey(st.dhPub) ||
+        !_isCurveKey(st.peerDhPub)) {
+      return false;
+    }
+    if (st.sendCount < 0 || st.recvCount < 0 || st.pn < 0) {
+      return false;
+    }
+    for (final skipped in st.skipped.values) {
+      final k = _decodeCurveKeyB64(skipped);
+      if (k == null) return false;
+    }
+    return true;
+  }
+
   Future<void> _bootstrap() async {
     final me = await _store.loadIdentity();
     final peer = await _store.loadPeer();
@@ -1855,8 +1910,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       final st = raw.isNotEmpty
           ? RatchetState.fromJson(raw as Map<String, Object?>)
           : null;
-      if (st != null) {
+      if (st != null && _isValidRatchetState(st)) {
         _ratchets[c.id] = st;
+      } else if (raw.isNotEmpty) {
+        await _store.deleteRatchet(c.id);
       }
     }
     String? activeId = active ?? peer?.id;
@@ -1995,17 +2052,17 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       _peerIdCtrl.text = '';
       _displayNameCtrl.text = me?.displayName ?? '';
       sessionKeys.forEach((k, v) {
-        try {
-          final key = base64Decode(v);
+        final key = _decodeCurveKeyB64(v);
+        if (key != null) {
           _sessionKeys[k] = key;
-        } catch (_) {}
+        }
       });
       chainStates.forEach((pid, state) {
-        try {
-          final ck = base64Decode(state['ck']?.toString() ?? '');
+        final ck = _decodeCurveKeyB64(state['ck']?.toString());
+        if (ck != null) {
           final ctr = int.tryParse(state['ctr']?.toString() ?? '0') ?? 0;
           _chains[pid] = _ChainState(chainKey: ck, counter: ctr);
-        } catch (_) {}
+        }
       });
       _safetyNumber = null;
       _sessionHash = null;
@@ -2520,7 +2577,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         headers['cookie'] = cookie;
       }
       final uri = Uri.parse('${widget.baseUrl}/auth/devices');
-      final resp = await http.get(uri, headers: headers);
+      final resp = await http
+          .get(uri, headers: headers)
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         return;
       }
@@ -2580,7 +2639,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         'unread_only': 'true',
         'limit': '1',
       });
-      final r = await http.get(uri, headers: await _officialHeaders());
+      final r = await http
+          .get(uri, headers: await _officialHeaders())
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -2661,7 +2722,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       final headers = await _officialHeaders();
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'true'});
-      final r = await http.get(uri, headers: headers);
+      final r = await http
+          .get(uri, headers: headers)
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -2956,8 +3019,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/official_accounts/$id/$endpoint');
-      final r =
-          await http.post(uri, headers: await _officialHeaders(jsonBody: true));
+      final r = await http
+          .post(uri, headers: await _officialHeaders(jsonBody: true))
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300 && mounted) {
         final nowFollowed = !currentlyFollowed;
         setState(() {
@@ -2989,7 +3053,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _officialHeaders());
+      final r = await http
+          .get(uri, headers: await _officialHeaders())
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return null;
       }
@@ -3042,7 +3108,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(accountId)}/auto_replies',
       );
-      final r = await http.get(uri, headers: await _officialHeaders());
+      final r = await http
+          .get(uri, headers: await _officialHeaders())
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         _officialAutoRepliesByAccount[accountId] =
             const <Map<String, dynamic>>[];
@@ -3209,7 +3277,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _officialHeaders());
+      final r = await http
+          .get(uri, headers: await _officialHeaders())
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -3332,7 +3402,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       }
       final uri =
           Uri.parse('${widget.baseUrl}/official_accounts/notifications');
-      final r = await http.get(uri, headers: await _officialHeaders());
+      final r = await http
+          .get(uri, headers: await _officialHeaders())
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -3418,7 +3490,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       }
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'true'});
-      final r = await http.get(uri, headers: headers);
+      final r = await http
+          .get(uri, headers: headers)
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -3461,7 +3535,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
           final feedUri =
               Uri.parse('${widget.baseUrl}/official_accounts/$accId/feed')
                   .replace(queryParameters: const {'limit': '20'});
-          final fr = await http.get(feedUri, headers: headers);
+          final fr = await http
+              .get(feedUri, headers: headers)
+              .timeout(_ShamellChatPageState._chatRequestTimeout);
           if (fr.statusCode >= 200 && fr.statusCode < 300) {
             final fd = jsonDecode(fr.body);
             List<dynamic> rawItems = const [];
@@ -3741,11 +3817,106 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     return sanitizeExceptionForUi(error: error, isArabic: l.isArabic);
   }
 
+  bool _isRecoverableSendError(Object error) {
+    if (error is ChatHttpException) {
+      if (error.statusCode == 401 || error.statusCode == 403) return true;
+      if (error.statusCode == 408 ||
+          error.statusCode == 425 ||
+          error.statusCode == 429 ||
+          error.statusCode >= 500) {
+        return true;
+      }
+      if (error.statusCode == 409) {
+        final detail = (error.body ?? '').toLowerCase();
+        return detail.contains('chat device not registered') ||
+            detail.contains('device id already in use');
+      }
+    }
+    final text = error.toString().toLowerCase();
+    return text.contains('authentication required') ||
+        text.contains('unauthorized') ||
+        text.contains('sign-in required') ||
+        text.contains('timeout') ||
+        text.contains('socket') ||
+        text.contains('network') ||
+        text.contains('connection');
+  }
+
+  Future<void> _sendRetryBackoff(int attempt) async {
+    final capped = attempt.clamp(0, 4);
+    final base = 220 * (1 << capped);
+    final jitter = Random.secure().nextInt(180);
+    await Future<void>.delayed(Duration(milliseconds: base + jitter));
+  }
+
+  Future<bool> _recoverSendAuthState() async {
+    try {
+      await _service.ensureAccountChatReady();
+      final refreshed = await _store.loadIdentity();
+      if (refreshed == null) return false;
+      if (mounted) {
+        _applyState(() {
+          _me = refreshed;
+        });
+      } else {
+        _me = refreshed;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<({ChatMessage msg, ChatContact peer})> _sendDraftPayload({
+    required ChatIdentity me,
+    required ChatContact peer,
+    required String text,
+  }) async {
+    final outbound = await _nextOutboundSendContext(peer);
+    final outboundPeer = outbound.peer;
+    _sessionHash ??= _computeSessionHash();
+    final payload = <String, Object?>{
+      "text": text,
+      "client_ts": DateTime.now().toIso8601String(),
+      "sender_fp": me.fingerprint,
+      "session_hash": _sessionHash,
+    };
+    final reply = _replyToMessage;
+    if (reply != null) {
+      try {
+        final decodedReply = _decodeMessage(reply);
+        final preview = decodedReply.text.isNotEmpty
+            ? decodedReply.text
+            : _previewText(reply);
+        payload['reply_to_id'] = reply.id;
+        payload['reply_preview'] = preview;
+      } catch (_) {}
+    }
+    if (_attachedBytes != null) {
+      payload["attachment_b64"] = base64Encode(_attachedBytes!);
+      payload["attachment_mime"] = _attachedMime ?? "image/jpeg";
+    }
+    final msg = await _service.sendMessage(
+      me: me,
+      peer: outboundPeer,
+      plainText: jsonEncode(payload),
+      expireAfterSeconds: _disappearing ? _disappearAfter.inSeconds : null,
+      sealedSender: true,
+      senderHint: me.fingerprint,
+      sessionKey: outbound.sessionKey,
+      keyId: outbound.keyId,
+      prevKeyId: outbound.prevKeyId,
+      senderDhPubB64: outbound.senderDhPubB64,
+    );
+    return (msg: msg, peer: outboundPeer);
+  }
+
   Future<void> _send() async {
     if (_me == null || _peer == null) return;
     final text = _msgCtrl.text.trim();
     if (text.isEmpty && _attachedBytes == null) return;
     setState(() {
+      _sending = true;
       _loading = true;
       _error = null;
       _ratchetWarning = null;
@@ -3763,64 +3934,60 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       }
       return;
     }
+    var delivered = false;
+    Object? failure;
     try {
-      final outbound = await _nextOutboundSendContext(_peer!);
-      final outboundPeer = outbound.peer;
-      _sessionHash ??= _computeSessionHash();
-      final payload = <String, Object?>{
-        "text": text,
-        "client_ts": DateTime.now().toIso8601String(),
-        "sender_fp": _me?.fingerprint ?? '',
-        "session_hash": _sessionHash,
-      };
-      final reply = _replyToMessage;
-      if (reply != null) {
+      for (var attempt = 0; attempt < 3; attempt++) {
+        final me = _me;
+        final peer = _peer;
+        if (me == null || peer == null) {
+          failure = StateError('Authentication required');
+          break;
+        }
         try {
-          final decodedReply = _decodeMessage(reply);
-          final preview = decodedReply.text.isNotEmpty
-              ? decodedReply.text
-              : _previewText(reply);
-          payload['reply_to_id'] = reply.id;
-          payload['reply_preview'] = preview;
-        } catch (_) {}
-      }
-      if (_attachedBytes != null) {
-        payload["attachment_b64"] = base64Encode(_attachedBytes!);
-        payload["attachment_mime"] = _attachedMime ?? "image/jpeg";
-      }
-      final msg = await _service.sendMessage(
-          me: _me!,
-          peer: outboundPeer,
-          plainText: jsonEncode(payload),
-          expireAfterSeconds: _disappearing ? _disappearAfter.inSeconds : null,
-          sealedSender: true,
-          senderHint: _me?.fingerprint,
-          sessionKey: outbound.sessionKey,
-          keyId: outbound.keyId,
-          prevKeyId: outbound.prevKeyId,
-          senderDhPubB64: outbound.senderDhPubB64);
-      final currentPeer = outboundPeer;
-      _msgCtrl.clear();
-      _attachedBytes = null;
-      _attachedMime = null;
-      _attachedName = null;
-      _replyToMessage = null;
-      if (currentPeer != null) {
-        await _clearDraftForChat(currentPeer.id, persistNow: true);
-      }
-      _mergeMessages([msg]);
-      _scheduleThreadScrollToBottom(force: true);
-      if (currentPeer != null) {
-        final off = _linkedOfficial ??
-            await _loadOfficialForPeer(currentPeer, updateState: false);
-        if (off != null) {
-          unawaited(_maybeInjectOfficialKeywordReply(off, text));
+          final sent = await _sendDraftPayload(me: me, peer: peer, text: text);
+          final currentPeer = sent.peer;
+          _msgCtrl.clear();
+          _attachedBytes = null;
+          _attachedMime = null;
+          _attachedName = null;
+          _replyToMessage = null;
+          await _clearDraftForChat(currentPeer.id, persistNow: true);
+          _mergeMessages([sent.msg]);
+          _scheduleThreadScrollToBottom(force: true);
+          final off = _linkedOfficial ??
+              await _loadOfficialForPeer(currentPeer, updateState: false);
+          if (off != null) {
+            unawaited(_maybeInjectOfficialKeywordReply(off, text));
+          }
+          delivered = true;
+          break;
+        } catch (e) {
+          failure = e;
+          if (_isRecoverableSendError(e) && attempt < 2) {
+            final recovered = await _recoverSendAuthState();
+            if (recovered) {
+              await _sendRetryBackoff(attempt);
+              continue;
+            }
+            await _sendRetryBackoff(attempt);
+            continue;
+          }
+          break;
         }
       }
-    } catch (e) {
-      setState(() => _error = _sendFailureToUi(e));
+      if (!delivered && failure != null && mounted) {
+        final ui = _sendFailureToUi(failure);
+        setState(() => _error = ui);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ui)));
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -4035,8 +4202,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       if (!alreadyFollowed) {
         final uri =
             Uri.parse('${widget.baseUrl}/official_accounts/$officialId/follow');
-        final r = await http.post(uri,
-            headers: await _officialHeaders(jsonBody: true));
+        final r = await http
+            .post(uri, headers: await _officialHeaders(jsonBody: true))
+            .timeout(_ShamellChatPageState._chatRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           await sp.setBool(followKey, true);
           justFollowed = true;
@@ -4491,7 +4659,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       });
     } catch (e) {
       final l = L10n.of(context);
-      setState(() => _error = '${l.shamellAttachFailed}: $e');
+      setState(
+        () => _error =
+            '${l.shamellAttachFailed}: ${sanitizeExceptionForUi(error: e, isArabic: l.isArabic)}',
+      );
     }
   }
 
@@ -4801,10 +4972,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       final elapsed = DateTime.now().difference(start).inSeconds;
       final secs = elapsed.clamp(1, 120);
       await _sendVoiceNote(bytes, secs);
-    } catch (e) {
+    } catch (_) {
       final l = L10n.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${l.shamellVoicePlaybackSoon} ($e)')),
+        SnackBar(content: Text(l.shamellVoicePlaybackSoon)),
       );
     }
   }
@@ -5101,10 +5272,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
           setState(() {});
         }
       });
-    } catch (e) {
+    } catch (_) {
       final l = L10n.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${l.shamellVoicePlaybackSoon} ($e)')),
+        SnackBar(content: Text(l.shamellVoicePlaybackSoon)),
       );
     }
   }
@@ -5452,8 +5623,13 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       return '<encrypted>';
     }
     // Try sealed-session secretbox first
-    final key = _sessionKeyForMessage(m);
-    if (key != null) {
+    Uint8List? key;
+    try {
+      key = _sessionKeyForMessage(m);
+    } catch (_) {
+      key = null;
+    }
+    if (key != null && _isCurveKey(key)) {
       try {
         final box = x25519.SecretBox(key);
         final cipher = x25519.ByteList(base64Decode(m.boxB64));
@@ -5647,9 +5823,11 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
         final sessionHash = (j['session_hash'] ?? '').toString();
         if (senderFp.isNotEmpty) {
           // map sender hint for sealed sender
-          _sessionKeysByFp[senderFp] = _sessionKeysByFp[senderFp] ??
-              _sessionKeys[_activePeerId ?? ''] ??
-              Uint8List(0);
+          final mapped =
+              _sessionKeysByFp[senderFp] ?? _sessionKeys[_activePeerId ?? ''];
+          if (mapped != null && _isCurveKey(mapped)) {
+            _sessionKeysByFp[senderFp] = mapped;
+          }
           if (_peer != null && _peer!.fingerprint != senderFp) {
             final l = L10n.of(context);
             _ratchetWarning = l.shamellSessionChangedBody;
@@ -5776,8 +5954,11 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       final file = XFile.fromData(data,
           mimeType: mime ?? 'image/jpeg', name: 'chat.$ext');
       await Share.shareXFiles([file], text: 'Encrypted chat image');
-    } catch (e) {
-      setState(() => _error = 'Share failed: $e');
+    } catch (_) {
+      final l = L10n.of(context);
+      setState(
+        () => _error = l.isArabic ? 'فشلت المشاركة.' : 'Share failed.',
+      );
     }
   }
 
@@ -5815,7 +5996,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       }
     } catch (e) {
       final l = L10n.of(context);
-      setState(() => _error = '${l.shamellBackupFailed}: $e');
+      setState(
+        () => _error =
+            '${l.shamellBackupFailed}: ${sanitizeExceptionForUi(error: e, isArabic: l.isArabic)}',
+      );
     }
   }
 
@@ -5870,7 +6054,10 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       _listenWs();
     } catch (e) {
       final l = L10n.of(context);
-      setState(() => _error = '${l.shamellRestoreFailed}: $e');
+      setState(
+        () => _error =
+            '${l.shamellRestoreFailed}: ${sanitizeExceptionForUi(error: e, isArabic: l.isArabic)}',
+      );
     }
   }
 
@@ -6135,13 +6322,21 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
   RatchetState _ensureRatchet(ChatContact peer) {
     final pid = peer.id;
     final existing = _ratchets[pid];
-    if (existing != null) return existing;
+    if (existing != null) {
+      if (_isValidRatchetState(existing)) return existing;
+      _ratchets.remove(pid);
+      unawaited(_store.deleteRatchet(pid));
+    }
+    final peerPub = _decodeCurveKeyB64(peer.publicKeyB64);
+    if (peerPub == null) {
+      throw const _SessionBootstrapViolation('peer identity key invalid');
+    }
     final dh = x25519.PrivateKey.generate();
     final dhPub = dh.publicKey;
     final shared = x25519.Box(
-            myPrivateKey: dh,
-            theirPublicKey: x25519.PublicKey(base64Decode(peer.publicKeyB64)))
-        .sharedKey;
+      myPrivateKey: dh,
+      theirPublicKey: x25519.PublicKey(peerPub),
+    ).sharedKey;
     final rk =
         Uint8List.fromList(crypto.sha256.convert(shared.asTypedList).bytes);
     final st = RatchetState(
@@ -6155,8 +6350,8 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       peerIdentity: peer.fingerprint,
       dhPriv: dh.asTypedList,
       dhPub: dhPub.asTypedList,
-      peerDhPub: base64Decode(peer.publicKeyB64),
-      peerDhPubB64: peer.publicKeyB64,
+      peerDhPub: peerPub,
+      peerDhPubB64: base64Encode(peerPub),
     );
     _ratchets[pid] = st;
     _store.saveRatchet(pid, st.toJson());
@@ -6179,9 +6374,20 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
   Uint8List? _sessionKeyForMessage(ChatMessage m) {
     final targetCtr = m.keyId ?? 0;
     final fp = m.senderHint ?? _peer?.fingerprint ?? '';
-    final peer = _contacts.firstWhere((x) => x.fingerprint == fp,
-        orElse: () =>
-            _peer ?? ChatContact(id: '', publicKeyB64: '', fingerprint: fp));
+    if (fp.isEmpty || targetCtr < 0) return null;
+    ChatContact? peer;
+    for (final c in _contacts) {
+      if (c.fingerprint == fp) {
+        peer = c;
+        break;
+      }
+    }
+    if (peer == null && _peer?.fingerprint == fp) {
+      peer = _peer;
+    }
+    if (peer == null || _decodeCurveKeyB64(peer.publicKeyB64) == null) {
+      return null;
+    }
     final st = _ensureRatchet(peer);
     // detect identity/key mismatch
     if (fp.isNotEmpty && peer.fingerprint != fp) {
@@ -6195,8 +6401,12 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       return null;
     }
     if (m.senderDhPubB64 != null && m.senderDhPubB64!.isNotEmpty) {
+      final newPeerDh = _decodeCurveKeyB64(m.senderDhPubB64);
+      if (newPeerDh == null) return null;
       if (st.peerDhPubB64 != m.senderDhPubB64) {
-        _dhRatchet(st, base64Decode(m.senderDhPubB64!), peerId: peer.id);
+        if (!_dhRatchet(st, newPeerDh, peerId: peer.id)) {
+          return null;
+        }
         st.peerDhPubB64 = m.senderDhPubB64!;
       }
     }
@@ -6218,9 +6428,11 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     // skipped cache lookup
     final skipKey = '${m.senderDhPubB64 ?? ''}:$targetCtr';
     if (st.skipped.containsKey(skipKey)) {
-      final mk = st.skipped.remove(skipKey);
+      final mkB64 = st.skipped.remove(skipKey);
       _store.saveRatchet(peer.id, st.toJson());
-      return mk != null ? base64Decode(mk) : null;
+      if (mkB64 == null || mkB64.isEmpty) return null;
+      final mk = _decodeCurveKeyB64(mkB64);
+      return mk;
     }
     // advance recv chain
     var counter = st.recvCount;
@@ -6246,18 +6458,27 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     return null;
   }
 
-  void _dhRatchet(RatchetState st, Uint8List newPeerDh,
+  bool _dhRatchet(RatchetState st, Uint8List newPeerDh,
       {required String peerId}) {
+    if (!_isCurveKey(st.dhPriv) || !_isCurveKey(newPeerDh)) {
+      return false;
+    }
     st.pn = st.recvCount;
     st.recvCount = 0;
     st.peerDhPub = newPeerDh;
     st.skipped.clear();
-    // derive new root + recv chain
-    final dhShared = x25519.Box(
-            myPrivateKey: x25519.PrivateKey(st.dhPriv),
-            theirPublicKey: x25519.PublicKey(newPeerDh))
-        .sharedKey;
-    final newRoot = _kdfRoot(st.rootKey, dhShared.asTypedList);
+    late Uint8List dhSharedBytes;
+    try {
+      // derive new root + recv chain
+      final dhShared = x25519.Box(
+        myPrivateKey: x25519.PrivateKey(st.dhPriv),
+        theirPublicKey: x25519.PublicKey(newPeerDh),
+      ).sharedKey;
+      dhSharedBytes = dhShared.asTypedList;
+    } catch (_) {
+      return false;
+    }
+    final newRoot = _kdfRoot(st.rootKey, dhSharedBytes);
     st.rootKey = newRoot.$1;
     st.recvChainKey = newRoot.$2;
     // rotate our DH
@@ -6265,8 +6486,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     st.dhPriv = newDh.asTypedList;
     st.dhPub = newDh.publicKey.asTypedList;
     final dhShared2 = x25519.Box(
-            myPrivateKey: newDh, theirPublicKey: x25519.PublicKey(newPeerDh))
-        .sharedKey;
+      myPrivateKey: newDh,
+      theirPublicKey: x25519.PublicKey(newPeerDh),
+    ).sharedKey;
     final sendRoot = _kdfRoot(st.rootKey, dhShared2.asTypedList);
     st.rootKey = sendRoot.$1;
     st.sendChainKey = sendRoot.$2;
@@ -6274,6 +6496,7 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     _store.saveRatchet(peerId, st.toJson());
     _ratchetWarning = null;
     setState(() {});
+    return true;
   }
 
   (Uint8List, Uint8List) _kdfRoot(Uint8List rk, Uint8List dh) {
@@ -6404,8 +6627,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
       if (!can) return false;
       final l = L10n.of(context);
       return await auth.authenticate(
-          localizedReason: l.shamellUnlockHiddenReason,
-          options: const AuthenticationOptions(biometricOnly: true));
+        localizedReason: l.shamellUnlockHiddenReason,
+        biometricOnly: true,
+      );
     } catch (_) {
       return false;
     }
@@ -8936,6 +9160,9 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     }
 
     if (n is OverscrollNotification) {
+      // Ignore non-drag overscroll (e.g. iOS bounce/ballistic), otherwise the
+      // pull-down panel can open by itself without explicit user gesture.
+      if (n.dragDetails == null) return false;
       final o = n.overscroll;
       if (o < 0) {
         _archivedPullDragOffset += -o;
@@ -8955,6 +9182,11 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     }
 
     if (n is ScrollEndNotification) {
+      // Only finalize pin/reveal after an actual drag sequence.
+      if (!_archivedPullDragging) {
+        _resetArchivedPullDown();
+        return false;
+      }
       final reveal = _archivedPullReveal;
       if (reveal <= 0) {
         _resetArchivedPullDown();
@@ -9631,7 +9863,11 @@ class _ShamellChatPageState extends State<ShamellChatPage> {
     final token = rawToken.trim();
     if (token.isEmpty) return;
     try {
-      final peerId = await _service.redeemContactInviteToken(token);
+      final peerId = await _service.redeemContactInviteTokenEnsured(token);
+      try {
+        final peer = await _service.resolveDevice(peerId);
+        await _store.upsertContact(peer);
+      } catch (_) {}
       await _resolvePeer(presetId: peerId);
       if (!mounted) return;
       setState(() => _tabIndex = 0);
@@ -15005,6 +15241,7 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
                                             alpha: isDark ? .25 : .55,
                                           );
                                 return Container(
+                                  width: double.infinity,
                                   height: 40,
                                   alignment: Alignment.center,
                                   padding: const EdgeInsets.symmetric(
@@ -15034,6 +15271,7 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
                           )
                         : Container(
                             key: const ValueKey('text'),
+                            width: double.infinity,
                             constraints: const BoxConstraints(minHeight: 40),
                             padding: const EdgeInsets.symmetric(
                               horizontal: 10,
@@ -15070,27 +15308,31 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
                     final showSend =
                         value.text.trim().isNotEmpty || _attachedBytes != null;
                     if (showSend) {
-                      return SizedBox(
+                      final canSend = !(_sending ||
+                          me == null ||
+                          peer == null ||
+                          peer.blocked ||
+                          _recordingVoice);
+                      return Container(
+                        width: 36,
                         height: 36,
-                        child: FilledButton(
-                          style: FilledButton.styleFrom(
-                            backgroundColor: ShamellPalette.green,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                          ),
-                          onPressed: (_loading ||
-                                  me == null ||
-                                  peer == null ||
-                                  peer.blocked ||
-                                  _recordingVoice)
-                              ? null
-                              : _send,
-                          child: Text(
-                            l.chatSend,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
+                        decoration: BoxDecoration(
+                          color: canSend
+                              ? ShamellPalette.green
+                              : theme.disabledColor.withValues(alpha: .18),
+                          shape: BoxShape.circle,
+                        ),
+                        child: IconButton(
+                          tooltip: l.chatSend,
+                          padding: EdgeInsets.zero,
+                          splashRadius: 18,
+                          onPressed: canSend ? _send : null,
+                          icon: Icon(
+                            Icons.send_rounded,
+                            size: 18,
+                            color: canSend
+                                ? Colors.white
+                                : theme.disabledColor.withValues(alpha: .75),
                           ),
                         ),
                       );
@@ -17214,14 +17456,16 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
         if (cookie.isNotEmpty) 'cookie': cookie,
       };
       final uri = Uri.parse('${widget.baseUrl}/auth/device_login/approve');
-      final resp = await http.post(
-        uri,
-        headers: headers,
-        body: jsonEncode(<String, Object?>{
-          'token': token,
-          if (label != null && label.isNotEmpty) 'label': label,
-        }),
-      );
+      final resp = await http
+          .post(
+            uri,
+            headers: headers,
+            body: jsonEncode(<String, Object?>{
+              'token': token,
+              if (label != null && label.isNotEmpty) 'label': label,
+            }),
+          )
+          .timeout(_ShamellChatPageState._chatRequestTimeout);
       if (!mounted) return;
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -17647,8 +17891,10 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
             OfficialNotificationMode.muted => 'muted',
           }
         });
-        await http.post(uri,
-            headers: await _officialHeaders(jsonBody: true), body: body);
+        await http
+            .post(uri,
+                headers: await _officialHeaders(jsonBody: true), body: body)
+            .timeout(_ShamellChatPageState._chatRequestTimeout);
       } catch (_) {}
     }
     if (!mounted) return;
@@ -17690,10 +17936,10 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
         } catch (_) {}
         await _audioPlayer.play();
         return;
-      } catch (e) {
+      } catch (_) {
         final l = L10n.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${l.shamellVoicePlaybackSoon} ($e)')),
+          SnackBar(content: Text(l.shamellVoicePlaybackSoon)),
         );
         return;
       }
@@ -17743,10 +17989,10 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
         _playingVoiceMessageId = m.id;
       });
       await _audioPlayer.play();
-    } catch (e) {
+    } catch (_) {
       final l = L10n.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${l.shamellVoicePlaybackSoon} ($e)')),
+        SnackBar(content: Text(l.shamellVoicePlaybackSoon)),
       );
     }
   }
@@ -18151,8 +18397,13 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
     );
   }
 
+  Future<String> _createInviteTokenWithBootstrap() async {
+    return _service.createContactInviteTokenEnsured(maxUses: 1);
+  }
+
   void _showInviteQr() {
     final l = L10n.of(context);
+    final inviteFuture = _createInviteTokenWithBootstrap();
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -18161,7 +18412,7 @@ extension _ShamellChatHelpers on _ShamellChatPageState {
         return Padding(
           padding: const EdgeInsets.all(20),
           child: FutureBuilder<String>(
-            future: _service.createContactInviteToken(maxUses: 1),
+            future: inviteFuture,
             builder: (ctx, snap) {
               final token = (snap.data ?? '').toString().trim();
               final payload =

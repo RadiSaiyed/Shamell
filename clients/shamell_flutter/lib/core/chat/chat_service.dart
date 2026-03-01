@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'chat_models.dart';
+import 'package:shamell_flutter/core/account_session_bootstrap.dart';
 import 'package:shamell_flutter/core/device_id.dart';
 import 'package:shamell_flutter/core/session_cookie_store.dart';
 
@@ -83,6 +84,17 @@ ChatGroupMessage shamellDecryptOrBlockGroupMessage(
     ChatGroupMessage m, Uint8List key) {
   final kind = (m.kind ?? '').toLowerCase();
   if (kind == 'system') return m;
+  if (key.length != 32) {
+    return ChatGroupMessage(
+      id: m.id,
+      groupId: m.groupId,
+      senderId: m.senderId,
+      text: 'Blocked insecure group message',
+      kind: 'system',
+      createdAt: m.createdAt,
+      expireAt: m.expireAt,
+    );
+  }
 
   // Fail closed: group chat must never render unsealed user content.
   if (kind != 'sealed') {
@@ -220,10 +232,35 @@ bool shamellAcceptPeerKeyBundle(ChatKeyBundle bundle) {
 
 class ChatService {
   ChatService(String baseUrl, {http.Client? httpClient})
-      : _base = baseUrl.endsWith('/')
-            ? baseUrl.substring(0, baseUrl.length - 1)
-            : baseUrl,
+      : _base = _normalizeBase(baseUrl),
         _http = httpClient ?? http.Client();
+
+  static const String _prodBase = 'https://api.shamell.online';
+  static const Duration _chatRequestTimeout = Duration(seconds: 15);
+
+  static bool _isLocalhost(String host) {
+    final h = host.trim().toLowerCase();
+    return h == 'localhost' || h == '127.0.0.1' || h == '::1';
+  }
+
+  static String _normalizeBase(String raw) {
+    final trimmed = raw.trim();
+    final u = Uri.tryParse(trimmed);
+    if (u == null || u.host.trim().isEmpty) {
+      return _prodBase;
+    }
+    final scheme = u.scheme.trim().toLowerCase();
+    final host = u.host.trim().toLowerCase();
+    final insecure =
+        scheme != 'https' && !(scheme == 'http' && _isLocalhost(host));
+    // Some legacy prefs accidentally persisted :0; treat as invalid.
+    if (insecure || (u.hasPort && u.port == 0)) {
+      return _prodBase;
+    }
+    return trimmed.endsWith('/')
+        ? trimmed.substring(0, trimmed.length - 1)
+        : trimmed;
+  }
 
   final String _base;
   final http.Client _http;
@@ -269,6 +306,27 @@ class ChatService {
     throw StateError('Insecure chat base URL: HTTPS is required');
   }
 
+  Future<http.Response> _get(
+    Uri uri, {
+    Map<String, String>? headers,
+  }) =>
+      _http.get(uri, headers: headers).timeout(_chatRequestTimeout);
+
+  Future<http.Response> _post(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+  }) =>
+      _http
+          .post(
+            uri,
+            headers: headers,
+            body: body,
+            encoding: encoding,
+          )
+          .timeout(_chatRequestTimeout);
+
   Future<ChatContact> registerDevice(ChatIdentity me) async {
     final clientDeviceId = (await getOrCreateStableDeviceId()).trim();
     final body = jsonEncode({
@@ -277,20 +335,35 @@ class ChatService {
       'public_key_b64': me.publicKeyB64,
       'name': me.displayName,
     });
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/devices/register'),
       headers: await _headers(json: true, chatDeviceId: me.id),
       body: body,
     );
     if (r.statusCode >= 400) {
-      throw Exception('register failed: ${r.statusCode}');
+      throw ChatHttpException(
+        op: 'registerDevice',
+        statusCode: r.statusCode,
+        body: r.body,
+      );
     }
     final j = jsonDecode(r.body) as Map<String, Object?>;
     final authToken = (j['auth_token'] ?? '').toString().trim();
     if (authToken.isNotEmpty) {
       await ChatLocalStore().saveDeviceAuthToken(me.id, authToken);
     }
-    await _bootstrapLibsignalMaterial(me);
+    // Best effort: account-scoped flows (contacts/QR) only require a registered
+    // chat device. Do not fail registration if key bootstrap is unavailable.
+    try {
+      await _bootstrapLibsignalMaterial(me);
+    } catch (e) {
+      if (_isMissingLibsignalKeyApiFailure(e)) {
+        // Avoid retrying an unavailable optional key API on every app action.
+        try {
+          await ChatLocalStore().markDeviceKeyBootstrapped(me.id);
+        } catch (_) {}
+      }
+    }
     return ChatContact(
       id: (j['device_id'] ?? '') as String,
       publicKeyB64: (j['public_key_b64'] ?? '') as String,
@@ -301,7 +374,7 @@ class ChatService {
   }
 
   Future<ChatContact> resolveDevice(String id) async {
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/devices/${Uri.encodeComponent(id)}'),
       headers: await _headers(),
     );
@@ -319,52 +392,271 @@ class ChatService {
     );
   }
 
-  Future<void> _requireSessionCookieForAccountOps() async {
+  Future<void> _refreshSessionForAccountOps({bool forceCreate = false}) async {
     final cookie = (await getSessionCookieHeader(_base) ?? '').trim();
-    if (cookie.isEmpty) {
-      throw StateError('Authentication required');
-    }
+    if (cookie.isNotEmpty && !forceCreate) return;
+    try {
+      await ensureSessionCookieViaAccountCreate(
+        baseUrl: _base,
+        client: _http,
+        forceCreate: forceCreate,
+      );
+    } catch (_) {}
   }
 
-  Future<ChatIdentity> _ensureChatIdentityAndRegistrationForAccountOps() async {
-    final store = ChatLocalStore();
-    var me = await store.loadIdentity();
-    if (me == null ||
-        me.id.trim().isEmpty ||
-        me.publicKeyB64.trim().isEmpty ||
-        me.privateKeyB64.trim().isEmpty) {
-      final sk = x25519.PrivateKey.generate();
-      final pk = sk.publicKey;
-      final pkB64 = base64Encode(pk.asTypedList);
-      me = ChatIdentity(
-        id: generateShortId(),
-        publicKeyB64: pkB64,
-        privateKeyB64: base64Encode(sk.asTypedList),
-        fingerprint: fingerprintForKey(pkB64),
-      );
-      await store.saveIdentity(me);
+  Future<void> _requireSessionCookieForAccountOps() async {
+    await _refreshSessionForAccountOps();
+    var cookie = (await getSessionCookieHeader(_base) ?? '').trim();
+    if (cookie.isEmpty) {
+      // Retry once with a forced account-create in case a stale/invalid local
+      // session token exists but no valid cookie can be produced.
+      await _refreshSessionForAccountOps(forceCreate: true);
+      cookie = (await getSessionCookieHeader(_base) ?? '').trim();
+    }
+    if (cookie.isEmpty) throw StateError('Authentication required');
+  }
+
+  Future<http.Response> _postAccountJsonWithRetry({
+    required String path,
+    required String chatDeviceId,
+    required Map<String, Object?> body,
+  }) async {
+    Future<http.Response> send(String did) async => _post(
+          _uri(path),
+          headers: await _headers(json: true, chatDeviceId: did),
+          body: jsonEncode(body),
+        );
+
+    var did = chatDeviceId;
+    var repairedAuth = false;
+    var repairedRegistration = false;
+    const maxAttempts = 3;
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final r = await send(did);
+        if (r.statusCode == 403 &&
+            _isChatDeviceOwnershipFailureResponse(r.body) &&
+            !repairedRegistration) {
+          repairedRegistration = true;
+          final me = await _ensureChatIdentityAndRegistrationForAccountOps(
+            forceRegister: true,
+          );
+          did = me.id;
+          continue;
+        }
+        if ((r.statusCode == 401 || r.statusCode == 403) && !repairedAuth) {
+          repairedAuth = true;
+          await _refreshSessionForAccountOps(forceCreate: true);
+          final me = await _ensureChatIdentityAndRegistrationForAccountOps(
+            forceRegister: true,
+          );
+          did = me.id;
+          continue;
+        }
+        if (r.statusCode == 409 &&
+            _isChatDeviceNotRegisteredResponse(r.body) &&
+            !repairedRegistration) {
+          repairedRegistration = true;
+          final me = await _ensureChatIdentityAndRegistrationForAccountOps(
+            forceRegister: true,
+          );
+          did = me.id;
+          continue;
+        }
+        if (_isRetryableAccountHttpStatus(r.statusCode) &&
+            attempt < maxAttempts - 1) {
+          await _backoffDelay(attempt);
+          continue;
+        }
+        return r;
+      } catch (e) {
+        if (!_isRetryableAccountException(e) || attempt >= maxAttempts - 1) {
+          rethrow;
+        }
+        await _backoffDelay(attempt);
+      }
     }
 
-    final tok = (await store.loadDeviceAuthToken(me.id) ?? '').trim();
-    if (tok.isEmpty) {
-      // This binds the chat device to the authenticated Shamell account in the backend.
-      await registerDevice(me);
-    } else {
-      // Best-effort: ensure key material exists for upgraded clients without re-registering.
-      await _bootstrapLibsignalMaterial(me);
+    return send(did);
+  }
+
+  String _extractHttpDetail(String? rawBody) {
+    final text = (rawBody ?? '').trim();
+    if (text.isEmpty) return '';
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        final detail = (decoded['detail'] ?? '').toString().trim();
+        if (detail.isNotEmpty) return detail;
+      }
+    } catch (_) {}
+    return text;
+  }
+
+  bool _isChatDeviceNotRegisteredResponse(String? rawBody) {
+    final d = _extractHttpDetail(rawBody).toLowerCase();
+    return d.contains('chat device not registered');
+  }
+
+  bool _isChatDeviceOwnershipFailureResponse(String? rawBody) {
+    final d = _extractHttpDetail(rawBody).toLowerCase();
+    return d.contains('device not registered for authenticated user') ||
+        d.contains('chat device not registered') ||
+        d.contains('chat device_id required');
+  }
+
+  bool _isRetryableAccountHttpStatus(int statusCode) {
+    return statusCode == 408 ||
+        statusCode == 425 ||
+        statusCode == 429 ||
+        statusCode >= 500;
+  }
+
+  bool _isRetryableAccountException(Object error) {
+    final raw = error.toString().toLowerCase();
+    return raw.contains('socket') ||
+        raw.contains('network') ||
+        raw.contains('connection') ||
+        raw.contains('timeout');
+  }
+
+  Future<void> _backoffDelay(int attempt) async {
+    final capped = attempt.clamp(0, 4);
+    final base = 250 * (1 << capped);
+    final jitter = Random.secure().nextInt(220);
+    await Future<void>.delayed(Duration(milliseconds: base + jitter));
+  }
+
+  bool _isMissingLibsignalKeyApiFailure(Object e) {
+    final text = e.toString().toLowerCase();
+    return text.contains('keys register failed: 404') ||
+        text.contains('prekeys upload failed: 404');
+  }
+
+  bool _isAuthFailure(Object e) {
+    if (e is ChatHttpException) {
+      return e.statusCode == 401 || e.statusCode == 403;
+    }
+    final text = e.toString().toLowerCase();
+    return text.contains('authentication required') ||
+        text.contains('unauthorized') ||
+        text.contains('forbidden') ||
+        text.contains('failed: 401') ||
+        text.contains('failed: 403');
+  }
+
+  bool _isDeviceIdInUseFailure(Object e) {
+    if (e is ChatHttpException) {
+      if (e.statusCode != 403 && e.statusCode != 409) return false;
+      final detail = _extractHttpDetail(e.body).toLowerCase();
+      return detail.contains('device id already in use');
+    }
+    final text = e.toString().toLowerCase();
+    return text.contains('device id already in use');
+  }
+
+  Future<ChatIdentity> _createAndPersistFreshIdentity(
+      ChatLocalStore store) async {
+    final sk = x25519.PrivateKey.generate();
+    final pk = sk.publicKey;
+    final pkB64 = base64Encode(pk.asTypedList);
+    final me = ChatIdentity(
+      id: generateShortId(),
+      publicKeyB64: pkB64,
+      privateKeyB64: base64Encode(sk.asTypedList),
+      fingerprint: fingerprintForKey(pkB64),
+    );
+    await store.saveIdentity(me);
+    return me;
+  }
+
+  Future<ChatIdentity> _ensureChatIdentityAndRegistrationForAccountOps({
+    bool forceRegister = false,
+  }) async {
+    final store = ChatLocalStore();
+    final loaded = await store.loadIdentity();
+    var me = (loaded == null ||
+            loaded.id.trim().isEmpty ||
+            loaded.publicKeyB64.trim().isEmpty ||
+            loaded.privateKeyB64.trim().isEmpty)
+        ? await _createAndPersistFreshIdentity(store)
+        : loaded;
+
+    final token = (await store.loadDeviceAuthToken(me.id) ?? '').trim();
+    if (token.isNotEmpty && !forceRegister) {
+      // Existing chat-device registration is present; keep account ops cheap.
+      return me;
+    }
+
+    // Register (or re-register) this chat device for account-scoped operations.
+    var didForceSessionRefresh = false;
+    var didRotateIdentity = false;
+    while (true) {
+      try {
+        await registerDevice(me);
+        break;
+      } catch (e) {
+        if (_isAuthFailure(e) && !didForceSessionRefresh) {
+          // Recover from stale/invalid local session cookie by forcing a fresh
+          // account session and retrying registration once.
+          didForceSessionRefresh = true;
+          await _refreshSessionForAccountOps(forceCreate: true);
+          continue;
+        }
+        if (_isDeviceIdInUseFailure(e) && !didRotateIdentity) {
+          // If this chat device id is already bound to another account, rotate
+          // to a fresh local identity and retry once.
+          didRotateIdentity = true;
+          me = await _createAndPersistFreshIdentity(store);
+          continue;
+        }
+        rethrow;
+      }
     }
 
     return me;
+  }
+
+  Future<void> ensureAccountChatReady() async {
+    await _requireSessionCookieForAccountOps();
+    await _ensureChatIdentityAndRegistrationForAccountOps();
+  }
+
+  Future<String> resolveContactByShamellId(String shamellId) async {
+    await _requireSessionCookieForAccountOps();
+    final me = await _ensureChatIdentityAndRegistrationForAccountOps();
+    final normalized = shamellId.trim().toUpperCase();
+    if (normalized.isEmpty) {
+      throw Exception('invalid shamell id');
+    }
+    final r = await _postAccountJsonWithRetry(
+      path: '/contacts/resolve',
+      chatDeviceId: me.id,
+      body: <String, Object?>{'shamell_id': normalized},
+    );
+    if (r.statusCode >= 400) {
+      throw Exception('contact resolve failed: ${r.statusCode}');
+    }
+    final j = jsonDecode(r.body);
+    if (j is! Map) {
+      throw Exception('contact resolve failed');
+    }
+    final did = (j['device_id'] ?? '').toString().trim();
+    if (did.isEmpty) {
+      throw Exception('contact resolve failed');
+    }
+    return did;
   }
 
   Future<String> createContactInviteToken({int maxUses = 1}) async {
     await _requireSessionCookieForAccountOps();
     final me = await _ensureChatIdentityAndRegistrationForAccountOps();
     final requested = maxUses.clamp(1, 20);
-    final r = await _http.post(
-      _uri('/contacts/invites'),
-      headers: await _headers(json: true, chatDeviceId: me.id),
-      body: jsonEncode(<String, Object?>{'max_uses': requested}),
+    final r = await _postAccountJsonWithRetry(
+      path: '/contacts/invites',
+      chatDeviceId: me.id,
+      body: <String, Object?>{'max_uses': requested},
     );
     if (r.statusCode >= 400) {
       throw Exception('invite create failed: ${r.statusCode}');
@@ -380,6 +672,30 @@ class ChatService {
     return tok;
   }
 
+  /// Creates an invite token with built-in account/chat bootstrap retries.
+  ///
+  /// This is used by UI entry points to avoid duplicating the same
+  /// "ensure session + ensure chat device + create token" flow.
+  Future<String> createContactInviteTokenEnsured({
+    int maxUses = 1,
+    int attempts = 2,
+  }) async {
+    Object? lastError;
+    final tries = attempts.clamp(1, 5);
+    for (var attempt = 0; attempt < tries; attempt++) {
+      try {
+        await ensureAccountChatReady();
+        return await createContactInviteToken(maxUses: maxUses);
+      } catch (e) {
+        lastError = e;
+        if (_isRetryableAccountException(e) && attempt < tries - 1) {
+          await _backoffDelay(attempt);
+        }
+      }
+    }
+    throw lastError ?? StateError('invite create failed');
+  }
+
   Future<String> redeemContactInviteToken(String rawToken) async {
     final tok = rawToken.trim().toLowerCase();
     if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(tok)) {
@@ -387,10 +703,10 @@ class ChatService {
     }
     await _requireSessionCookieForAccountOps();
     final me = await _ensureChatIdentityAndRegistrationForAccountOps();
-    final r = await _http.post(
-      _uri('/contacts/invites/redeem'),
-      headers: await _headers(json: true, chatDeviceId: me.id),
-      body: jsonEncode(<String, Object?>{'token': tok}),
+    final r = await _postAccountJsonWithRetry(
+      path: '/contacts/invites/redeem',
+      chatDeviceId: me.id,
+      body: <String, Object?>{'token': tok},
     );
     if (r.statusCode >= 400) {
       throw Exception('invite redeem failed: ${r.statusCode}');
@@ -406,6 +722,27 @@ class ChatService {
     return did;
   }
 
+  /// Redeems an invite token with built-in account/chat bootstrap retries.
+  Future<String> redeemContactInviteTokenEnsured(
+    String rawToken, {
+    int attempts = 2,
+  }) async {
+    Object? lastError;
+    final tries = attempts.clamp(1, 5);
+    for (var attempt = 0; attempt < tries; attempt++) {
+      try {
+        await ensureAccountChatReady();
+        return await redeemContactInviteToken(rawToken);
+      } catch (e) {
+        lastError = e;
+        if (_isRetryableAccountException(e) && attempt < tries - 1) {
+          await _backoffDelay(attempt);
+        }
+      }
+    }
+    throw lastError ?? StateError('invite redeem failed');
+  }
+
   /// Fetches a peer key bundle from the server.
   /// Note: this may consume one-time prekeys server-side; call only when establishing a new session.
   Future<ChatKeyBundle> fetchKeyBundle({
@@ -416,7 +753,7 @@ class ChatService {
     if (did.isEmpty) {
       throw ArgumentError.value(targetDeviceId, 'targetDeviceId');
     }
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/keys/bundle/${Uri.encodeComponent(did)}'),
       headers: await _headers(chatDeviceId: requesterDeviceId),
     );
@@ -449,7 +786,7 @@ class ChatService {
       identityPrivateKeyB64: me.privateKeyB64,
       input: signatureInput,
     );
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/keys/register'),
       headers: await _headers(json: true, chatDeviceId: me.id),
       body: jsonEncode({
@@ -470,7 +807,7 @@ class ChatService {
 
     final prekeys = _buildOneTimePrekeys(oneTimePrekeyCount);
     if (prekeys.isEmpty) return;
-    final upload = await _http.post(
+    final upload = await _post(
       _uri('/chat/keys/prekeys/upload'),
       headers: await _headers(json: true, chatDeviceId: me.id),
       body: jsonEncode({
@@ -523,7 +860,7 @@ class ChatService {
       if (expireAfterSeconds != null)
         'expire_after_seconds': expireAfterSeconds,
     });
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/messages/send'),
       headers: await _headers(json: true, chatDeviceId: me.id),
       body: body,
@@ -556,7 +893,7 @@ class ChatService {
     if (sinceIso != null && sinceIso.isNotEmpty) {
       qp['since_iso'] = sinceIso;
     }
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/messages/inbox', qp),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -568,7 +905,7 @@ class ChatService {
   }
 
   Future<void> markRead(String id, {String? deviceId}) async {
-    await _http.post(
+    await _post(
       _uri('/chat/messages/$id/read'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode({'read': true}),
@@ -581,7 +918,7 @@ class ChatService {
     required bool blocked,
     bool hidden = false,
   }) async {
-    await _http.post(
+    await _post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/block'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode({
@@ -616,7 +953,7 @@ class ChatService {
     if (muted != null) body['muted'] = muted;
     if (starred != null) body['starred'] = starred;
     if (pinned != null) body['pinned'] = pinned;
-    await _http.post(
+    await _post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/prefs'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode(body),
@@ -624,7 +961,7 @@ class ChatService {
   }
 
   Future<List<ChatContactPrefs>> fetchPrefs({required String deviceId}) async {
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/prefs'),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -654,7 +991,7 @@ class ChatService {
     final body = <String, Object?>{'group_id': groupId};
     if (muted != null) body['muted'] = muted;
     if (pinned != null) body['pinned'] = pinned;
-    await _http.post(
+    await _post(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/group_prefs'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: jsonEncode(body),
@@ -664,7 +1001,7 @@ class ChatService {
   Future<List<ChatGroupPrefs>> fetchGroupPrefs({
     required String deviceId,
   }) async {
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/group_prefs'),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -691,7 +1028,7 @@ class ChatService {
     String? platform,
   }) async {
     try {
-      await _http.post(
+      await _post(
         _uri('/chat/devices/${Uri.encodeComponent(deviceId)}/push_token'),
         headers: await _headers(json: true, chatDeviceId: deviceId),
         body: jsonEncode({
@@ -861,7 +1198,7 @@ class ChatService {
       if (memberIds.isNotEmpty) 'member_ids': memberIds,
       if (groupId != null && groupId.isNotEmpty) 'group_id': groupId,
     });
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/create'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: body,
@@ -873,7 +1210,7 @@ class ChatService {
   }
 
   Future<List<ChatGroup>> listGroups({required String deviceId}) async {
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/groups/list', {'device_id': deviceId}),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -900,7 +1237,7 @@ class ChatService {
       if (avatarB64 != null) 'avatar_b64': avatarB64,
       if (avatarMime != null) 'avatar_mime': avatarMime,
     });
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/update'),
       headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
@@ -968,7 +1305,7 @@ class ChatService {
     bodyMap['box_b64'] = base64Encode(box.cipherText.asTypedList);
 
     final body = jsonEncode(bodyMap);
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/messages/send'),
       headers: await _headers(json: true, chatDeviceId: senderId),
       body: body,
@@ -991,7 +1328,7 @@ class ChatService {
     if (sinceIso != null && sinceIso.isNotEmpty) {
       qp['since_iso'] = sinceIso;
     }
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/messages/inbox', qp),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -1019,7 +1356,7 @@ class ChatService {
     required String groupId,
     required String deviceId,
   }) async {
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/members', {
         'device_id': deviceId,
       }),
@@ -1041,7 +1378,7 @@ class ChatService {
     required List<String> memberIds,
   }) async {
     final body = jsonEncode({'inviter_id': inviterId, 'member_ids': memberIds});
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/invite'),
       headers: await _headers(json: true, chatDeviceId: inviterId),
       body: body,
@@ -1057,7 +1394,7 @@ class ChatService {
     required String deviceId,
   }) async {
     final body = jsonEncode({'device_id': deviceId});
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/leave'),
       headers: await _headers(json: true, chatDeviceId: deviceId),
       body: body,
@@ -1078,7 +1415,7 @@ class ChatService {
       'target_id': targetId,
       'role': role,
     });
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/set_role'),
       headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
@@ -1097,7 +1434,7 @@ class ChatService {
       'device_id': deviceId,
       'limit': '${limit.clamp(1, 200)}',
     };
-    final r = await _http.get(
+    final r = await _get(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/keys/events', qp),
       headers: await _headers(chatDeviceId: deviceId),
     );
@@ -1123,7 +1460,7 @@ class ChatService {
       'actor_id': actorId,
       if (keyFp != null && keyFp.isNotEmpty) 'key_fp': keyFp,
     });
-    final r = await _http.post(
+    final r = await _post(
       _uri('/chat/groups/${Uri.encodeComponent(groupId)}/keys/rotate'),
       headers: await _headers(json: true, chatDeviceId: actorId),
       body: body,
@@ -1243,6 +1580,9 @@ class ChatService {
       List<int>.generate(24, (_) => rnd.nextInt(256)),
     );
     if (sealed && sessionKey != null) {
+      if (sessionKey.length != 32) {
+        throw StateError('session key invalid');
+      }
       final box = x25519.SecretBox(sessionKey);
       final cipher = box.encrypt(
         Uint8List.fromList(utf8.encode(plain)),
@@ -1253,8 +1593,16 @@ class ChatService {
         base64Encode(cipher.cipherText.asTypedList),
       );
     }
-    final sk = x25519.PrivateKey(base64Decode(me.privateKeyB64));
-    final pkPeer = x25519.PublicKey(base64Decode(peer.publicKeyB64));
+    final skRaw = base64Decode(me.privateKeyB64);
+    if (skRaw.length != 32) {
+      throw StateError('identity private key invalid');
+    }
+    final pkRaw = base64Decode(peer.publicKeyB64);
+    if (pkRaw.length != 32) {
+      throw StateError('peer identity key invalid');
+    }
+    final sk = x25519.PrivateKey(skRaw);
+    final pkPeer = x25519.PublicKey(pkRaw);
     final box = x25519.Box(
       myPrivateKey: sk,
       theirPublicKey: pkPeer,
@@ -1301,7 +1649,11 @@ class ChatService {
         if (ch is WebSocketChannel) {
           return ch;
         }
-      } catch (_) {}
+      } catch (_) {
+        // On non-web platforms we expect explicit header support; fail closed
+        // instead of silently retrying without auth/session headers.
+        if (!kIsWeb) rethrow;
+      }
     }
     // Fail closed: never fall back to putting authentication material into the URL.
     return WebSocketChannel.connect(wsUri);
@@ -1498,6 +1850,46 @@ class ChatLocalStore {
       return;
     }
     await sp.setString(_contactsKey, enc);
+  }
+
+  Future<void> upsertContact(ChatContact incoming) async {
+    final pid = incoming.id.trim();
+    if (pid.isEmpty) return;
+
+    final contacts = await loadContacts();
+    final idx = contacts.indexWhere((c) => c.id == pid);
+    if (idx == -1) {
+      await saveContacts(<ChatContact>[...contacts, incoming]);
+      return;
+    }
+
+    final existing = contacts[idx];
+    final merged = ChatContact(
+      id: existing.id,
+      publicKeyB64: incoming.publicKeyB64.trim().isNotEmpty
+          ? incoming.publicKeyB64
+          : existing.publicKeyB64,
+      fingerprint: incoming.fingerprint.trim().isNotEmpty
+          ? incoming.fingerprint
+          : existing.fingerprint,
+      name: (incoming.name ?? '').trim().isNotEmpty
+          ? incoming.name
+          : existing.name,
+      verified: existing.verified,
+      verifiedAt: existing.verifiedAt,
+      starred: existing.starred,
+      pinned: existing.pinned,
+      disappearing: existing.disappearing,
+      disappearAfter: existing.disappearAfter,
+      archived: existing.archived,
+      hidden: existing.hidden,
+      blocked: existing.blocked,
+      blockedAt: existing.blockedAt,
+      muted: existing.muted,
+    );
+    final updated = List<ChatContact>.from(contacts);
+    updated[idx] = merged;
+    await saveContacts(updated);
   }
 
   Future<Map<String, String>> loadDrafts() async {
@@ -2044,13 +2436,22 @@ class ChatLocalStore {
   Future<Map<String, Map<String, Object>>> loadChains() async {
     final raw = await _secureRead(_chainMap);
     if (raw == null || raw.isEmpty) return {};
-    final decoded = (jsonDecode(raw) as Map<String, Object?>);
-    return decoded.map(
-      (k, v) => MapEntry(
-        k,
-        (v as Map<String, Object?>).map((k2, v2) => MapEntry(k2, v2 ?? '')),
-      ),
-    );
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      final out = <String, Map<String, Object>>{};
+      decoded.forEach((k, v) {
+        if (v is! Map) return;
+        final inner = <String, Object>{};
+        v.forEach((k2, v2) {
+          inner[k2.toString()] = v2 ?? '';
+        });
+        out[k.toString()] = inner;
+      });
+      return out;
+    } catch (_) {
+      return {};
+    }
   }
 
   Future<void> saveChain(String peerId, Map<String, Object> state) async {
@@ -2062,7 +2463,17 @@ class ChatLocalStore {
   Future<Map<String, Object>> loadRatchet(String peerId) async {
     final raw = await _secureRead('$_ratchetMap.$peerId');
     if (raw == null || raw.isEmpty) return {};
-    return jsonDecode(raw) as Map<String, Object>;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      final out = <String, Object>{};
+      decoded.forEach((k, v) {
+        out[k.toString()] = v ?? '';
+      });
+      return out;
+    } catch (_) {
+      return {};
+    }
   }
 
   Future<void> saveRatchet(String peerId, Map<String, Object> state) async {
@@ -2232,7 +2643,6 @@ class ChatLocalStore {
 
   FlutterSecureStorage _sec() => const FlutterSecureStorage(
         aOptions: AndroidOptions(
-          encryptedSharedPreferences: true,
           resetOnError: true,
           // prefer hardware-backed when available
           sharedPreferencesName: 'chat_secure_store',

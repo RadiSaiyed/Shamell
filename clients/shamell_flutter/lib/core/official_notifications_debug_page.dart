@@ -1,10 +1,15 @@
 import 'dart:convert';
 import 'http_error.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'l10n.dart';
+import 'safe_set_state.dart';
+
+const Duration _officialNotificationsDebugRequestTimeout =
+    Duration(seconds: 15);
 
 class OfficialNotificationsDebugPage extends StatefulWidget {
   final String baseUrl;
@@ -17,7 +22,8 @@ class OfficialNotificationsDebugPage extends StatefulWidget {
 }
 
 class _OfficialNotificationsDebugPageState
-    extends State<OfficialNotificationsDebugPage> {
+    extends State<OfficialNotificationsDebugPage>
+    with SafeSetStateMixin<OfficialNotificationsDebugPage> {
   bool _loading = true;
   String _error = '';
   List<_NotifRow> _rows = const <_NotifRow>[];
@@ -28,6 +34,17 @@ class _OfficialNotificationsDebugPageState
     _load();
   }
 
+  Future<Map<String, String>> _hdr() async {
+    final headers = <String, String>{};
+    try {
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) {
+        headers['cookie'] = cookie;
+      }
+    } catch (_) {}
+    return headers;
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -36,7 +53,9 @@ class _OfficialNotificationsDebugPageState
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts');
-      final r = await http.get(uri);
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialNotificationsDebugRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         setState(() {
           _error = sanitizeHttpError(

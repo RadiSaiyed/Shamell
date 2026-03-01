@@ -52,7 +52,8 @@ Map<String, Object> _snapshotPrefs(SharedPreferences sp, Set<String> keys) {
   return out;
 }
 
-Future<void> _restorePrefs(SharedPreferences sp, Map<String, Object> snapshot) async {
+Future<void> _restorePrefs(
+    SharedPreferences sp, Map<String, Object> snapshot) async {
   for (final e in snapshot.entries) {
     final k = e.key;
     final v = e.value;
@@ -74,26 +75,24 @@ Future<void> _restorePrefs(SharedPreferences sp, Map<String, Object> snapshot) a
 
 const FlutterSecureStorage _shamellSecureStore = FlutterSecureStorage(
   aOptions: AndroidOptions(
-    encryptedSharedPreferences: true,
     resetOnError: true,
     sharedPreferencesName: 'shamell_secure_store',
   ),
   iOptions:
       IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
-  mOptions:
-      MacOsOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
+  mOptions: MacOsOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device),
 );
 
 const FlutterSecureStorage _chatSecureStore = FlutterSecureStorage(
   aOptions: AndroidOptions(
-    encryptedSharedPreferences: true,
     resetOnError: true,
     sharedPreferencesName: 'chat_secure_store',
   ),
   iOptions:
       IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
-  mOptions:
-      MacOsOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
+  mOptions: MacOsOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device),
 );
 
 Future<void> _wipeSecureStoreAll(FlutterSecureStorage sec) async {
@@ -127,8 +126,9 @@ Future<void> wipeLocalAccountData({bool preserveDevicePrefs = true}) async {
   // 3) Clear SharedPreferences, preserving only device prefs.
   try {
     final sp = await SharedPreferences.getInstance();
-    final preserved =
-        preserveDevicePrefs ? _snapshotPrefs(sp, _kPreservePrefsKeys) : <String, Object>{};
+    final preserved = preserveDevicePrefs
+        ? _snapshotPrefs(sp, _kPreservePrefsKeys)
+        : <String, Object>{};
     await sp.clear();
     if (preserved.isNotEmpty) {
       await _restorePrefs(sp, preserved);

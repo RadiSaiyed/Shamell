@@ -14,10 +14,14 @@ String sanitizeHttpError({
     return isArabic ? 'العنصر غير موجود.' : 'Not found.';
   }
   if (statusCode == 429) {
-    return isArabic ? 'محاولات كثيرة. حاول لاحقًا.' : 'Too many requests. Try again later.';
+    return isArabic
+        ? 'محاولات كثيرة. حاول لاحقًا.'
+        : 'Too many requests. Try again later.';
   }
   if (statusCode >= 500) {
-    return isArabic ? 'خطأ في الخادم. حاول لاحقًا.' : 'Server error. Try again later.';
+    return isArabic
+        ? 'خطأ في الخادم. حاول لاحقًا.'
+        : 'Server error. Try again later.';
   }
 
   if (detail.contains('unauthorized') ||
@@ -53,8 +57,20 @@ String sanitizeExceptionForUi({
   if (text.contains('unauthorized') ||
       text.contains('forbidden') ||
       text.contains('internal auth required') ||
-      text.contains('auth session required')) {
+      text.contains('auth session required') ||
+      text.contains('authentication required') ||
+      text.contains('failed: 401') ||
+      text.contains('failed: 403')) {
     return isArabic ? 'تسجيل الدخول مطلوب.' : 'Sign-in required.';
+  }
+  if (text.contains('failed: 404') || text.contains('not found')) {
+    return isArabic ? 'العنصر غير موجود.' : 'Not found.';
+  }
+  if (text.contains('chat device not registered') ||
+      text.contains('failed: 409')) {
+    return isArabic
+        ? 'الجهاز غير مرتبط بالحساب بعد. أعد المحاولة.'
+        : 'This device is not linked to the account yet. Please try again.';
   }
   return isArabic
       ? (fallbackAr ?? 'تعذّر إكمال العملية.')

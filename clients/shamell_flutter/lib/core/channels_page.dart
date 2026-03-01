@@ -17,6 +17,7 @@ import 'mini_programs_my_page_insights.dart' show MiniProgramInsightChip;
 import 'shamell_ui.dart';
 import 'mini_program_runtime.dart';
 import 'http_error.dart';
+import 'safe_set_state.dart';
 
 Future<Map<String, String>> _hdrChannels({
   required String baseUrl,
@@ -67,7 +68,9 @@ class ChannelsPage extends StatefulWidget {
   State<ChannelsPage> createState() => _ChannelsPageState();
 }
 
-class _ChannelsPageState extends State<ChannelsPage> {
+class _ChannelsPageState extends State<ChannelsPage>
+    with SafeSetStateMixin<ChannelsPage> {
+  static const Duration _channelsRequestTimeout = Duration(seconds: 15);
   bool _loading = true;
   String _error = '';
   List<Map<String, dynamic>> _items = const <Map<String, dynamic>>[];
@@ -304,11 +307,14 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                           'live_url': liveUrl,
                                         };
                                       }
-                                      final resp = await http.post(
-                                        uri,
-                                        headers: await _hdrUpload(json: true),
-                                        body: jsonEncode(payload),
-                                      );
+                                      final resp = await http
+                                          .post(
+                                            uri,
+                                            headers:
+                                                await _hdrUpload(json: true),
+                                            body: jsonEncode(payload),
+                                          )
+                                          .timeout(_channelsRequestTimeout);
                                       if (resp.statusCode < 200 ||
                                           resp.statusCode >= 300) {
                                         final msg = sanitizeHttpError(
@@ -340,7 +346,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                     } catch (e) {
                                       setModalState(() {
                                         submitting = false;
-                                        error = sanitizeExceptionForUi(error: e);
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -386,7 +393,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
       }
       final uri = Uri.parse('${widget.baseUrl}/channels/feed')
           .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl))
+          .timeout(_channelsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -431,7 +440,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/view',
       );
-      await http.post(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
+      await http
+          .post(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl))
+          .timeout(_channelsRequestTimeout);
     } catch (_) {}
   }
 
@@ -441,11 +452,13 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/like',
       );
-      final r = await http.post(
-        uri,
-        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode(<String, dynamic>{}),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
+            body: jsonEncode(<String, dynamic>{}),
+          )
+          .timeout(_channelsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
@@ -472,11 +485,13 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/live/${Uri.encodeComponent(itemId)}/stop',
       );
-      final r = await http.post(
-        uri,
-        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode(<String, dynamic>{}),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
+            body: jsonEncode(<String, dynamic>{}),
+          )
+          .timeout(_channelsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -524,7 +539,10 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/accounts/${Uri.encodeComponent(accountId)}/$path',
       );
-      final r = await http.post(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true));
+      final r = await http
+          .post(uri,
+              headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true))
+          .timeout(_channelsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -571,7 +589,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
     final uri = Uri.parse(
       '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/comments',
     ).replace(queryParameters: const {'limit': '50'});
-    final r = await http.get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
+    final r = await http
+        .get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl))
+        .timeout(_channelsRequestTimeout);
     if (r.statusCode < 200 || r.statusCode >= 300) {
       return const <Map<String, dynamic>>[];
     }
@@ -779,13 +799,17 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                       final uri = Uri.parse(
                                         '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/comments',
                                       );
-                                      final r = await http.post(
-                                        uri,
-                                        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
-                                        body: jsonEncode(
-                                          <String, dynamic>{'text': text},
-                                        ),
-                                      );
+                                      final r = await http
+                                          .post(
+                                            uri,
+                                            headers: await _hdrChannels(
+                                                baseUrl: widget.baseUrl,
+                                                json: true),
+                                            body: jsonEncode(
+                                              <String, dynamic>{'text': text},
+                                            ),
+                                          )
+                                          .timeout(_channelsRequestTimeout);
                                       if (r.statusCode < 200 ||
                                           r.statusCode >= 300) {
                                         setModalState(() {
@@ -2481,7 +2505,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
         final uri = Uri.parse(
           '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/moments_stats',
         );
-        final r = await http.get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl));
+        final r = await http
+            .get(uri, headers: await _hdrChannels(baseUrl: widget.baseUrl))
+            .timeout(_channelsRequestTimeout);
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           if (decoded is Map) {

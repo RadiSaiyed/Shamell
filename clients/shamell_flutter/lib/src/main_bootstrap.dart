@@ -204,63 +204,6 @@ class _SuperadminChip extends StatelessWidget {
   }
 }
 
-class _DriverChip extends StatelessWidget {
-  final VoidCallback onTap;
-  final bool selected;
-  const _DriverChip({required this.onTap, this.selected = false});
-  @override
-  Widget build(BuildContext context) {
-    final l = L10n.of(context);
-    final theme = Theme.of(context);
-    final label = l.isArabic ? 'سائق' : 'Driver';
-    final icon = Icons.badge_outlined;
-    final bg = selected
-        ? Tokens.colorBus.withValues(alpha: .18)
-        : theme.colorScheme.surface.withValues(alpha: .9);
-    final fg =
-        theme.brightness == Brightness.dark ? Colors.white : Colors.black87;
-    return Expanded(
-      child: Semantics(
-        button: true,
-        label: label,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(999),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: bg,
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(
-                color: selected ? Tokens.colorBus : Colors.white24,
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 16, color: fg),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    label,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: fg,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 bool _isInDndWindow({
   required DateTime now,
   required int startMinutes,
@@ -296,7 +239,7 @@ Future<String> _loadStoredBaseUrl() async {
   } catch (_) {}
   return const String.fromEnvironment(
     'BASE_URL',
-    defaultValue: 'http://localhost:8080',
+    defaultValue: 'https://api.shamell.online',
   );
 }
 
@@ -441,7 +384,10 @@ final GlobalKey<NavigatorState> _rootNavKey = GlobalKey<NavigatorState>();
 
 Future<void> _initPush() async {
   if (!_isPushSupportedPlatform()) {
-    debugPrint('PUSH_INIT_SKIP: unsupported platform');
+    assert(() {
+      debugPrint('PUSH_INIT_SKIP: unsupported platform');
+      return true;
+    }());
     return;
   }
   try {
@@ -463,10 +409,12 @@ Future<void> _initPush() async {
         FirebaseMessaging.onMessageOpenedApp.listen((message) {
           try {
             final data = message.data;
-            final rawType = (data['type'] ?? '').toString().trim().toLowerCase();
+            final rawType =
+                (data['type'] ?? '').toString().trim().toLowerCase();
             if (rawType != 'chat_wakeup') return;
             // Push is wakeup-only: never deep-link to specific content from remote payloads.
-            unawaited(_handleNotificationPayload(_chatNotificationPayloadUri()));
+            unawaited(
+                _handleNotificationPayload(_chatNotificationPayloadUri()));
           } catch (_) {}
         });
       } catch (_) {}
@@ -502,7 +450,8 @@ Future<void> launchWithSession(Uri uri) async {
           // session bridging for localhost dev to avoid leaking bearer tokens
           // to JS in production WebViews.
           final host = parsed.host.toLowerCase();
-          final isLocal = host == 'localhost' || host == '127.0.0.1' || host == '::1';
+          final isLocal =
+              host == 'localhost' || host == '127.0.0.1' || host == '::1';
           injectSessionForSameOrigin = !kReleaseMode && isLocal;
         }
       }
@@ -534,31 +483,64 @@ Future<void> launchWithSession(Uri uri) async {
   await launchUrl(uri);
 }
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await _initPush();
-  // Offline background sync disabled
+Future<void> _runStartupTask(
+  String name,
+  Future<void> Function() task, {
+  Duration timeout = const Duration(seconds: 12),
+}) async {
   try {
+    await task().timeout(timeout);
+  } catch (e) {
+    assert(() {
+      debugPrint('STARTUP_TASK_FAIL[$name]: $e');
+      return true;
+    }());
+  }
+}
+
+Future<void> _runDeferredStartup() async {
+  await _runStartupTask('push_init', _initPush,
+      timeout: const Duration(seconds: 20));
+
+  await _runStartupTask('notification_init', () async {
     await NotificationService.initialize();
     await NotificationService.requestAndroidPermission();
     NotificationService.setOnTapHandler(_handleNotificationPayload);
     final payload = await NotificationService.getLaunchPayload();
-    if (payload != null && payload.trim().isNotEmpty) {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString(_kPendingNotificationPayload, payload.trim());
+    final trimmed = (payload ?? '').trim();
+    if (trimmed.isNotEmpty) {
+      try {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString(_kPendingNotificationPayload, trimmed);
+      } catch (_) {}
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_handleNotificationPayload(trimmed));
+      });
     }
-  } catch (_) {}
-  try {
+  });
+
+  await _runStartupTask('offline_queue_init', () async {
     await OfflineQueue.init();
-  } catch (_) {}
+  });
+
+  await _runStartupTask('ui_prefs_load', () async {
+    await loadUiPrefs();
+  }, timeout: const Duration(seconds: 6));
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   Perf.init();
-  await loadUiPrefs();
+
   runApp(
     MaterialApp(
       navigatorKey: _rootNavKey,
       home: const SuperApp(),
     ),
   );
+
+  // Never block first frame on startup integrations/plugins.
+  unawaited(_runDeferredStartup());
 }
 
 void showBackoff(BuildContext context, http.Response resp) {

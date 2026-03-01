@@ -20,6 +20,7 @@ import 'chat/shamell_chat_page.dart';
 import 'shamell_ui.dart';
 import 'shamell_moments_composer_page.dart';
 import 'shamell_photo_viewer_page.dart';
+import 'safe_set_state.dart';
 
 Future<Map<String, String>> _hdrMoments({
   required String baseUrl,
@@ -75,7 +76,9 @@ class MomentsPage extends StatefulWidget {
   State<MomentsPage> createState() => _MomentsPageState();
 }
 
-class _MomentsPageState extends State<MomentsPage> {
+class _MomentsPageState extends State<MomentsPage>
+    with SafeSetStateMixin<MomentsPage> {
+  static const Duration _momentsRequestTimeout = Duration(seconds: 15);
   final TextEditingController _postCtrl = TextEditingController();
   final TextEditingController _visibilityTagCtrl = TextEditingController();
   final GlobalKey _composerKey = GlobalKey();
@@ -684,7 +687,9 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl))
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       final list = <_MomentOfficialAccount>[];
@@ -721,7 +726,9 @@ class _MomentsPageState extends State<MomentsPage> {
   Future<void> _loadMyOfficialStats() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/official_moments_stats');
-      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl))
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
@@ -1028,7 +1035,8 @@ class _MomentsPageState extends State<MomentsPage> {
 
   Future<void> _loadMyMomentsPseudonym() async {
     try {
-      final tok = (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
+      final tok =
+          (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
       final pseudo = tok.isEmpty
           ? null
           : 'User ${crypto.sha1.convert(utf8.encode(tok)).toString().substring(0, 6)}';
@@ -1043,7 +1051,9 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/topics/trending')
           .replace(queryParameters: const {'limit': '8'});
-      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl))
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -1335,7 +1345,9 @@ class _MomentsPageState extends State<MomentsPage> {
         uri = Uri.parse('${widget.baseUrl}/moments/feed')
             .replace(queryParameters: qp);
       }
-      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl))
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode != 200) return;
       final body = r.body;
       if (body.isEmpty) return;
@@ -1383,7 +1395,9 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$postId/comments')
           .replace(queryParameters: const {'limit': '100'});
-      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
+      final r = await http
+          .get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl))
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return const [];
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -1434,11 +1448,13 @@ class _MomentsPageState extends State<MomentsPage> {
       if (replyToId != null && replyToId.trim().isNotEmpty) {
         payload['reply_to_id'] = replyToId;
       }
-      final r = await http.post(
-        uri,
-        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode(payload),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
+            body: jsonEncode(payload),
+          )
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return null;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return null;
@@ -1475,10 +1491,12 @@ class _MomentsPageState extends State<MomentsPage> {
       final uri = admin
           ? Uri.parse('${widget.baseUrl}/moments/admin/comments/$id')
           : Uri.parse('${widget.baseUrl}/moments/comments/$id');
-      final r = await http.delete(
-        uri,
-        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
-      );
+      final r = await http
+          .delete(
+            uri,
+            headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
+          )
+          .timeout(_momentsRequestTimeout);
       return r.statusCode >= 200 && r.statusCode < 300;
     } catch (_) {
       return false;
@@ -1523,7 +1541,10 @@ class _MomentsPageState extends State<MomentsPage> {
     if (id.isEmpty) return;
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$id/like');
-      await http.post(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true));
+      await http
+          .post(uri,
+              headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true))
+          .timeout(_momentsRequestTimeout);
     } catch (_) {}
   }
 
@@ -1559,7 +1580,10 @@ class _MomentsPageState extends State<MomentsPage> {
     if (id.isEmpty) return;
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$id/like');
-      await http.delete(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true));
+      await http
+          .delete(uri,
+              headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true))
+          .timeout(_momentsRequestTimeout);
     } catch (_) {}
   }
 
@@ -2113,11 +2137,13 @@ class _MomentsPageState extends State<MomentsPage> {
       if (loc.isNotEmpty) {
         payload['location_label'] = loc;
       }
-      final r = await http.post(
-        uri,
-        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode(payload),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
+            body: jsonEncode(payload),
+          )
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         try {
           final decoded = jsonDecode(r.body);
@@ -2265,11 +2291,13 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$postId');
       final payload = jsonEncode(<String, dynamic>{'visibility': next});
-      await http.patch(
-        uri,
-        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
-        body: payload,
-      );
+      await http
+          .patch(
+            uri,
+            headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
+            body: payload,
+          )
+          .timeout(_momentsRequestTimeout);
     } catch (_) {}
   }
 
@@ -2281,11 +2309,13 @@ class _MomentsPageState extends State<MomentsPage> {
       final payload = jsonEncode(<String, dynamic>{
         'reason': 'client_report',
       });
-      final r = await http.post(
-        uri,
-        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
-        body: payload,
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
+            body: payload,
+          )
+          .timeout(_momentsRequestTimeout);
       if (!mounted) return;
       final ok = r.statusCode >= 200 && r.statusCode < 300;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2521,7 +2551,8 @@ class _MomentsPageState extends State<MomentsPage> {
     final youLabel = l.isArabic ? 'أنت' : 'You';
     String? myPseudonym;
     try {
-      final tok = (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
+      final tok =
+          (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
       if (tok.isNotEmpty) {
         final hex = crypto.sha1.convert(utf8.encode(tok)).toString();
         if (hex.length >= 6) {
@@ -5815,7 +5846,10 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/official_accounts/$accountId/$endpoint');
-      final r = await http.post(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true));
+      final r = await http
+          .post(uri,
+              headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true))
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       setState(() {
         _officialAccounts[accountId] = _MomentOfficialAccount(
@@ -5857,11 +5891,13 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/moments/admin/posts/$postId/comment');
-      final r = await http.post(
-        uri,
-        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
-        body: jsonEncode(payload),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
+            body: jsonEncode(payload),
+          )
+          .timeout(_momentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return null;
       }

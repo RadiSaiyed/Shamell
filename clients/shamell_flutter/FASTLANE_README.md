@@ -17,6 +17,9 @@ Lanes (from `clients/shamell_flutter/ios`):
 Requirements:
 - App package configured as `online.shamell.app` (user flavor)
 - Play Console access (optional; only if you want automated uploads)
+- Release signing credentials via Gradle properties or env vars:
+  `SHAMELL_RELEASE_STORE_FILE`, `SHAMELL_RELEASE_STORE_PASSWORD`,
+  `SHAMELL_RELEASE_KEY_ALIAS`, `SHAMELL_RELEASE_KEY_PASSWORD`
 
 Lanes (from `clients/shamell_flutter/android`):
 - `bundle exec fastlane build` → `flutter build appbundle --release --flavor user`

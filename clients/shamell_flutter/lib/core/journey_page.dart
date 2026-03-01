@@ -10,6 +10,9 @@ import 'status_banner.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'mobility_history.dart' show MobilityHistoryPage;
+import 'safe_set_state.dart';
+
+const Duration _journeyRequestTimeout = Duration(seconds: 15);
 
 class JourneyPage extends StatefulWidget {
   final String baseUrl;
@@ -21,7 +24,8 @@ class JourneyPage extends StatefulWidget {
   State<JourneyPage> createState() => _JourneyPageState();
 }
 
-class _JourneyPageState extends State<JourneyPage> {
+class _JourneyPageState extends State<JourneyPage>
+    with SafeSetStateMixin<JourneyPage> {
   bool _loading = true;
   String _error = '';
   Map<String, dynamic> _home = {};
@@ -47,7 +51,7 @@ class _JourneyPageState extends State<JourneyPage> {
       final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       final r = await http.get(uri, headers: {
         if (cookie.isNotEmpty) 'cookie': cookie,
-      });
+      }).timeout(_journeyRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final home = j['home'];

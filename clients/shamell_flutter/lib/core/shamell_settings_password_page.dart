@@ -21,7 +21,6 @@ class _ShamellSettingsPasswordPageState
     extends State<ShamellSettingsPasswordPage> {
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(
-      encryptedSharedPreferences: true,
       resetOnError: true,
       sharedPreferencesName: 'shamell_secure_store',
     ),

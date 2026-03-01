@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../l10n.dart';
+import '../safe_set_state.dart';
 import '../shamell_ui.dart';
 
 class ShamellChatInfoPage extends StatefulWidget {
@@ -86,7 +87,8 @@ class ShamellChatInfoPage extends StatefulWidget {
   State<ShamellChatInfoPage> createState() => _ShamellChatInfoPageState();
 }
 
-class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
+class _ShamellChatInfoPageState extends State<ShamellChatInfoPage>
+    with SafeSetStateMixin<ShamellChatInfoPage> {
   bool _busy = false;
   late bool _closeFriend;
   late bool _muted;
@@ -112,16 +114,32 @@ class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
     _themeKey = widget.themeKey;
   }
 
-  Future<void> _runBusy(Future<void> Function() op) async {
-    if (_busy) return;
+  Future<bool> _runBusy(Future<void> Function() op) async {
+    if (_busy) return false;
+    var ok = true;
     setState(() => _busy = true);
     try {
       await op();
+    } catch (_) {
+      ok = false;
+      if (mounted) {
+        final l = L10n.of(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              l.isArabic
+                  ? 'تعذّر إكمال العملية.'
+                  : 'Could not complete action.',
+            ),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() => _busy = false);
       }
     }
+    return ok;
   }
 
   Future<void> _copyToClipboard(String text) async {
@@ -249,35 +267,51 @@ class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
   }
 
   Future<void> _toggleMuted(bool value) async {
+    final prev = _muted;
     final next = value;
     setState(() => _muted = next);
-    await _runBusy(() async {
+    final ok = await _runBusy(() async {
       await widget.onToggleMuted(next);
     });
+    if (!ok && mounted) {
+      setState(() => _muted = prev);
+    }
   }
 
   Future<void> _togglePinned(bool value) async {
+    final prev = _pinned;
     final next = value;
     setState(() => _pinned = next);
-    await _runBusy(() async {
+    final ok = await _runBusy(() async {
       await widget.onTogglePinned(next);
     });
+    if (!ok && mounted) {
+      setState(() => _pinned = prev);
+    }
   }
 
   Future<void> _toggleHidden(bool value) async {
+    final prev = _hidden;
     final next = value;
     setState(() => _hidden = next);
-    await _runBusy(() async {
+    final ok = await _runBusy(() async {
       await widget.onToggleHidden(next);
     });
+    if (!ok && mounted) {
+      setState(() => _hidden = prev);
+    }
   }
 
   Future<void> _toggleBlocked(bool value) async {
+    final prev = _blocked;
     final next = value;
     setState(() => _blocked = next);
-    await _runBusy(() async {
+    final ok = await _runBusy(() async {
       await widget.onToggleBlocked(next);
     });
+    if (!ok && mounted) {
+      setState(() => _blocked = prev);
+    }
   }
 
   Future<void> _openRemarksTags() async {
@@ -627,7 +661,9 @@ class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
                 ),
                 title: Text(l.isArabic ? 'التحقق' : 'Verification'),
                 subtitle: Text(
-                  _verified ? l.shamellTrustedFingerprint : l.shamellUnverifiedContact,
+                  _verified
+                      ? l.shamellTrustedFingerprint
+                      : l.shamellUnverifiedContact,
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontSize: 12,
                     color: _verified
@@ -652,13 +688,13 @@ class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontFamily: 'monospace',
                       letterSpacing: 0.5,
-                      color:
-                          theme.colorScheme.onSurface.withValues(alpha: .80),
+                      color: theme.colorScheme.onSurface.withValues(alpha: .80),
                     ),
                   ),
                   trailing: IconButton(
                     tooltip: l.isArabic ? 'نسخ' : 'Copy',
-                    onPressed: canTap ? () => _copyToClipboard(safetyRaw) : null,
+                    onPressed:
+                        canTap ? () => _copyToClipboard(safetyRaw) : null,
                     icon: const Icon(Icons.copy),
                   ),
                   onTap: canTap ? () => _copyToClipboard(safetyRaw) : null,
@@ -672,8 +708,7 @@ class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
                     peerFp,
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontFamily: 'monospace',
-                      color:
-                          theme.colorScheme.onSurface.withValues(alpha: .75),
+                      color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),
                   ),
                   trailing: IconButton(
@@ -691,8 +726,7 @@ class _ShamellChatInfoPageState extends State<ShamellChatInfoPage> {
                     myFp,
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontFamily: 'monospace',
-                      color:
-                          theme.colorScheme.onSurface.withValues(alpha: .75),
+                      color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),
                   ),
                   trailing: IconButton(
@@ -929,7 +963,8 @@ class _ShamellRemarksTagsPage extends StatefulWidget {
   });
 
   @override
-  State<_ShamellRemarksTagsPage> createState() => _ShamellRemarksTagsPageState();
+  State<_ShamellRemarksTagsPage> createState() =>
+      _ShamellRemarksTagsPageState();
 }
 
 class _ShamellRemarksTagsPageState extends State<_ShamellRemarksTagsPage> {

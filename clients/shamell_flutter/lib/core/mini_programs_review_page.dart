@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'l10n.dart';
+import 'safe_set_state.dart';
 
 class MiniProgramsReviewPage extends StatefulWidget {
   final String baseUrl;
@@ -16,7 +17,10 @@ class MiniProgramsReviewPage extends StatefulWidget {
   State<MiniProgramsReviewPage> createState() => _MiniProgramsReviewPageState();
 }
 
-class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
+class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage>
+    with SafeSetStateMixin<MiniProgramsReviewPage> {
+  static const Duration _miniProgramsReviewRequestTimeout =
+      Duration(seconds: 15);
   bool _loading = true;
   String _error = '';
   List<Map<String, dynamic>> _programs = const <Map<String, dynamic>>[];
@@ -45,7 +49,9 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs');
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_miniProgramsReviewRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         setState(() {
           _error = 'HTTP ${r.statusCode}';
@@ -86,14 +92,16 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
       final body = <String, dynamic>{};
       if (status != null) body['status'] = status;
       if (reviewStatus != null) body['review_status'] = reviewStatus;
-      final r = await http.patch(
-        uri,
-        headers: {
-          ...(await _hdr()),
-          'content-type': 'application/json',
-        },
-        body: jsonEncode(body),
-      );
+      final r = await http
+          .patch(
+            uri,
+            headers: {
+              ...(await _hdr()),
+              'content-type': 'application/json',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(_miniProgramsReviewRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         final msg = sanitizeHttpError(
           statusCode: r.statusCode,

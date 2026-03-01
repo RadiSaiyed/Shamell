@@ -6,6 +6,7 @@ import '../../core/design_tokens.dart';
 import '../../core/l10n.dart';
 import '../../core/format.dart' show fmtCents;
 import '../../core/http_error.dart';
+import '../../core/safe_set_state.dart';
 import '../../core/superapp_api.dart';
 import 'payments_shell.dart';
 import '../../core/history_page.dart';
@@ -21,7 +22,8 @@ class PaymentsMultiLevelPage extends StatefulWidget {
   State<PaymentsMultiLevelPage> createState() => _PaymentsMultiLevelPageState();
 }
 
-class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage> {
+class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage>
+    with SafeSetStateMixin<PaymentsMultiLevelPage> {
   bool _loading = true;
   String _error = '';
 
