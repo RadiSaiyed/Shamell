@@ -61,8 +61,19 @@ jobs:
           security list-keychains -d user -s "$keychain"
           security default-keychain -s "$keychain"
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          profile_uuid="$(security cms -D -i "$IOS_PROFILE_PATH" | /usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin)"
-          cp "$IOS_PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+          fallback_profile="$HOME/Library/MobileDevice/Provisioning Profiles/shamell.mobileprovision"
+          cp "$IOS_PROFILE_PATH" "$fallback_profile"
+          profile_plist="$RUNNER_TEMP/shamell-profile.plist"
+          if security cms -D -i "$IOS_PROFILE_PATH" > "$profile_plist" 2>/dev/null; then
+            profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist" 2>/dev/null || true)"
+            if [ -n "${profile_uuid:-}" ]; then
+              cp "$IOS_PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+            else
+              echo "Could not extract provisioning profile UUID; using fallback profile filename."
+            fi
+          else
+            echo "Provisioning profile is not CMS-decodable; using fallback profile filename."
+          fi
           security find-identity -v -p codesigning "$keychain"
 
       - name: iOS build (signed IPA)

@@ -50,15 +50,20 @@ webrtc_minor_patch="${webrtc_version#*.}"
 webrtc_minor="${webrtc_minor_patch%%.*}"
 webrtc_patch="${webrtc_version##*.}"
 
-# Known blocker (2026-03-01): flutter_webrtc <= 1.3.1 ships an Android
-# buildscript pinned to old Kotlin/AGP internals and fails under KGP >= 2.1.
-if (( kgp_major > 2 || (kgp_major == 2 && kgp_minor >= 1) )); then
-  if (( webrtc_major < 1 )) || (( webrtc_major == 1 && webrtc_minor < 3 )) || \
-     (( webrtc_major == 1 && webrtc_minor == 3 && webrtc_patch <= 1 )); then
-    echo "[FAIL] KGP $kgp_version is incompatible with flutter_webrtc $webrtc_version" >&2
-    echo "       Action: keep KGP at 2.0.x or upgrade flutter_webrtc beyond 1.3.1 first." >&2
-    exit 1
-  fi
+# Baseline gate (2026-03-01): current Android plugin set resolves Kotlin stdlib
+# metadata 2.2.x; KGP below 2.2 fails in release builds.
+if (( kgp_major < 2 )) || (( kgp_major == 2 && kgp_minor < 2 )); then
+  echo "[FAIL] KGP $kgp_version is too old for current Flutter Android plugin set" >&2
+  echo "       Action: use KGP >= 2.2.x (current baseline: 2.2.21)." >&2
+  exit 1
+fi
+
+# Guard minimum flutter_webrtc we have validated in CI with modern KGP.
+if (( webrtc_major < 1 )) || (( webrtc_major == 1 && webrtc_minor < 3 )) || \
+   (( webrtc_major == 1 && webrtc_minor == 3 && webrtc_patch < 1 )); then
+  echo "[FAIL] flutter_webrtc $webrtc_version is below supported floor 1.3.1" >&2
+  echo "       Action: upgrade flutter_webrtc to >=1.3.1." >&2
+  exit 1
 fi
 
 echo "[OK]   Kotlin/flutter_webrtc compatibility check passed (KGP=$kgp_version, flutter_webrtc=$webrtc_version)"

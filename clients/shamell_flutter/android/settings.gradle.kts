@@ -62,8 +62,8 @@ dependencyResolutionManagement {
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.9.1" apply false
-    // Keep KGP on 2.0.x until flutter_webrtc supports KGP >= 2.1 reliably.
-    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+    // Keep KGP aligned with modern Flutter Android plugin transitive metadata.
+    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
     id("com.google.gms.google-services") version "4.4.2" apply false
 }
 
