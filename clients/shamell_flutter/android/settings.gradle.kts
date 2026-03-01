@@ -35,7 +35,9 @@ pluginManagement {
 // Ensure all builds (including included Flutter gradle plugin project) use these repos
 import org.gradle.api.initialization.resolve.RepositoriesMode
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    // Many third-party Flutter Android plugins still inject project-level
+    // repositories; prefer project repos to avoid build-log warning floods.
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         google()
         mavenCentral()
@@ -59,8 +61,9 @@ dependencyResolutionManagement {
 
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
-    id("com.android.application") version "8.7.2" apply false
-    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+    id("com.android.application") version "8.9.1" apply false
+    // Keep KGP on 2.0.x until flutter_webrtc supports KGP >= 2.1 reliably.
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
     id("com.google.gms.google-services") version "4.4.2" apply false
 }
 

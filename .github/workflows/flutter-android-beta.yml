@@ -1,20 +1,69 @@
 name: Flutter Android Beta (Build)
 
 'on':
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      require_production_signing:
+        description: Require production signing secrets and fail if missing
+        required: false
+        type: boolean
+        default: true
+      allow_debug_release_signing:
+        description: Allow debug signing for non-production test artifacts
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   android-beta:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      REQUIRE_PRODUCTION_SIGNING: ${{ inputs.require_production_signing && 'true' || 'false' }}
+      SHAMELL_ALLOW_DEBUG_RELEASE_SIGNING: ${{ inputs.allow_debug_release_signing && 'true' || 'false' }}
+      SHAMELL_RELEASE_STORE_BASE64: ${{ secrets.SHAMELL_RELEASE_STORE_BASE64 }}
+      SHAMELL_RELEASE_STORE_PASSWORD: ${{ secrets.SHAMELL_RELEASE_STORE_PASSWORD }}
+      SHAMELL_RELEASE_KEY_ALIAS: ${{ secrets.SHAMELL_RELEASE_KEY_ALIAS }}
+      SHAMELL_RELEASE_KEY_PASSWORD: ${{ secrets.SHAMELL_RELEASE_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - name: Install Java 17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk
+          java -version
+
+      - name: Verify Android signing environment
+        run: ./scripts/check_android_release_signing_env.sh
+
+      - name: Prepare release keystore from secret (if needed)
+        run: |
+          set -euo pipefail
+          if [ -n "${SHAMELL_RELEASE_STORE_FILE:-}" ]; then
+            echo "SHAMELL_RELEASE_STORE_FILE already set; skipping decode."
+            exit 0
+          fi
+          if [ -z "${SHAMELL_RELEASE_STORE_BASE64:-}" ]; then
+            if [ "${REQUIRE_PRODUCTION_SIGNING}" = "true" ]; then
+              echo "::error::Production signing is required but SHAMELL_RELEASE_STORE_BASE64 is missing."
+              exit 1
+            fi
+            echo "No SHAMELL_RELEASE_STORE_BASE64 secret configured; relying on debug-signing override."
+            exit 0
+          fi
+          keystore_path="$RUNNER_TEMP/shamell-release.keystore"
+          printf '%s' "$SHAMELL_RELEASE_STORE_BASE64" | base64 --decode > "$keystore_path"
+          echo "SHAMELL_RELEASE_STORE_FILE=$keystore_path" >> "$GITHUB_ENV"
+
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
@@ -22,7 +71,7 @@ jobs:
 
       - name: Build appbundle
         working-directory: clients/shamell_flutter
-        run: flutter build appbundle --release --flavor user
+        run: flutter build appbundle --release --flavor user --no-pub
 
       - name: Resolve built AAB path
         working-directory: clients/shamell_flutter
@@ -33,6 +82,12 @@ jobs:
             exit 1
           fi
           echo "AAB_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${AAB_REL_PATH}" >> "$GITHUB_ENV"
+
+      - name: Verify AAB signature
+        run: |
+          set -euo pipefail
+          jarsigner -verify -verbose -certs "${AAB_PATH}" >/dev/null
+          echo "AAB signature verified."
 
       - name: Upload Android appbundle artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

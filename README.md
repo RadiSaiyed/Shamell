@@ -45,6 +45,12 @@ This runs:
   - `scripts/check_frontend_error_sanitization.sh`
   - `scripts/check_no_secrets_in_urls.sh`
 
+## Mobile release runbooks
+- Signed mobile release CI verification:
+  - `docs/release/mobile-signed-release-ci-runbook.md`
+- Android Kotlin/plugin upgrade path (`flutter_webrtc`):
+  - `docs/release/kotlin-plugin-upgrade-path.md`
+
 ## Production / Hetzner
 Use `ops/pi/docker-compose.postgres.yml` (Postgres is mandatory in production):
 

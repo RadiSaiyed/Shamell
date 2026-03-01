@@ -200,9 +200,37 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_image_digest_pinning.sh
 
+      - name: Guard Rust reqwest client timeouts
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_rust_http_client_timeouts.sh
+
+      - name: Guard Rust runtime panic-prone calls
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_runtime_panics.sh
+
       - name: Guard frontend UI error sanitization
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_frontend_error_sanitization.sh
+
+      - name: Guard Flutter HTTP timeout usage
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_flutter_http_timeouts.sh
+
+      - name: Guard no raw debug logs in Flutter lib
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_raw_debug_logs.sh
+
+      - name: Guard Flutter CI version pinning
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_flutter_ci_version_pinning.sh
+
+      - name: Guard Kotlin/flutter_webrtc compatibility
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_kotlin_webrtc_compat.sh
+
+      - name: Guard no dev-only plugin registrations in Android runtime
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_dev_plugin_registrations.sh
 
       - name: Guard no secrets in URLs (query strings)
         if: steps.detect_rust.outputs.present == 'true'
@@ -226,19 +254,25 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
         run: flutter pub get
 
-      - name: Flutter smoke test
-        working-directory: clients/shamell_flutter
-        run: flutter test test/ratchet_kdf_test.dart
+      - name: Guard Flutter record platform compatibility
+        run: ./scripts/check_flutter_record_platform_compat.sh
 
-      - name: Flutter security hardening tests
+      - name: Guard iOS flutter_webrtc Pod lock sync
+        run: ./scripts/check_ios_webrtc_pod_lock_sync.sh
+
+      - name: Flutter analyze
         working-directory: clients/shamell_flutter
-        run: flutter test test/chat_security_hardening_test.dart
+        run: flutter analyze
+
+      - name: Flutter test suite
+        working-directory: clients/shamell_flutter
+        run: flutter test
 
   flutter-macos-smoke:
     runs-on: macos-latest
@@ -250,7 +284,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Enable macOS desktop
         run: flutter config --enable-macos-desktop
@@ -265,7 +299,7 @@ jobs:
 
       - name: Build macOS debug app
         working-directory: clients/shamell_flutter
-        run: flutter build macos --debug
+        run: flutter build macos --debug --no-pub
 
       - name: Runtime smoke log guard
         working-directory: clients/shamell_flutter

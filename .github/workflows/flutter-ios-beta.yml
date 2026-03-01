@@ -1,14 +1,33 @@
 name: Flutter iOS Beta (TestFlight)
 
 'on':
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      require_production_signing:
+        description: Require production signing secrets and fail if missing
+        required: false
+        type: boolean
+        default: true
+      upload_testflight:
+        description: Upload signed IPA to TestFlight
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 jobs:
   ios-beta:
     runs-on: macos-latest
     timeout-minutes: 60
     env:
-      HAS_APPSTORE_CREDENTIALS: "false"
+      REQUIRE_PRODUCTION_SIGNING: ${{ inputs.require_production_signing && 'true' || 'false' }}
+      REQUIRE_TESTFLIGHT_UPLOAD: ${{ inputs.upload_testflight && 'true' || 'false' }}
+      IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+      IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_API_KEY_JSON: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON }}
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -16,46 +35,101 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
         run: flutter pub get
 
-      - name: iOS build (no codesign)
+      - name: Verify iOS signing environment
+        run: ./scripts/check_ios_release_signing_env.sh
+
+      - name: Install iOS signing assets
+        if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/shamell-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 20)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$IOS_CERT_PATH" \
+            -k "$keychain" \
+            -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          profile_uuid="$(security cms -D -i "$IOS_PROFILE_PATH" | /usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin)"
+          cp "$IOS_PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+          security find-identity -v -p codesigning "$keychain"
+
+      - name: iOS build (signed IPA)
+        if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
         working-directory: clients/shamell_flutter
-        run: flutter build ios --release --no-codesign
+        run: flutter build ipa --release --export-method app-store --no-pub
+
+      - name: iOS build (no codesign fallback)
+        if: ${{ env.REQUIRE_PRODUCTION_SIGNING != 'true' }}
+        working-directory: clients/shamell_flutter
+        run: flutter build ios --release --no-codesign --no-pub
+
+      - name: Resolve built IPA path
+        if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
+        working-directory: clients/shamell_flutter
+        run: |
+          IPA_REL_PATH="$(find build/ios/ipa -type f -name '*.ipa' | head -n 1)"
+          if [ -z "${IPA_REL_PATH}" ]; then
+            echo "::error::No signed IPA found under build/ios/ipa"
+            exit 1
+          fi
+          echo "IPA_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${IPA_REL_PATH}" >> "$GITHUB_ENV"
+
+      - name: Verify IPA code signature
+        if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          unzip -q "$IPA_PATH" -d "$workdir"
+          codesign -dv --verbose=4 "$workdir/Payload/Runner.app"
+
+      - name: Upload signed iOS IPA artifact
+        if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-ios-release-ipa
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
 
       - name: Detect App Store credentials
-        env:
-          APP_STORE_CONNECT_API_KEY_JSON: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON }}
+        if: ${{ env.REQUIRE_TESTFLIGHT_UPLOAD == 'true' }}
         run: |
           if [ -n "${APP_STORE_CONNECT_API_KEY_JSON:-}" ]; then
             echo "HAS_APPSTORE_CREDENTIALS=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_APPSTORE_CREDENTIALS=false" >> "$GITHUB_ENV"
           fi
 
       - name: Install fastlane
-        if: ${{ env.HAS_APPSTORE_CREDENTIALS == 'true' }}
+        if: ${{ env.REQUIRE_TESTFLIGHT_UPLOAD == 'true' && env.HAS_APPSTORE_CREDENTIALS == 'true' }}
         run: sudo gem install fastlane
 
       - name: Write App Store Connect API key
-        if: ${{ env.HAS_APPSTORE_CREDENTIALS == 'true' }}
+        if: ${{ env.REQUIRE_TESTFLIGHT_UPLOAD == 'true' && env.HAS_APPSTORE_CREDENTIALS == 'true' }}
         working-directory: clients/shamell_flutter/ios
-        env:
-          APP_STORE_CONNECT_API_KEY_JSON: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON }}
         run: |
           printf '%s' "${APP_STORE_CONNECT_API_KEY_JSON}" > appstore_api_key.json
 
       - name: Fastlane beta (TestFlight)
-        if: ${{ env.HAS_APPSTORE_CREDENTIALS == 'true' }}
+        if: ${{ env.REQUIRE_TESTFLIGHT_UPLOAD == 'true' && env.HAS_APPSTORE_CREDENTIALS == 'true' }}
         working-directory: clients/shamell_flutter/ios
         env:
           APP_STORE_CONNECT_API_KEY_PATH: appstore_api_key.json
         run: |
-          fastlane build
           fastlane beta
 
       - name: Skip note (credentials missing)
-        if: ${{ env.HAS_APPSTORE_CREDENTIALS != 'true' }}
+        if: ${{ env.REQUIRE_TESTFLIGHT_UPLOAD == 'true' && env.HAS_APPSTORE_CREDENTIALS != 'true' }}
         run: |
           echo "Skipping TestFlight upload: APP_STORE_CONNECT_API_KEY_JSON is not configured."
