@@ -1,5 +1,6 @@
 import com.android.build.gradle.BaseExtension
 import org.gradle.api.tasks.compile.JavaCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 allprojects {
@@ -71,7 +72,8 @@ subprojects {
                     ?: fallbackJavaTask?.targetCompatibility
                 )?.trim()
             if (!javaTarget.isNullOrEmpty()) {
-                kotlinOptions.jvmTarget = javaTarget
+                runCatching { JvmTarget.fromTarget(javaTarget) }
+                    .onSuccess { compilerOptions.jvmTarget.set(it) }
             }
         }
     }
