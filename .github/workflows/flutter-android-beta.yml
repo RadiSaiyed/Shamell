@@ -69,6 +69,16 @@ jobs:
         working-directory: clients/shamell_flutter
         run: flutter pub get
 
+      - name: Android SDK preflight
+        run: |
+          set -euo pipefail
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            echo "sdkmanager not found on PATH; skipping explicit SDK preinstall."
+            exit 0
+          fi
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-33" "cmake;3.22.1" >/dev/null
+
       - name: Build appbundle
         working-directory: clients/shamell_flutter
         run: flutter build appbundle --release --flavor user --no-pub

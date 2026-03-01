@@ -79,23 +79,24 @@ jobs:
       - name: iOS build (signed IPA)
         if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
         working-directory: clients/shamell_flutter
-        run: flutter build ipa --release --export-method app-store --no-pub
+        run: |
+          set -euo pipefail
+          flutter build ipa --release --export-method app-store --no-pub
+          IPA_REL_PATH="$(find build/ios/ipa -type f -name '*.ipa' | head -n 1 || true)"
+          if [ -z "${IPA_REL_PATH}" ]; then
+            echo "::error::Signed IPA export missing after flutter build ipa. Check iOS distribution certificate/profile and Apple account alignment."
+            echo "::notice::Codesigning identities visible to the runner:"
+            security find-identity -v -p codesigning || true
+            echo "::notice::Provisioning profiles installed on runner:"
+            ls -1 "$HOME/Library/MobileDevice/Provisioning Profiles" || true
+            exit 1
+          fi
+          echo "IPA_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${IPA_REL_PATH}" >> "$GITHUB_ENV"
 
       - name: iOS build (no codesign fallback)
         if: ${{ env.REQUIRE_PRODUCTION_SIGNING != 'true' }}
         working-directory: clients/shamell_flutter
         run: flutter build ios --release --no-codesign --no-pub
-
-      - name: Resolve built IPA path
-        if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
-        working-directory: clients/shamell_flutter
-        run: |
-          IPA_REL_PATH="$(find build/ios/ipa -type f -name '*.ipa' | head -n 1)"
-          if [ -z "${IPA_REL_PATH}" ]; then
-            echo "::error::No signed IPA found under build/ios/ipa"
-            exit 1
-          fi
-          echo "IPA_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${IPA_REL_PATH}" >> "$GITHUB_ENV"
 
       - name: Verify IPA code signature
         if: ${{ env.REQUIRE_PRODUCTION_SIGNING == 'true' }}
