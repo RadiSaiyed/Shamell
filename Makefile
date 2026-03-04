@@ -28,7 +28,19 @@ audit:
 		echo "  cargo install cargo-audit --locked --version 0.22.1"; \
 		exit 1; \
 	}
-	cargo audit -D warnings
+	@attempt=1; max_attempts=3; \
+	while true; do \
+		echo "cargo audit attempt $$attempt/$$max_attempts"; \
+		if CARGO_NET_RETRY=5 CARGO_HTTP_TIMEOUT=120 cargo audit -D warnings; then \
+			break; \
+		fi; \
+		if [ $$attempt -ge $$max_attempts ]; then \
+			echo "cargo audit failed after $$max_attempts attempts"; \
+			exit 1; \
+		fi; \
+		attempt=$$((attempt + 1)); \
+		sleep 2; \
+	done
 
 deny:
 	@command -v cargo-deny >/dev/null 2>&1 || { \
@@ -46,6 +58,7 @@ guards:
 	./scripts/check_deploy_env_invariants.sh
 	./scripts/check_frontend_error_sanitization.sh
 	./scripts/check_no_secrets_in_urls.sh
+	./scripts/v2/check_v2_foundation.sh
 
 check: fmt clippy test audit deny guards
 
