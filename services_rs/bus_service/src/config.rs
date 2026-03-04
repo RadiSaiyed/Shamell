@@ -1,31 +1,20 @@
-use regex::Regex;
 use shamell_common::secret_policy;
 use std::env;
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub env_name: String,
-    pub env_lower: String,
 
     pub host: String,
     pub port: u16,
     pub max_body_bytes: usize,
 
-    pub db_url: String,
-    pub db_schema: Option<String>,
-
-    pub ticket_secret: String,
-
     pub require_internal_secret: bool,
     pub internal_secret: Option<String>,
     pub internal_allowed_callers: Vec<String>,
-    pub internal_service_id: String,
 
     pub allowed_hosts: Vec<String>,
     pub allowed_origins: Vec<String>,
-
-    pub payments_base_url: Option<String>,
-    pub bus_payments_internal_secret: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -54,29 +43,6 @@ fn parse_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn normalize_db_url(raw: &str) -> String {
-    // Accept SQLAlchemy-style URLs like "postgresql+psycopg://..." by dropping
-    // the "+driver" portion.
-    if let Some(colon) = raw.find(':') {
-        let (scheme, rest) = raw.split_at(colon);
-        if let Some(plus) = scheme.find('+') {
-            return format!("{}{}", &scheme[..plus], rest);
-        }
-    }
-    raw.to_string()
-}
-
-fn validate_postgres_url(url: &str) -> Result<(), String> {
-    let scheme = url
-        .split_once(':')
-        .map(|(s, _)| s.trim().to_lowercase())
-        .unwrap_or_default();
-    match scheme.as_str() {
-        "postgres" | "postgresql" => Ok(()),
-        _ => Err("BUS_DB_URL (or DB_URL) must be a postgres URL".to_string()),
-    }
-}
-
 fn parse_required_bool_like(raw: &str) -> Option<bool> {
     let v = raw.trim().to_lowercase();
     if v.is_empty() {
@@ -99,29 +65,7 @@ impl Config {
             .parse()
             .map_err(|_| "APP_PORT must be a valid u16".to_string())?;
 
-        let db_raw = env_opt("BUS_DB_URL")
-            .or_else(|| env_opt("DB_URL"))
-            .unwrap_or_else(|| "postgresql://shamell:shamell@db:5432/shamell_bus".to_string());
-        let db_url = normalize_db_url(&db_raw);
-        validate_postgres_url(&db_url)?;
-
-        let db_schema = env_opt("DB_SCHEMA");
-        if let Some(s) = &db_schema {
-            let re = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").map_err(|e| e.to_string())?;
-            if !re.is_match(s) {
-                return Err("DB_SCHEMA must match ^[A-Za-z_][A-Za-z0-9_]*$".to_string());
-            }
-        }
-
         let prod_like = matches!(env_lower.as_str(), "prod" | "production" | "staging");
-
-        let ticket_secret = env_or("BUS_TICKET_SECRET", "change-me-bus-ticket");
-        secret_policy::validate_secret_for_env(
-            &env_name,
-            "BUS_TICKET_SECRET",
-            Some(ticket_secret.as_str()),
-            !matches!(env_lower.as_str(), "dev" | "test"),
-        )?;
 
         let require_internal_secret = {
             let raw = env_or("BUS_REQUIRE_INTERNAL_SECRET", "");
@@ -161,18 +105,6 @@ impl Config {
                 "BUS_INTERNAL_ALLOWED_CALLERS must define at least one caller in prod/staging"
                     .to_string(),
             );
-        }
-
-        let internal_service_id = env_or("BUS_INTERNAL_SERVICE_ID", "bus")
-            .trim()
-            .to_ascii_lowercase();
-        if internal_service_id.is_empty()
-            || internal_service_id.len() > 64
-            || !internal_service_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        {
-            return Err("BUS_INTERNAL_SERVICE_ID must be 1..64 [A-Za-z0-9-_.]".to_string());
         }
 
         let mut allowed_hosts = parse_csv(&env_or("ALLOWED_HOSTS", ""));
@@ -227,41 +159,16 @@ impl Config {
             .map_err(|_| "BUS_MAX_BODY_BYTES must be an integer".to_string())?;
         let max_body_bytes = max_body_bytes.clamp(16 * 1024, 10 * 1024 * 1024);
 
-        let payments_base_url = env_opt("PAYMENTS_BASE_URL");
-        let bus_payments_internal_secret = env_opt("BUS_PAYMENTS_INTERNAL_SECRET");
-        if payments_base_url.is_some()
-            && !matches!(env_lower.as_str(), "dev" | "test")
-            && bus_payments_internal_secret.is_none()
-        {
-            return Err(
-                "BUS_PAYMENTS_INTERNAL_SECRET must be set when PAYMENTS_BASE_URL is configured"
-                    .to_string(),
-            );
-        }
-        secret_policy::validate_secret_for_env(
-            &env_name,
-            "BUS_PAYMENTS_INTERNAL_SECRET",
-            bus_payments_internal_secret.as_deref(),
-            false,
-        )?;
-
         Ok(Self {
             env_name,
-            env_lower,
             host,
             port,
             max_body_bytes,
-            db_url,
-            db_schema,
-            ticket_secret,
             require_internal_secret,
             internal_secret,
             internal_allowed_callers,
-            internal_service_id,
             allowed_hosts,
             allowed_origins,
-            payments_base_url,
-            bus_payments_internal_secret,
         })
     }
 }
@@ -307,72 +214,84 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_non_postgres_url() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        let _env = EnvGuard::new(&[
-            "ENV",
-            "BUS_DB_URL",
-            "DB_URL",
-            "BUS_TICKET_SECRET",
-            "BUS_REQUIRE_INTERNAL_SECRET",
-        ]);
-
-        env::set_var("BUS_DB_URL", "sqlite:////tmp/bus.db");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
-        // Avoid unrelated failures on internal secret.
-        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
-
-        let res = Config::from_env();
-        assert!(res.is_err());
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
-    fn prod_rejects_weak_ticket_secret() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        let _env = EnvGuard::new(&["ENV", "BUS_DB_URL", "DB_URL", "BUS_TICKET_SECRET"]);
+    fn dev_config_loads_without_prod_only_secrets() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+            "ALLOWED_HOSTS",
+            "BUS_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "dev");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
+        env::remove_var("BUS_INTERNAL_SECRET");
+
+        let cfg = Config::from_env().expect("dev config should load");
+        assert!(cfg.allowed_hosts.iter().any(|h| h == "localhost"));
+        assert!(cfg
+            .allowed_origins
+            .iter()
+            .any(|o| o == "http://localhost:5173"));
+    }
+
+    #[test]
+    fn prod_requires_internal_secret_value_when_enabled() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+        ]);
 
         env::set_var("ENV", "prod");
         env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
-        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "change-me-bus-ticket");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::remove_var("BUS_INTERNAL_SECRET");
 
         let res = Config::from_env();
         assert!(res.is_err());
+        let msg = res.err().unwrap_or_default();
+        assert!(msg.contains("BUS_INTERNAL_SECRET"));
     }
 
     #[test]
-    fn prod_requires_bus_payments_secret_when_payments_enabled() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    fn prod_ignores_removed_bus_payments_secret_env() {
+        let _g = env_lock();
         let _env = EnvGuard::new(&[
             "ENV",
-            "BUS_DB_URL",
-            "DB_URL",
-            "BUS_TICKET_SECRET",
             "BUS_REQUIRE_INTERNAL_SECRET",
             "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
             "PAYMENTS_BASE_URL",
             "BUS_PAYMENTS_INTERNAL_SECRET",
         ]);
 
         env::set_var("ENV", "prod");
         env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
-        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
-        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
         env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
         env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
         env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
         env::remove_var("BUS_PAYMENTS_INTERNAL_SECRET");
 
-        let res = Config::from_env();
-        assert!(res.is_err());
-        let msg = res.err().unwrap_or_default();
-        assert!(msg.contains("BUS_PAYMENTS_INTERNAL_SECRET"));
+        let cfg = Config::from_env()
+            .expect("BUS_PAYMENTS_INTERNAL_SECRET was removed from bus_service config contract");
+        assert!(cfg.require_internal_secret);
     }
 
     #[test]
     fn prod_rejects_wildcard_allowed_hosts() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _g = env_lock();
         let _env = EnvGuard::new(&[
             "ENV",
             "BUS_DB_URL",
@@ -397,7 +316,7 @@ mod tests {
 
     #[test]
     fn prod_requires_explicit_allowed_origins() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _g = env_lock();
         let _env = EnvGuard::new(&[
             "ENV",
             "BUS_DB_URL",
@@ -425,7 +344,7 @@ mod tests {
 
     #[test]
     fn prod_rejects_non_https_allowed_origins() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _g = env_lock();
         let _env = EnvGuard::new(&[
             "ENV",
             "BUS_DB_URL",
@@ -450,7 +369,7 @@ mod tests {
 
     #[test]
     fn prod_rejects_internal_secret_toggle_off() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _g = env_lock();
         let _env = EnvGuard::new(&[
             "ENV",
             "BUS_DB_URL",
@@ -471,7 +390,7 @@ mod tests {
 
     #[test]
     fn body_limit_is_clamped_to_safe_bounds() {
-        let _g = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _g = env_lock();
         let _env = EnvGuard::new(&[
             "ENV",
             "BUS_DB_URL",
