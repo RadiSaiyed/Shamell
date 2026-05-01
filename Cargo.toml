@@ -3,7 +3,15 @@ resolver = "2"
 members = [
   "crates_rs/shamell_common",
   "crates_rs/shamell_signal",
+  "services_rs/bff_gateway",
+]
+
+# WIP: chat_service and payments_service are intentionally excluded from the
+# workspace until their missing src/db.rs and src/handlers.rs modules are
+# materialised. Their lib.rs declares pub mod db; pub mod handlers; for which
+# no source files exist yet, so including them breaks `cargo build --workspace`
+# and any CI gate that touches the full graph. See each crate's README.md.
+exclude = [
   "services_rs/chat_service",
   "services_rs/payments_service",
-  "services_rs/bff_gateway",
 ]
