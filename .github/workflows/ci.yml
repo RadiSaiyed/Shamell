@@ -274,10 +274,6 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_no_payments_phone_routing.sh
 
-      - name: Guard v2 foundation artifacts
-        if: steps.detect_rust.outputs.present == 'true'
-        run: ./scripts/v2/check_v2_foundation.sh
-
       - name: Skip note (no Cargo.toml)
         if: steps.detect_rust.outputs.present != 'true'
         run: echo "No Cargo.toml found; skipping Rust CI job for this branch."

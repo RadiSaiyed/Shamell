@@ -1,7 +1,13 @@
 # Rewrite Program: 36-Point Checklist
 
 All items are implemented in this repository as architecture, process, or code foundation artifacts.
-Validation guard: `scripts/v2/check_v2_foundation.sh`.
+
+> **Status note:** the original validation guard
+> (`scripts/v2/check_v2_foundation.sh`) has been retired together with
+> the V2 Flutter spike under `experimental/flutter_v2_spike/`. The
+> checklist remains the source of truth for the V2 program scope; a
+> new automated guard will be reintroduced when V2 implementation
+> resumes against a stable target tree.
 
 ## Product scope and priorities (1-6)
 - [x] 1. Three core flows defined (`auth`, `chat`, `payments`).

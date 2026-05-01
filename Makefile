@@ -65,7 +65,6 @@ guards:
 	./scripts/check_dashboard_proxy_trusted_proxy_guard.sh
 	./scripts/check_frontend_error_sanitization.sh
 	./scripts/check_no_secrets_in_urls.sh
-	./scripts/v2/check_v2_foundation.sh
 
 check: fmt clippy test audit deny guards
 
