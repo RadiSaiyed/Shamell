@@ -36,8 +36,11 @@ ops/dev-proxy/certs/
 clients/**/build/
 clients/**/.dart_tool/
 clients/**/ios/Pods/
+clients/**/macos/Pods/
 clients/**/android/.gradle/
 **/macos/Flutter/ephemeral/
+**/macos/Flutter/Flutter-Generated.xcconfig
+**/ios/Flutter/Flutter-Generated.xcconfig
 
 # Local archives / exports
 shamell-pi.tar.gz
