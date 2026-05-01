@@ -39,6 +39,8 @@ clients/**/ios/Pods/
 clients/**/macos/Pods/
 clients/**/android/.gradle/
 **/macos/Flutter/ephemeral/
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
 **/macos/Flutter/Flutter-Generated.xcconfig
 **/ios/Flutter/Flutter-Generated.xcconfig
 
