@@ -51,6 +51,14 @@ ops/reports/
 REGULATOR_ACCESS.local.txt
 REGULATOR_ACCESS_WINDOWS.local.txt
 
+# Firebase / GCP service-account keys (NEVER commit private keys)
+*-firebase-adminsdk-*.json
+*-service-account*.json
+google-services*adminsdk*.json
+
+# Mac download duplicates (e.g. "foo (1).json")
+*\ \(*\).json
+
 # Local tmp/seed snapshots
 tmp_*.json
 tmp_*.txt
