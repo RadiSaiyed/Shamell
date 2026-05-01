@@ -1,0 +1,3835 @@
+openapi: 3.0.3
+info:
+  title: Shamell BFF Runtime Surface
+  version: 0.1.0
+  description: |
+    Auto-generated from `services_rs/bff_gateway/src/main.rs`.
+    This document tracks the live BFF route and HTTP-method surface only.
+    Request and response schemas are not yet described here.
+servers:
+  - url: https://api.shamell.example
+paths:
+  /:
+    get:
+      tags: [root]
+      operationId: getRoot
+      summary: Runtime surface entry for GET /
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/access/assignments:
+    get:
+      tags: [admin]
+      operationId: GetAdminAccessAssignments
+      summary: Runtime surface entry for GET /admin/access/assignments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [admin]
+      operationId: PostAdminAccessAssignments
+      summary: Runtime surface entry for POST /admin/access/assignments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    delete:
+      tags: [admin]
+      operationId: DeleteAdminAccessAssignments
+      summary: Runtime surface entry for DELETE /admin/access/assignments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/chat/moderation/reports:
+    get:
+      tags: [admin]
+      operationId: GetAdminChatModerationReports
+      summary: Runtime surface entry for GET /admin/chat/moderation/reports
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/chat/moderation/reports/{report_id}/action:
+    post:
+      tags: [admin]
+      operationId: PostAdminChatModerationReportsByReportIdAction
+      summary: Runtime surface entry for POST /admin/chat/moderation/reports/{report_id}/action
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}:
+    patch:
+      tags: [admin]
+      operationId: PatchAdminOfficialAccountsByAccountId
+      summary: Runtime surface entry for PATCH /admin/official_accounts/{account_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/auto_replies:
+    get:
+      tags: [admin]
+      operationId: GetAdminOfficialAccountsByAccountIdAutoReplies
+      summary: Runtime surface entry for GET /admin/official_accounts/{account_id}/auto_replies
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [admin]
+      operationId: PostAdminOfficialAccountsByAccountIdAutoReplies
+      summary: Runtime surface entry for POST /admin/official_accounts/{account_id}/auto_replies
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/moments_stats:
+    get:
+      tags: [admin]
+      operationId: GetAdminOfficialAccountsByAccountIdMomentsStats
+      summary: Runtime surface entry for GET /admin/official_accounts/{account_id}/moments_stats
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/owners:
+    get:
+      tags: [admin]
+      operationId: GetAdminOfficialAccountsByAccountIdOwners
+      summary: Runtime surface entry for GET /admin/official_accounts/{account_id}/owners
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [admin]
+      operationId: PostAdminOfficialAccountsByAccountIdOwners
+      summary: Runtime surface entry for POST /admin/official_accounts/{account_id}/owners
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    delete:
+      tags: [admin]
+      operationId: DeleteAdminOfficialAccountsByAccountIdOwners
+      summary: Runtime surface entry for DELETE /admin/official_accounts/{account_id}/owners
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/service_inbox:
+    get:
+      tags: [admin]
+      operationId: GetAdminOfficialAccountsByAccountIdServiceInbox
+      summary: Runtime surface entry for GET /admin/official_accounts/{account_id}/service_inbox
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/service_inbox/{session_id}/close:
+    post:
+      tags: [admin]
+      operationId: PostAdminOfficialAccountsByAccountIdServiceInboxBySessionIdClose
+      summary: Runtime surface entry for POST /admin/official_accounts/{account_id}/service_inbox/{session_id}/close
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/service_inbox/{session_id}/mark_read:
+    post:
+      tags: [admin]
+      operationId: PostAdminOfficialAccountsByAccountIdServiceInboxBySessionIdMarkRead
+      summary: Runtime surface entry for POST /admin/official_accounts/{account_id}/service_inbox/{session_id}/mark_read
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_accounts/{account_id}/service_inbox/{session_id}/template_messages:
+    post:
+      tags: [admin]
+      operationId: PostAdminOfficialAccountsByAccountIdServiceInboxBySessionIdTemplateMessages
+      summary: Runtime surface entry for POST /admin/official_accounts/{account_id}/service_inbox/{session_id}/template_messages
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_auto_replies/{rule_id}:
+    patch:
+      tags: [admin]
+      operationId: PatchAdminOfficialAutoRepliesByRuleId
+      summary: Runtime surface entry for PATCH /admin/official_auto_replies/{rule_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/official_feeds:
+    get:
+      tags: [admin]
+      operationId: GetAdminOfficialFeeds
+      summary: Runtime surface entry for GET /admin/official_feeds
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [admin]
+      operationId: PostAdminOfficialFeeds
+      summary: Runtime surface entry for POST /admin/official_feeds
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/platform/features/summary:
+    get:
+      tags: [admin]
+      operationId: GetAdminPlatformFeaturesSummary
+      summary: Runtime surface entry for GET /admin/platform/features/summary
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/roles:
+    get:
+      tags: [admin]
+      operationId: GetAdminRoles
+      summary: Runtime surface entry for GET /admin/roles
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [admin]
+      operationId: PostAdminRoles
+      summary: Runtime surface entry for POST /admin/roles
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    delete:
+      tags: [admin]
+      operationId: DeleteAdminRoles
+      summary: Runtime surface entry for DELETE /admin/roles
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/roles/check:
+    get:
+      tags: [admin]
+      operationId: GetAdminRolesCheck
+      summary: Runtime surface entry for GET /admin/roles/check
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /admin/user-activity:
+    get:
+      tags: [admin]
+      operationId: GetAdminUserActivity
+      summary: Runtime surface entry for GET /admin/user-activity
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /app:
+    get:
+      tags: [app]
+      operationId: GetApp
+      summary: Runtime surface entry for GET /app
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/account/create:
+    post:
+      tags: [auth]
+      operationId: PostAuthAccountCreate
+      summary: Runtime surface entry for POST /auth/account/create
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/account/create/challenge:
+    post:
+      tags: [auth]
+      operationId: PostAuthAccountCreateChallenge
+      summary: Runtime surface entry for POST /auth/account/create/challenge
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/biometric/enroll:
+    post:
+      tags: [auth]
+      operationId: PostAuthBiometricEnroll
+      summary: Runtime surface entry for POST /auth/biometric/enroll
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/biometric/enroll/challenge:
+    post:
+      tags: [auth]
+      operationId: PostAuthBiometricEnrollChallenge
+      summary: Runtime surface entry for POST /auth/biometric/enroll/challenge
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/biometric/login:
+    post:
+      tags: [auth]
+      operationId: PostAuthBiometricLogin
+      summary: Runtime surface entry for POST /auth/biometric/login
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/biometric/login/challenge:
+    post:
+      tags: [auth]
+      operationId: PostAuthBiometricLoginChallenge
+      summary: Runtime surface entry for POST /auth/biometric/login/challenge
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/control_bootstrap:
+    get:
+      tags: [auth]
+      operationId: GetAuthControlBootstrap
+      summary: Runtime surface entry for GET /auth/control_bootstrap
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/device_login:
+    get:
+      tags: [auth]
+      operationId: GetAuthDeviceLogin
+      summary: Runtime surface entry for GET /auth/device_login
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/device_login/approve:
+    post:
+      tags: [auth]
+      operationId: PostAuthDeviceLoginApprove
+      summary: Runtime surface entry for POST /auth/device_login/approve
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/device_login/qr.svg:
+    post:
+      tags: [auth]
+      operationId: PostAuthDeviceLoginQrSvg
+      summary: Runtime surface entry for POST /auth/device_login/qr.svg
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/device_login/redeem:
+    post:
+      tags: [auth]
+      operationId: PostAuthDeviceLoginRedeem
+      summary: Runtime surface entry for POST /auth/device_login/redeem
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/device_login/start:
+    post:
+      tags: [auth]
+      operationId: PostAuthDeviceLoginStart
+      summary: Runtime surface entry for POST /auth/device_login/start
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/device_login_demo:
+    get:
+      tags: [auth]
+      operationId: GetAuthDeviceLoginDemo
+      summary: Runtime surface entry for GET /auth/device_login_demo
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/devices:
+    get:
+      tags: [auth]
+      operationId: GetAuthDevices
+      summary: Runtime surface entry for GET /auth/devices
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/devices/{device_id}:
+    delete:
+      tags: [auth]
+      operationId: DeleteAuthDevicesByDeviceId
+      summary: Runtime surface entry for DELETE /auth/devices/{device_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/devices/register:
+    post:
+      tags: [auth]
+      operationId: PostAuthDevicesRegister
+      summary: Runtime surface entry for POST /auth/devices/register
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/direct-web/launch:
+    get:
+      tags: [auth]
+      operationId: GetAuthDirectWebLaunch
+      summary: Runtime surface entry for GET /auth/direct-web/launch
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: PostAuthLogin
+      summary: Runtime surface entry for POST /auth/login
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: PostAuthLogout
+      summary: Runtime surface entry for POST /auth/logout
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/payment_attestation/challenge:
+    post:
+      tags: [auth]
+      operationId: PostAuthPaymentAttestationChallenge
+      summary: Runtime surface entry for POST /auth/payment_attestation/challenge
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/signup:
+    post:
+      tags: [auth]
+      operationId: PostAuthSignup
+      summary: Runtime surface entry for POST /auth/signup
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /auth/workforce/session/exchange:
+    post:
+      tags: [auth]
+      operationId: PostAuthWorkforceSessionExchange
+      summary: Runtime surface entry for POST /auth/workforce/session/exchange
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/calls/logs:
+    get:
+      tags: [chat]
+      operationId: GetChatCallsLogs
+      summary: Runtime surface entry for GET /chat/calls/logs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [chat]
+      operationId: PostChatCallsLogs
+      summary: Runtime surface entry for POST /chat/calls/logs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/{device_id}:
+    get:
+      tags: [chat]
+      operationId: GetChatDevicesByDeviceId
+      summary: Runtime surface entry for GET /chat/devices/{device_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/{device_id}/block:
+    post:
+      tags: [chat]
+      operationId: PostChatDevicesByDeviceIdBlock
+      summary: Runtime surface entry for POST /chat/devices/{device_id}/block
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/{device_id}/group_prefs:
+    get:
+      tags: [chat]
+      operationId: GetChatDevicesByDeviceIdGroupPrefs
+      summary: Runtime surface entry for GET /chat/devices/{device_id}/group_prefs
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [chat]
+      operationId: PostChatDevicesByDeviceIdGroupPrefs
+      summary: Runtime surface entry for POST /chat/devices/{device_id}/group_prefs
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/{device_id}/hidden:
+    get:
+      tags: [chat]
+      operationId: GetChatDevicesByDeviceIdHidden
+      summary: Runtime surface entry for GET /chat/devices/{device_id}/hidden
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/{device_id}/prefs:
+    get:
+      tags: [chat]
+      operationId: GetChatDevicesByDeviceIdPrefs
+      summary: Runtime surface entry for GET /chat/devices/{device_id}/prefs
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [chat]
+      operationId: PostChatDevicesByDeviceIdPrefs
+      summary: Runtime surface entry for POST /chat/devices/{device_id}/prefs
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/{device_id}/push_token:
+    post:
+      tags: [chat]
+      operationId: PostChatDevicesByDeviceIdPushToken
+      summary: Runtime surface entry for POST /chat/devices/{device_id}/push_token
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    delete:
+      tags: [chat]
+      operationId: DeleteChatDevicesByDeviceIdPushToken
+      summary: Runtime surface entry for DELETE /chat/devices/{device_id}/push_token
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/devices/register:
+    post:
+      tags: [chat]
+      operationId: PostChatDevicesRegister
+      summary: Runtime surface entry for POST /chat/devices/register
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/events:
+    get:
+      tags: [chat]
+      operationId: GetChatEvents
+      summary: Runtime surface entry for GET /chat/events
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/events/stream:
+    get:
+      tags: [chat]
+      operationId: GetChatEventsStream
+      summary: Runtime surface entry for GET /chat/events/stream
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/invite:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsByGroupIdInvite
+      summary: Runtime surface entry for POST /chat/groups/{group_id}/invite
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/keys/events:
+    get:
+      tags: [chat]
+      operationId: GetChatGroupsByGroupIdKeysEvents
+      summary: Runtime surface entry for GET /chat/groups/{group_id}/keys/events
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/keys/rotate:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsByGroupIdKeysRotate
+      summary: Runtime surface entry for POST /chat/groups/{group_id}/keys/rotate
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/leave:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsByGroupIdLeave
+      summary: Runtime surface entry for POST /chat/groups/{group_id}/leave
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/members:
+    get:
+      tags: [chat]
+      operationId: GetChatGroupsByGroupIdMembers
+      summary: Runtime surface entry for GET /chat/groups/{group_id}/members
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/messages/inbox:
+    get:
+      tags: [chat]
+      operationId: GetChatGroupsByGroupIdMessagesInbox
+      summary: Runtime surface entry for GET /chat/groups/{group_id}/messages/inbox
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/messages/send:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsByGroupIdMessagesSend
+      summary: Runtime surface entry for POST /chat/groups/{group_id}/messages/send
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/set_role:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsByGroupIdSetRole
+      summary: Runtime surface entry for POST /chat/groups/{group_id}/set_role
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/{group_id}/update:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsByGroupIdUpdate
+      summary: Runtime surface entry for POST /chat/groups/{group_id}/update
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/create:
+    post:
+      tags: [chat]
+      operationId: PostChatGroupsCreate
+      summary: Runtime surface entry for POST /chat/groups/create
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/groups/list:
+    get:
+      tags: [chat]
+      operationId: GetChatGroupsList
+      summary: Runtime surface entry for GET /chat/groups/list
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/keys/bootstrap:
+    post:
+      tags: [chat]
+      operationId: PostChatKeysBootstrap
+      summary: Runtime surface entry for POST /chat/keys/bootstrap
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/keys/bundle/{device_id}:
+    get:
+      tags: [chat]
+      operationId: GetChatKeysBundleByDeviceId
+      summary: Runtime surface entry for GET /chat/keys/bundle/{device_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/keys/prekeys/status/{device_id}:
+    get:
+      tags: [chat]
+      operationId: GetChatKeysPrekeysStatusByDeviceId
+      summary: Runtime surface entry for GET /chat/keys/prekeys/status/{device_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/keys/prekeys/upload:
+    post:
+      tags: [chat]
+      operationId: PostChatKeysPrekeysUpload
+      summary: Runtime surface entry for POST /chat/keys/prekeys/upload
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/keys/register:
+    post:
+      tags: [chat]
+      operationId: PostChatKeysRegister
+      summary: Runtime surface entry for POST /chat/keys/register
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/mailboxes/issue:
+    post:
+      tags: [chat]
+      operationId: PostChatMailboxesIssue
+      summary: Runtime surface entry for POST /chat/mailboxes/issue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/mailboxes/poll:
+    post:
+      tags: [chat]
+      operationId: PostChatMailboxesPoll
+      summary: Runtime surface entry for POST /chat/mailboxes/poll
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/mailboxes/rotate:
+    post:
+      tags: [chat]
+      operationId: PostChatMailboxesRotate
+      summary: Runtime surface entry for POST /chat/mailboxes/rotate
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/mailboxes/write:
+    post:
+      tags: [chat]
+      operationId: PostChatMailboxesWrite
+      summary: Runtime surface entry for POST /chat/mailboxes/write
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/{mid}/delete:
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesByMidDelete
+      summary: Runtime surface entry for POST /chat/messages/{mid}/delete
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/{mid}/edit:
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesByMidEdit
+      summary: Runtime surface entry for POST /chat/messages/{mid}/edit
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/{mid}/pin:
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesByMidPin
+      summary: Runtime surface entry for POST /chat/messages/{mid}/pin
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/{mid}/reactions:
+    get:
+      tags: [chat]
+      operationId: GetChatMessagesByMidReactions
+      summary: Runtime surface entry for GET /chat/messages/{mid}/reactions
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesByMidReactions
+      summary: Runtime surface entry for POST /chat/messages/{mid}/reactions
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/{mid}/read:
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesByMidRead
+      summary: Runtime surface entry for POST /chat/messages/{mid}/read
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/{mid}/report:
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesByMidReport
+      summary: Runtime surface entry for POST /chat/messages/{mid}/report
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/inbox:
+    get:
+      tags: [chat]
+      operationId: GetChatMessagesInbox
+      summary: Runtime surface entry for GET /chat/messages/inbox
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/pins:
+    get:
+      tags: [chat]
+      operationId: GetChatMessagesPins
+      summary: Runtime surface entry for GET /chat/messages/pins
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/send:
+    post:
+      tags: [chat]
+      operationId: PostChatMessagesSend
+      summary: Runtime surface entry for POST /chat/messages/send
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/stream:
+    get:
+      tags: [chat]
+      operationId: GetChatMessagesStream
+      summary: Runtime surface entry for GET /chat/messages/stream
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/messages/thread:
+    get:
+      tags: [chat]
+      operationId: GetChatMessagesThread
+      summary: Runtime surface entry for GET /chat/messages/thread
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/voice/transcript_jobs:
+    get:
+      tags: [chat]
+      operationId: GetChatVoiceTranscriptJobs
+      summary: Runtime surface entry for GET /chat/voice/transcript_jobs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [chat]
+      operationId: PostChatVoiceTranscriptJobs
+      summary: Runtime surface entry for POST /chat/voice/transcript_jobs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/voice/transcript_jobs/{job_id}/complete:
+    post:
+      tags: [chat]
+      operationId: PostChatVoiceTranscriptJobsByJobIdComplete
+      summary: Runtime surface entry for POST /chat/voice/transcript_jobs/{job_id}/complete
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /chat/voice/transcripts:
+    get:
+      tags: [chat]
+      operationId: GetChatVoiceTranscripts
+      summary: Runtime surface entry for GET /chat/voice/transcripts
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [chat]
+      operationId: PostChatVoiceTranscripts
+      summary: Runtime surface entry for POST /chat/voice/transcripts
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /contacts/invites:
+    post:
+      tags: [contacts]
+      operationId: PostContactsInvites
+      summary: Runtime surface entry for POST /contacts/invites
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /contacts/invites/redeem:
+    post:
+      tags: [contacts]
+      operationId: PostContactsInvitesRedeem
+      summary: Runtime surface entry for POST /contacts/invites/redeem
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /contacts/resolve_by_shamell_id:
+    post:
+      tags: [contacts]
+      operationId: PostContactsResolveByShamellId
+      summary: Runtime surface entry for POST /contacts/resolve_by_shamell_id
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /downloads/coach/payout_import_reports/{artifact_name}:
+    get:
+      tags: [downloads]
+      operationId: GetDownloadsCoachPayoutImportReportsByArtifactName
+      summary: Runtime surface entry for GET /downloads/coach/payout_import_reports/{artifact_name}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: artifact_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /downloads/coach/settlement_exports/{artifact_name}:
+    get:
+      tags: [downloads]
+      operationId: GetDownloadsCoachSettlementExportsByArtifactName
+      summary: Runtime surface entry for GET /downloads/coach/settlement_exports/{artifact_name}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: artifact_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /health:
+    get:
+      tags: [health]
+      operationId: GetHealth
+      summary: Runtime surface entry for GET /health
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /home:
+    get:
+      tags: [home]
+      operationId: GetHome
+      summary: Runtime surface entry for GET /home
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /internal/admin/access/assignments:
+    get:
+      tags: [internal]
+      operationId: GetInternalAdminAccessAssignments
+      summary: Runtime surface entry for GET /internal/admin/access/assignments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [internal]
+      operationId: PostInternalAdminAccessAssignments
+      summary: Runtime surface entry for POST /internal/admin/access/assignments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    delete:
+      tags: [internal]
+      operationId: DeleteInternalAdminAccessAssignments
+      summary: Runtime surface entry for DELETE /internal/admin/access/assignments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /internal/security/alerts:
+    post:
+      tags: [internal]
+      operationId: PostInternalSecurityAlerts
+      summary: Runtime surface entry for POST /internal/security/alerts
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /login:
+    get:
+      tags: [login]
+      operationId: GetLogin
+      summary: Runtime surface entry for GET /login
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/access-context:
+    get:
+      tags: [me]
+      operationId: GetMeAccessContext
+      summary: Runtime surface entry for GET /me/access-context
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/activity:
+    post:
+      tags: [me]
+      operationId: PostMeActivity
+      summary: Runtime surface entry for POST /me/activity
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/disruptions:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminDisruptions
+      summary: Runtime surface entry for GET /me/coach/admin/disruptions
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/disruptions/{trip_id}/action:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminDisruptionsByTripIdAction
+      summary: Runtime surface entry for POST /me/coach/admin/disruptions/{trip_id}/action
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/finance/journal:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminFinanceJournal
+      summary: Runtime surface entry for GET /me/coach/admin/finance/journal
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/finance/shamell_pay_reconciliation:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminFinanceShamellPayReconciliation
+      summary: Runtime surface entry for GET /me/coach/admin/finance/shamell_pay_reconciliation
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/finance/shamell_pay_reconciliation/{payout_run_id}/confirm_operator_rail:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminFinanceShamellPayReconciliationByPayoutRunIdConfirmOperatorRail
+      summary: Runtime surface entry for POST /me/coach/admin/finance/shamell_pay_reconciliation/{payout_run_id}/confirm_operator_rail
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: payout_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/finance/shamell_pay_reconciliation/{payout_run_id}/fail_operator_rail:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminFinanceShamellPayReconciliationByPayoutRunIdFailOperatorRail
+      summary: Runtime surface entry for POST /me/coach/admin/finance/shamell_pay_reconciliation/{payout_run_id}/fail_operator_rail
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: payout_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/finance/shamell_pay_reconciliation/{payout_run_id}/release_operator_rail:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminFinanceShamellPayReconciliationByPayoutRunIdReleaseOperatorRail
+      summary: Runtime surface entry for POST /me/coach/admin/finance/shamell_pay_reconciliation/{payout_run_id}/release_operator_rail
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: payout_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/finance/shamell_pay_reports:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminFinanceShamellPayReports
+      summary: Runtime surface entry for POST /me/coach/admin/finance/shamell_pay_reports
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/overview:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminOverview
+      summary: Runtime surface entry for GET /me/coach/admin/overview
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/partners/{operator_id}/onboarding_action:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminPartnersByOperatorIdOnboardingAction
+      summary: Runtime surface entry for POST /me/coach/admin/partners/{operator_id}/onboarding_action
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: operator_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/partners/onboarding:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminPartnersOnboarding
+      summary: Runtime surface entry for GET /me/coach/admin/partners/onboarding
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/risk/{risk_id}/action:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminRiskByRiskIdAction
+      summary: Runtime surface entry for POST /me/coach/admin/risk/{risk_id}/action
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: risk_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/risk/dashboard:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminRiskDashboard
+      summary: Runtime surface entry for GET /me/coach/admin/risk/dashboard
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/support/cases:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminSupportCases
+      summary: Runtime surface entry for GET /me/coach/admin/support/cases
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/support/cases/{case_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachAdminSupportCasesByCaseId
+      summary: Runtime surface entry for GET /me/coach/admin/support/cases/{case_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: case_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/admin/support/cases/{case_id}/resolve_payment_failure:
+    post:
+      tags: [me]
+      operationId: PostMeCoachAdminSupportCasesByCaseIdResolvePaymentFailure
+      summary: Runtime surface entry for POST /me/coach/admin/support/cases/{case_id}/resolve_payment_failure
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: case_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings:
+    get:
+      tags: [me]
+      operationId: GetMeCoachBookings
+      summary: Runtime surface entry for GET /me/coach/bookings
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachBookings
+      summary: Runtime surface entry for POST /me/coach/bookings
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachBookingsByBookingId
+      summary: Runtime surface entry for GET /me/coach/bookings/{booking_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/change_options:
+    get:
+      tags: [me]
+      operationId: GetMeCoachBookingsByBookingIdChangeOptions
+      summary: Runtime surface entry for GET /me/coach/bookings/{booking_id}/change_options
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/rebook_requests:
+    post:
+      tags: [me]
+      operationId: PostMeCoachBookingsByBookingIdRebookRequests
+      summary: Runtime surface entry for POST /me/coach/bookings/{booking_id}/rebook_requests
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/refund_eligibility:
+    get:
+      tags: [me]
+      operationId: GetMeCoachBookingsByBookingIdRefundEligibility
+      summary: Runtime surface entry for GET /me/coach/bookings/{booking_id}/refund_eligibility
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/refunds:
+    post:
+      tags: [me]
+      operationId: PostMeCoachBookingsByBookingIdRefunds
+      summary: Runtime surface entry for POST /me/coach/bookings/{booking_id}/refunds
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/reissue:
+    post:
+      tags: [me]
+      operationId: PostMeCoachBookingsByBookingIdReissue
+      summary: Runtime surface entry for POST /me/coach/bookings/{booking_id}/reissue
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/reissue/resolve_payment_failure:
+    post:
+      tags: [me]
+      operationId: PostMeCoachBookingsByBookingIdReissueResolvePaymentFailure
+      summary: Runtime surface entry for POST /me/coach/bookings/{booking_id}/reissue/resolve_payment_failure
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bookings/{booking_id}/tickets:
+    post:
+      tags: [me]
+      operationId: PostMeCoachBookingsByBookingIdTickets
+      summary: Runtime surface entry for POST /me/coach/bookings/{booking_id}/tickets
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/bootstrap:
+    get:
+      tags: [me]
+      operationId: GetMeCoachBootstrap
+      summary: Runtime surface entry for GET /me/coach/bootstrap
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/crew/departures:
+    get:
+      tags: [me]
+      operationId: GetMeCoachCrewDepartures
+      summary: Runtime surface entry for GET /me/coach/crew/departures
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/crew/trips/{trip_id}/boardings:
+    post:
+      tags: [me]
+      operationId: PostMeCoachCrewTripsByTripIdBoardings
+      summary: Runtime surface entry for POST /me/coach/crew/trips/{trip_id}/boardings
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/crew/trips/{trip_id}/manifest:
+    get:
+      tags: [me]
+      operationId: GetMeCoachCrewTripsByTripIdManifest
+      summary: Runtime surface entry for GET /me/coach/crew/trips/{trip_id}/manifest
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/holds:
+    post:
+      tags: [me]
+      operationId: PostMeCoachHolds
+      summary: Runtime surface entry for POST /me/coach/holds
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/holds/{hold_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachHoldsByHoldId
+      summary: Runtime surface entry for GET /me/coach/holds/{hold_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: hold_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/journeys/{journey_id}/live:
+    get:
+      tags: [me]
+      operationId: GetMeCoachJourneysByJourneyIdLive
+      summary: Runtime surface entry for GET /me/coach/journeys/{journey_id}/live
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: journey_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/offers/{offer_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOffersByOfferId
+      summary: Runtime surface entry for GET /me/coach/offers/{offer_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: offer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_config:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportConfig
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_config
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportConfig
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_config
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_issue_saved_views:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportRunIssueSavedViews
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_run_issue_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunIssueSavedViews
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_issue_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_issue_saved_views/{view_id}/delete:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunIssueSavedViewsByViewIdDelete
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_issue_saved_views/{view_id}/delete
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_issue_saved_views/{view_id}/favorite:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunIssueSavedViewsByViewIdFavorite
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_issue_saved_views/{view_id}/favorite
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_issue_saved_views/{view_id}/use:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunIssueSavedViewsByViewIdUse
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_issue_saved_views/{view_id}/use
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_saved_views:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportRunSavedViews
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_run_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunSavedViews
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_saved_views/{view_id}/delete:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunSavedViewsByViewIdDelete
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_saved_views/{view_id}/delete
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_saved_views/{view_id}/favorite:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunSavedViewsByViewIdFavorite
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_saved_views/{view_id}/favorite
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_run_saved_views/{view_id}/use:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRunSavedViewsByViewIdUse
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_run_saved_views/{view_id}/use
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_runs:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportRuns
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_runs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportRuns
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_runs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_runs/{import_run_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportRunsByImportRunId
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_runs/{import_run_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: import_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_runs/{import_run_id}/replays:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportRunsByImportRunIdReplays
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_runs/{import_run_id}/replays
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: import_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_sources:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogImportSources
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_import_sources
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_import_sources/upload:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorCatalogImportSourcesUpload
+      summary: Runtime surface entry for POST /me/coach/operator/catalog_import_sources/upload
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_source_artifacts:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogSourceArtifacts
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_source_artifacts
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/catalog_source_artifacts/{artifact_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorCatalogSourceArtifactsByArtifactId
+      summary: Runtime surface entry for GET /me/coach/operator/catalog_source_artifacts/{artifact_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/change_queue:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorChangeQueue
+      summary: Runtime surface entry for GET /me/coach/operator/change_queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/change_requests/{change_request_id}/review:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorChangeRequestsByChangeRequestIdReview
+      summary: Runtime surface entry for POST /me/coach/operator/change_requests/{change_request_id}/review
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: change_request_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/feed_health:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorFeedHealth
+      summary: Runtime surface entry for GET /me/coach/operator/feed_health
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_batch_saved_views:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutImportBatchSavedViews
+      summary: Runtime surface entry for GET /me/coach/operator/payout_import_batch_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportBatchSavedViews
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_batch_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_batch_saved_views/{view_id}/delete:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportBatchSavedViewsByViewIdDelete
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_batch_saved_views/{view_id}/delete
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_batch_saved_views/{view_id}/favorite:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportBatchSavedViewsByViewIdFavorite
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_batch_saved_views/{view_id}/favorite
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_batch_saved_views/{view_id}/use:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportBatchSavedViewsByViewIdUse
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_batch_saved_views/{view_id}/use
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_batches:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutImportBatches
+      summary: Runtime surface entry for GET /me/coach/operator/payout_import_batches
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportBatches
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_batches
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_batches/upload:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportBatchesUpload
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_batches/upload
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_preview_saved_views:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutImportPreviewSavedViews
+      summary: Runtime surface entry for GET /me/coach/operator/payout_import_preview_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportPreviewSavedViews
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_preview_saved_views
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_preview_saved_views/{view_id}/delete:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportPreviewSavedViewsByViewIdDelete
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_preview_saved_views/{view_id}/delete
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_preview_saved_views/{view_id}/favorite:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportPreviewSavedViewsByViewIdFavorite
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_preview_saved_views/{view_id}/favorite
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_preview_saved_views/{view_id}/use:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportPreviewSavedViewsByViewIdUse
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_preview_saved_views/{view_id}/use
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_previews:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutImportPreviews
+      summary: Runtime surface entry for GET /me/coach/operator/payout_import_previews
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_previews/{preview_token}/invalidate:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutImportPreviewsByPreviewTokenInvalidate
+      summary: Runtime surface entry for POST /me/coach/operator/payout_import_previews/{preview_token}/invalidate
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: preview_token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_import_profiles:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutImportProfiles
+      summary: Runtime surface entry for GET /me/coach/operator/payout_import_profiles
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_imports:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutImports
+      summary: Runtime surface entry for GET /me/coach/operator/payout_imports
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_reconciliation:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutReconciliation
+      summary: Runtime surface entry for GET /me/coach/operator/payout_reconciliation
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_runs:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorPayoutRuns
+      summary: Runtime surface entry for GET /me/coach/operator/payout_runs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutRuns
+      summary: Runtime surface entry for POST /me/coach/operator/payout_runs
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_runs/{payout_run_id}/exports:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutRunsByPayoutRunIdExports
+      summary: Runtime surface entry for POST /me/coach/operator/payout_runs/{payout_run_id}/exports
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: payout_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_runs/{payout_run_id}/imports:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutRunsByPayoutRunIdImports
+      summary: Runtime surface entry for POST /me/coach/operator/payout_runs/{payout_run_id}/imports
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: payout_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/payout_runs/{payout_run_id}/mark_paid:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorPayoutRunsByPayoutRunIdMarkPaid
+      summary: Runtime surface entry for POST /me/coach/operator/payout_runs/{payout_run_id}/mark_paid
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: payout_run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/reconciliation:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorReconciliation
+      summary: Runtime surface entry for GET /me/coach/operator/reconciliation
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/refund_queue:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorRefundQueue
+      summary: Runtime surface entry for GET /me/coach/operator/refund_queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/refund_requests/{refund_request_id}/review:
+    post:
+      tags: [me]
+      operationId: PostMeCoachOperatorRefundRequestsByRefundRequestIdReview
+      summary: Runtime surface entry for POST /me/coach/operator/refund_requests/{refund_request_id}/review
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: refund_request_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/operator/settlement_statements:
+    get:
+      tags: [me]
+      operationId: GetMeCoachOperatorSettlementStatements
+      summary: Runtime surface entry for GET /me/coach/operator/settlement_statements
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/search:
+    get:
+      tags: [me]
+      operationId: GetMeCoachSearch
+      summary: Runtime surface entry for GET /me/coach/search
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/coach/tickets/{ticket_id}:
+    get:
+      tags: [me]
+      operationId: GetMeCoachTicketsByTicketId
+      summary: Runtime surface entry for GET /me/coach/tickets/{ticket_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/geo/reverse:
+    get:
+      tags: [me]
+      operationId: GetMeGeoReverse
+      summary: Runtime surface entry for GET /me/geo/reverse
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/geo/search:
+    get:
+      tags: [me]
+      operationId: GetMeGeoSearch
+      summary: Runtime surface entry for GET /me/geo/search
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/home_snapshot:
+    get:
+      tags: [me]
+      operationId: GetMeHomeSnapshot
+      summary: Runtime surface entry for GET /me/home_snapshot
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/official_template_messages:
+    get:
+      tags: [me]
+      operationId: GetMeOfficialTemplateMessages
+      summary: Runtime surface entry for GET /me/official_template_messages
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/official_template_messages/{mid}/read:
+    post:
+      tags: [me]
+      operationId: PostMeOfficialTemplateMessagesByMidRead
+      summary: Runtime surface entry for POST /me/official_template_messages/{mid}/read
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/permissions:
+    get:
+      tags: [me]
+      operationId: GetMePermissions
+      summary: Runtime surface entry for GET /me/permissions
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/platform/features/events:
+    post:
+      tags: [me]
+      operationId: PostMePlatformFeaturesEvents
+      summary: Runtime surface entry for POST /me/platform/features/events
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/bootstrap:
+    get:
+      tags: [me]
+      operationId: GetMeRidesBootstrap
+      summary: Runtime surface entry for GET /me/rides/bootstrap
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/dispatch_offers:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverDispatchOffers
+      summary: Runtime surface entry for GET /me/rides/driver/dispatch_offers
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/dispatch_offers/{offer_id}/accept:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverDispatchOffersByOfferIdAccept
+      summary: Runtime surface entry for POST /me/rides/driver/dispatch_offers/{offer_id}/accept
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: offer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/dispatch_offers/{offer_id}/reject:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverDispatchOffersByOfferIdReject
+      summary: Runtime surface entry for POST /me/rides/driver/dispatch_offers/{offer_id}/reject
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: offer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/documents:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverDocuments
+      summary: Runtime surface entry for GET /me/rides/driver/documents
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverDocuments
+      summary: Runtime surface entry for POST /me/rides/driver/documents
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/finance_dashboard:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverFinanceDashboard
+      summary: Runtime surface entry for GET /me/rides/driver/finance_dashboard
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/payout_requests:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverPayoutRequests
+      summary: Runtime surface entry for POST /me/rides/driver/payout_requests
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/presence:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverPresence
+      summary: Runtime surface entry for GET /me/rides/driver/presence
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverPresence
+      summary: Runtime surface entry for POST /me/rides/driver/presence
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/queue:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverQueue
+      summary: Runtime surface entry for GET /me/rides/driver/queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/shift_summary:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverShiftSummary
+      summary: Runtime surface entry for GET /me/rides/driver/shift_summary
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/stream:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverStream
+      summary: Runtime surface entry for GET /me/rides/driver/stream
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/trips/{ride_id}/accept:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverTripsByRideIdAccept
+      summary: Runtime surface entry for POST /me/rides/driver/trips/{ride_id}/accept
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/trips/{ride_id}/commands:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverTripsByRideIdCommands
+      summary: Runtime surface entry for POST /me/rides/driver/trips/{ride_id}/commands
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/trips/{ride_id}/location_ping:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverTripsByRideIdLocationPing
+      summary: Runtime surface entry for POST /me/rides/driver/trips/{ride_id}/location_ping
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/trips/{ride_id}/status:
+    post:
+      tags: [me]
+      operationId: PostMeRidesDriverTripsByRideIdStatus
+      summary: Runtime surface entry for POST /me/rides/driver/trips/{ride_id}/status
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/driver/trips/active:
+    get:
+      tags: [me]
+      operationId: GetMeRidesDriverTripsActive
+      summary: Runtime surface entry for GET /me/rides/driver/trips/active
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/map_tiles/{z}/{x}/{y}:
+    get:
+      tags: [me]
+      operationId: GetMeRidesMapTilesByZByXByY
+      summary: Runtime surface entry for GET /me/rides/map_tiles/{z}/{x}/{y}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: z
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: x
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: y
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/case_queue:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorCaseQueue
+      summary: Runtime surface entry for GET /me/rides/operator/case_queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/document_queue:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorDocumentQueue
+      summary: Runtime surface entry for GET /me/rides/operator/document_queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/documents/{document_id}/review:
+    post:
+      tags: [me]
+      operationId: PostMeRidesOperatorDocumentsByDocumentIdReview
+      summary: Runtime surface entry for POST /me/rides/operator/documents/{document_id}/review
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/driver_roster:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorDriverRoster
+      summary: Runtime surface entry for GET /me/rides/operator/driver_roster
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/finance_queue:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorFinanceQueue
+      summary: Runtime surface entry for GET /me/rides/operator/finance_queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/fleet/live:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorFleetLive
+      summary: Runtime surface entry for GET /me/rides/operator/fleet/live
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/live_board:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorLiveBoard
+      summary: Runtime surface entry for GET /me/rides/operator/live_board
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/payout_requests/{rid}/approve:
+    post:
+      tags: [me]
+      operationId: PostMeRidesOperatorPayoutRequestsByRidApprove
+      summary: Runtime surface entry for POST /me/rides/operator/payout_requests/{rid}/approve
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: rid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/pricing_policy:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorPricingPolicy
+      summary: Runtime surface entry for GET /me/rides/operator/pricing_policy
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeRidesOperatorPricingPolicy
+      summary: Runtime surface entry for POST /me/rides/operator/pricing_policy
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/stream:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorStream
+      summary: Runtime surface entry for GET /me/rides/operator/stream
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/support_queue:
+    get:
+      tags: [me]
+      operationId: GetMeRidesOperatorSupportQueue
+      summary: Runtime surface entry for GET /me/rides/operator/support_queue
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/support_tickets/{ticket_id}/resolve:
+    post:
+      tags: [me]
+      operationId: PostMeRidesOperatorSupportTicketsByTicketIdResolve
+      summary: Runtime surface entry for POST /me/rides/operator/support_tickets/{ticket_id}/resolve
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/operator/trips/{ride_id}/commands:
+    post:
+      tags: [me]
+      operationId: PostMeRidesOperatorTripsByRideIdCommands
+      summary: Runtime surface entry for POST /me/rides/operator/trips/{ride_id}/commands
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/pricing_preview:
+    get:
+      tags: [me]
+      operationId: GetMeRidesPricingPreview
+      summary: Runtime surface entry for GET /me/rides/pricing_preview
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/route:
+    get:
+      tags: [me]
+      operationId: GetMeRidesRoute
+      summary: Runtime surface entry for GET /me/rides/route
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/search:
+    get:
+      tags: [me]
+      operationId: GetMeRidesSearch
+      summary: Runtime surface entry for GET /me/rides/search
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/support_tickets:
+    get:
+      tags: [me]
+      operationId: GetMeRidesSupportTickets
+      summary: Runtime surface entry for GET /me/rides/support_tickets
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeRidesSupportTickets
+      summary: Runtime surface entry for POST /me/rides/support_tickets
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/traffic:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTraffic
+      summary: Runtime surface entry for GET /me/rides/traffic
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTrips
+      summary: Runtime surface entry for GET /me/rides/trips
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [me]
+      operationId: PostMeRidesTrips
+      summary: Runtime surface entry for POST /me/rides/trips
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/{ride_id}:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTripsByRideId
+      summary: Runtime surface entry for GET /me/rides/trips/{ride_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/{ride_id}/commands:
+    post:
+      tags: [me]
+      operationId: PostMeRidesTripsByRideIdCommands
+      summary: Runtime surface entry for POST /me/rides/trips/{ride_id}/commands
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/{ride_id}/enter_matching:
+    post:
+      tags: [me]
+      operationId: PostMeRidesTripsByRideIdEnterMatching
+      summary: Runtime surface entry for POST /me/rides/trips/{ride_id}/enter_matching
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/{ride_id}/live:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTripsByRideIdLive
+      summary: Runtime surface entry for GET /me/rides/trips/{ride_id}/live
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/{ride_id}/tracking:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTripsByRideIdTracking
+      summary: Runtime surface entry for GET /me/rides/trips/{ride_id}/tracking
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: ride_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/active:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTripsActive
+      summary: Runtime surface entry for GET /me/rides/trips/active
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/rides/trips/active/stream:
+    get:
+      tags: [me]
+      operationId: GetMeRidesTripsActiveStream
+      summary: Runtime surface entry for GET /me/rides/trips/active/stream
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /me/roles:
+    get:
+      tags: [me]
+      operationId: GetMeRoles
+      summary: Runtime surface entry for GET /me/roles
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /official_accounts:
+    get:
+      tags: [official_accounts]
+      operationId: GetOfficialAccounts
+      summary: Runtime surface entry for GET /official_accounts
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /official_accounts/{account_id}/auto_replies:
+    get:
+      tags: [official_accounts]
+      operationId: GetOfficialAccountsByAccountIdAutoReplies
+      summary: Runtime surface entry for GET /official_accounts/{account_id}/auto_replies
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /official_accounts/{account_id}/follow:
+    post:
+      tags: [official_accounts]
+      operationId: PostOfficialAccountsByAccountIdFollow
+      summary: Runtime surface entry for POST /official_accounts/{account_id}/follow
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /official_accounts/{account_id}/notification_mode:
+    post:
+      tags: [official_accounts]
+      operationId: PostOfficialAccountsByAccountIdNotificationMode
+      summary: Runtime surface entry for POST /official_accounts/{account_id}/notification_mode
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /official_accounts/{account_id}/unfollow:
+    post:
+      tags: [official_accounts]
+      operationId: PostOfficialAccountsByAccountIdUnfollow
+      summary: Runtime surface entry for POST /official_accounts/{account_id}/unfollow
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /official_accounts/notifications:
+    get:
+      tags: [official_accounts]
+      operationId: GetOfficialAccountsNotifications
+      summary: Runtime surface entry for GET /official_accounts/notifications
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/audit/timeline:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminAuditTimeline
+      summary: Runtime surface entry for GET /payments/admin/audit/timeline
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/credits:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminCredits
+      summary: Runtime surface entry for GET /payments/admin/credits
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminCredits
+      summary: Runtime surface entry for POST /payments/admin/credits
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/credits/{request_id}/approve:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminCreditsByRequestIdApprove
+      summary: Runtime surface entry for POST /payments/admin/credits/{request_id}/approve
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/credits/metrics:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminCreditsMetrics
+      summary: Runtime surface entry for GET /payments/admin/credits/metrics
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/credits/reconciliation:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminCreditsReconciliation
+      summary: Runtime surface entry for GET /payments/admin/credits/reconciliation
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/fx/rates:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminFxRates
+      summary: Runtime surface entry for POST /payments/admin/fx/rates
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/kyc:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminKyc
+      summary: Runtime surface entry for POST /payments/admin/kyc
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/reconciliation:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminReconciliation
+      summary: Runtime surface entry for GET /payments/admin/reconciliation
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/recurring/run:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminRecurringRun
+      summary: Runtime surface entry for POST /payments/admin/recurring/run
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/risk/evaluate:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminRiskEvaluate
+      summary: Runtime surface entry for POST /payments/admin/risk/evaluate
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/risk/metrics:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminRiskMetrics
+      summary: Runtime surface entry for GET /payments/admin/risk/metrics
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/risk/rules:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAdminRiskRules
+      summary: Runtime surface entry for GET /payments/admin/risk/rules
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminRiskRules
+      summary: Runtime surface entry for POST /payments/admin/risk/rules
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/settlements/{settlement_id}/resolve:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminSettlementsBySettlementIdResolve
+      summary: Runtime surface entry for POST /payments/admin/settlements/{settlement_id}/resolve
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: settlement_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/admin/wallet-controls:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAdminWalletControls
+      summary: Runtime surface entry for POST /payments/admin/wallet-controls
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/aliases:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsAliases
+      summary: Runtime surface entry for GET /payments/aliases
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsAliases
+      summary: Runtime surface entry for POST /payments/aliases
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/disputes:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsDisputes
+      summary: Runtime surface entry for GET /payments/disputes
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsDisputes
+      summary: Runtime surface entry for POST /payments/disputes
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/events:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsEvents
+      summary: Runtime surface entry for GET /payments/events
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/exchange/quotes:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsExchangeQuotes
+      summary: Runtime surface entry for GET /payments/exchange/quotes
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsExchangeQuotes
+      summary: Runtime surface entry for POST /payments/exchange/quotes
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/exchange/quotes/{quote_id}/execute:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsExchangeQuotesByQuoteIdExecute
+      summary: Runtime surface entry for POST /payments/exchange/quotes/{quote_id}/execute
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/favorites:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsFavorites
+      summary: Runtime surface entry for GET /payments/favorites
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsFavorites
+      summary: Runtime surface entry for POST /payments/favorites
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/favorites/{fid}:
+    delete:
+      tags: [payments]
+      operationId: DeletePaymentsFavoritesByFid
+      summary: Runtime surface entry for DELETE /payments/favorites/{fid}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: fid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/fx/rates:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsFxRates
+      summary: Runtime surface entry for GET /payments/fx/rates
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/holds/{hold_id}/resolve:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsHoldsByHoldIdResolve
+      summary: Runtime surface entry for POST /payments/holds/{hold_id}/resolve
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: hold_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/kyc/documents:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsKycDocuments
+      summary: Runtime surface entry for GET /payments/kyc/documents
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsKycDocuments
+      summary: Runtime surface entry for POST /payments/kyc/documents
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/merchant/profile:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsMerchantProfile
+      summary: Runtime surface entry for GET /payments/merchant/profile
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsMerchantProfile
+      summary: Runtime surface entry for POST /payments/merchant/profile
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/merchant/settlements:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsMerchantSettlements
+      summary: Runtime surface entry for GET /payments/merchant/settlements
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsMerchantSettlements
+      summary: Runtime surface entry for POST /payments/merchant/settlements
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/merchant/webhooks:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsMerchantWebhooks
+      summary: Runtime surface entry for GET /payments/merchant/webhooks
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsMerchantWebhooks
+      summary: Runtime surface entry for POST /payments/merchant/webhooks
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/mini/payment-intents:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsMiniPaymentIntents
+      summary: Runtime surface entry for POST /payments/mini/payment-intents
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/mini/payment-intents/{intent_id}:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsMiniPaymentIntentsByIntentId
+      summary: Runtime surface entry for GET /payments/mini/payment-intents/{intent_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: intent_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/mini/payment-intents/{intent_id}/confirm:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsMiniPaymentIntentsByIntentIdConfirm
+      summary: Runtime surface entry for POST /payments/mini/payment-intents/{intent_id}/confirm
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: intent_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/offline-payments:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsOfflinePayments
+      summary: Runtime surface entry for GET /payments/offline-payments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsOfflinePayments
+      summary: Runtime surface entry for POST /payments/offline-payments
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/payment-links:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsPaymentLinks
+      summary: Runtime surface entry for GET /payments/payment-links
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsPaymentLinks
+      summary: Runtime surface entry for POST /payments/payment-links
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/payment-links/{link_id}:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsPaymentLinksByLinkId
+      summary: Runtime surface entry for GET /payments/payment-links/{link_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: link_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/payment-links/{link_id}/pay:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsPaymentLinksByLinkIdPay
+      summary: Runtime surface entry for POST /payments/payment-links/{link_id}/pay
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: link_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/recurring:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsRecurring
+      summary: Runtime surface entry for GET /payments/recurring
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRecurring
+      summary: Runtime surface entry for POST /payments/recurring
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/recurring/{recurring_id}/cancel:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRecurringByRecurringIdCancel
+      summary: Runtime surface entry for POST /payments/recurring/{recurring_id}/cancel
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: recurring_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/refunds:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsRefunds
+      summary: Runtime surface entry for GET /payments/refunds
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRefunds
+      summary: Runtime surface entry for POST /payments/refunds
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/refunds/{refund_id}/resolve:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRefundsByRefundIdResolve
+      summary: Runtime surface entry for POST /payments/refunds/{refund_id}/resolve
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: refund_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/requests:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsRequests
+      summary: Runtime surface entry for GET /payments/requests
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRequests
+      summary: Runtime surface entry for POST /payments/requests
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/requests/{rid}/accept:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRequestsByRidAccept
+      summary: Runtime surface entry for POST /payments/requests/{rid}/accept
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: rid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/requests/{rid}/cancel:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsRequestsByRidCancel
+      summary: Runtime surface entry for POST /payments/requests/{rid}/cancel
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: rid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/transfer:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsTransfer
+      summary: Runtime surface entry for POST /payments/transfer
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/users:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsUsers
+      summary: Runtime surface entry for POST /payments/users
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletId
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/buckets:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletIdBuckets
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}/buckets
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/driver-ledger:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletIdDriverLedger
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}/driver-ledger
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/holds:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletIdHolds
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}/holds
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+    post:
+      tags: [payments]
+      operationId: PostPaymentsWalletsByWalletIdHolds
+      summary: Runtime surface entry for POST /payments/wallets/{wallet_id}/holds
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/limits:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletIdLimits
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}/limits
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/snapshot:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletIdSnapshot
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}/snapshot
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/statement:
+    get:
+      tags: [payments]
+      operationId: GetPaymentsWalletsByWalletIdStatement
+      summary: Runtime surface entry for GET /payments/wallets/{wallet_id}/statement
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /payments/wallets/{wallet_id}/topup:
+    post:
+      tags: [payments]
+      operationId: PostPaymentsWalletsByWalletIdTopup
+      summary: Runtime surface entry for POST /payments/wallets/{wallet_id}/topup
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /qr.svg:
+    post:
+      tags: [qr.svg]
+      operationId: PostQrSvg
+      summary: Runtime surface entry for POST /qr.svg
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /wallets/{wallet_id}:
+    get:
+      tags: [wallets]
+      operationId: GetWalletsByWalletId
+      summary: Runtime surface entry for GET /wallets/{wallet_id}
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /wallets/{wallet_id}/buckets:
+    get:
+      tags: [wallets]
+      operationId: GetWalletsByWalletIdBuckets
+      summary: Runtime surface entry for GET /wallets/{wallet_id}/buckets
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /wallets/{wallet_id}/driver-ledger:
+    get:
+      tags: [wallets]
+      operationId: GetWalletsByWalletIdDriverLedger
+      summary: Runtime surface entry for GET /wallets/{wallet_id}/driver-ledger
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /wallets/{wallet_id}/snapshot:
+    get:
+      tags: [wallets]
+      operationId: GetWalletsByWalletIdSnapshot
+      summary: Runtime surface entry for GET /wallets/{wallet_id}/snapshot
+      x-shamell-runtime-surface-only: true
+      parameters:
+        - name: wallet_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /ws/call/signaling:
+    get:
+      tags: [ws]
+      operationId: GetWsCallSignaling
+      summary: Runtime surface entry for GET /ws/call/signaling
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /ws/chat/groups:
+    get:
+      tags: [ws]
+      operationId: GetWsChatGroups
+      summary: Runtime surface entry for GET /ws/chat/groups
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /ws/chat/inbox:
+    get:
+      tags: [ws]
+      operationId: GetWsChatInbox
+      summary: Runtime surface entry for GET /ws/chat/inbox
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.
+  /ws/chat/typing:
+    get:
+      tags: [ws]
+      operationId: GetWsChatTyping
+      summary: Runtime surface entry for GET /ws/chat/typing
+      x-shamell-runtime-surface-only: true
+      responses:
+        default:
+          description: Runtime path exists; schema documentation is tracked separately.

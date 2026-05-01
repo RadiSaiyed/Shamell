@@ -1,0 +1,25 @@
+version: 1
+owner: shamell-platform
+
+events:
+  - name: v2_activation_started
+    domain: growth
+    required_properties: [source, user_role]
+  - name: v2_activation_completed
+    domain: growth
+    required_properties: [elapsed_ms, first_flow]
+  - name: v2_auth_sign_in_succeeded
+    domain: auth
+    required_properties: [method, elapsed_ms]
+  - name: v2_chat_message_sent
+    domain: chat
+    required_properties: [chat_type, elapsed_ms]
+  - name: v2_payments_transfer_succeeded
+    domain: payments
+    required_properties: [amount_cents, elapsed_ms]
+  - name: v2_feature_flag_exposure
+    domain: platform
+    required_properties: [flag, variant]
+  - name: v2_error_shown
+    domain: quality
+    required_properties: [code, surface]

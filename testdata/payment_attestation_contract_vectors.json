@@ -1,0 +1,73 @@
+{
+  "header_names": {
+    "challenge": "X-Shamell-Payment-Attestation-Challenge",
+    "play_integrity": "X-Shamell-Payment-Play-Integrity",
+    "apple_devicecheck": "X-Shamell-Payment-Apple-DeviceCheck"
+  },
+  "resource_vectors": [
+    {
+      "operation": "payments_create_user",
+      "account_id": "acct/demo@x",
+      "resource_id": "account_id=acct%2Fdemo%40x"
+    },
+    {
+      "operation": "payments_topup",
+      "wallet_id": "wallet 1",
+      "amount_cents": 250,
+      "resource_id": "wallet_id=wallet%201&amount_cents=250"
+    },
+    {
+      "operation": "payments_transfer",
+      "from_wallet_id": "wallet/me",
+      "to_wallet_id": "wallet target",
+      "amount_cents": 123,
+      "resource_id": "from_wallet_id=wallet%2Fme&to_wallet_id=wallet%20target&amount_cents=123"
+    },
+    {
+      "operation": "payments_transfer",
+      "from_wallet_id": "wallet/me",
+      "to_alias": "@merchant",
+      "amount_cents": 123,
+      "resource_id": "from_wallet_id=wallet%2Fme&to_alias=%40merchant&amount_cents=123"
+    },
+    {
+      "operation": "payments_requests_accept",
+      "request_id": "req/1",
+      "to_wallet_id": "wallet demo",
+      "resource_id": "rid=req%2F1&to_wallet_id=wallet%20demo"
+    },
+    {
+      "operation": "payments_requests_create",
+      "from_wallet_id": "wallet/me",
+      "to_wallet_id": "wallet target",
+      "amount_cents": 123,
+      "resource_id": "from_wallet_id=wallet%2Fme&to_wallet_id=wallet%20target&amount_cents=123"
+    },
+    {
+      "operation": "payments_requests_create",
+      "from_wallet_id": "wallet/me",
+      "to_alias": "@merchant",
+      "amount_cents": 123,
+      "resource_id": "from_wallet_id=wallet%2Fme&to_alias=%40merchant&amount_cents=123"
+    },
+    {
+      "operation": "payments_requests_cancel",
+      "request_id": "req/1",
+      "from_wallet_id": "wallet demo",
+      "resource_id": "rid=req%2F1&from_wallet_id=wallet%20demo"
+    },
+    {
+      "operation": "payments_favorites_create",
+      "owner_wallet_id": "wallet/me",
+      "favorite_wallet_id": "wallet target",
+      "alias": "coffee shop",
+      "resource_id": "owner_wallet_id=wallet%2Fme&favorite_wallet_id=wallet%20target&alias=coffee%20shop"
+    },
+    {
+      "operation": "payments_favorites_delete",
+      "favorite_id": "fav/1",
+      "owner_wallet_id": "wallet demo",
+      "resource_id": "fid=fav%2F1&owner_wallet_id=wallet%20demo"
+    }
+  ]
+}
