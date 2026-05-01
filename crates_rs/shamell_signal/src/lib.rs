@@ -92,6 +92,7 @@ pub mod safety_number {
         }
     }
 
+    #[must_use = "the safety number is the verification artifact; ignoring it discards the cryptographic output"]
     pub fn safety_number_with_iterations(
         local_identifier: &str,
         local_identity_key: &[u8],
@@ -122,6 +123,7 @@ pub mod safety_number {
         Ok(format!("{a_fp}{b_fp}"))
     }
 
+    #[must_use = "the safety number is the verification artifact; ignoring it discards the cryptographic output"]
     pub fn safety_number(
         local_identifier: &str,
         local_identity_key: &[u8],

@@ -34,7 +34,7 @@ class PaymentsController extends ChangeNotifier {
   bool isLoadingBalance = false;
   String error = '';
   String success = '';
-  int balanceCents = 2000000;
+  int balanceCents = 0;
   String _activeWalletId = '';
   bool sessionResetRequired = false;
   String _pendingTransferFingerprint = '';
