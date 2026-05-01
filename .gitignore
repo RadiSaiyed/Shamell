@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+.secrets-local/
 .venv*
 .venv*/
 venv/
@@ -19,12 +20,17 @@ __pycache__/
 **/dist/
 **/*.egg-info/
 
+# Rust build artifacts
+target/
+**/target/
+
 # Workspace root .gitignore mirrors common patterns used here.
 
 # Local run logs
 ops/dev/logs/
 ops/dev/pids/
 ops/gcp/logs/
+ops/dev-proxy/certs/
 
 # Flutter/Android build artifacts
 clients/**/build/
@@ -37,11 +43,21 @@ clients/**/android/.gradle/
 shamell-pi.tar.gz
 backups/
 ops/reports/
+.artifacts/
+.cache/
+REGULATOR_ACCESS.local.txt
+REGULATOR_ACCESS_WINDOWS.local.txt
 
-# IDE/editor
+# Local tmp/seed snapshots
+tmp_*.json
+tmp_*.txt
+tmp_*.xml
+
+# IDE/editor + tooling
 **/.idea/
 **/.vscode/
 **/*.iml
+.claude/
 
 # Large SDKs/tools not tracked
 tools/
