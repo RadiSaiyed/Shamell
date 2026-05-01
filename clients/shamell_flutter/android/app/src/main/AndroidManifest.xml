@@ -1,36 +1,56 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.INTERNET" />
+  <!-- Keep both location permissions: the app actively uses high/best accuracy
+       flows, and geolocator_android supports Android 12 approximate location
+       by requesting fine+coarse together when both are declared. -->
   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <!-- Let Android reschedule Driver background work after a device reboot. -->
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- Keep CAMERA: the app uses QR scanning via mobile_scanner and still-image
+       capture via image_picker in chat, groups, and moments. -->
   <uses-permission android:name="android.permission.CAMERA" />
-  <!-- Gallery save / share (best-effort across Android versions) -->
-  <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-  <uses-permission android:name="android.permission.READ_CONTACTS" />
   <!-- Android 13+ notifications permission -->
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-  <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:usesCleartextTraffic="false">
-    <meta-data android:name="com.google.android.geo.API_KEY" android:value="${GOOGLE_MAPS_API_KEY}" />
+  <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:usesCleartextTraffic="false" android:allowBackup="false" android:fullBackupContent="@xml/backup_rules" android:dataExtractionRules="@xml/data_extraction_rules" android:networkSecurityConfig="@xml/network_security_config" android:extractNativeLibs="false">
     <meta-data android:name="flutterEmbedding" android:value="2" />
     <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:theme="@style/LaunchTheme" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" android:hardwareAccelerated="true" android:windowSoftInputMode="adjustResize">
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
-      <!-- Deep links: custom scheme and https path for module navigation -->
+      <!-- Security hardening: do not expose unverified custom-scheme inbound
+           routes to the OS intent resolver. Only verified HTTPS app links are
+           externally routable. -->
       <intent-filter android:autoVerify="true">
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="shamell" android:host="app" />
-      </intent-filter>
-      <intent-filter android:autoVerify="true">
-        <action android:name="android.intent.action.VIEW" />
-        <category android:name="android.intent.category.DEFAULT" />
-        <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/device_login" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/invite" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/friend" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/chat" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/moduleapp" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/moduleapps" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/ride" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/taxi" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/coach" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/bus" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/official" />
+        <data android:scheme="https" android:host="online.shamell.online" android:pathPrefix="/app/moments" />
       </intent-filter>
     </activity>
+    <!-- Release hardening: remove library-added debug/benchmark receivers that
+         do not participate in app functionality but widen the exported surface. -->
+    <receiver
+        android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver"
+        tools:node="remove" />
+    <receiver
+        android:name="androidx.profileinstaller.ProfileInstallReceiver"
+        tools:node="remove" />
   </application>
 </manifest>
