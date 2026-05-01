@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 sha2 = "0.10"
 thiserror = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }

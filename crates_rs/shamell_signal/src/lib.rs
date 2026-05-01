@@ -26,22 +26,29 @@ pub type Result<T> = std::result::Result<T, SignalError>;
 pub mod safety_number {
     use super::{Result, SignalError};
     use sha2::{Digest, Sha512};
+    use zeroize::Zeroizing;
 
     pub const DEFAULT_ITERATIONS: usize = 5200;
     const VERSION: u16 = 0;
     type IdentityRef<'a> = (&'a str, &'a [u8]);
 
-    fn iterate_hash(data: &[u8], key: &[u8], count: usize) -> Vec<u8> {
-        let mut combined = Vec::with_capacity(data.len() + key.len());
+    /// Iterated SHA-512 over (data || key), reusing the previous digest as
+    /// the next round's input. Both the running buffer and the rolling
+    /// digest are wrapped in `Zeroizing<_>` so intermediate hash state is
+    /// scrubbed from memory on drop instead of leaking via process memory
+    /// dumps or memory reuse.
+    fn iterate_hash(data: &[u8], key: &[u8], count: usize) -> Zeroizing<Vec<u8>> {
+        let mut combined: Zeroizing<Vec<u8>> =
+            Zeroizing::new(Vec::with_capacity(data.len() + key.len()));
         combined.extend_from_slice(data);
         combined.extend_from_slice(key);
 
-        let mut result = Sha512::digest(&combined).to_vec();
+        let mut result: Zeroizing<Vec<u8>> = Zeroizing::new(Sha512::digest(&*combined).to_vec());
         for _ in 1..count {
             combined.clear();
             combined.extend_from_slice(&result);
             combined.extend_from_slice(key);
-            result = Sha512::digest(&combined).to_vec();
+            result = Zeroizing::new(Sha512::digest(&*combined).to_vec());
         }
         result
     }
@@ -57,12 +64,16 @@ pub mod safety_number {
     }
 
     fn display_string_for(identifier: &str, identity_key: &[u8], iterations: usize) -> String {
-        let mut bytes = Vec::with_capacity(2 + identity_key.len() + identifier.len());
+        let mut bytes: Zeroizing<Vec<u8>> =
+            Zeroizing::new(Vec::with_capacity(2 + identity_key.len() + identifier.len()));
         bytes.extend_from_slice(&VERSION.to_le_bytes());
         bytes.extend_from_slice(identity_key);
         bytes.extend_from_slice(identifier.as_bytes());
 
         let output = iterate_hash(&bytes, identity_key, iterations);
+        // The five-digit chunks themselves are user-visible safety numbers,
+        // so the returned String is intentionally not zeroized; only the
+        // intermediate hash state is.
         get_encoded_chunk(&output, 0)
             + &get_encoded_chunk(&output, 5)
             + &get_encoded_chunk(&output, 10)
