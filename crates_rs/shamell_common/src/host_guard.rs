@@ -86,16 +86,7 @@ where
                 return Ok((StatusCode::BAD_REQUEST, body).into_response());
             }
 
-            let ok = allowed.iter().any(|rule| match rule.as_str() {
-                "*" => true,
-                r if r.starts_with('.') => {
-                    // Starlette-style: ".example.com" matches "a.example.com" and "example.com".
-                    host == r[1..] || host.ends_with(rule)
-                }
-                r => host == r,
-            });
-
-            if !ok {
+            if !host_matches_any(&host, &allowed) {
                 let body = axum::Json(ErrorBody {
                     detail: "invalid host",
                 });
@@ -104,5 +95,83 @@ where
 
             inner.call(req).await
         })
+    }
+}
+
+/// Pure host matcher used by `AllowedHostsService`. Exposed at crate scope
+/// so it can be unit-tested without spinning up a tower service.
+///
+/// Rules supported:
+/// - `"*"` matches anything.
+/// - A rule starting with `.` (Starlette-style, e.g. `.example.com`) matches
+///   the bare apex (`example.com`) and any subdomain (`a.example.com`,
+///   `a.b.example.com`).
+/// - Anything else is an exact match against the lowercased host.
+///
+/// Caller is expected to have already lowercased and port-stripped `host`.
+pub fn host_matches_any(host: &str, rules: &[String]) -> bool {
+    rules.iter().any(|rule| match rule.as_str() {
+        "*" => true,
+        r if r.starts_with('.') => host == &r[1..] || host.ends_with(rule),
+        r => host == r,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_matches_any;
+
+    fn rules(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn exact_match_only_accepts_exact_host() {
+        let rs = rules(&["api.shamell.online"]);
+        assert!(host_matches_any("api.shamell.online", &rs));
+        assert!(!host_matches_any("evil.api.shamell.online", &rs));
+        assert!(!host_matches_any("api.shamell.onlin", &rs));
+        assert!(!host_matches_any("", &rs));
+    }
+
+    #[test]
+    fn wildcard_rule_accepts_apex_and_any_subdomain() {
+        let rs = rules(&[".shamell.online"]);
+        assert!(host_matches_any("shamell.online", &rs));
+        assert!(host_matches_any("api.shamell.online", &rs));
+        assert!(host_matches_any("a.b.shamell.online", &rs));
+    }
+
+    #[test]
+    fn wildcard_rule_does_not_match_lookalike_apex() {
+        let rs = rules(&[".shamell.online"]);
+        // Critical: ".shamell.online" must NOT match "evilshamell.online".
+        assert!(!host_matches_any("evilshamell.online", &rs));
+        // ...nor a domain that merely shares the suffix without the dot.
+        assert!(!host_matches_any("notshamell.online", &rs));
+        // ...nor an unrelated TLD that happens to contain the substring.
+        assert!(!host_matches_any("shamell.online.attacker.com", &rs));
+    }
+
+    #[test]
+    fn star_rule_matches_anything() {
+        let rs = rules(&["*"]);
+        assert!(host_matches_any("anything.example", &rs));
+        assert!(host_matches_any("", &rs)); // pure function; emptiness is filtered earlier
+    }
+
+    #[test]
+    fn empty_rules_never_match() {
+        let rs: Vec<String> = vec![];
+        assert!(!host_matches_any("anything.example", &rs));
+    }
+
+    #[test]
+    fn multiple_rules_use_first_hit() {
+        let rs = rules(&["api.shamell.online", ".dev.shamell.online"]);
+        assert!(host_matches_any("api.shamell.online", &rs));
+        assert!(host_matches_any("foo.dev.shamell.online", &rs));
+        assert!(host_matches_any("dev.shamell.online", &rs));
+        assert!(!host_matches_any("bar.shamell.online", &rs));
     }
 }

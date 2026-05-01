@@ -3,6 +3,7 @@ pub fn is_production_like(env_name: &str) -> bool {
     matches!(env.as_str(), "prod" | "production" | "staging")
 }
 
+#[must_use = "secret validation result must be propagated; ignoring it lets weak/placeholder secrets through"]
 pub fn validate_secret_for_env(
     env_name: &str,
     key: &str,
