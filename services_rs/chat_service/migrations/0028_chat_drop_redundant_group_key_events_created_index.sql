@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS __CHAT_SCHEMA__.idx_group_key_events_group_created;

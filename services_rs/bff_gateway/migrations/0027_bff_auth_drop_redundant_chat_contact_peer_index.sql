@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_auth_chat_contacts_peer_chat_device_id;

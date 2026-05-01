@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_auth_official_template_messages_account;
+DROP INDEX IF EXISTS idx_auth_official_template_messages_unread;
+DROP INDEX IF EXISTS idx_auth_official_auto_replies_account;
