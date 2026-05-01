@@ -31,6 +31,9 @@ To refresh the CIDRs:
 scripts/update_cloudflare_ip_ranges.sh
 ```
 
+`scripts/sync_hetzner_ufw.sh` now refuses to apply firewall changes from a
+stale Cloudflare snippet; refresh it first, then sync.
+
 ## Apply
 
 Run from the repo root:

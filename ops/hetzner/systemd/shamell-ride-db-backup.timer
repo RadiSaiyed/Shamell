@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Shamell encrypted ride/auth database backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=shamell-ride-db-backup.service
+
+[Install]
+WantedBy=timers.target

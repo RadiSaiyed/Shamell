@@ -1,0 +1,13 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "AVKQ9VZ94G.online.shamell.app",
+        "paths": [
+          "/app/*"
+        ]
+      }
+    ]
+  }
+}

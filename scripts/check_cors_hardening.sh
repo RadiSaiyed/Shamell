@@ -99,7 +99,6 @@ check_required_in_whitelist() {
 check_service_main "services_rs/bff_gateway/src/main.rs"
 check_service_main "services_rs/chat_service/src/main.rs"
 check_service_main "services_rs/payments_service/src/main.rs"
-check_service_main "services_rs/bus_service/src/main.rs"
 
 check_required_in_whitelist \
   "services_rs/bff_gateway/src/main.rs" \
@@ -114,7 +113,7 @@ check_required_in_whitelist \
 check_forbidden_in_whitelist \
   "services_rs/bff_gateway/src/main.rs" \
   "bff_public_cors_allowed_headers" \
-  'AUTHORIZATION|x-chat-device-id|x-chat-device-token|x-device-id|idempotency-key|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|sec-fetch-site|COOKIE' \
+  'AUTHORIZATION|x-chat-device-id|x-chat-device-token|x-device-id|idempotency-key|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-internal-audience|x-internal-identity-ts|x-internal-identity-sig|x-internal-identity-sig-v2|x-internal-identity-nonce|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|x-shamell-client-ip-attested|sec-fetch-site|COOKIE' \
   'auth/internal/proxy/role/app headers'
 
 check_required_in_whitelist \
@@ -130,7 +129,7 @@ check_required_in_whitelist \
 check_forbidden_in_whitelist \
   "services_rs/bff_gateway/src/main.rs" \
   "bff_chat_cors_allowed_headers" \
-  'AUTHORIZATION|idempotency-key|x-device-id|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|sec-fetch-site|COOKIE' \
+  'AUTHORIZATION|idempotency-key|x-device-id|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-internal-audience|x-internal-identity-ts|x-internal-identity-sig|x-internal-identity-sig-v2|x-internal-identity-nonce|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|x-shamell-client-ip-attested|sec-fetch-site|COOKIE' \
   'auth/payment/internal/proxy/role headers'
 
 check_required_in_whitelist \
@@ -141,7 +140,7 @@ check_required_in_whitelist \
 check_forbidden_in_whitelist \
   "services_rs/bff_gateway/src/main.rs" \
   "bff_contacts_cors_allowed_headers" \
-  'AUTHORIZATION|x-chat-device-token|idempotency-key|x-device-id|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|sec-fetch-site|COOKIE' \
+  'AUTHORIZATION|x-chat-device-token|idempotency-key|x-device-id|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-internal-audience|x-internal-identity-ts|x-internal-identity-sig|x-internal-identity-sig-v2|x-internal-identity-nonce|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|x-shamell-client-ip-attested|sec-fetch-site|COOKIE' \
   'auth/chat-token/payment/internal/proxy/role headers'
 
 check_required_in_whitelist \
@@ -167,24 +166,8 @@ check_required_in_whitelist \
 check_forbidden_in_whitelist \
   "services_rs/bff_gateway/src/main.rs" \
   "bff_payments_cors_allowed_headers" \
-  'AUTHORIZATION|x-chat-device-id|x-chat-device-token|x-internal-secret|x-internal-service-id|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|sec-fetch-site|COOKIE' \
+  'AUTHORIZATION|x-chat-device-id|x-chat-device-token|x-internal-secret|x-internal-service-id|x-internal-audience|x-internal-identity-ts|x-internal-identity-sig|x-internal-identity-sig-v2|x-internal-identity-nonce|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|x-shamell-client-ip-attested|sec-fetch-site|COOKIE' \
   'auth/chat/internal/proxy/role headers'
-
-check_required_in_whitelist \
-  "services_rs/bff_gateway/src/main.rs" \
-  "bff_bus_cors_allowed_headers" \
-  'idempotency-key' \
-  'idempotency-key'
-check_required_in_whitelist \
-  "services_rs/bff_gateway/src/main.rs" \
-  "bff_bus_cors_allowed_headers" \
-  'x-device-id' \
-  'x-device-id'
-check_forbidden_in_whitelist \
-  "services_rs/bff_gateway/src/main.rs" \
-  "bff_bus_cors_allowed_headers" \
-  'AUTHORIZATION|x-chat-device-id|x-chat-device-token|x-merchant|x-ref|x-internal-secret|x-internal-service-id|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|sec-fetch-site|COOKIE' \
-  'auth/chat/payment/internal/proxy/role headers'
 
 check_required_in_whitelist \
   "services_rs/chat_service/src/main.rs" \
@@ -199,7 +182,7 @@ check_required_in_whitelist \
 check_forbidden_in_whitelist \
   "services_rs/chat_service/src/main.rs" \
   "chat_cors_allowed_headers" \
-  'x-internal-secret|x-internal-service-id|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|COOKIE' \
+  'x-internal-secret|x-internal-service-id|x-internal-audience|x-internal-identity-ts|x-internal-identity-sig|x-internal-identity-sig-v2|x-internal-identity-nonce|x-role-auth|x-auth-roles|x-roles|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|x-shamell-client-ip-attested|COOKIE' \
   'internal/proxy/role headers'
 
 check_required_in_whitelist \
@@ -215,18 +198,7 @@ check_required_in_whitelist \
 check_forbidden_in_whitelist \
   "services_rs/payments_service/src/main.rs" \
   "payments_cors_allowed_headers" \
-  'x-internal-secret|x-internal-service-id|x-bus-payments-internal-secret|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|COOKIE' \
-  'internal/proxy headers'
-
-check_required_in_whitelist \
-  "services_rs/bus_service/src/main.rs" \
-  "bus_cors_allowed_headers" \
-  'idempotency-key' \
-  'idempotency-key'
-check_forbidden_in_whitelist \
-  "services_rs/bus_service/src/main.rs" \
-  "bus_cors_allowed_headers" \
-  'x-internal-secret|x-internal-service-id|x-bus-payments-internal-secret|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|COOKIE' \
+  'x-internal-secret|x-internal-service-id|x-internal-audience|x-internal-identity-ts|x-internal-identity-sig|x-internal-identity-sig-v2|x-internal-identity-nonce|x-forwarded-for|x-forwarded-host|x-real-ip|x-shamell-client-ip|x-shamell-client-ip-attested|COOKIE' \
   'internal/proxy headers'
 
 if (( errors != 0 )); then

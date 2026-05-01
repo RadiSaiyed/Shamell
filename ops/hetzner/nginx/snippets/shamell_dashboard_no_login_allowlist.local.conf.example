@@ -1,0 +1,8 @@
+# Host-local IP allowlist for the temporary no-login dashboard front.
+# This file is intended to live on the server as:
+#   /etc/nginx/snippets/shamell_dashboard_no_login_allowlist.local.conf
+#
+# Safe default: localhost only.
+allow 127.0.0.1;
+allow ::1;
+deny all;

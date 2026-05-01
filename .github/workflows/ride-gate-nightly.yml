@@ -1,0 +1,180 @@
+name: Ride Gate Nightly
+
+on:
+  schedule:
+    - cron: '20 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ride-gate-nightly
+  cancel-in-progress: false
+
+jobs:
+  ride-gate-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shamell
+          POSTGRES_PASSWORD: shamell
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shamell -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Install postgres client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Ride release gate (dev)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/ride-e2e
+          ./scripts/ops.sh dev ride-release-gate 2>&1 | tee .artifacts/ride-e2e/ride-gate-console.log
+
+      - name: Collect ride gate artifacts
+        if: always()
+        run: ./scripts/collect_ride_e2e_artifacts.sh .artifacts/ride-e2e
+
+      - name: Write ride gate summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/write_ride_gate_summary.sh .artifacts/ride-e2e | tee .artifacts/ride-e2e/ride-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ride gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ride-gate-nightly-artifacts
+          path: .artifacts/ride-e2e
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Sync nightly ride gate issue
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          JOB_STATUS: ${{ job.status }}
+          SUMMARY_PATH: .artifacts/ride-e2e/ride-gate-summary.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- shamell-ride-gate-nightly -->';
+            const title = 'Ride gate nightly failing';
+            const summaryPath = process.env.SUMMARY_PATH;
+            const status = process.env.JOB_STATUS || 'unknown';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const runLabel = `${process.env.GITHUB_WORKFLOW} #${process.env.GITHUB_RUN_NUMBER}.${process.env.GITHUB_RUN_ATTEMPT}`;
+            let summary = 'Ride gate summary was not captured.';
+            if (summaryPath && fs.existsSync(summaryPath)) {
+              summary = fs.readFileSync(summaryPath, 'utf8').trim() || summary;
+            }
+            if (summary.length > 60000) {
+              summary = `${summary.slice(0, 60000)}\n\n_Truncated._`;
+            }
+
+            const { owner, repo } = context.repo;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find((issue) => (issue.body || '').includes(marker));
+
+            if (status === 'success') {
+              if (!existing) {
+                core.info('Nightly succeeded and no open ride gate issue exists.');
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body: [
+                  'Nightly ride gate recovered.',
+                  '',
+                  `- Run: [${runLabel}](${runUrl})`,
+                  `- Commit: \`${context.sha}\``,
+                ].join('\n'),
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: existing.number,
+                state: 'closed',
+              });
+              return;
+            }
+
+            const body = [
+              marker,
+              '',
+              'The scheduled ride release gate is failing.',
+              '',
+              `- Status: \`${status}\``,
+              `- Run: [${runLabel}](${runUrl})`,
+              `- Event: \`${process.env.GITHUB_EVENT_NAME}\``,
+              `- Ref: \`${process.env.GITHUB_REF_NAME}\``,
+              `- Commit: \`${context.sha}\``,
+              '',
+              summary,
+            ].join('\n');
+
+            if (!existing) {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+              });
+              return;
+            }
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: existing.number,
+              title,
+              body,
+            });
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: existing.number,
+              body: [
+                'Nightly ride gate failed again.',
+                '',
+                `- Status: \`${status}\``,
+                `- Run: [${runLabel}](${runUrl})`,
+                `- Commit: \`${context.sha}\``,
+              ].join('\n'),
+            });

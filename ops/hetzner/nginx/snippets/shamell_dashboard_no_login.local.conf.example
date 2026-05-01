@@ -1,0 +1,16 @@
+# Host-local no-login dashboard injection (optional, temporary).
+# This file is intended to live on the server as:
+#   /etc/nginx/snippets/shamell_dashboard_no_login.local.conf
+# Keep it root-owned and mode 0600.
+#
+# When enabled, this snippet injects a fixed BFF session and trusted roles for
+# the temporary no-login dashboard front on `online.shamell.online`.
+# Example:
+#   proxy_set_header Cookie "__Host-sa_session=<32-hex-session-token>";
+#   proxy_set_header X-Role-Auth "<same-secret-as-BFF_ROLE_HEADER_SECRET>";
+#   proxy_set_header X-Auth-Roles "superadmin,admin,ops";
+#
+# Safe default: inject nothing.
+proxy_set_header Cookie "";
+proxy_set_header X-Role-Auth "";
+proxy_set_header X-Auth-Roles "";

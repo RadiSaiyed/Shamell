@@ -2,8 +2,7 @@ port: 7880
 rtc:
   tcp_port: 7881
   udp_port: 7882
-  use_external_ip: true
+  use_external_ip: false
 room:
   max_participants: 2
 # API keys are configured via LIVEKIT_KEYS env var (docker-compose).
-

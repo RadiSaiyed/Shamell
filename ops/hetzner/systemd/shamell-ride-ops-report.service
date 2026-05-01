@@ -1,0 +1,21 @@
+[Unit]
+Description=Shamell ride ops report and stale-flow audit
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/shamell-ride-ops-report
+ExecStart=/usr/bin/flock -n -E 75 /run/shamell-ride-ops-report.lock /usr/bin/env bash -lc 'set -euo pipefail; APP_DIR="$${APP_DIR:-/opt/shamell}"; REPORT_SCRIPT="$${APP_DIR}/scripts/ride_ops_report.sh"; [[ -x "$${REPORT_SCRIPT}" ]] || { echo "missing ride ops report script: $${REPORT_SCRIPT}" >&2; exit 1; }; export COMPOSE_FILE="$${COMPOSE_FILE:-$${APP_DIR}/ops/pi/docker-compose.postgres.yml}"; export ENV_FILE="$${ENV_FILE:-$${APP_DIR}/ops/pi/.env}"; export RIDE_REPORT_FAIL_ON_FINDINGS="$${RIDE_REPORT_FAIL_ON_FINDINGS:-1}"; cd "$${APP_DIR}"; "$${REPORT_SCRIPT}"'
+# Exit code 75 means a previous run still holds the lock, so systemd should
+# treat it as a benign skip instead of a failed unit.
+SuccessExitStatus=75
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

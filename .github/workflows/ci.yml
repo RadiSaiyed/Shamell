@@ -90,7 +90,7 @@ jobs:
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/repo" \
             -w /repo \
-            rhysd/actionlint:1.7.8
+            rhysd/actionlint:1.7.8@sha256:96d4a8c87dbbfb3bdd324f8fdc285fc3df5261e2decc619a4dd7e8ee52bbfd46
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -117,10 +117,12 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
 
       - name: Detect Rust workspace
         id: detect_rust
@@ -158,29 +160,235 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: cargo test
 
+      - name: Schema migration smoke (versioned + fail-closed runtime)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/smoke_schema_migrations.sh
+
       - name: Install cargo-audit
         if: steps.detect_rust.outputs.present == 'true'
         run: cargo install cargo-audit --locked --version 0.22.1
 
       - name: cargo audit
         if: steps.detect_rust.outputs.present == 'true'
-        run: cargo audit -D warnings
+        run: ./scripts/cargo_audit_retry.sh
+
+      - name: Install cargo-deny
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo install cargo-deny --locked --version 0.19.0
+
+      - name: cargo deny (licenses, bans, sources)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo deny check licenses bans sources
 
       - name: Guard legacy artifacts are absent
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_no_legacy_artifacts.sh
 
+      - name: Guard local secret artifact ignores
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_secret_artifact_ignores.sh
+
       - name: Guard internal port exposure
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_internal_port_exposure.sh
 
+      - name: Guard BFF public route boundary
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_bff_public_route_boundary.sh
+
+      - name: Guard BFF runtime OpenAPI surface freshness
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_bff_runtime_openapi_surface_freshness.sh
+
+      - name: Report BFF/OpenAPI route drift
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/report_bff_openapi_route_drift.sh --strict
+
       - name: Guard Nginx edge hardening
         if: steps.detect_rust.outputs.present == 'true'
-        run: ./scripts/check_nginx_edge_hardening.sh
+        run: |
+          ./scripts/check_nginx_edge_hardening.sh
+          ./scripts/check_cloudflare_realip_freshness.sh
+          ./scripts/check_update_cloudflare_ip_ranges_validation.sh
+          ./scripts/check_cloudflare_sync_freshness_guard.sh
+          ./scripts/check_ops_edge_commands.sh
+          ./scripts/check_ops_edge_preflight.sh
+          ./scripts/check_ops_report_exit_semantics.sh
+
+      - name: Guard deploy env invariants
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_deploy_env_invariants.sh
+
+      - name: Guard trusted-proxy smoke/header invariants
+        if: steps.detect_rust.outputs.present == 'true'
+        run: |
+          ./scripts/check_trusted_proxy_smoke_headers.sh
+          ./scripts/check_ci_trusted_proxy_smoke.sh
+          ./scripts/check_dashboard_proxy_trusted_proxy_guard.sh
+
+      - name: Account-create profile smoke (strict + interim)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: bash ./scripts/ci_account_create_profiles.sh
+
+      - name: Guard image digest pinning
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_image_digest_pinning.sh
+
+      - name: Guard Rust reqwest client timeouts
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_rust_http_client_timeouts.sh
+
+      - name: Guard Rust runtime panic-prone calls
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_runtime_panics.sh
+
+      - name: Guard frontend UI error sanitization
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_frontend_error_sanitization.sh
+
+      - name: Guard Flutter HTTP timeout usage
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_flutter_http_timeouts.sh
+
+      - name: Guard no raw debug logs in Flutter lib
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_raw_debug_logs.sh
+
+      - name: Guard Flutter CI version pinning
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_flutter_ci_version_pinning.sh
+
+      - name: Guard Kotlin/flutter_webrtc compatibility
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_kotlin_webrtc_compat.sh
+
+      - name: Guard no dev-only plugin registrations in Android runtime
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_dev_plugin_registrations.sh
+
+      - name: Guard no secrets in URLs (query strings)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_secrets_in_urls.sh
+
+      - name: Guard no payments phone routing
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_payments_phone_routing.sh
+
+      - name: Guard v2 foundation artifacts
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/v2/check_v2_foundation.sh
 
       - name: Skip note (no Cargo.toml)
         if: steps.detect_rust.outputs.present != 'true'
         run: echo "No Cargo.toml found; skipping Rust CI job for this branch."
+
+  ride-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shamell
+          POSTGRES_PASSWORD: shamell
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shamell -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Install postgres client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Ride release gate (dev)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/ride-e2e
+          ./scripts/ops.sh dev ride-release-gate 2>&1 | tee .artifacts/ride-e2e/ride-gate-console.log
+
+      - name: Collect ride gate artifacts
+        if: always()
+        run: ./scripts/collect_ride_e2e_artifacts.sh .artifacts/ride-e2e
+
+      - name: Write ride gate summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/write_ride_gate_summary.sh .artifacts/ride-e2e | tee .artifacts/ride-e2e/ride-gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ride gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ride-gate-artifacts
+          path: .artifacts/ride-e2e
+          if-no-files-found: warn
+
+  admin-credit-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shamell
+          POSTGRES_PASSWORD: shamell
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shamell -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Install smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq postgresql-client
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Admin credit smoke
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: shamell
+          PGPASSWORD: shamell
+        run: ./scripts/ci_admin_credit_smoke.sh
 
   flutter:
     runs-on: ubuntu-latest
@@ -192,12 +400,195 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
         run: flutter pub get
 
-      - name: Flutter smoke test
+      - name: Guard Flutter record platform compatibility
+        run: ./scripts/check_flutter_record_platform_compat.sh
+
+      - name: Guard iOS flutter_webrtc Pod lock sync
+        run: ./scripts/check_ios_webrtc_pod_lock_sync.sh
+
+      - name: Guard mobile release security env script
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/check_mobile_release_security_env.sh
+          tls_bundle="$(python3 - <<'PY'
+          import base64
+          print(base64.b64encode(b'\x01' * 128).decode())
+          PY
+          )"
+          REQUIRE_PRODUCTION_SIGNING=true \
+            TRUSTED_TLS_CERTIFICATES_DER_BASE64="$tls_bundle" \
+            FLUTTER_BUILD_ARGS="flutter build appbundle --release --obfuscate --split-debug-info=build/symbols/android" \
+            ./scripts/check_mobile_release_security_env.sh
+          if REQUIRE_PRODUCTION_SIGNING=true SHAMELL_ALLOW_DEBUG_RELEASE_SIGNING=true \
+            ./scripts/check_mobile_release_security_env.sh; then
+            echo "expected production debug-signing override to be rejected"
+            exit 1
+          fi
+          if REQUIRE_PRODUCTION_SIGNING=true \
+            TRUSTED_TLS_CERTIFICATES_DER_BASE64="$tls_bundle" \
+            FLUTTER_BUILD_ARGS="flutter build appbundle --release --split-debug-info=build/symbols/android" \
+            ./scripts/check_mobile_release_security_env.sh; then
+            echo "expected missing --obfuscate to be rejected"
+            exit 1
+          fi
+          if REQUIRE_PRODUCTION_SIGNING=true \
+            TRUSTED_TLS_CERTIFICATES_DER_BASE64="$tls_bundle" \
+            FLUTTER_BUILD_ARGS="flutter build appbundle --release --obfuscate" \
+            ./scripts/check_mobile_release_security_env.sh; then
+            echo "expected missing --split-debug-info to be rejected"
+            exit 1
+          fi
+          bad_defines="$(python3 - <<'PY'
+          import base64
+          print(base64.b64encode(b'ALLOW_LEGACY_SESSION_FALLBACK_ON_MOBILE_IN_RELEASE=true').decode())
+          PY
+          )"
+          if DART_DEFINES="$bad_defines" ./scripts/check_mobile_release_security_env.sh; then
+            echo "expected insecure release dart define to be rejected"
+            exit 1
+          fi
+
+      - name: Guard Android release signing env script
+        shell: bash
+        run: |
+          set -euo pipefail
+          store_file="$(mktemp)"
+          keytool -genkeypair \
+            -alias shamell-test \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 1 \
+            -keystore "$store_file" \
+            -storepass changeit \
+            -keypass changeit \
+            -dname "CN=Shamell Test,O=Shamell,C=US" >/dev/null 2>&1
+          REQUIRE_PRODUCTION_SIGNING=false \
+            SHAMELL_ALLOW_DEBUG_RELEASE_SIGNING=true \
+            ./scripts/check_android_release_signing_env.sh
+          REQUIRE_PRODUCTION_SIGNING=true \
+            SHAMELL_RELEASE_STORE_FILE="$store_file" \
+            SHAMELL_RELEASE_STORE_PASSWORD=changeit \
+            SHAMELL_RELEASE_KEY_ALIAS=shamell-test \
+            SHAMELL_RELEASE_KEY_PASSWORD=changeit \
+            ORG_GRADLE_PROJECT_playIntegrityCloudProjectNumber=123456789 \
+            ./scripts/check_android_release_signing_env.sh
+          if REQUIRE_PRODUCTION_SIGNING=true \
+            SHAMELL_ALLOW_DEBUG_RELEASE_SIGNING=true \
+            SHAMELL_RELEASE_STORE_FILE="$store_file" \
+            SHAMELL_RELEASE_STORE_PASSWORD=changeit \
+            SHAMELL_RELEASE_KEY_ALIAS=shamell-test \
+            SHAMELL_RELEASE_KEY_PASSWORD=changeit \
+            ORG_GRADLE_PROJECT_playIntegrityCloudProjectNumber=123456789 \
+            ./scripts/check_android_release_signing_env.sh; then
+            echo "expected production debug-signing override to be rejected"
+            exit 1
+          fi
+          if REQUIRE_PRODUCTION_SIGNING=true \
+            SHAMELL_RELEASE_STORE_FILE="$store_file" \
+            SHAMELL_RELEASE_STORE_PASSWORD=changeit \
+            SHAMELL_RELEASE_KEY_ALIAS=shamell-test \
+            SHAMELL_RELEASE_KEY_PASSWORD=changeit \
+            SHAMELL_ANDROID_SIGNING_CERT_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+            ORG_GRADLE_PROJECT_playIntegrityCloudProjectNumber=123456789 \
+            ./scripts/check_android_release_signing_env.sh; then
+            echo "expected mismatched Android signing fingerprint to be rejected"
+            exit 1
+          fi
+          if REQUIRE_PRODUCTION_SIGNING=true \
+            SHAMELL_RELEASE_STORE_FILE="$store_file" \
+            SHAMELL_RELEASE_STORE_PASSWORD=changeit \
+            SHAMELL_RELEASE_KEY_ALIAS=shamell-test \
+            SHAMELL_RELEASE_KEY_PASSWORD=changeit \
+            ./scripts/check_android_release_signing_env.sh; then
+            echo "expected missing Play Integrity cloud project number to be rejected"
+            exit 1
+          fi
+          debugish_store_file="$(mktemp)"
+          keytool -genkeypair \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 1 \
+            -keystore "$debugish_store_file" \
+            -storepass android \
+            -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
+          if REQUIRE_PRODUCTION_SIGNING=true \
+            SHAMELL_RELEASE_STORE_FILE="$debugish_store_file" \
+            SHAMELL_RELEASE_STORE_PASSWORD=android \
+            SHAMELL_RELEASE_KEY_ALIAS=androiddebugkey \
+            SHAMELL_RELEASE_KEY_PASSWORD=android \
+            ORG_GRADLE_PROJECT_playIntegrityCloudProjectNumber=123456789 \
+            ./scripts/check_android_release_signing_env.sh; then
+            echo "expected debug signing identity to be rejected for release keystore"
+            exit 1
+          fi
+
+      - name: Guard Android exported component surface
+        run: ./scripts/check_android_exported_components.sh
+
+      - name: Flutter analyze
         working-directory: clients/shamell_flutter
-        run: flutter test test/ratchet_kdf_test.dart
+        run: flutter analyze
+
+      - name: Flutter test suite
+        working-directory: clients/shamell_flutter
+        run: flutter test
+
+  flutter-macos-smoke:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
+        with:
+          flutter-version: "3.38.5"
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Flutter pub get
+        working-directory: clients/shamell_flutter
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: clients/shamell_flutter
+        run: flutter analyze
+
+      - name: Build macOS debug app
+        working-directory: clients/shamell_flutter
+        run: flutter build macos --debug --no-pub
+
+      - name: Runtime smoke log guard
+        working-directory: clients/shamell_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="$(mktemp)"
+          flutter run -d macos --debug -t lib/main.dart >"$log_file" 2>&1 &
+          run_pid=$!
+          sleep 45
+          if kill -0 "$run_pid" 2>/dev/null; then
+            kill "$run_pid" || true
+          fi
+          wait "$run_pid" || true
+          echo "---- flutter run log (tail) ----"
+          tail -n 200 "$log_file" || true
+          if ! grep -q "HOME_PAGE_BUILD: Shamell" "$log_file"; then
+            echo "Missing app startup marker in macOS smoke run."
+            exit 1
+          fi
+          if grep -E "OSStatus error 13|Could not locate configuration file: 'GoogleService-Info\\.plist'" "$log_file"; then
+            echo "Detected forbidden runtime errors in macOS smoke run."
+            exit 1
+          fi
