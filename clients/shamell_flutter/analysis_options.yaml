@@ -33,12 +33,16 @@ analyzer:
     unreachable_switch_default: warning
     invalid_null_aware_operator: warning
     library_private_types_in_public_api: warning
-    # Style-only rules deliberately silenced for now; revisit in a
-    # dedicated lint cleanup sprint.
-    prefer_const_constructors: ignore
-    prefer_const_literals_to_create_immutables: ignore
-    prefer_const_declarations: ignore
-    prefer_final_fields: ignore
+    # Performance-relevant: const constructors avoid unnecessary widget
+    # rebuilds inside deep trees (Moments, threema chat, sticker grids).
+    # Promoted from ignore to warning so the analyzer surfaces them in
+    # IDE/`flutter analyze` output -- run `dart fix --apply` to bulk-
+    # rewrite at any point. Kept below error level until that bulk
+    # cleanup happens to avoid breaking builds on PRs that touch them.
+    prefer_const_constructors: warning
+    prefer_const_literals_to_create_immutables: warning
+    prefer_const_declarations: warning
+    prefer_final_fields: warning
     prefer_interpolation_to_compose_strings: ignore
     unnecessary_brace_in_string_interps: ignore
     unnecessary_to_list_in_spreads: ignore
