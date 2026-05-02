@@ -22,3 +22,6 @@ uuid = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

@@ -41,3 +41,6 @@ urlencoding = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 shamell_common = { path = "../../crates_rs/shamell_common", version = "0.1.0" }
+
+[lints]
+workspace = true

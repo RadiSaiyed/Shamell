@@ -52,3 +52,27 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# Workspace-wide lints.
+#
+# Each crate opts in via `[lints] workspace = true`, so toggling a rule
+# here applies everywhere uniformly. Severities below are deliberately
+# moderate to avoid drowning the cleanup pass in unrelated noise; a
+# follow-up pass can tighten them once the handlers.rs decomposition
+# lands.
+[workspace.lints.rust]
+# We genuinely have no `unsafe` in this codebase today; forbid prevents
+# a stray `unsafe` block from sneaking in via PR.
+unsafe_code = "forbid"
+# `Result`/`Future` left dangling is almost always a bug. Already part
+# of the standard set, but pinned explicitly so it can't be relaxed.
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Surface developer placeholders before they ship.
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+# Cheap correctness hints worth catching at lint time.
+needless_borrow = "warn"
+redundant_clone = "warn"
