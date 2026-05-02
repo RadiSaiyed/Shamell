@@ -64,8 +64,9 @@ pub mod safety_number {
     }
 
     fn display_string_for(identifier: &str, identity_key: &[u8], iterations: usize) -> String {
-        let mut bytes: Zeroizing<Vec<u8>> =
-            Zeroizing::new(Vec::with_capacity(2 + identity_key.len() + identifier.len()));
+        let mut bytes: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(
+            2 + identity_key.len() + identifier.len(),
+        ));
         bytes.extend_from_slice(&VERSION.to_le_bytes());
         bytes.extend_from_slice(identity_key);
         bytes.extend_from_slice(identifier.as_bytes());

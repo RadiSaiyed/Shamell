@@ -75,4 +75,22 @@ unimplemented = "warn"
 dbg_macro = "warn"
 # Cheap correctness hints worth catching at lint time.
 needless_borrow = "warn"
-redundant_clone = "warn"
+
+# Lints we deliberately allow today and plan to tighten later.
+#
+# `redundant_clone` is a nursery lint with documented false-positive
+# patterns (cargo clippy --fix refused to auto-apply 19 of 20
+# suggestions in services_rs/bff_gateway/src/handlers.rs alone).
+# Re-enable as warn once handlers.rs is decomposed
+# (see services_rs/bff_gateway/REFACTORING.md) so each call site
+# is reviewable without scrolling through 74k lines.
+redundant_clone = "allow"
+#
+# `collapsible_match` (a stable clippy::all lint, so it would be an
+# error under `-D warnings` even if we did nothing here) fires 5x
+# in handlers.rs -- 4 of them on the same WebSocket Pong fall-
+# through pattern. The pattern is intentional ("send pong, drop
+# the connection on error") and rewriting it inside a 74k-line file
+# without per-call-site verification is the wrong tradeoff for a
+# style lint. Will revisit alongside the same decomposition.
+collapsible_match = "allow"

@@ -570,7 +570,7 @@ mod tests {
         let method = Method::POST;
         let path_and_query = "/internal/security/alerts?source=test";
         let (parts, verifier) =
-            v2_request_parts_without_legacy_signature(method.clone(), path_and_query, body, "bff");
+            v2_request_parts_without_legacy_signature(method, path_and_query, body, "bff");
 
         let caller = verify_identity(IdentityVerificationContext {
             parts: &parts,
