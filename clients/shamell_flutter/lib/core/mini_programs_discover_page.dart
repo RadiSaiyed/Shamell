@@ -2996,7 +2996,7 @@ class _MiniProgramsPinnedManagePageState
                   width: 22,
                   height: 22,
                   decoration: const BoxDecoration(
-                    color: Color(0xFF07C160),
+                    color: Tokens.primary,
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(

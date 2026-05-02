@@ -163,12 +163,12 @@ class _ProfilePageState extends State<ProfilePage> {
             child: Row(
               children: [
                 CircleAvatar(
-                  radius: 26,
+                  radius: 22,
                   child: Text(
                     _avatarInitial(),
                     style: const TextStyle(
                       fontWeight: FontWeight.w700,
-                      fontSize: 20,
+                      fontSize: 18,
                     ),
                   ),
                 ),
@@ -319,9 +319,9 @@ class CardsOffersPage extends StatelessWidget {
               children: [
                 ListTile(
                   dense: true,
-                  leading: const WeChatLeadingIcon(
-                    icon: Icons.card_giftcard_outlined,
-                    background: Color(0xFFF59E0B),
+              leading: const WeChatLeadingIcon(
+                icon: Icons.card_giftcard_outlined,
+                    background: Tokens.warning,
                   ),
                   title: Text(l.isArabic ? 'قسائم' : 'Vouchers'),
                   trailing: chevron(),
@@ -338,7 +338,7 @@ class CardsOffersPage extends StatelessWidget {
                     dense: true,
                     leading: const WeChatLeadingIcon(
                       icon: Icons.pending_actions_outlined,
-                      background: Color(0xFF3B82F6),
+                      background: Tokens.accent,
                     ),
                     title:
                         Text(l.isArabic ? 'طلبات الدفع' : 'Payment requests'),
@@ -2268,9 +2268,9 @@ class _WeChatPrivacyBlockedListPageState
         display.trim().isNotEmpty ? display.trim()[0].toUpperCase() : '?';
     final seed = display.hashCode;
     final colors = <Color>[
-      const Color(0xFF3B82F6),
+      Tokens.accent,
       const Color(0xFF10B981),
-      const Color(0xFFF59E0B),
+      Tokens.warning,
       const Color(0xFF8B5CF6),
       const Color(0xFFEF4444),
     ];

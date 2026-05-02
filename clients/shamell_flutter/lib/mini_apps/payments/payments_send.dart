@@ -1585,8 +1585,8 @@ class PayActionButton extends StatelessWidget {
       this.icon,
       required this.label,
       required this.onTap,
-      this.padding = const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-      this.radius = 10,
+      this.padding = const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      this.radius = 8,
       this.tint});
   @override
   Widget build(BuildContext context) {
@@ -1594,10 +1594,10 @@ class PayActionButton extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final Color base = tint ?? theme.colorScheme.primary;
     final Color bg =
-        isDark ? base.withValues(alpha: .18) : base.withValues(alpha: .12);
+        isDark ? base.withValues(alpha: .16) : base.withValues(alpha: .10);
     final Color border = isDark
-        ? Colors.white.withValues(alpha: .18)
-        : Colors.black.withValues(alpha: .10);
+        ? theme.dividerColor.withValues(alpha: .80)
+        : theme.dividerColor.withValues(alpha: .95);
     final Color textColor = base;
     final content = Row(
       mainAxisSize: MainAxisSize.min,
@@ -1613,7 +1613,8 @@ class PayActionButton extends StatelessWidget {
             style: TextStyle(
               color: textColor,
               fontWeight: FontWeight.w700,
-              fontSize: 15,
+              fontSize: 13,
+              letterSpacing: 0,
             ),
           ),
         ),

@@ -8,21 +8,41 @@ class SuperApp extends StatelessWidget {
     final l = L10n.of(context);
     // Debug log to verify HomePage from this repo is running on device.
     debugPrint('HOME_PAGE_BUILD: Shamell');
-    // WeChat-like light theme: flat surfaces + WeChat green accent.
-    const wechatGreen = WeChatPalette.green;
+    const brandPrimary = Tokens.primary;
     final baseBtnShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(8),
+    );
+    final lightTextTheme = GoogleFonts.interTextTheme().apply(
+      bodyColor: Tokens.lightOnSurface,
+      displayColor: Tokens.lightOnSurface,
+    );
+    final darkTextTheme = GoogleFonts.interTextTheme(
+      ThemeData(brightness: Brightness.dark).textTheme,
+    ).apply(
+      bodyColor: Tokens.onSurface,
+      displayColor: Tokens.onSurface,
+    );
+    final lightInputBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: const BorderSide(color: Tokens.lightBorder),
+    );
+    final darkInputBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: const BorderSide(color: Tokens.border),
     );
     final lightTheme = ThemeData(
       useMaterial3: true,
       brightness: Brightness.light,
       colorScheme: const ColorScheme.light(
-        primary: wechatGreen,
-        secondary: wechatGreen,
-        surface: Colors.white,
-        onSurface: Color(0xFF111111),
+        primary: brandPrimary,
+        onPrimary: Tokens.onPrimary,
+        secondary: Tokens.accent,
+        tertiary: Tokens.colorPayments,
+        error: Tokens.error,
+        surface: Tokens.lightSurfaceAlt,
+        onSurface: Tokens.lightOnSurface,
       ),
-      scaffoldBackgroundColor: WeChatPalette.background,
+      scaffoldBackgroundColor: Tokens.lightSurface,
       dividerColor: WeChatPalette.divider,
       dividerTheme: const DividerThemeData(
         color: WeChatPalette.divider,
@@ -30,74 +50,138 @@ class SuperApp extends StatelessWidget {
         space: 1,
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-        backgroundColor: Colors.white,
-        selectedItemColor: wechatGreen,
-        unselectedItemColor: Color(0xFF8A8A8A),
-        elevation: 0.5,
+        backgroundColor: Tokens.lightSurfaceAlt,
+        selectedItemColor: brandPrimary,
+        unselectedItemColor: Tokens.lightOnSurfaceSecondary,
+        elevation: 0,
       ),
-      textTheme: GoogleFonts.interTextTheme().apply(
-          bodyColor: const Color(0xFF111111),
-          displayColor: const Color(0xFF111111)),
-      iconTheme: const IconThemeData(color: Color(0xFF111111)),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: Tokens.lightSurfaceAlt,
+        indicatorColor: brandPrimary.withValues(alpha: .10),
+        elevation: 0,
+        labelTextStyle: WidgetStatePropertyAll(
+          GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0,
+            color: Tokens.lightOnSurfaceSecondary,
+          ),
+        ),
+      ),
+      textTheme: lightTextTheme.copyWith(
+        headlineMedium: lightTextTheme.headlineMedium?.copyWith(
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+        titleLarge: lightTextTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        titleMedium: lightTextTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        bodyMedium: lightTextTheme.bodyMedium?.copyWith(
+          height: 1.35,
+          letterSpacing: 0,
+        ),
+        bodySmall: lightTextTheme.bodySmall?.copyWith(
+          color: Tokens.lightOnSurfaceSecondary,
+          height: 1.35,
+          letterSpacing: 0,
+        ),
+        labelLarge: lightTextTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+      ),
+      iconTheme: const IconThemeData(color: Tokens.lightOnSurface, size: 22),
       elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
         elevation: 0,
-        backgroundColor: wechatGreen,
-        foregroundColor: Colors.white,
+        backgroundColor: brandPrimary,
+        foregroundColor: Tokens.onPrimary,
         shape: baseBtnShape,
-        minimumSize: const Size.fromHeight(48),
+        minimumSize: const Size.fromHeight(44),
       )),
       filledButtonTheme: FilledButtonThemeData(
           style: ButtonStyle(
         elevation: const WidgetStatePropertyAll(0),
-        backgroundColor: const WidgetStatePropertyAll(wechatGreen),
-        foregroundColor: const WidgetStatePropertyAll(Colors.white),
+        backgroundColor: const WidgetStatePropertyAll(brandPrimary),
+        foregroundColor: const WidgetStatePropertyAll(Tokens.onPrimary),
         shape: WidgetStatePropertyAll(baseBtnShape),
-        minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
+        minimumSize: const WidgetStatePropertyAll(Size.fromHeight(44)),
       )),
       outlinedButtonTheme: OutlinedButtonThemeData(
           style: ButtonStyle(
-        side:
-            const WidgetStatePropertyAll(BorderSide(color: Color(0xFFDDDDDD))),
-        foregroundColor: const WidgetStatePropertyAll(Color(0xFF111111)),
-        backgroundColor: const WidgetStatePropertyAll(Colors.white),
+        side: const WidgetStatePropertyAll(
+            BorderSide(color: Tokens.lightBorder)),
+        foregroundColor: const WidgetStatePropertyAll(Tokens.lightOnSurface),
+        backgroundColor: const WidgetStatePropertyAll(Tokens.lightSurfaceAlt),
         shape: WidgetStatePropertyAll(baseBtnShape),
-        minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
+        minimumSize: const WidgetStatePropertyAll(Size.fromHeight(44)),
       )),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: brandPrimary,
+          shape: baseBtnShape,
+        ),
+      ),
       inputDecorationTheme: InputDecorationTheme(
-        filled: false,
-        border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: Color(0xFFDDDDDD), width: 1.0)),
-        enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: Color(0xFFDDDDDD), width: 1.0)),
-        focusedBorder: const OutlineInputBorder(
-            borderRadius: BorderRadius.all(Radius.circular(16)),
-            borderSide: BorderSide(color: wechatGreen, width: 2.0)),
-        labelStyle: const TextStyle(color: Color(0xFF555555)),
-        hintStyle: const TextStyle(color: Color(0xFF999999)),
+        filled: true,
+        fillColor: Tokens.lightSurfaceAlt,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        border: lightInputBorder,
+        enabledBorder: lightInputBorder,
+        focusedBorder: lightInputBorder.copyWith(
+          borderSide: const BorderSide(color: Tokens.lightFocus, width: 1.4),
+        ),
+        labelStyle: const TextStyle(color: Tokens.lightOnSurfaceSecondary),
+        hintStyle: const TextStyle(color: Tokens.lightOnSurfaceSecondary),
       ),
       cardTheme: CardThemeData(
-        color: Colors.white,
+        color: Tokens.lightSurfaceAlt,
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: WeChatPalette.divider)),
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: Tokens.lightBorder)),
         elevation: 0,
         shadowColor: Colors.black.withValues(alpha: .05),
       ),
+      listTileTheme: const ListTileThemeData(
+        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+        iconColor: Tokens.lightOnSurfaceSecondary,
+        textColor: Tokens.lightOnSurface,
+      ),
+      chipTheme: ChipThemeData(
+        backgroundColor: WeChatPalette.searchFill,
+        selectedColor: brandPrimary.withValues(alpha: .12),
+        side: const BorderSide(color: Tokens.lightBorder),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        labelStyle: const TextStyle(
+          color: Tokens.lightOnSurface,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: Tokens.surface,
+        contentTextStyle: GoogleFonts.inter(color: Tokens.onSurface),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
       appBarTheme: const AppBarTheme(
-        backgroundColor: Colors.white,
+        backgroundColor: Tokens.lightSurfaceAlt,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        surfaceTintColor: Colors.white,
+        surfaceTintColor: Tokens.lightSurfaceAlt,
         titleTextStyle: TextStyle(
             fontWeight: FontWeight.w700,
             fontSize: 18,
-            color: Color(0xFF111111)),
-        foregroundColor: Color(0xFF111111),
-        iconTheme: IconThemeData(color: Color(0xFF111111)),
+            color: Tokens.lightOnSurface),
+        foregroundColor: Tokens.lightOnSurface,
+        iconTheme: IconThemeData(color: Tokens.lightOnSurface),
         systemOverlayStyle: SystemUiOverlayStyle(
             statusBarBrightness: Brightness.light,
             statusBarIconBrightness: Brightness.dark,
@@ -109,98 +193,160 @@ class SuperApp extends StatelessWidget {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
-        primary: wechatGreen,
-        secondary: wechatGreen,
-        surface: Color(0xFF1C1C1E),
-        onSurface: Color(0xFFEDEDED),
+        primary: brandPrimary,
+        onPrimary: Tokens.onPrimary,
+        secondary: Tokens.accent,
+        tertiary: Tokens.colorPayments,
+        error: Tokens.error,
+        surface: Tokens.surfaceAlt,
+        onSurface: Tokens.onSurface,
       ),
-      scaffoldBackgroundColor: const Color(0xFF0F0F10),
-      dividerColor: const Color(0xFF2C2C2E),
+      scaffoldBackgroundColor: Tokens.surface,
+      dividerColor: Tokens.border,
       dividerTheme: const DividerThemeData(
-        color: Color(0xFF2C2C2E),
+        color: Tokens.border,
         thickness: 0.5,
         space: 1,
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-        backgroundColor: Color(0xFF1C1C1E),
-        selectedItemColor: wechatGreen,
-        unselectedItemColor: Color(0xFF9A9A9A),
-        elevation: 0.5,
+        backgroundColor: Tokens.surfaceAlt,
+        selectedItemColor: brandPrimary,
+        unselectedItemColor: Tokens.onSurfaceSecondary,
+        elevation: 0,
       ),
-      textTheme: GoogleFonts.interTextTheme(
-        ThemeData(brightness: Brightness.dark).textTheme,
-      ).apply(
-          bodyColor: const Color(0xFFEDEDED),
-          displayColor: const Color(0xFFEDEDED)),
-      iconTheme: const IconThemeData(color: Color(0xFFEDEDED)),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: Tokens.surfaceAlt,
+        indicatorColor: brandPrimary.withValues(alpha: .18),
+        elevation: 0,
+        labelTextStyle: WidgetStatePropertyAll(
+          GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0,
+            color: Tokens.onSurfaceSecondary,
+          ),
+        ),
+      ),
+      textTheme: darkTextTheme.copyWith(
+        headlineMedium: darkTextTheme.headlineMedium?.copyWith(
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+        titleLarge: darkTextTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        titleMedium: darkTextTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        bodyMedium: darkTextTheme.bodyMedium?.copyWith(
+          height: 1.35,
+          letterSpacing: 0,
+        ),
+        bodySmall: darkTextTheme.bodySmall?.copyWith(
+          color: Tokens.onSurfaceSecondary,
+          height: 1.35,
+          letterSpacing: 0,
+        ),
+        labelLarge: darkTextTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+      ),
+      iconTheme: const IconThemeData(color: Tokens.onSurface, size: 22),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           elevation: 0,
-          backgroundColor: wechatGreen,
-          foregroundColor: Colors.white,
+          backgroundColor: brandPrimary,
+          foregroundColor: Tokens.onPrimary,
           shape: baseBtnShape,
-          minimumSize: const Size.fromHeight(48),
+          minimumSize: const Size.fromHeight(44),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: ButtonStyle(
           elevation: const WidgetStatePropertyAll(0),
-          backgroundColor: const WidgetStatePropertyAll(wechatGreen),
-          foregroundColor: const WidgetStatePropertyAll(Colors.white),
+          backgroundColor: const WidgetStatePropertyAll(brandPrimary),
+          foregroundColor: const WidgetStatePropertyAll(Tokens.onPrimary),
           shape: WidgetStatePropertyAll(baseBtnShape),
-          minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
+          minimumSize: const WidgetStatePropertyAll(Size.fromHeight(44)),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: ButtonStyle(
           side: const WidgetStatePropertyAll(
-            BorderSide(color: Color(0xFF3A3A3C)),
+            BorderSide(color: Tokens.border),
           ),
-          foregroundColor: const WidgetStatePropertyAll(Color(0xFFEDEDED)),
-          backgroundColor: const WidgetStatePropertyAll(Color(0xFF1C1C1E)),
+          foregroundColor: const WidgetStatePropertyAll(Tokens.onSurface),
+          backgroundColor: const WidgetStatePropertyAll(Tokens.surfaceAlt),
           shape: WidgetStatePropertyAll(baseBtnShape),
-          minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
+          minimumSize: const WidgetStatePropertyAll(Size.fromHeight(44)),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: Tokens.focus,
+          shape: baseBtnShape,
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
-        filled: false,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFF3A3A3C), width: 1.0),
+        filled: true,
+        fillColor: Tokens.surfaceAlt,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        border: darkInputBorder,
+        enabledBorder: darkInputBorder,
+        focusedBorder: darkInputBorder.copyWith(
+          borderSide: const BorderSide(color: Tokens.focus, width: 1.4),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: Color(0xFF3A3A3C), width: 1.0),
-        ),
-        focusedBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.all(Radius.circular(16)),
-          borderSide: BorderSide(color: wechatGreen, width: 2.0),
-        ),
-        labelStyle: const TextStyle(color: Color(0xFFB0B0B0)),
-        hintStyle: const TextStyle(color: Color(0xFF8A8A8A)),
+        labelStyle: const TextStyle(color: Tokens.onSurfaceSecondary),
+        hintStyle: const TextStyle(color: Tokens.onSurfaceSecondary),
       ),
       cardTheme: CardThemeData(
-        color: const Color(0xFF1C1C1E),
+        color: Tokens.surfaceAlt,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: Color(0xFF2C2C2E)),
+          borderRadius: BorderRadius.circular(10),
+          side: const BorderSide(color: Tokens.border),
         ),
         elevation: 0,
         shadowColor: Colors.black.withValues(alpha: .35),
       ),
+      listTileTheme: const ListTileThemeData(
+        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+        iconColor: Tokens.onSurfaceSecondary,
+        textColor: Tokens.onSurface,
+      ),
+      chipTheme: ChipThemeData(
+        backgroundColor: Tokens.surfaceAlt,
+        selectedColor: brandPrimary.withValues(alpha: .18),
+        side: const BorderSide(color: Tokens.border),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        labelStyle: const TextStyle(
+          color: Tokens.onSurface,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: Tokens.onSurface,
+        contentTextStyle: GoogleFonts.inter(color: Tokens.surface),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
       appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xFF1C1C1E),
+        backgroundColor: Tokens.surfaceAlt,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        surfaceTintColor: Color(0xFF1C1C1E),
+        surfaceTintColor: Tokens.surfaceAlt,
         titleTextStyle: TextStyle(
           fontWeight: FontWeight.w700,
           fontSize: 18,
-          color: Color(0xFFEDEDED),
+          color: Tokens.onSurface,
         ),
-        foregroundColor: Color(0xFFEDEDED),
-        iconTheme: IconThemeData(color: Color(0xFFEDEDED)),
+        foregroundColor: Tokens.onSurface,
+        iconTheme: IconThemeData(color: Tokens.onSurface),
         systemOverlayStyle: SystemUiOverlayStyle(
           statusBarBrightness: Brightness.dark,
           statusBarIconBrightness: Brightness.light,

@@ -529,8 +529,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         final showLetter =
             appIcon == Icons.widgets_outlined && avatarInitial.isNotEmpty;
         return Container(
-          width: 44,
-          height: 44,
+          width: 40,
+          height: 40,
           decoration: BoxDecoration(
             color: appBg,
             borderRadius: BorderRadius.circular(10),
@@ -565,6 +565,130 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         if (clean == 'rejected') return isArabic ? 'مرفوض' : 'Rejected';
         if (clean == 'suspended') return isArabic ? 'موقوف' : 'Suspended';
         return r;
+      }
+
+      Widget compactAppHeader() {
+        final ownerLabel = () {
+          if (_isMine) return isArabic ? 'أنت (المالك)' : 'You (owner)';
+          if (_ownerName != null && _ownerName!.trim().isNotEmpty) {
+            return isArabic
+                ? 'المالك: ${_ownerName!}'
+                : 'Owner: ${_ownerName!}';
+          }
+          return '';
+        }();
+
+        final badges = <Widget>[
+          pill(
+            isArabic ? 'برنامج مصغر' : 'Mini Program',
+            background: WeChatPalette.searchFill,
+            foreground: WeChatPalette.textSecondary,
+          ),
+          if (hasPaymentsScope)
+            pill(
+              isArabic ? 'يدعم الدفع' : 'Pay-enabled',
+              background: Tokens.colorPayments.withValues(alpha: .12),
+              foreground: Tokens.colorPayments,
+              icon: Icons.account_balance_wallet_outlined,
+            ),
+          if (_status != null && _status!.trim().isNotEmpty)
+            pill(
+              statusLabel(_status!),
+              background: theme.colorScheme.primary.withValues(alpha: .10),
+              foreground: theme.colorScheme.primary.withValues(alpha: .90),
+            ),
+          if (_reviewStatus != null && _reviewStatus!.trim().isNotEmpty)
+            pill(
+              reviewLabel(_reviewStatus!),
+              background: (_reviewStatus == 'approved')
+                  ? Colors.green.withValues(alpha: .10)
+                  : theme.colorScheme.error.withValues(alpha: .08),
+              foreground: (_reviewStatus == 'approved')
+                  ? Colors.green.withValues(alpha: .90)
+                  : theme.colorScheme.error.withValues(alpha: .90),
+            ),
+        ];
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              appAvatar(),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    if (description.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        description,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .76),
+                        ),
+                      ),
+                    ],
+                    if (ownerLabel.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            _isMine
+                                ? Icons.person_outline
+                                : Icons.storefront_outlined,
+                            size: 13,
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: .66),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              ownerLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontSize: 11,
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: .70),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (badges.isNotEmpty) ...[
+                      const SizedBox(height: 7),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < badges.length; i++) ...[
+                              if (i > 0) const SizedBox(width: 6),
+                              badges[i],
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
       }
 
       final List<Widget> actionTiles = <Widget>[];
@@ -603,11 +727,11 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         switch (a.kind) {
           case MiniProgramActionKind.openUrl:
             icon = Icons.link_outlined;
-            bg = const Color(0xFF3B82F6);
+            bg = Tokens.accent;
             break;
           case MiniProgramActionKind.close:
             icon = Icons.close;
-            bg = const Color(0xFF94A3B8);
+            bg = Tokens.lightOnSurfaceSecondary;
             break;
           case MiniProgramActionKind.openMod:
           default:
@@ -633,7 +757,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           dense: true,
           leading: const WeChatLeadingIcon(
             icon: Icons.star_outline,
-            background: Color(0xFFF59E0B),
+            background: Tokens.warning,
           ),
           title: Text(isArabic ? 'التقييم' : 'Rating'),
           subtitle: Text(
@@ -658,7 +782,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.verified_user_outlined,
-              background: Color(0xFF64748B),
+              background: Tokens.border,
             ),
             title: Text(isArabic ? 'الأذونات' : 'Permissions'),
             subtitle: Text(
@@ -706,7 +830,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.insights_outlined,
-              background: Color(0xFF3B82F6),
+              background: Tokens.accent,
             ),
             title: Text(isArabic ? 'أثر اللحظات' : 'Moments impact'),
             subtitle: Text(
@@ -723,7 +847,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           dense: true,
           leading: const WeChatLeadingIcon(
             icon: Icons.tag_outlined,
-            background: Color(0xFFF97316),
+            background: Tokens.colorBus,
           ),
           title: Text(isArabic ? 'لحظات هذا البرنامج' : 'Moments topic'),
           trailing: chevron(),
@@ -733,7 +857,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           dense: true,
           leading: const WeChatLeadingIcon(
             icon: Icons.share_outlined,
-            background: WeChatPalette.green,
+            background: Tokens.primary,
           ),
           title: Text(isArabic ? 'مشاركة في اللحظات' : 'Share to Moments'),
           trailing: chevron(),
@@ -829,119 +953,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             padding: const EdgeInsets.only(top: 8, bottom: 24),
             children: [
               WeChatSection(
-                margin: const EdgeInsets.only(top: 0),
+                margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
                 dividerIndent: 16,
-                children: [
-                  ListTile(
-                    dense: true,
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    leading: appAvatar(),
-                    title: Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (description.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            description,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurface
-                                  .withValues(alpha: .80),
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: [
-                            pill(
-                              isArabic ? 'برنامج مصغر' : 'Mini Program',
-                              background: WeChatPalette.searchFill,
-                              foreground: WeChatPalette.textSecondary,
-                            ),
-                            if (hasPaymentsScope)
-                              pill(
-                                isArabic ? 'يدعم الدفع' : 'Pay‑enabled',
-                                background:
-                                    Tokens.colorPayments.withValues(alpha: .12),
-                                foreground: Tokens.colorPayments,
-                                icon: Icons.account_balance_wallet_outlined,
-                              ),
-                            if (_status != null && _status!.trim().isNotEmpty)
-                              pill(
-                                statusLabel(_status!),
-                                background: theme.colorScheme.primary
-                                    .withValues(alpha: .10),
-                                foreground: theme.colorScheme.primary
-                                    .withValues(alpha: .90),
-                              ),
-                            if (_reviewStatus != null &&
-                                _reviewStatus!.trim().isNotEmpty)
-                              pill(
-                                reviewLabel(_reviewStatus!),
-                                background: (_reviewStatus == 'approved')
-                                    ? Colors.green.withValues(alpha: .10)
-                                    : theme.colorScheme.error
-                                        .withValues(alpha: .08),
-                                foreground: (_reviewStatus == 'approved')
-                                    ? Colors.green.withValues(alpha: .90)
-                                    : theme.colorScheme.error
-                                        .withValues(alpha: .90),
-                              ),
-                          ],
-                        ),
-                        if (_isMine ||
-                            (_ownerName != null &&
-                                _ownerName!.trim().isNotEmpty)) ...[
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Icon(
-                                _isMine
-                                    ? Icons.person_outline
-                                    : Icons.storefront_outlined,
-                                size: 14,
-                                color: theme.colorScheme.onSurface
-                                    .withValues(alpha: .70),
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  _isMine
-                                      ? (isArabic
-                                          ? 'أنت (المالك)'
-                                          : 'You (owner)')
-                                      : (isArabic
-                                          ? 'المالك: ${_ownerName!}'
-                                          : 'Owner: ${_ownerName!}'),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    fontSize: 11,
-                                    color: theme.colorScheme.onSurface
-                                        .withValues(alpha: .75),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+                children: [compactAppHeader()],
               ),
               if (_loading)
                 const Padding(
@@ -955,7 +969,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
                       color: theme.colorScheme.error.withValues(alpha: .06),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: theme.colorScheme.error.withValues(alpha: .18),
                       ),
@@ -1031,24 +1045,18 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: ListView(
+            padding: EdgeInsets.zero,
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: theme.cardColor,
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: theme.dividerColor.withValues(alpha: .25),
+                    color: theme.dividerColor.withValues(alpha: .90),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: theme.colorScheme.shadow.withValues(alpha: .03),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+                  boxShadow: const [],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1057,12 +1065,12 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Container(
-                          width: 48,
-                          height: 48,
+                          width: 40,
+                          height: 40,
                           decoration: BoxDecoration(
                             color: theme.colorScheme.primary
-                                .withValues(alpha: .06),
-                            borderRadius: BorderRadius.circular(12),
+                                .withValues(alpha: .10),
+                            borderRadius: BorderRadius.circular(8),
                           ),
                           child: Center(
                             child: avatarInitial.isNotEmpty
@@ -1100,7 +1108,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                 const SizedBox(height: 4),
                                 Text(
                                   description,
-                                  maxLines: 2,
+                                  maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     color: theme.colorScheme.onSurface
@@ -1177,7 +1185,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                       Icons.star,
                                       size: 14,
                                       color:
-                                          Colors.amber.withValues(alpha: .95),
+                                          Tokens.warning.withValues(alpha: .95),
                                     ),
                                     const SizedBox(width: 2),
                                     Text(
@@ -1572,7 +1580,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                   );
                 }).toList(),
               ),
-              const Spacer(),
+              const SizedBox(height: 16),
               TextButton.icon(
                 icon: const Icon(Icons.tag_outlined, size: 18),
                 label: Text(

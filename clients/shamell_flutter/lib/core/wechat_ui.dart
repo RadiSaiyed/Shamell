@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 
 class WeChatPalette {
-  static const Color green = Color(0xFF07C160);
-  static const Color background = Color(0xFFF7F7F7);
-  static const Color divider = Color(0xFFE5E5E5);
-  static const Color searchFill = Color(0xFFF1F1F1);
-  static const Color searchFillDark = Color(0xFF2C2C2E);
-  static const Color textPrimary = Color(0xFF111111);
-  static const Color textSecondary = Color(0xFF777777);
-  static const Color linkBlue = Color(0xFF576B95);
+  static const Color green = Color(0xFF0F766E);
+  static const Color background = Color(0xFFF6F8FB);
+  static const Color divider = Color(0xFFD7DEE8);
+  static const Color searchFill = Color(0xFFEFF3F8);
+  static const Color searchFillDark = Color(0xFF1F2937);
+  static const Color textPrimary = Color(0xFF111827);
+  static const Color textSecondary = Color(0xFF475569);
+  static const Color linkBlue = Color(0xFF2563EB);
 }
 
 class WeChatSection extends StatelessWidget {
@@ -22,7 +22,7 @@ class WeChatSection extends StatelessWidget {
   const WeChatSection({
     super.key,
     required this.children,
-    this.margin = const EdgeInsets.only(top: 12),
+    this.margin = const EdgeInsets.fromLTRB(12, 12, 12, 0),
     this.backgroundColor,
     this.dividerIndent = 72,
     this.dividerEndIndent = 0,
@@ -52,11 +52,19 @@ class WeChatSection extends StatelessWidget {
       ],
     );
 
-    final box = Container(color: bg, child: content);
-    final radius = borderRadius;
+    final effectiveRadius =
+        borderRadius ?? const BorderRadius.all(Radius.circular(10));
+    final box = DecoratedBox(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: effectiveRadius,
+        border: Border.all(color: theme.dividerColor.withValues(alpha: .90)),
+      ),
+      child: ClipRRect(borderRadius: effectiveRadius, child: content),
+    );
     return Container(
       margin: margin,
-      child: radius == null ? box : ClipRRect(borderRadius: radius, child: box),
+      child: box,
     );
   }
 }
@@ -131,7 +139,8 @@ class WeChatSearchBar extends StatelessWidget {
       height: 36,
       decoration: BoxDecoration(
         color: fill,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: .80)),
       ),
       child: TextField(
         controller: controller,

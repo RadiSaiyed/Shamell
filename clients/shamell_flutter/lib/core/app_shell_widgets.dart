@@ -38,8 +38,8 @@ class WaterButton extends StatelessWidget {
     this.icon,
     required this.label,
     required this.onTap,
-    this.padding = const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
-    this.radius = 12,
+    this.padding = const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    this.radius = 8,
     this.tint,
   });
 

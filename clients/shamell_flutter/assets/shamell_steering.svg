@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Outer wheel -->
+  <circle cx="128" cy="128" r="110" fill="none" stroke="#111827" stroke-width="16"/>
+  <!-- Inner hub -->
+  <circle cx="128" cy="128" r="28" fill="none" stroke="#111827" stroke-width="14"/>
+  <!-- Top spoke -->
+  <line x1="128" y1="60" x2="128" y2="100" stroke="#111827" stroke-width="14" stroke-linecap="round"/>
+  <!-- Left spoke -->
+  <line x1="82" y1="164" x2="110" y2="136" stroke="#111827" stroke-width="14" stroke-linecap="round"/>
+  <!-- Right spoke -->
+  <line x1="174" y1="164" x2="146" y2="136" stroke="#111827" stroke-width="14" stroke-linecap="round"/>
+  <!-- Top arc (grip) -->
+  <path d="M64 120 A64 64 0 0 1 192 120" fill="none" stroke="#111827" stroke-width="12" stroke-linecap="round"/>
+</svg>
+

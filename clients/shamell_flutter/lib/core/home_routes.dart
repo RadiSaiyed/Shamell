@@ -143,19 +143,29 @@ class HomeRouteGrid extends StatelessWidget {
       children: [
         const SizedBox(height: 8),
         Expanded(
-          child: GridView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 6,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 1.1,
-            ),
-            itemCount: cats.length,
-            itemBuilder: (_, i) {
-              final s = cats[i];
-              return _HomeGridTile(
-                  icon: s.icon, label: s.label, onTap: s.onTap, tint: s.tint);
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final cols = constraints.maxWidth >= 700 ? 4 : 2;
+              return GridView.builder(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: cols,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  childAspectRatio: cols >= 4 ? 2.8 : 2.55,
+                ),
+                itemCount: cats.length,
+                itemBuilder: (_, i) {
+                  final s = cats[i];
+                  return _HomeGridTile(
+                    icon: s.icon,
+                    label: s.label,
+                    onTap: s.onTap,
+                    tint: s.tint,
+                  );
+                },
+              );
             },
           ),
         ),
@@ -232,8 +242,8 @@ class _HomeGridTile extends StatelessWidget {
     final theme = Theme.of(context);
     final Color baseTint = tint ?? theme.colorScheme.primary;
     final Color surface = theme.colorScheme.surface;
-    final Color border = theme.dividerColor.withValues(alpha: .65);
-    final Color iconBg = baseTint.withValues(alpha: .15);
+    final Color border = theme.dividerColor.withValues(alpha: .90);
+    final Color iconBg = baseTint.withValues(alpha: .10);
     final Color iconFg = baseTint;
     final Color textColor = theme.colorScheme.onSurface.withValues(alpha: .90);
     return Semantics(
@@ -244,33 +254,37 @@ class _HomeGridTile extends StatelessWidget {
         child: Material(
           color: surface,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(10),
             side: BorderSide(color: border),
           ),
           child: InkWell(
             onTap: onTap,
-            borderRadius: BorderRadius.circular(24),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
                 children: [
                   Container(
-                    width: 48,
-                    height: 48,
+                    width: 38,
+                    height: 38,
                     decoration: BoxDecoration(
                       color: iconBg,
-                      shape: BoxShape.circle,
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Icon(icon, size: 28, color: iconFg),
+                    child: Icon(icon, size: 22, color: iconFg),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: textColor,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: textColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        letterSpacing: 0,
+                      ),
                     ),
                   ),
                 ],
@@ -298,12 +312,11 @@ class HomeSubGrid extends StatelessWidget {
       appBar: AppBar(title: Text(title)),
       body: GridView.builder(
         padding: const EdgeInsets.all(16),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          // In compact-Modus dieselbe Kachelgröße wie im Haupt-Homescreen (6 Spalten).
-          crossAxisCount: compact ? 6 : 3,
-          mainAxisSpacing: compact ? 8 : 12,
-          crossAxisSpacing: compact ? 8 : 12,
-          childAspectRatio: compact ? 1.1 : .95,
+        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: compact ? 260 : 320,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: compact ? 2.55 : 2.2,
         ),
         itemCount: specs.length,
         itemBuilder: (_, i) {

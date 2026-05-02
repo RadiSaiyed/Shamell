@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'chat/threema_chat_page.dart';
+import 'design_tokens.dart';
 import 'l10n.dart';
 import 'wechat_ui.dart';
 
@@ -183,7 +184,7 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
                               dense: true,
                               leading: const WeChatLeadingIcon(
                                 icon: Icons.sell_outlined,
-                                background: Color(0xFF3B82F6),
+                                background: Tokens.accent,
                               ),
                               title: Text(entry.key),
                               subtitle: Text(
