@@ -136,6 +136,9 @@ done
 scp "${tmp_env_file}" "${HOST_ALIAS}:${tmp_remote}/shamell-ride-db-backup.env"
 rm -f "${tmp_env_file}"
 
+# shellcheck disable=SC2087
+# Mixed-substitution heredoc: '${REMOTE_APP_DIR}' / '${SERVICE_NAME}' /
+# '${tmp_remote}' resolved locally; server-only vars use \$.
 ssh -tt "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'
@@ -165,6 +168,8 @@ rm -rf '${tmp_remote}'
 EOF
 
 if [[ "${RUN_NOW}" == "1" ]]; then
+  # shellcheck disable=SC2087
+  # Mixed-substitution heredoc, see comment above the first ssh block.
   ssh -tt "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'

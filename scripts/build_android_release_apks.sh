@@ -379,6 +379,7 @@ SHAMELL_ANDROID_SIGNING_ENV_OUT="$signing_env_out" \
 # Reuse the validated signing fingerprint (and decoded keystore path when the
 # source came from base64) in the later Gradle invocations of this same shell.
 set -a
+# shellcheck disable=SC1090  # signing_env_out is generated at runtime by check_android_release_signing_env.sh
 source "$signing_env_out"
 set +a
 printf 'TRUSTED_TLS_CERTIFICATES_DER_BASE64=%s\n' \

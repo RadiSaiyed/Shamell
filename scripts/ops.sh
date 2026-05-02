@@ -1034,6 +1034,9 @@ schema_migrate() {
   done
 }
 
+# shellcheck disable=SC2120
+# `migrate` is invoked indirectly via the dispatch table near the bottom
+# of this script (cmd "$@"), so shellcheck cannot see the call site.
 migrate() {
   schema_migrate "$@"
 }

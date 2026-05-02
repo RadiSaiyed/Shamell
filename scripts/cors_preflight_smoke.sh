@@ -109,7 +109,8 @@ run_preflight() {
   local requested_headers="$3"
   local headers_file="$4"
 
-  local url="${BASE_URL}$(normalize_path "$path")"
+  local url
+  url="${BASE_URL}$(normalize_path "$path")"
   local -a args
   args=(
     -sS

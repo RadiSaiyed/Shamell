@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR=""
 HOST_ALIAS="shamell"
 REMOTE_ROOT="/var/www/shamell/downloads/android"
@@ -113,6 +112,11 @@ for bundle_file in "${bundle_files[@]}"; do
 done
 
 echo "Installing APK bundle on ${HOST_ALIAS}"
+# shellcheck disable=SC2087
+# This heredoc deliberately mixes client and server substitution:
+# locally substituted vars (e.g. '${remote_sudo_password_b64}') carry
+# session/runtime values onto the server, while server-only vars are
+# escaped with \$ so they evaluate in the remote shell.
 ssh -tt "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'

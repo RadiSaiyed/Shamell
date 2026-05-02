@@ -171,6 +171,9 @@ if [[ -d "$WELL_KNOWN_DIR" ]]; then
 fi
 
 echo "Installing configs on ${HOST_ALIAS}"
+# shellcheck disable=SC2087
+# Mixed-substitution heredoc: '${remote_sudo_password_b64}' / paths
+# resolved locally before sending; server-only vars use \$ to defer.
 ssh -tt "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'

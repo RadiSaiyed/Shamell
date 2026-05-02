@@ -160,8 +160,8 @@ start_service() {
 wait_health() {
   local name="$1"
   local url="$2"
-  local i
-  for i in $(seq 1 60); do
+  local _ignored
+  for _ignored in $(seq 1 60); do
     if curl -fsS "$url" >/dev/null 2>&1; then
       log "health ${name}: ok"
       return 0

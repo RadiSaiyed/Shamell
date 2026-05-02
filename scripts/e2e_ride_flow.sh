@@ -157,8 +157,8 @@ start_service() {
 wait_health() {
   local name="$1"
   local url="$2"
-  local i
-  for i in $(seq 1 90); do
+  local _ignored
+  for _ignored in $(seq 1 90); do
     if curl -fsS "$url" >/dev/null 2>&1; then
       log "health ${name}: ok"
       return 0
@@ -303,8 +303,8 @@ poll_until() {
   local attempts="$2"
   local sleep_secs="$3"
   shift 3
-  local i
-  for i in $(seq 1 "$attempts"); do
+  local _ignored
+  for _ignored in $(seq 1 "$attempts"); do
     if "$@"; then
       return 0
     fi
@@ -456,7 +456,6 @@ log "creating ride request"
 RIDE_ID="$(create_and_match_ride "001" 2500 "Bab Touma Damascus" "Malki Damascus")"
 
 QUEUE_BODY="$(mktemp)"
-QUEUE_HEADERS="$(mktemp)"
 QUEUE2_BODY="$(mktemp)"
 OFFER_ID=""
 OFFER2_ID=""

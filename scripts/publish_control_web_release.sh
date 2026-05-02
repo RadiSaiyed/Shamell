@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR=""
 HOST_ALIAS="shamell"
 REMOTE_ROOT="/var/www/shamell/control"
@@ -102,6 +101,10 @@ ssh_args=()
 if [[ -z "${remote_sudo_password_b64}" ]]; then
   ssh_args+=(-tt)
 fi
+# shellcheck disable=SC2087
+# Mixed-substitution heredoc: '${remote_sudo_password_b64}' /
+# '${REMOTE_ROOT}' / '${release_root}' carry local values onto the
+# server; server-only vars use \$ to defer evaluation.
 ssh "${ssh_args[@]}" "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'

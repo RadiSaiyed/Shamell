@@ -115,6 +115,7 @@ run_bff_schema_migrate() {
   local log_file="$2"
   (
     set -a
+    # shellcheck disable=SC1090  # env_file is generated per-profile at runtime
     source "$env_file"
     set +a
     exec "${APP_DIR}/target/debug/shamell_bff_auth_schema_migrate"
@@ -135,6 +136,7 @@ start_bff() {
   stop_bff
   (
     set -a
+    # shellcheck disable=SC1090  # env_file is generated per-profile at runtime
     source "$env_file"
     set +a
     exec "${APP_DIR}/target/debug/shamell_bff_gateway"
@@ -218,6 +220,8 @@ build_env_file() {
   read -r internal_identity_seed_b64 internal_identity_pub_b64 < <(generate_internal_identity_pair)
   read -r security_alert_seed_b64 security_alert_pub_b64 < <(generate_internal_identity_pair)
   read -r access_assignment_admin_seed_b64 access_assignment_admin_pub_b64 < <(generate_internal_identity_pair)
+  # shellcheck disable=SC2034  # seed half is read for symmetry with the
+  # other identity pairs; only the pub half is currently consumed by line ~243.
   read -r access_assignment_sync_seed_b64 access_assignment_sync_pub_b64 < <(generate_internal_identity_pair)
   apple_p8_file="${TMP_DIR}/apple-${mode}.p8"
   google_key_file="${TMP_DIR}/google-${mode}.pem"
