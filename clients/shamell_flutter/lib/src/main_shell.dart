@@ -274,19 +274,42 @@ class AppScaffold extends StatelessWidget {
   }
 }
 
+// In-memory cookie cache.
+//
+// SharedPreferences is itself a process-singleton after the first
+// call to getInstance(), but every _getCookie() still pays a string
+// lookup + result allocation. With ~135 _hdr() / _getCookie() call
+// sites in the V1 client, this cache short-circuits all but the
+// first read per app run.
+//
+// The cache is invalidated on every _setCookie / _clearCookie, so
+// the SharedPreferences value remains the source of truth and
+// concurrent app processes (web platform tabs) cannot diverge.
+String? _sessionCookieCache;
+bool _sessionCookieCacheLoaded = false;
+
 Future<String?> _getCookie() async {
+  if (_sessionCookieCacheLoaded) {
+    return _sessionCookieCache;
+  }
   final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+  _sessionCookieCache = sp.getString('sa_cookie');
+  _sessionCookieCacheLoaded = true;
+  return _sessionCookieCache;
 }
 
 Future<void> _setCookie(String v) async {
   final sp = await SharedPreferences.getInstance();
   await sp.setString('sa_cookie', v);
+  _sessionCookieCache = v;
+  _sessionCookieCacheLoaded = true;
 }
 
 Future<void> _clearCookie() async {
   final sp = await SharedPreferences.getInstance();
   await sp.remove('sa_cookie');
+  _sessionCookieCache = null;
+  _sessionCookieCacheLoaded = true;
 }
 
 Future<Map<String, String>> _hdr({bool json = false}) async {
