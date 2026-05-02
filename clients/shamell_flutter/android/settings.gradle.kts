@@ -14,6 +14,11 @@ pluginManagement {
         // Prefer official repositories for Android/Flutter artifacts
         google()
         mavenCentral()
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
         gradlePluginPortal()
         // Required for Flutter engine/artifacts
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
@@ -35,6 +40,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
         gradlePluginPortal()
         // Required for Flutter engine/artifacts
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))

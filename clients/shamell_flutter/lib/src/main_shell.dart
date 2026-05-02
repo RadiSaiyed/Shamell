@@ -114,8 +114,8 @@ class SuperApp extends StatelessWidget {
       )),
       outlinedButtonTheme: OutlinedButtonThemeData(
           style: ButtonStyle(
-        side: const WidgetStatePropertyAll(
-            BorderSide(color: Tokens.lightBorder)),
+        side:
+            const WidgetStatePropertyAll(BorderSide(color: Tokens.lightBorder)),
         foregroundColor: const WidgetStatePropertyAll(Tokens.lightOnSurface),
         backgroundColor: const WidgetStatePropertyAll(Tokens.lightSurfaceAlt),
         shape: WidgetStatePropertyAll(baseBtnShape),
@@ -974,7 +974,10 @@ class _LoginPageState extends State<LoginPage> {
       final label = country.isEmpty ? code : '$code · $country';
       return DropdownMenuItem<String>(
         value: code,
-        child: Text(label),
+        child: Text(
+          label,
+          overflow: TextOverflow.ellipsis,
+        ),
       );
     }).toList();
     final String currentDial = _regionCodes.contains(_selectedDialCode)
@@ -1026,6 +1029,21 @@ class _LoginPageState extends State<LoginPage> {
               child: DropdownButtonFormField<String>(
                 initialValue: currentDial,
                 items: regionItems,
+                isExpanded: true,
+                selectedItemBuilder: (context) => _regionCodes
+                    .map(
+                      (code) => Align(
+                        alignment: l.isArabic
+                            ? Alignment.centerRight
+                            : Alignment.centerLeft,
+                        child: Text(
+                          code,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        ),
+                      ),
+                    )
+                    .toList(),
                 decoration: InputDecoration(
                   labelText: l.isArabic ? 'المقدمة' : 'Code',
                   prefixIcon: const Icon(Icons.flag_outlined),

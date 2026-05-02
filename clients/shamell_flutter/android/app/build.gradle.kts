@@ -9,6 +9,29 @@ plugins {
 val tomtomApiKey: String by project
 // Optional: Google Maps Android API key (if used by plugins/components).
 val googleMapsApiKey: String by project
+val playIntegrityCloudProjectNumber =
+    providers.gradleProperty("playIntegrityCloudProjectNumber")
+        .orElse("0")
+        .get()
+        .toLongOrNull() ?: 0L
+val expectedSigningCertSha256 =
+    providers.gradleProperty("expectedSigningCertSha256")
+        .orElse(providers.environmentVariable("SHAMELL_EXPECTED_SIGNING_CERT_SHA256"))
+        .orElse("")
+        .get()
+val runtimeIntegrityFailClosed =
+    providers.gradleProperty("runtimeIntegrityFailClosed")
+        .orElse("false")
+        .get()
+        .toBooleanStrictOrNull() ?: false
+val allowEmulatorQaRuntimeIntegrityBypass =
+    providers.gradleProperty("allowEmulatorQaRuntimeIntegrityBypass")
+        .orElse("true")
+        .get()
+        .toBooleanStrictOrNull() ?: true
+
+fun buildConfigString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "online.shamell.app"
@@ -68,7 +91,27 @@ android {
         }
         // Expose the TomTom API key as a BuildConfig field for all build types.
         buildTypes.configureEach {
-            buildConfigField("String", "TOMTOM_API_KEY", "\"$tomtomApiKey\"")
+            buildConfigField("String", "TOMTOM_API_KEY", buildConfigString(tomtomApiKey))
+            buildConfigField(
+                "String",
+                "EXPECTED_SIGNING_CERT_SHA256",
+                buildConfigString(expectedSigningCertSha256)
+            )
+            buildConfigField(
+                "long",
+                "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER",
+                "${playIntegrityCloudProjectNumber}L"
+            )
+            buildConfigField(
+                "boolean",
+                "RUNTIME_INTEGRITY_FAIL_CLOSED",
+                runtimeIntegrityFailClosed.toString()
+            )
+            buildConfigField(
+                "boolean",
+                "ALLOW_EMULATOR_QA_RUNTIME_INTEGRITY_BYPASS",
+                allowEmulatorQaRuntimeIntegrityBypass.toString()
+            )
         }
     }
 }
@@ -83,4 +126,5 @@ dependencies {
     // TomTom Maps SDK – Map Display module
     val tomTomMapsVersion = "1.26.3"
     implementation("com.tomtom.sdk.maps:map-display:$tomTomMapsVersion")
+    implementation("com.google.android.play:integrity:1.6.0")
 }

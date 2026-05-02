@@ -32,6 +32,11 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
         maven(url = uri("https://jitpack.io"))
     }

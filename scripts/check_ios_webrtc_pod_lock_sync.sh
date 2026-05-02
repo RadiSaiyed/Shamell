@@ -33,8 +33,15 @@ fi
 
 find_webrtc_podspec() {
   local v="$1"
+  # CI runners using `subosito/flutter-action` set PUB_CACHE to the
+  # toolchain-local cache (e.g. /opt/hostedtoolcache/flutter/<channel>/
+  # .pub-cache), not $HOME/.pub-cache. Honour PUB_CACHE first, fall
+  # back to $HOME/.pub-cache for local devs, and finally check the
+  # plugin symlink that `flutter precache` creates under ios/.symlinks.
+  local pub_cache="${PUB_CACHE:-$HOME/.pub-cache}"
   local candidates=(
     "clients/shamell_flutter/ios/.symlinks/plugins/flutter_webrtc/ios/flutter_webrtc.podspec"
+    "$pub_cache/hosted/pub.dev/flutter_webrtc-$v/ios/flutter_webrtc.podspec"
     "$HOME/.pub-cache/hosted/pub.dev/flutter_webrtc-$v/ios/flutter_webrtc.podspec"
   )
   local c
