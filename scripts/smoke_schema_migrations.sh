@@ -44,6 +44,16 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
+# Returns 0 when the named cargo package is part of the active workspace,
+# 1 when it has been moved to workspace.exclude (or is otherwise unbuildable).
+# Used to skip chat_service / payments_service smoke when those crates are
+# parked.
+crate_in_workspace() {
+  local crate="$1"
+  cargo metadata --no-deps --format-version=1 --manifest-path "$ROOT_DIR/Cargo.toml" 2>/dev/null \
+    | jq -e --arg name "$crate" '.packages[] | select(.name == $name) | .name' >/dev/null
+}
+
 resolve_pg_bin() {
   local bin="$1"
   if command -v "$bin" >/dev/null 2>&1; then
@@ -110,8 +120,8 @@ docker_daemon_available() {
 pick_free_port() {
   require_cmd lsof
   local candidate
-  local attempt
-  for attempt in $(seq 1 50); do
+  local _ignored
+  for _ignored in $(seq 1 50); do
     candidate="$((20000 + RANDOM % 20000))"
     if ! lsof -iTCP:"$candidate" -sTCP:LISTEN >/dev/null 2>&1; then
       printf '%s\n' "$candidate"
@@ -126,8 +136,8 @@ wait_for_http_ok() {
   local url="$2"
   local pid="$3"
   local log_file="$4"
-  local attempt
-  for attempt in $(seq 1 60); do
+  local _ignored
+  for _ignored in $(seq 1 60); do
     if curl -fsS "$url" >/dev/null 2>&1; then
       log "${name} health ok"
       return 0
@@ -152,9 +162,9 @@ wait_for_process_failure() {
   local name="$1"
   local pid="$2"
   local log_file="$3"
-  local attempt
+  local _ignored
   local status
-  for attempt in $(seq 1 40); do
+  for _ignored in $(seq 1 40); do
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       set +e
       wait "$pid"
@@ -181,8 +191,8 @@ wait_for_process_failure() {
 }
 
 wait_for_postgres_local() {
-  local attempt
-  for attempt in $(seq 1 60); do
+  local _ignored
+  for _ignored in $(seq 1 60); do
     if "$PG_ISREADY_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d postgres >/dev/null 2>&1; then
       return 0
     fi
@@ -192,8 +202,8 @@ wait_for_postgres_local() {
 }
 
 wait_for_postgres_docker() {
-  local attempt
-  for attempt in $(seq 1 60); do
+  local _ignored
+  for _ignored in $(seq 1 60); do
     if docker exec "$DOCKER_CONTAINER_NAME" pg_isready -U "$PG_USER" -d postgres >/dev/null 2>&1; then
       return 0
     fi
@@ -345,16 +355,20 @@ run_payments_migrator() {
 }
 
 build_runtime_binaries() {
-  log "building bff, chat and payments service binaries"
+  local -a packages=(-p shamell_bff_gateway)
+  local -a bins=(--bin shamell_bff_gateway)
+  if [[ "${CHAT_AVAILABLE:-0}" == "1" ]]; then
+    packages+=(-p shamell_chat_service)
+    bins+=(--bin shamell_chat_service)
+  fi
+  if [[ "${PAYMENTS_AVAILABLE:-0}" == "1" ]]; then
+    packages+=(-p shamell_payments_service)
+    bins+=(--bin shamell_payments_service)
+  fi
+  log "building service binaries (${packages[*]})"
   (
     cd "$ROOT_DIR"
-    cargo build --quiet \
-      -p shamell_bff_gateway \
-      -p shamell_chat_service \
-      -p shamell_payments_service \
-      --bin shamell_bff_gateway \
-      --bin shamell_chat_service \
-      --bin shamell_payments_service
+    cargo build --quiet "${packages[@]}" "${bins[@]}"
   )
 }
 
@@ -513,15 +527,36 @@ else
   start_local_postgres
 fi
 
+# Detect which downstream crates are part of the active workspace. The
+# repo currently parks chat_service + payments_service under
+# workspace.exclude (they declare modules without source files; see each
+# crate's README.md). Skip the smoke for whichever is excluded so the
+# step still exercises the bff_gateway migrator path on every CI run.
+require_cmd jq
+CHAT_AVAILABLE=0
+PAYMENTS_AVAILABLE=0
+if crate_in_workspace shamell_chat_service; then
+  CHAT_AVAILABLE=1
+else
+  log "shamell_chat_service is not in the active workspace; skipping chat smoke"
+fi
+if crate_in_workspace shamell_payments_service; then
+  PAYMENTS_AVAILABLE=1
+else
+  log "shamell_payments_service is not in the active workspace; skipping payments smoke"
+fi
+
 log "creating smoke databases"
 create_db "$BFF_DB_NAME"
 create_db "$BFF_EMPTY_DB_NAME"
-create_db "$CHAT_DB_NAME"
-create_db "$PAYMENTS_DB_NAME"
+if [[ "$CHAT_AVAILABLE" == "1" ]]; then
+  create_db "$CHAT_DB_NAME"
+fi
+if [[ "$PAYMENTS_AVAILABLE" == "1" ]]; then
+  create_db "$PAYMENTS_DB_NAME"
+fi
 
 BFF_EXPECTED="$(expected_versions "$ROOT_DIR/services_rs/bff_gateway/migrations")"
-CHAT_EXPECTED="$(expected_versions "$ROOT_DIR/services_rs/chat_service/migrations")"
-PAYMENTS_EXPECTED="$(expected_versions "$ROOT_DIR/services_rs/payments_service/migrations")"
 RUNTIME_LOG_DIR="$(mktemp -d /tmp/shamell-schema-runtime-XXXXXX)"
 
 log "running bff auth schema migrator on empty database"
@@ -530,26 +565,36 @@ log "rerunning bff auth schema migrator to verify idempotence"
 run_bff_migrator
 assert_ledger_matches "$BFF_DB_NAME" "public" "__auth_schema_migrations" "$BFF_EXPECTED"
 
-log "running chat schema migrator on empty database"
-run_chat_migrator
-log "rerunning chat schema migrator to verify idempotence"
-run_chat_migrator
-assert_ledger_matches "$CHAT_DB_NAME" "$CHAT_SCHEMA_NAME" "__schema_migrations" "$CHAT_EXPECTED"
+if [[ "$CHAT_AVAILABLE" == "1" ]]; then
+  CHAT_EXPECTED="$(expected_versions "$ROOT_DIR/services_rs/chat_service/migrations")"
+  log "running chat schema migrator on empty database"
+  run_chat_migrator
+  log "rerunning chat schema migrator to verify idempotence"
+  run_chat_migrator
+  assert_ledger_matches "$CHAT_DB_NAME" "$CHAT_SCHEMA_NAME" "__schema_migrations" "$CHAT_EXPECTED"
+fi
 
-log "running payments schema migrator on empty database"
-run_payments_migrator
-log "rerunning payments schema migrator to verify idempotence"
-run_payments_migrator
-assert_ledger_matches "$PAYMENTS_DB_NAME" "$PAYMENTS_SCHEMA_NAME" "__schema_migrations" "$PAYMENTS_EXPECTED"
+if [[ "$PAYMENTS_AVAILABLE" == "1" ]]; then
+  PAYMENTS_EXPECTED="$(expected_versions "$ROOT_DIR/services_rs/payments_service/migrations")"
+  log "running payments schema migrator on empty database"
+  run_payments_migrator
+  log "rerunning payments schema migrator to verify idempotence"
+  run_payments_migrator
+  assert_ledger_matches "$PAYMENTS_DB_NAME" "$PAYMENTS_SCHEMA_NAME" "__schema_migrations" "$PAYMENTS_EXPECTED"
+fi
 
 build_runtime_binaries
 start_bff_runtime "$(pick_free_port)"
-start_chat_runtime "$(pick_free_port)"
-start_payments_runtime "$(pick_free_port)"
-drop_schema_if_exists "$CHAT_DB_NAME" "$CHAT_EMPTY_SCHEMA_NAME"
-drop_schema_if_exists "$PAYMENTS_DB_NAME" "$PAYMENTS_EMPTY_SCHEMA_NAME"
+if [[ "$CHAT_AVAILABLE" == "1" ]]; then
+  start_chat_runtime "$(pick_free_port)"
+  drop_schema_if_exists "$CHAT_DB_NAME" "$CHAT_EMPTY_SCHEMA_NAME"
+  start_chat_runtime_expect_failure "$(pick_free_port)"
+fi
+if [[ "$PAYMENTS_AVAILABLE" == "1" ]]; then
+  start_payments_runtime "$(pick_free_port)"
+  drop_schema_if_exists "$PAYMENTS_DB_NAME" "$PAYMENTS_EMPTY_SCHEMA_NAME"
+  start_payments_runtime_expect_failure "$(pick_free_port)"
+fi
 start_bff_runtime_expect_failure "$(pick_free_port)"
-start_chat_runtime_expect_failure "$(pick_free_port)"
-start_payments_runtime_expect_failure "$(pick_free_port)"
 
 log "schema migration smoke passed"
