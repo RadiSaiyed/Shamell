@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'glass.dart';
 import 'l10n.dart';
+import 'network_image_helpers.dart';
 import 'perf.dart';
 import 'mini_apps_config.dart';
 import 'ui_kit.dart';
@@ -3645,7 +3646,11 @@ class _MomentsPageState extends State<MomentsPage> {
                   ),
                   child: Hero(
                     tag: heroTag,
-                    child: Image.network(raw, fit: BoxFit.cover),
+                    child: shamellCachedNetworkImage(
+                      raw,
+                      context: context,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 );
               }
@@ -3725,10 +3730,12 @@ class _MomentsPageState extends State<MomentsPage> {
             tag: heroTag,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
-              child: Image.network(
+              child: shamellCachedNetworkImage(
                 imageUrl,
+                context: context,
                 height: 200,
                 width: double.infinity,
+                logicalHeight: 200,
                 fit: BoxFit.cover,
               ),
             ),
@@ -3744,9 +3751,12 @@ class _MomentsPageState extends State<MomentsPage> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(4),
           child: avatarUrl.isNotEmpty
-              ? Image.network(
+              ? shamellCachedNetworkImage(
                   avatarUrl,
+                  context: context,
                   fit: BoxFit.cover,
+                  logicalWidth: 40,
+                  logicalHeight: 40,
                 )
               : Container(
                   color: theme.colorScheme.primary

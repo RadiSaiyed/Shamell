@@ -1254,9 +1254,10 @@ class _TopupKioskPageState extends State<TopupKioskPage> {
                       child: Column(children: [
                         Expanded(
                             child: Center(
-                                child: Image.network(
+                                child: shamellCachedNetworkImage(
                                     '${widget.baseUrl}/qr.png?data=' +
                                         Uri.encodeComponent(payload),
+                                    context: context,
                                     width: 180,
                                     height: 180))),
                         const SizedBox(height: 6),

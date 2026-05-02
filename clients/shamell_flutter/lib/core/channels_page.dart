@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'glass.dart';
 import 'l10n.dart';
+import 'network_image_helpers.dart';
 import 'official_accounts_page.dart' show OfficialFeedItemDeepLinkPage;
 import 'moments_page.dart' show MomentsPage;
 import 'mini_apps_config.dart';
@@ -1742,8 +1743,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                   if (thumb.isNotEmpty)
                                     ClipRRect(
                                       borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
+                                      child: shamellCachedNetworkImage(
                                         thumb,
+                                        context: context,
                                         width: 80,
                                         height: 80,
                                         fit: BoxFit.cover,
