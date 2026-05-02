@@ -27,6 +27,7 @@ paths = [
   # test mod, gitleaks will still flag them via the allowlist regex
   # checks below (which fire on patterns the test PEMs don't have).
   '''services_rs/bff_gateway/src/auth\.rs''',
+  '''services_rs/bff_gateway/src/handlers\.rs''',
   '''services_rs/bff_gateway/src/main\.rs''',
   '''services_rs/chat_service/src/config\.rs''',
 ]

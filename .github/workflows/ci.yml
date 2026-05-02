@@ -490,10 +490,12 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          # Pinned ahead of 3.38.x to dodge the pub.dev advisory
-          # decoder bug ("FormatException: advisoriesUpdated must be
-          # a String") that 3.38 ships. 3.42.0 has the fix.
-          flutter-version: "3.42.0"
+          # 3.38.5 ships a pub-advisory-decoder bug
+          # ("FormatException: advisoriesUpdated must be a String").
+          # Track the channel head so we automatically pull in the
+          # current stable patch (which has the fix) without having
+          # to manually bump versions every release.
+          channel: stable
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
@@ -661,10 +663,12 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          # Pinned ahead of 3.38.x to dodge the pub.dev advisory
-          # decoder bug ("FormatException: advisoriesUpdated must be
-          # a String") that 3.38 ships. 3.42.0 has the fix.
-          flutter-version: "3.42.0"
+          # 3.38.5 ships a pub-advisory-decoder bug
+          # ("FormatException: advisoriesUpdated must be a String").
+          # Track the channel head so we automatically pull in the
+          # current stable patch (which has the fix) without having
+          # to manually bump versions every release.
+          channel: stable
 
       - name: Enable macOS desktop
         run: flutter config --enable-macos-desktop

@@ -304,7 +304,7 @@ services:
     restart: unless-stopped
 
   coturn:
-    image: coturn/coturn:4.6.2-r2
+    image: coturn/coturn:4.6.2-r2@sha256:06e20791a0f546a11771e94a601150736ce3148188303a9a65190c08a9dd6301
     init: true
     network_mode: host
     security_opt:
