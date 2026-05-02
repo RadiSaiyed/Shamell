@@ -15,12 +15,46 @@ use tokio::sync::RwLock;
 use crate::auth::AuthRuntime;
 
 pub const DEFAULT_GEO_LOOKUP_BASE_URL: &str = "https://nominatim.openstreetmap.org";
+
+// In-process caches for short-lived auth/payments resolution. Each cache:
+//
+// - Is keyed by a normalised string (account_id, geo cache_key).
+// - Stores `expires_at: Instant` per entry; `cached_*` returns None for
+//   expired entries and lazily removes them on the read path.
+// - Has a hard size cap; on insert, expired entries are pruned via
+//   `retain(...)` first, and if still at capacity the oldest-expiring
+//   entry is evicted (`min_by_key` over the map -- O(n) but `n` is
+//   bounded by the cap below).
+// - Has a separate, shorter TTL for "negative" results (account with no
+//   roles, geo lookup that returned nothing) to avoid hammering the
+//   upstream when a misconfigured client retries in a tight loop.
+//
+// The eviction is intentionally NOT a true LRU; a true LRU buys little
+// here because the workload is dominated by auth-resolve hits with
+// stable working set << cap. If profiling later shows the O(n)
+// eviction matters, migrate to the `lru` crate -- the public method
+// surface (`cached_*` / `remember_*`) is small enough to swap in
+// place. See services_rs/bff_gateway/REFACTORING.md.
+
+/// Wallet ID stays cached for 5 minutes after a successful resolve.
+/// Wallet IDs are immutable per account, so the only invalidation
+/// pressure is account deletion, which is rare and tolerated to be
+/// up to TTL stale.
 const WALLET_RESOLUTION_CACHE_TTL_SECS: u64 = 300;
+/// Roles change on operator action. 2 minutes is short enough that a
+/// promotion/demotion lands within a meeting, long enough to absorb
+/// load on the roles upstream during a steady state.
 const ACCOUNT_ROLES_CACHE_TTL_SECS: u64 = 120;
+/// Empty-roles negative cache: tests use 1s for fast assertions; prod
+/// uses 15s to keep a misconfigured-client retry storm off the
+/// upstream without making correct grants take long to materialise.
 #[cfg(test)]
 const ACCOUNT_ROLES_EMPTY_CACHE_TTL_SECS: u64 = 1;
 #[cfg(not(test))]
 const ACCOUNT_ROLES_EMPTY_CACHE_TTL_SECS: u64 = 15;
+/// Cache size caps. Tests use 4 to make the cap eviction path easy
+/// to assert on; prod uses 10_000 which fits the working set of
+/// authenticated users for the BFF's instance footprint.
 #[cfg(test)]
 const WALLET_RESOLUTION_CACHE_MAX_ENTRIES: usize = 4;
 #[cfg(not(test))]
