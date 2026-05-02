@@ -1834,11 +1834,20 @@ impl AuthRuntime {
     }
 }
 
-pub fn spawn_maintenance_task(auth: Option<AuthRuntime>) {
-    let Some(auth) = auth else {
-        return;
-    };
-    tokio::spawn(async move {
+/// Spawn the periodic auth maintenance loop.
+///
+/// Returns the [`tokio::task::JoinHandle`] so callers (e.g. `main.rs`)
+/// can supervise the task: store it on `AppState`, await it during
+/// graceful shutdown, or `.abort()` it on config reload to avoid
+/// orphaned background loops accumulating across reloads.
+///
+/// Returns `None` when no [`AuthRuntime`] is configured (development /
+/// auth-disabled flavors), so the caller does not need a separate
+/// branch.
+#[must_use = "the JoinHandle owns the maintenance loop; dropping it abandons the task"]
+pub fn spawn_maintenance_task(auth: Option<AuthRuntime>) -> Option<tokio::task::JoinHandle<()>> {
+    let auth = auth?;
+    let handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
             auth.maintenance_interval_secs as u64,
         ));
@@ -1850,6 +1859,7 @@ pub fn spawn_maintenance_task(auth: Option<AuthRuntime>) {
             }
         }
     });
+    Some(handle)
 }
 
 async fn run_maintenance_once(auth: &AuthRuntime) -> Result<(), sqlx::Error> {

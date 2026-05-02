@@ -138,7 +138,13 @@ async fn main() {
     )
     .await;
     coach_catalog::seed_coach_catalog_best_effort(auth.as_ref(), "startup").await;
-    auth::spawn_maintenance_task(auth.clone());
+    // The maintenance loop's JoinHandle is intentionally held by the
+    // process until shutdown -- there is no per-request lifecycle and
+    // we never restart it without restarting the process. Drop guard
+    // is named to make that lifetime explicit and to silence the
+    // #[must_use] on spawn_maintenance_task.
+    let _auth_maintenance_task: Option<tokio::task::JoinHandle<()>> =
+        auth::spawn_maintenance_task(auth.clone());
 
     let internal_request_signer = match cfg.internal_identity_signing_seed_b64.as_deref() {
         Some(seed_b64) => {
