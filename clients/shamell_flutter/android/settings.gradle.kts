@@ -14,6 +14,11 @@ pluginManagement {
         // Prefer official repositories for Android/Flutter artifacts
         google()
         mavenCentral()
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
         gradlePluginPortal()
         // Required for Flutter engine/artifacts
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
@@ -21,12 +26,6 @@ pluginManagement {
         maven(url = uri("https://jitpack.io")) {
             content {
                 includeGroupByRegex("com\\.github(\\..*)?")
-            }
-        }
-        // TomTom Android SDK
-        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
-            content {
-                includeGroupByRegex("com\\.tomtom(\\..*)?")
             }
         }
     }
@@ -35,10 +34,17 @@ pluginManagement {
 // Ensure all builds (including included Flutter gradle plugin project) use these repos
 import org.gradle.api.initialization.resolve.RepositoriesMode
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    // Many third-party Flutter Android plugins still inject project-level
+    // repositories; prefer project repos to avoid build-log warning floods.
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         google()
         mavenCentral()
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
         gradlePluginPortal()
         // Required for Flutter engine/artifacts
         maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
@@ -48,19 +54,14 @@ dependencyResolutionManagement {
                 includeGroupByRegex("com\\.github(\\..*)?")
             }
         }
-        // TomTom Android SDK
-        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
-            content {
-                includeGroupByRegex("com\\.tomtom(\\..*)?")
-            }
-        }
     }
 }
 
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
-    id("com.android.application") version "8.7.2" apply false
-    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+    id("com.android.application") version "8.9.1" apply false
+    // Keep KGP aligned with modern Flutter Android plugin transitive metadata.
+    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
     id("com.google.gms.google-services") version "4.4.2" apply false
 }
 

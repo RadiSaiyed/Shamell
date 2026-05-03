@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+.secrets-local/
 .venv*
 .venv*/
 venv/
@@ -19,29 +20,57 @@ __pycache__/
 **/dist/
 **/*.egg-info/
 
+# Rust build artifacts
+target/
+**/target/
+
 # Workspace root .gitignore mirrors common patterns used here.
 
 # Local run logs
 ops/dev/logs/
 ops/dev/pids/
 ops/gcp/logs/
+ops/dev-proxy/certs/
 
 # Flutter/Android build artifacts
 clients/**/build/
 clients/**/.dart_tool/
 clients/**/ios/Pods/
+clients/**/macos/Pods/
 clients/**/android/.gradle/
 **/macos/Flutter/ephemeral/
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
+**/macos/Flutter/Flutter-Generated.xcconfig
+**/ios/Flutter/Flutter-Generated.xcconfig
 
 # Local archives / exports
 shamell-pi.tar.gz
 backups/
 ops/reports/
+.artifacts/
+.cache/
+REGULATOR_ACCESS.local.txt
+REGULATOR_ACCESS_WINDOWS.local.txt
 
-# IDE/editor
+# Firebase / GCP service-account keys (NEVER commit private keys)
+*-firebase-adminsdk-*.json
+*-service-account*.json
+google-services*adminsdk*.json
+
+# Mac download duplicates (e.g. "foo (1).json")
+*\ \(*\).json
+
+# Local tmp/seed snapshots
+tmp_*.json
+tmp_*.txt
+tmp_*.xml
+
+# IDE/editor + tooling
 **/.idea/
 **/.vscode/
 **/*.iml
+.claude/
 
 # Large SDKs/tools not tracked
 tools/

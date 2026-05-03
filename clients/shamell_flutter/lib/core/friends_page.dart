@@ -5,6 +5,7 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'design_tokens.dart';
 import 'l10n.dart';
 import 'people_nearby_page.dart';
 import 'wechat_ui.dart';
@@ -781,7 +782,7 @@ class _FriendsPageState extends State<FriendsPage> {
           icon:
               incoming ? Icons.person_add_alt_1_outlined : Icons.outgoing_mail,
           background:
-              incoming ? const Color(0xFF3B82F6) : const Color(0xFF94A3B8),
+              incoming ? Tokens.accent : Tokens.lightOnSurfaceSecondary,
         ),
         title: Text(
           display,
@@ -822,7 +823,7 @@ class _FriendsPageState extends State<FriendsPage> {
         contentPadding: const EdgeInsets.symmetric(horizontal: 16),
         leading: const WeChatLeadingIcon(
           icon: Icons.location_on_outlined,
-          background: Color(0xFFF59E0B),
+          background: Tokens.warning,
         ),
         title: Text(l.mirsaalFriendsPeopleNearbyTitle),
         subtitle: Text(

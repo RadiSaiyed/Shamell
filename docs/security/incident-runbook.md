@@ -183,21 +183,77 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
 - Alert on:
   - secret scanning findings
   - admin auth anomalies
+  - admin role mutation blocks/failures
+  - ride sensitive mutation blocks/failures
   - webhook signature failures and replay detections
   - payments edge abuse signals (wallet mismatch attempts + repeated rate-limit hits)
   - staging DAST smoke failures crossing `DAST_ALERT_CONSECUTIVE_FAILURES`
+  - encrypted ride/auth backup timer failures
 - Dashboards should include:
   - auth failures by endpoint/role
   - token issuance and revocation rates
+  - admin role mutation outcomes by operation
+  - ride sensitive mutation outcomes by operation
   - webhook accepted/rejected counts by reason
   - payments edge rate-limit events by scope (`requests_*`, `favorites_*`, `resolve_phone`)
 
-### Runtime Alert Controls (BFF)
+### Runtime Alert Controls (BFF + Chat)
 
 - `SECURITY_ALERT_WEBHOOK_URL`: optional webhook target for runtime security alerts.
+- `SECURITY_ALERT_WEBHOOK_SIGNING_SEED_B64`: preferred Ed25519 seed used by alert scripts for signed posts into BFF.
+- `SECURITY_ALERT_WEBHOOK_INTERNAL_SECRET`: optional legacy override for `X-Internal-Secret` (compatibility-only).
 - `SECURITY_ALERT_WINDOW_SECS`: rolling window for threshold checks (default `300`).
 - `SECURITY_ALERT_COOLDOWN_SECS`: minimum resend interval per alert action (default `600`).
+- `SECURITY_ALERT_SERVICE`: comma-separated compose service names to scan (default `bff,chat`).
 - `SECURITY_ALERT_THRESHOLDS`: comma-separated `action:threshold` pairs. Default covers:
+  - `device_login_approve.blocked`
+  - `device_login_redeem.blocked`
+  - `biometric_login.blocked`
+  - `biometric_login_attestation.revoked`
+  - `biometric_token_rotate.failed`
+  - `auth_rate_limit_exceeded.blocked`
+  - `chat_protocol_downgrade.blocked`
+  - `chat_key_bundle_policy.blocked`
+  - `chat_key_register_policy.blocked`
+  - `chat_key_bootstrap_policy.blocked`
+  - `chat_prekey_inventory.low`
+- Run log-based alert evaluation on host (cron/systemd timer recommended):
+  - `./scripts/security_events_report.sh`
+  - or `./scripts/ops.sh pipg security-report`
+- Preferred production setup: `systemd` timer on Hetzner host
+  - install/update: `./scripts/sync_hetzner_security_timer.sh shamell --run-now`
+  - verify timer: `ssh shamell "sudo systemctl list-timers --all shamell-security-events-report.timer --no-pager"`
+  - inspect logs: `ssh shamell "sudo journalctl -u shamell-security-events-report.service -n 100 --no-pager"`
+- Encrypted ride/auth backup timer on Hetzner host:
+  - install/update: `./scripts/sync_hetzner_ride_backup_timer.sh shamell --run-now`
+  - verify timer: `ssh shamell "sudo systemctl list-timers --all shamell-ride-db-backup.timer --no-pager"`
+  - inspect logs: `ssh shamell "sudo journalctl -u shamell-ride-db-backup.service -n 100 --no-pager"`
+- `security_events_report.sh` reads JSON logs from `SECURITY_ALERT_SERVICE` (default `bff,chat`) and can post webhook notifications with cooldown.
+- Recommended in-host default (no third-party webhook required):
+  - `SECURITY_ALERT_WEBHOOK_URL=http://127.0.0.1:8080/internal/security/alerts`
+  - `SECURITY_ALERT_WEBHOOK_SIGNING_SEED_B64=<security-reporter-ed25519-seed>`
+  - Endpoint: `POST /internal/security/alerts` (BFF, internal-auth protected).
+- Webhook drill:
+  - local dry-run: `./scripts/ops.sh pipg security-drill --dry-run`
+  - live host drill: `./scripts/sync_hetzner_security_timer.sh shamell --drill`
+  - targeted chat-alert dry-run: `./scripts/ops.sh pipg security-drill --dry-run --severity warning --alert chat_prekey_inventory.low:3/3 --alert chat_key_bootstrap_policy.blocked:1/1`
+- Current runtime security event names include:
+  - `device_login_start`
+  - `device_login_approve`
+  - `device_login_redeem`
+  - `biometric_login_attestation`
+  - `biometric_login`
+  - `biometric_token_rotate`
+  - `device_removed`
+  - `auth_rate_limit_exceeded`
+  - `chat_protocol_downgrade`
+  - `chat_key_bundle_policy`
+  - `chat_key_register_policy`
+  - `chat_key_bootstrap_policy`
+  - `chat_prekey_inventory`
+  - `blocked` outcomes should page on sustained spikes.
+  - `chat_prekey_inventory.low` indicates device OTK inventory is at or below the low-watermark and should trigger prekey refill triage before `bundle unavailable` starts spiking.
+- Legacy payments edge alert actions (if still configured):
   - `payments_transfer_wallet_mismatch`
   - `alias_request_wallet_mismatch`
   - `alias_request_user_override_blocked`

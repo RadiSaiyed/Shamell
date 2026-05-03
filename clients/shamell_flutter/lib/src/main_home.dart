@@ -1467,7 +1467,7 @@ class _HomePageState extends State<HomePage> {
                 dense: true,
                 leading: const WeChatLeadingIcon(
                   icon: Icons.person_add_outlined,
-                  background: Color(0xFFF59E0B),
+                  background: Tokens.warning,
                 ),
                 title: Text(l.isArabic ? 'أصدقاء جدد' : 'New friends'),
                 trailing: Row(
@@ -1505,7 +1505,7 @@ class _HomePageState extends State<HomePage> {
                 dense: true,
                 leading: const WeChatLeadingIcon(
                   icon: Icons.sell_outlined,
-                  background: Color(0xFF3B82F6),
+                  background: Tokens.accent,
                 ),
                 title: Text(l.isArabic ? 'الوسوم' : 'Tags'),
                 trailing: chevron(),
@@ -2142,7 +2142,7 @@ class _HomePageState extends State<HomePage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.live_tv_outlined,
-              background: Color(0xFFF59E0B),
+              background: Tokens.warning,
             ),
             title: Text(l.isArabic ? 'القنوات' : 'Channels'),
             trailing: chevron(),
@@ -2177,7 +2177,7 @@ class _HomePageState extends State<HomePage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.local_fire_department_outlined,
-              background: Color(0xFFF59E0B),
+              background: Tokens.warning,
             ),
             title: Text(l.isArabic ? 'الأخبار' : 'Top Stories'),
             trailing: chevron(),
@@ -2199,7 +2199,7 @@ class _HomePageState extends State<HomePage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.qr_code_scanner,
-              background: Color(0xFF3B82F6),
+              background: Tokens.accent,
             ),
             title: Text(l.mirsaalChannelScanTitle),
             trailing: chevron(),
@@ -2488,7 +2488,7 @@ class _HomePageState extends State<HomePage> {
               dense: true,
               leading: const WeChatLeadingIcon(
                 icon: Icons.live_tv_outlined,
-                background: Color(0xFFF59E0B),
+                background: Tokens.warning,
               ),
               title: Text(l.isArabic ? 'القنوات' : 'Channels'),
               subtitle: Text(
@@ -2531,7 +2531,7 @@ class _HomePageState extends State<HomePage> {
               dense: true,
               leading: const WeChatLeadingIcon(
                 icon: Icons.qr_code_scanner,
-                background: Color(0xFF3B82F6),
+                background: Tokens.accent,
               ),
               title: Text(l.mirsaalChannelScanTitle),
               subtitle: Text(l.mirsaalChannelScanSubtitle),
@@ -2567,7 +2567,7 @@ class _HomePageState extends State<HomePage> {
               dense: true,
               leading: const WeChatLeadingIcon(
                 icon: Icons.local_fire_department_outlined,
-                background: Color(0xFFF59E0B),
+                background: Tokens.warning,
               ),
               title: Text(l.isArabic ? 'الأخبار' : 'Top Stories'),
               subtitle: Text(
@@ -3649,7 +3649,7 @@ class _HomePageState extends State<HomePage> {
                   dense: true,
                   leading: const WeChatLeadingIcon(
                     icon: Icons.star_outline,
-                    background: Color(0xFFF59E0B),
+                    background: Tokens.warning,
                   ),
                   title: Text(l.isArabic ? 'المفضلة' : 'Favorites'),
                   trailing: chevron(),
@@ -3679,7 +3679,7 @@ class _HomePageState extends State<HomePage> {
                     dense: true,
                     leading: const WeChatLeadingIcon(
                       icon: Icons.card_giftcard_outlined,
-                      background: Color(0xFF3B82F6),
+                      background: Tokens.accent,
                     ),
                     title: Text(
                         l.isArabic ? 'البطاقات والعروض' : 'Cards & Offers'),

@@ -1,0 +1,2 @@
+ALTER TABLE __CHAT_SCHEMA__.push_tokens
+    ALTER COLUMN token TYPE TEXT;

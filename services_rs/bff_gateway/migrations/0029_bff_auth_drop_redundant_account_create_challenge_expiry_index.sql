@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_auth_account_create_challenges_expires_at;

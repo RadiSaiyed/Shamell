@@ -1,28 +1,124 @@
 name: Flutter Android Beta (Build)
 
 'on':
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      require_production_signing:
+        description: Require production signing secrets and fail if missing
+        required: false
+        type: boolean
+        default: true
+      allow_debug_release_signing:
+        description: Allow debug signing for non-production test artifacts
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   android-beta:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
+    env:
+      REQUIRE_PRODUCTION_SIGNING: ${{ inputs.require_production_signing && 'true' || 'false' }}
+      SHAMELL_ALLOW_DEBUG_RELEASE_SIGNING: ${{ inputs.allow_debug_release_signing && 'true' || 'false' }}
+      SHAMELL_RELEASE_STORE_BASE64: ${{ secrets.SHAMELL_RELEASE_STORE_BASE64 }}
+      SHAMELL_RELEASE_STORE_PASSWORD: ${{ secrets.SHAMELL_RELEASE_STORE_PASSWORD }}
+      SHAMELL_RELEASE_KEY_ALIAS: ${{ secrets.SHAMELL_RELEASE_KEY_ALIAS }}
+      SHAMELL_RELEASE_KEY_PASSWORD: ${{ secrets.SHAMELL_RELEASE_KEY_PASSWORD }}
+      SHAMELL_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: ${{ secrets.SHAMELL_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER }}
+      TRUSTED_TLS_CERTIFICATES_DER_BASE64: ${{ secrets.TRUSTED_TLS_CERTIFICATES_DER_BASE64 }}
+      FLUTTER_BUILD_DART_DEFINES: TRUSTED_TLS_CERTIFICATES_DER_BASE64=${{ secrets.TRUSTED_TLS_CERTIFICATES_DER_BASE64 }}
+      ORG_GRADLE_PROJECT_playIntegrityCloudProjectNumber: ${{ secrets.SHAMELL_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER }}
+      SHAMELL_ANDROID_SPLIT_DEBUG_INFO_DIR: build/app/outputs/symbols/android
+      SHAMELL_ANDROID_APK_OUTPUT_DIR: ${{ github.workspace }}/.artifacts/android-apk-release
+      SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR: ${{ github.workspace }}/.artifacts/android-apk-split-debug-info
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - name: Install Java 17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk
+          java -version
+
+      - name: Verify Android signing environment
+        run: ./scripts/check_android_release_signing_env.sh
+
+      - name: Guard mobile release security env
+        env:
+          FLUTTER_BUILD_ARGS: >-
+            flutter build appbundle --release --flavor user --no-pub --obfuscate
+            --split-debug-info=${{ env.SHAMELL_ANDROID_SPLIT_DEBUG_INFO_DIR }}
+        run: ./scripts/check_mobile_release_security_env.sh
+
+      - name: Prepare release keystore from secret (if needed)
+        run: |
+          set -euo pipefail
+          if [ -n "${SHAMELL_RELEASE_STORE_FILE:-}" ]; then
+            echo "SHAMELL_RELEASE_STORE_FILE already set; skipping decode."
+            exit 0
+          fi
+          if [ -z "${SHAMELL_RELEASE_STORE_BASE64:-}" ]; then
+            if [ "${REQUIRE_PRODUCTION_SIGNING}" = "true" ]; then
+              echo "::error::Production signing is required but SHAMELL_RELEASE_STORE_BASE64 is missing."
+              exit 1
+            fi
+            echo "No SHAMELL_RELEASE_STORE_BASE64 secret configured; relying on debug-signing override."
+            exit 0
+          fi
+          keystore_path="$(mktemp "${RUNNER_TEMP:-/tmp}/shamell-release.keystore.XXXXXX")"
+          chmod 600 "$keystore_path"
+          printf '%s' "$SHAMELL_RELEASE_STORE_BASE64" | base64 --decode > "$keystore_path"
+          chmod 600 "$keystore_path"
+          echo "SHAMELL_RELEASE_STORE_FILE=$keystore_path" >> "$GITHUB_ENV"
+
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
         run: flutter pub get
 
+      - name: Android SDK preflight
+        run: |
+          set -euo pipefail
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            echo "sdkmanager not found on PATH; skipping explicit SDK preinstall."
+            exit 0
+          fi
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-33" "cmake;3.22.1" >/dev/null
+
       - name: Build appbundle
         working-directory: clients/shamell_flutter
-        run: flutter build appbundle --release --flavor user
+        run: |
+          mkdir -p "${SHAMELL_ANDROID_SPLIT_DEBUG_INFO_DIR}"
+          flutter build appbundle --release --flavor user --no-pub \
+            --obfuscate \
+            --dart-define="TRUSTED_TLS_CERTIFICATES_DER_BASE64=${TRUSTED_TLS_CERTIFICATES_DER_BASE64}" \
+            --split-debug-info="${SHAMELL_ANDROID_SPLIT_DEBUG_INFO_DIR}"
+
+      - name: Guard Android merged-manifest exported component surface
+        shell: bash
+        working-directory: clients/shamell_flutter
+        run: |
+          set -euo pipefail
+          manifest_path="$(find build android/app/build -type f -name AndroidManifest.xml 2>/dev/null \
+            | grep -E '/merged(_|/)?manifest(s)?/|/merged_manifests/' \
+            | grep -E '/userRelease/' \
+            | head -n 1 || true)"
+          if [ -z "${manifest_path}" ]; then
+            echo "::error::Unable to locate userRelease merged AndroidManifest.xml after build."
+            exit 1
+          fi
+          SHAMELL_ANDROID_MANIFEST_PATH="${PWD}/${manifest_path}" \
+            ../../scripts/check_android_exported_components.sh
 
       - name: Resolve built AAB path
         working-directory: clients/shamell_flutter
@@ -34,9 +130,42 @@ jobs:
           fi
           echo "AAB_PATH=${GITHUB_WORKSPACE}/clients/shamell_flutter/${AAB_REL_PATH}" >> "$GITHUB_ENV"
 
+      - name: Verify AAB signature
+        run: |
+          set -euo pipefail
+          jarsigner -verify -verbose -certs "${AAB_PATH}" >/dev/null
+          echo "AAB signature verified."
+
       - name: Upload Android appbundle artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shamell-android-user-release-aab
           path: ${{ env.AAB_PATH }}
+          if-no-files-found: error
+
+      - name: Build signed APK bundle
+        run: |
+          ./scripts/build_android_release_apks.sh \
+            --output-dir "${SHAMELL_ANDROID_APK_OUTPUT_DIR}" \
+            --split-debug-info-dir "${SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR}"
+
+      - name: Upload Android APK bundle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-android-release-apks
+          path: ${{ env.SHAMELL_ANDROID_APK_OUTPUT_DIR }}
+          if-no-files-found: error
+
+      - name: Upload Android split-debug-info artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-android-user-release-split-debug-info
+          path: clients/shamell_flutter/${{ env.SHAMELL_ANDROID_SPLIT_DEBUG_INFO_DIR }}
+          if-no-files-found: error
+
+      - name: Upload Android APK split-debug-info artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-android-release-apk-split-debug-info
+          path: ${{ env.SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR }}
           if-no-files-found: error

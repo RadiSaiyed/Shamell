@@ -1,0 +1,11 @@
+# Workspace-wide rustfmt configuration.
+#
+# Kept intentionally minimal: rustfmt's defaults are good and changing them
+# per-project just creates merge friction. The two non-defaults below are
+# the ones we actually disagree with the defaults on.
+
+edition = "2021"
+
+# Default is 100 -- pin it explicitly so a future rustfmt bump does not
+# silently widen the line length used for clippy/CI gates.
+max_width = 100

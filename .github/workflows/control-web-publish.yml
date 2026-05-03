@@ -1,0 +1,84 @@
+name: Shamell Control Web Publish
+
+'on':
+  workflow_dispatch:
+    inputs:
+      sync_nginx:
+        description: Sync Hetzner Nginx before publishing the web bundle
+        required: false
+        type: boolean
+        default: true
+      publish_to_production:
+        description: Publish the Shamell Control web bundle to https://shamell.online/control/
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  control-web-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SHAMELL_CONTROL_WEB_OUTPUT_DIR: ${{ github.workspace }}/.artifacts/control-web-release
+      HETZNER_HOST: ${{ secrets.SHAMELL_HETZNER_HOST }}
+      HETZNER_USER: ${{ secrets.SHAMELL_HETZNER_USER }}
+      REMOTE_SUDO_PASSWORD: ${{ secrets.SHAMELL_HETZNER_SUDO_PASSWORD }}
+      NGINX_INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+      SHAMELL_FIREBASE_API_KEY: ${{ secrets.SHAMELL_FIREBASE_API_KEY }}
+      SHAMELL_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.SHAMELL_FIREBASE_MESSAGING_SENDER_ID }}
+      SHAMELL_FIREBASE_PROJECT_ID: ${{ secrets.SHAMELL_FIREBASE_PROJECT_ID }}
+      SHAMELL_FIREBASE_STORAGE_BUCKET: ${{ secrets.SHAMELL_FIREBASE_STORAGE_BUCKET }}
+      SHAMELL_FIREBASE_AUTH_DOMAIN: ${{ secrets.SHAMELL_FIREBASE_AUTH_DOMAIN }}
+      SHAMELL_FIREBASE_MEASUREMENT_ID: ${{ secrets.SHAMELL_FIREBASE_MEASUREMENT_ID }}
+      SHAMELL_FIREBASE_WEB_APP_ID: ${{ secrets.SHAMELL_FIREBASE_WEB_APP_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
+        with:
+          flutter-version: "3.38.5"
+
+      - name: Build Shamell Control web bundle
+        run: |
+          ./scripts/build_control_web_release.sh \
+            --output-dir "${SHAMELL_CONTROL_WEB_OUTPUT_DIR}" \
+            --base-href /control/
+
+      - name: Upload Shamell Control web artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-control-web-release
+          path: ${{ env.SHAMELL_CONTROL_WEB_OUTPUT_DIR }}
+          if-no-files-found: error
+
+      - name: Install SSH key
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${{ secrets.SHAMELL_HETZNER_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${HETZNER_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Sync Hetzner Nginx
+        if: ${{ inputs.publish_to_production && inputs.sync_nginx }}
+        run: |
+          ./scripts/sync_hetzner_nginx.sh "${HETZNER_USER}@${HETZNER_HOST}"
+
+      - name: Publish Shamell Control web bundle to production
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          ./scripts/publish_control_web_release.sh \
+            --source-dir "${SHAMELL_CONTROL_WEB_OUTPUT_DIR}" \
+            --host "${HETZNER_USER}@${HETZNER_HOST}"
+
+      - name: Verify public Shamell Control web URLs
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          curl -fsSI https://shamell.online/control/
+          curl -fsS https://shamell.online/control/release-manifest.json >/dev/null

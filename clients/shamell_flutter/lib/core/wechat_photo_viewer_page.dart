@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'chat/chat_service.dart';
 import 'chat/threema_chat_page.dart';
 import 'l10n.dart';
+import 'network_image_helpers.dart';
 
 class WeChatPhotoViewerPage extends StatefulWidget {
   final String? baseUrl;
@@ -469,8 +470,9 @@ class _WeChatPhotoViewerPageState extends State<WeChatPhotoViewerPage> {
     Widget content;
 
     if (_isUrl(src)) {
-      content = Image.network(
+      content = shamellCachedNetworkImage(
         src,
+        context: context,
         fit: BoxFit.contain,
         loadingBuilder: (ctx, child, progress) {
           if (progress == null) return child;

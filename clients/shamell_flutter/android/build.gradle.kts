@@ -1,11 +1,44 @@
 import com.android.build.gradle.BaseExtension
 import org.gradle.api.tasks.compile.JavaCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
+val shamellForcedAgpVersion = "8.9.1"
+val shamellForcedKgpVersion = "2.2.21"
+
+// Third-party Flutter Android plugins often pin their own AGP/KGP versions in
+// buildscript classpaths. Force a single toolchain early to avoid pulling
+// multiple incompatible Android build stacks during one app build.
+gradle.beforeProject {
+    buildscript.configurations.configureEach {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "com.android.tools.build" &&
+                requested.name == "gradle"
+            ) {
+                useVersion(shamellForcedAgpVersion)
+                because("Align Flutter plugin AGP versions with Shamell")
+            }
+            if (requested.group == "org.jetbrains.kotlin" &&
+                requested.name == "kotlin-gradle-plugin"
+            ) {
+                useVersion(shamellForcedKgpVersion)
+                because("Align Flutter plugin Kotlin Gradle plugin versions with Shamell")
+            }
+        }
+    }
+}
 
 allprojects {
     repositories {
         google()
         mavenCentral()
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven")) {
+            content {
+                includeGroupByRegex("com\\.tomtom(\\..*)?")
+            }
+        }
+        maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
+        maven(url = uri("https://jitpack.io"))
     }
 }
 
@@ -68,7 +101,8 @@ subprojects {
                     ?: fallbackJavaTask?.targetCompatibility
                 )?.trim()
             if (!javaTarget.isNullOrEmpty()) {
-                kotlinOptions.jvmTarget = javaTarget
+                runCatching { JvmTarget.fromTarget(javaTarget) }
+                    .onSuccess { compilerOptions.jvmTarget.set(it) }
             }
         }
     }

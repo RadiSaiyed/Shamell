@@ -1,0 +1,6 @@
+services:
+  db:
+    # Temporary public listener for regulator GUI tools such as Postbird/DBeaver.
+    # Use only for the audit window and stop using this override afterwards.
+    ports:
+      - "${REGULATOR_POSTGRES_PUBLISH_ADDR:-0.0.0.0}:${REGULATOR_POSTGRES_PUBLISH_PORT:-55432}:5432"

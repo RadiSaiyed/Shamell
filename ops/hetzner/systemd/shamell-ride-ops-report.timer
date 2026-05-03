@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Shamell ride ops report every 5 minutes
+Requires=shamell-ride-ops-report.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=45s
+AccuracySec=30s
+Persistent=true
+Unit=shamell-ride-ops-report.service
+
+[Install]
+WantedBy=timers.target

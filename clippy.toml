@@ -1,0 +1,23 @@
+# Workspace-wide clippy configuration.
+#
+# These thresholds are above clippy defaults because the existing bff_gateway
+# code (handlers.rs in particular, see services_rs/bff_gateway/REFACTORING.md)
+# legitimately exceeds the defaults until the planned decomposition lands.
+# Lowering them on day one would either bury the lint output in noise or
+# pressure people into unrelated drive-by refactors during PRs.
+#
+# Once the handlers/auth split is done these can be tightened back to
+# clippy defaults.
+
+# Default: 25.  bff_gateway has handler chains (auth, payments) that are
+# domain-complex by nature; raising to 30 keeps the lint actionable.
+cognitive-complexity-threshold = 30
+
+# Default: 7.  Several handlers thread through 8 dependencies (auth state,
+# attestation context, idempotency, tracing span, etc.) which is normal
+# for a BFF and not a useful lint target right now.
+too-many-arguments-threshold = 8
+
+# Default: 250 (already permissive; pin explicitly so future clippy
+# updates can't silently change the gate).
+type-complexity-threshold = 250

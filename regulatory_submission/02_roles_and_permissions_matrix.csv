@@ -1,0 +1,22 @@
+actor,resource,action,scope,enforcement_point
+rider,ride_trip,create,session-bound caller on /me route surface,BFF route + account-create/session principal
+rider,ride_trip,read,session-bound caller on own /me route surface,BFF route + session principal
+rider,ride_tracking,read,session-bound caller on own /me route surface,BFF route + session principal
+rider,support_ticket,create,session-bound caller on /me route surface,BFF route + session principal
+ride_driver,driver_queue,read,roles in ride-driver allowlist,require_ride_driver_principal
+ride_driver,driver_presence,read_update,roles in ride-driver allowlist,require_ride_driver_principal
+ride_driver,driver_trip,accept_update_status_location,roles in ride-driver allowlist,require_ride_driver_principal
+ride_driver,driver_documents,list_submit,roles in ride-driver allowlist,require_ride_driver_principal
+ride_operator,live_board,read,roles in ride-operator allowlist; precise location reduced unless compliance,require_ride_operator_principal + response shaping
+ride_operator,driver_roster,read,roles in ride-operator allowlist,require_ride_operator_principal + response shaping
+ride_operator,fleet_live,read,roles in ride-operator allowlist; precise location reduced unless compliance,require_ride_operator_principal + response shaping
+support_l1,support_queue,read,support allowlist; sensitive ticket body redacted for lower-trust readers,require_ride_support_principal + response shaping
+support_l2,case_queue,read,case-sensitive details allowed for higher-trust case reviewers,require_ride_operator_principal + case-detail shaping
+compliance_risk,document_queue,read_review,document-sensitive details and review actions,require_ride_compliance_principal + document review validation
+compliance_risk,live_board_precise_location,read,precise trip and driver location,roles_allow_ride_compliance + operator response shaping
+city_manager,pricing_policy,read_update,pricing allowlist,require_ride_pricing_principal
+ops,pricing_policy,read_update,pricing allowlist,require_ride_pricing_principal
+admin,admin_roles,list_check,visible role set only; rate limited and audited,admin_roles_list/check handlers
+admin,admin_roles,add_remove_lower_privilege,cannot grant or remove admin/superadmin unless caller is superadmin,validated_public_admin_role_mutation
+superadmin,admin_roles,add_remove_all_public_roles,full public role mutation authority,validated_public_admin_role_mutation
+operator_or_admin,sensitive_control_actions,reveal_or_launch,local device-auth gate on supported clients,Flutter local-auth step-up

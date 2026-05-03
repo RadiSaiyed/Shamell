@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_auth_chat_contacts_owner_account_id;
+DROP INDEX IF EXISTS idx_auth_chat_contacts_last_used_at;

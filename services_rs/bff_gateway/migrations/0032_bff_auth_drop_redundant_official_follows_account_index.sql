@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_auth_official_follows_account_id;

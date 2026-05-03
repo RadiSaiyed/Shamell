@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_auth_official_service_sessions_account;
+DROP INDEX IF EXISTS idx_auth_official_service_sessions_account_status;
+DROP INDEX IF EXISTS idx_auth_official_service_sessions_last_message_ts;

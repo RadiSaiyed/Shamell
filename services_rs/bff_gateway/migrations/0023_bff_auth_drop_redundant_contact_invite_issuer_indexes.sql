@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_auth_contact_invites_issuer_phone;
+DROP INDEX IF EXISTS idx_auth_contact_invites_issuer_account_id;
+DROP INDEX IF EXISTS idx_auth_contact_invites_issuer_chat_device_id;

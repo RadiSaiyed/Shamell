@@ -24,6 +24,7 @@ import 'core/config.dart';
 import 'core/gotify_client.dart';
 import 'core/glass.dart';
 import 'core/home_routes.dart';
+import 'core/network_image_helpers.dart';
 import 'core/chat/threema_chat_page.dart';
 import 'core/group_chats_page.dart';
 import 'mini_apps/payments/payments_multilevel.dart';

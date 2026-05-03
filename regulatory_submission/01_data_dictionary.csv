@@ -1,0 +1,136 @@
+store_name,schema_name,table_name,column_name,data_type,nullable,default,key_type,references,description,sensitivity
+postgresql_core_store,unqualified_default,auth_accounts,account_id,VARCHAR(64),no,,PK,,Canonical account identifier,authentication data; audit / privileged action data
+postgresql_core_store,unqualified_default,auth_accounts,shamell_user_id,VARCHAR(16),no,,UNIQUE,,Human-facing user identifier,PII
+postgresql_core_store,unqualified_default,auth_accounts,phone,VARCHAR(32),yes,,UNIQUE,,Phone attribute on account,PII
+postgresql_core_store,unqualified_default,auth_accounts,created_at,TIMESTAMPTZ,no,NOW(),,,Account creation timestamp,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_sessions,id,BIGSERIAL,no,,PK,,Session row identifier,authentication data
+postgresql_core_store,unqualified_default,auth_sessions,sid_hash,VARCHAR(64),no,,UNIQUE,,Hashed opaque session identifier,authentication data
+postgresql_core_store,unqualified_default,auth_sessions,account_id,VARCHAR(64),yes,,FK,auth_accounts.account_id,Account bound to session,authentication data
+postgresql_core_store,unqualified_default,auth_sessions,phone,VARCHAR(32),yes,,,,Phone shadow on session row,PII
+postgresql_core_store,unqualified_default,auth_sessions,device_id,VARCHAR(128),yes,,INDEXED,,Optional bound device identifier,authentication data
+postgresql_core_store,unqualified_default,auth_sessions,expires_at,TIMESTAMPTZ,no,,INDEXED,,Session expiry timestamp,authentication data
+postgresql_core_store,unqualified_default,auth_sessions,last_seen_at,TIMESTAMPTZ,no,NOW(),INDEXED,,Sliding activity timestamp,authentication data
+postgresql_core_store,unqualified_default,auth_sessions,revoked_at,TIMESTAMPTZ,yes,,,,Session revocation timestamp,authentication data
+postgresql_core_store,unqualified_default,auth_user_ids,phone,VARCHAR(32),no,,UNIQUE,,Phone to user-id mapping,PII
+postgresql_core_store,unqualified_default,auth_user_ids,shamell_user_id,VARCHAR(16),no,,UNIQUE,,Stable user identifier mapping,PII
+postgresql_core_store,unqualified_default,auth_account_create_challenges,token_hash,VARCHAR(64),no,,UNIQUE,,Hashed account-create challenge token,authentication data
+postgresql_core_store,unqualified_default,auth_account_create_challenges,device_id,VARCHAR(128),no,,,,Device bound to create challenge,authentication data
+postgresql_core_store,unqualified_default,auth_account_create_challenges,expires_at,TIMESTAMPTZ,no,,,,Challenge expiry,authentication data
+postgresql_core_store,unqualified_default,auth_account_create_challenges,consumed_at,TIMESTAMPTZ,yes,,,,Challenge consumption marker,authentication data
+postgresql_core_store,unqualified_default,auth_biometric_tokens,token_hash,VARCHAR(64),no,,UNIQUE,,Hashed biometric re-login token,authentication data
+postgresql_core_store,unqualified_default,auth_biometric_tokens,account_id,VARCHAR(64),yes,,FK,auth_accounts.account_id,Account linked to biometric token,authentication data
+postgresql_core_store,unqualified_default,auth_biometric_tokens,device_id,VARCHAR(128),no,,UNIQUE (with phone/account),,Device bound to biometric token,authentication data
+postgresql_core_store,unqualified_default,auth_biometric_tokens,last_used_at,TIMESTAMPTZ,yes,,,,Last biometric use timestamp,authentication data
+postgresql_core_store,unqualified_default,auth_biometric_tokens,expires_at,TIMESTAMPTZ,no,,INDEXED,,Biometric token expiry,authentication data
+postgresql_core_store,unqualified_default,auth_biometric_tokens,revoked_at,TIMESTAMPTZ,yes,,,,Biometric token revocation time,authentication data
+postgresql_core_store,unqualified_default,auth_rate_limits,limit_key,VARCHAR(255),no,,PK,,Rate-limit bucket key,authentication data
+postgresql_core_store,unqualified_default,auth_rate_limits,request_count,BIGINT,no,0,,,Observed requests in current bucket,authentication data
+postgresql_core_store,unqualified_default,auth_rate_limits,updated_at,TIMESTAMPTZ,no,NOW(),INDEXED,,Bucket maintenance timestamp,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,token_hash,VARCHAR(64),no,,UNIQUE,,Hashed device-login token,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,status,VARCHAR(16),no,pending,,,Challenge state machine value,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,account_id,VARCHAR(64),yes,,FK,auth_accounts.account_id,Approving account reference,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,phone,VARCHAR(32),yes,,,,Approving account phone shadow,PII
+postgresql_core_store,unqualified_default,device_login_challenges,device_id,VARCHAR(128),yes,,,,Target device identifier,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,browser_binding_hash,VARCHAR(64),yes,,,,Browser binding hash for redemption,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,redeemed_client_ip_hash,VARCHAR(64),yes,,,,Hashed redemption client IP,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,redeemed_user_agent_hash,VARCHAR(64),yes,,,,Hashed redemption user agent,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,approved_at,TIMESTAMPTZ,yes,,,,Approval timestamp,authentication data
+postgresql_core_store,unqualified_default,device_login_challenges,redeemed_at,TIMESTAMPTZ,yes,,,,Redemption timestamp,authentication data
+postgresql_core_store,unqualified_default,device_sessions,account_id,VARCHAR(64),yes,,FK,auth_accounts.account_id,Account owning the registered device,authentication data
+postgresql_core_store,unqualified_default,device_sessions,device_id,VARCHAR(128),no,,UNIQUE (with account_id),,Stable device identifier,authentication data
+postgresql_core_store,unqualified_default,device_sessions,platform,VARCHAR(32),yes,,,,Platform label supplied during device registration,authentication data
+postgresql_core_store,unqualified_default,device_sessions,last_ip,VARCHAR(64),yes,,,,Last observed client IP,authentication data
+postgresql_core_store,unqualified_default,device_sessions,user_agent,VARCHAR(255),yes,,,,Last observed user agent,authentication data
+postgresql_core_store,unqualified_default,device_sessions,last_seen_at,TIMESTAMPTZ,no,NOW(),INDEXED,,Last device activity,authentication data
+postgresql_core_store,unqualified_default,auth_ride_trips,ride_id,TEXT,no,,UNIQUE,,Canonical ride identifier,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trips,rider_account_id,TEXT,no,,INDEXED,,Rider-side account reference,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,driver_account_id,TEXT,yes,,INDEXED,,Assigned driver account reference,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,driver_name,TEXT,yes,,,,Driver display name stored on trip snapshot,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,car_plate,TEXT,yes,,,,Vehicle plate stored on trip snapshot,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,pickup_text,TEXT,no,,,,Pickup text as presented to operations,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,destination_text,TEXT,no,,,,Destination text as presented to operations,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,pickup_label,TEXT,yes,,,,Normalized pickup label,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,pickup_lat,DOUBLE PRECISION,yes,,,,Pickup latitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trips,pickup_lon,DOUBLE PRECISION,yes,,,,Pickup longitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trips,destination_label,TEXT,yes,,,,Normalized destination label,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,destination_lat,DOUBLE PRECISION,yes,,,,Destination latitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trips,destination_lon,DOUBLE PRECISION,yes,,,,Destination longitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trips,ride_class,TEXT,no,,,,Ride product class,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_trips,fare_estimate_cents,BIGINT,no,,,,Estimated ride amount in minor units,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_trips,eta_seconds,BIGINT,no,,,,Estimated arrival duration,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_trips,status,TEXT,no,,INDEXED,,Ride lifecycle state,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trips,cancel_reason,TEXT,yes,,,,Free-text cancellation context,PII
+postgresql_core_store,unqualified_default,auth_ride_trips,cancel_reason_code,TEXT,yes,,,,Structured cancellation code,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trips,assigned_at,TIMESTAMPTZ,yes,,,,Assignment milestone,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trips,completed_at,TIMESTAMPTZ,yes,,,,Completion milestone,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_commands,ride_id,TEXT,no,,FK,auth_ride_trips.ride_id,Command target ride,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_commands,rider_account_id,TEXT,no,,,,Rider-side caller on command record,PII
+postgresql_core_store,unqualified_default,auth_ride_trip_commands,idempotency_key,TEXT,no,,UNIQUE (with rider_account_id),,Idempotency token for ride mutation,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_commands,command,TEXT,no,,,,Command verb applied to ride,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_commands,request_fingerprint,TEXT,no,,,,Request fingerprint for replay detection,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_commands,response_json,JSONB,no,,,,Stored command response payload,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,ride_id,TEXT,no,,FK,auth_ride_trips.ride_id,Tracking-event parent ride,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,event_kind,TEXT,no,,,,Tracking event type,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,status,TEXT,yes,,,,Ride status snapshot on event,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,actor_account_id,TEXT,yes,,,,Actor that generated operator note or status mutation,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,location_lat,DOUBLE PRECISION,yes,,,,Event latitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,location_lon,DOUBLE PRECISION,yes,,,,Event longitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,accuracy_meters,INTEGER,yes,,,,Reported GPS accuracy,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,speed_kmh,INTEGER,yes,,,,Reported speed,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,heading_degrees,INTEGER,yes,,,,Reported heading,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,note,TEXT,yes,,,,Short operator or system note,PII
+postgresql_core_store,unqualified_default,auth_ride_trip_tracking_events,metadata_json,JSONB,no,'{}'::jsonb,,,Structured event metadata,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,document_id,TEXT,no,,UNIQUE,,Stable document identifier,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,driver_account_id,TEXT,no,,INDEXED,,Driver associated with document,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,document_type,TEXT,no,,UNIQUE (with driver_account_id),,Document class,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,document_number,TEXT,no,,,,Document number,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,issuing_country,TEXT,yes,,,,Country code for document,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,expires_at,TIMESTAMPTZ,yes,,,,Document expiry,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,status,TEXT,no,,INDEXED,,Review state,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,review_note,TEXT,yes,,,,Reviewer note,driver verification / KYC data
+postgresql_core_store,unqualified_default,auth_ride_driver_documents,reviewer_account_id,TEXT,yes,,,,Reviewer identity,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,ticket_id,TEXT,no,,UNIQUE,,Stable support ticket identifier,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,ride_id,TEXT,yes,,FK,auth_ride_trips.ride_id,Optional linked ride,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,rider_account_id,TEXT,no,,INDEXED,,Rider who opened case,PII
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,ticket_category,TEXT,no,,,,Ticket category; one excluded literal is redacted in this submission,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,subject,TEXT,no,,,,Ticket subject,PII
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,body_text,TEXT,no,,,,Ticket body,PII
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,preferred_contact,TEXT,no,,,,Preferred reply channel,PII
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,status,TEXT,no,open,INDEXED,,Case status,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,resolution_note,TEXT,yes,,,,Resolution narrative,PII
+postgresql_core_store,unqualified_default,auth_ride_support_tickets,resolved_by_account_id,TEXT,yes,,,,Resolver identity,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,driver_account_id,TEXT,no,,PK,,Driver currently represented in presence store,PII
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,availability_status,TEXT,no,,INDEXED,,Online/offline availability,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,last_seen_at,TIMESTAMPTZ,no,NOW(),INDEXED,,Latest heartbeat,precise location data
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,last_online_at,TIMESTAMPTZ,yes,,,,First online marker for current session,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,location_lat,DOUBLE PRECISION,yes,,,,Latest driver latitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,location_lon,DOUBLE PRECISION,yes,,,,Latest driver longitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,driver_name,TEXT,yes,,,,Current driver display name,PII
+postgresql_core_store,unqualified_default,auth_ride_driver_presence,car_plate,TEXT,yes,,,,Current car plate,PII
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,offer_id,TEXT,no,,UNIQUE,,Dispatch offer identifier,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,ride_id,TEXT,no,,FK,auth_ride_trips.ride_id,Target ride,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,driver_account_id,TEXT,no,,INDEXED,,Driver offered the ride,PII
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,driver_name,TEXT,no,,,,Driver name copied into offer snapshot,PII
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,car_plate,TEXT,no,,,,Car plate copied into offer snapshot,PII
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,status,TEXT,no,,INDEXED,,Dispatch-offer state,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,response_reason,TEXT,yes,,,,Driver response reason,PII
+postgresql_core_store,unqualified_default,auth_ride_dispatch_offers,expires_at,TIMESTAMPTZ,no,,,,Offer expiry,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,ride_id,TEXT,no,,PK/FK,auth_ride_trips.ride_id,Current ride live-state row,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,rider_account_id,TEXT,no,,,,Rider account snapshot on live row,PII
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,driver_account_id,TEXT,yes,,INDEXED,,Driver account snapshot on live row,PII
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,stage,TEXT,no,,INDEXED,,Current ride stage,audit / privileged action data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,driver_location_lat,DOUBLE PRECISION,yes,,,,Current driver latitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,driver_location_lon,DOUBLE PRECISION,yes,,,,Current driver longitude,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,accuracy_meters,INTEGER,yes,,,,Current driver location accuracy,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,speed_kmh,INTEGER,yes,,,,Current driver speed,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,heading_degrees,INTEGER,yes,,,,Current driver heading,precise location data
+postgresql_core_store,unqualified_default,auth_ride_trip_live_state,last_location_at,TIMESTAMPTZ,yes,,,,Timestamp of latest live driver location,precise location data
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,ride_class,TEXT,no,,PK,,Pricing profile key,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,base_fare_minor_units,BIGINT,no,,,,Base fare setting,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,per_km_minor_units,BIGINT,no,,,,Distance-based increment,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,per_minute_minor_units,BIGINT,no,,,,Time-based increment,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,traffic_delay_per_minute_minor_units,BIGINT,no,,,,Delay increment,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,booking_fee_minor_units,BIGINT,no,,,,Booking fee setting,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,minimum_fare_minor_units,BIGINT,no,,,,Minimum fare setting,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,driver_share_bps,BIGINT,no,,,,Driver share ratio in basis points,operational metadata
+postgresql_core_store,unqualified_default,auth_ride_pricing_policies,updated_by_account_id,TEXT,yes,,,,Actor who last changed pricing,audit / privileged action data

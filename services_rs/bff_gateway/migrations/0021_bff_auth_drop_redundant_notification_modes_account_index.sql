@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_auth_official_notification_modes_account;

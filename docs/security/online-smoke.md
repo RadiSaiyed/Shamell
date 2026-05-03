@@ -7,7 +7,7 @@ after deploys (especially mis-layered internal-auth that breaks real clients).
 
 - Public client-facing routes must **not** require `X-Internal-Secret`.
 - Internal-only routes (e.g. `/internal/*`) must remain **non-public** (blocked at edge) or
-  require `X-Internal-Secret` (direct-to-service).
+  require signed internal identity or `X-Internal-Secret` (direct-to-service compatibility only).
 
 ## Run
 
@@ -47,9 +47,6 @@ Required secrets/vars:
   - `CORS_PREFLIGHT_MAX_FAILED_CHECKS` (default: `0`)
   - `CORS_PREFLIGHT_TIMEOUT_SECS` (default: `15`)
   - `CORS_PREFLIGHT_CONNECT_TIMEOUT_SECS` (default: `5`)
-  - `CORS_PREFLIGHT_REQUIRE_REQUEST_ID` (default: `true`)
-  - `CORS_PREFLIGHT_STAGING_ALLOW_WILDCARD_ALLOW_HEADERS` (default: `false`)
-  - `CORS_PREFLIGHT_PROD_ALLOW_WILDCARD_ALLOW_HEADERS` (default: `false`)
 
 ## Remote smoke (optional)
 

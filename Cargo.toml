@@ -1,0 +1,96 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates_rs/shamell_common",
+  "crates_rs/shamell_signal",
+  "services_rs/bff_gateway",
+]
+
+# WIP: chat_service and payments_service are intentionally excluded from the
+# workspace until their missing src/db.rs and src/handlers.rs modules are
+# materialised. Their lib.rs declares pub mod db; pub mod handlers; for which
+# no source files exist yet, so including them breaks `cargo build --workspace`
+# and any CI gate that touches the full graph. See each crate's README.md.
+exclude = [
+  "services_rs/chat_service",
+  "services_rs/payments_service",
+]
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+# Centralised dependency versions: bumping here updates every crate at once and
+# keeps the lockfile coherent across the workspace. Crates pull a dep with
+# `name = { workspace = true }` and may extend with crate-local features via
+# `features = [...]` on top of the workspace base.
+[workspace.dependencies]
+# axum: keep default features. Crates that need multipart/ws extend via
+# `features = [...]` on the workspace dep at the call site.
+axum = "0.7"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ed25519-dalek = "2"
+hmac = "0.12"
+http-body-util = "0.1"
+ipnet = "2"
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# Workspace-wide lints.
+#
+# Each crate opts in via `[lints] workspace = true`, so toggling a rule
+# here applies everywhere uniformly. Severities below are deliberately
+# moderate to avoid drowning the cleanup pass in unrelated noise; a
+# follow-up pass can tighten them once the handlers.rs decomposition
+# lands.
+[workspace.lints.rust]
+# We genuinely have no `unsafe` in this codebase today; forbid prevents
+# a stray `unsafe` block from sneaking in via PR.
+unsafe_code = "forbid"
+# `Result`/`Future` left dangling is almost always a bug. Already part
+# of the standard set, but pinned explicitly so it can't be relaxed.
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Surface developer placeholders before they ship.
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+# Cheap correctness hints worth catching at lint time.
+needless_borrow = "warn"
+
+# Lints we deliberately allow today and plan to tighten later.
+#
+# `redundant_clone` is a nursery lint with documented false-positive
+# patterns (cargo clippy --fix refused to auto-apply 19 of 20
+# suggestions in services_rs/bff_gateway/src/handlers.rs alone).
+# Re-enable as warn once handlers.rs is decomposed
+# (see services_rs/bff_gateway/REFACTORING.md) so each call site
+# is reviewable without scrolling through 74k lines.
+redundant_clone = "allow"
+#
+# `collapsible_match` (a stable clippy::all lint, so it would be an
+# error under `-D warnings` even if we did nothing here) fires 5x
+# in handlers.rs -- 4 of them on the same WebSocket Pong fall-
+# through pattern. The pattern is intentional ("send pong, drop
+# the connection on error") and rewriting it inside a 74k-line file
+# without per-call-site verification is the wrong tradeoff for a
+# style lint. Will revisit alongside the same decomposition.
+collapsible_match = "allow"

@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_auth_official_feed_items_account_ts;

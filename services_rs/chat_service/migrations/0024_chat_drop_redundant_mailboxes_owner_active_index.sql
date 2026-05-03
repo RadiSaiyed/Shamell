@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS __CHAT_SCHEMA__.idx_chat_mailboxes_owner_active;

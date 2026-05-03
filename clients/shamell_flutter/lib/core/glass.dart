@@ -12,8 +12,8 @@ class GlassPanel extends StatelessWidget {
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(16),
-    this.radius = 26,
-    this.blurSigma = 14, // deeper blur for frosted glassmorphism
+    this.radius = 12,
+    this.blurSigma = 0,
     this.borderOpacityDark = 0.18,
     this.borderOpacityLight = 0.14,
     this.showNoise = false,
@@ -24,7 +24,7 @@ class GlassPanel extends StatelessWidget {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final Color border =
-        theme.dividerColor.withValues(alpha: isDark ? 0.22 : 0.28);
+        theme.dividerColor.withValues(alpha: isDark ? 0.55 : 0.90);
     final Color fill = theme.cardColor;
     return Container(
       padding: padding,
@@ -50,7 +50,7 @@ class Glass extends StatelessWidget {
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(16),
-    this.radius = 16,
+    this.radius = 12,
   });
 
   @override

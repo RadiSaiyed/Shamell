@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'chat/threema_chat_page.dart';
+import 'design_tokens.dart';
 import 'l10n.dart';
 import 'wechat_ui.dart';
 
@@ -705,7 +706,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
         leadColor = const Color(0xFFE11D48);
         leadIcon = Icons.place_outlined;
       } else if (_isStarredMessage(p)) {
-        leadColor = const Color(0xFF3B82F6);
+        leadColor = Tokens.accent;
         leadIcon = Icons.chat_bubble_outline;
       } else {
         leadColor = const Color(0xFF10B981);
@@ -858,7 +859,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                               theme: theme,
                               label: l.isArabic ? 'الكل' : 'All',
                               icon: Icons.star_outline,
-                              color: const Color(0xFFF59E0B),
+                              color: Tokens.warning,
                               selected: _filter == FavoritesFilter.all,
                               count: allCount,
                               onTap: () =>
@@ -868,7 +869,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
                               theme: theme,
                               label: l.isArabic ? 'الرسائل' : 'Chats',
                               icon: Icons.chat_bubble_outline,
-                              color: const Color(0xFF3B82F6),
+                              color: Tokens.accent,
                               selected: _filter == FavoritesFilter.messages,
                               count: messagesCount,
                               onTap: () => setState(

@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_auth_account_create_challenges_device_id;
+DROP INDEX IF EXISTS idx_device_login_challenges_account_id;
