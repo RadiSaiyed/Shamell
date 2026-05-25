@@ -255,6 +255,11 @@ android {
             applicationId = "online.shamell.busoperator"
             resValue("string", "app_name", "SyrChat Bus")
         }
+        create("hotelOperator") {
+            dimension = "app"
+            applicationId = "online.shamell.hoteloperator"
+            resValue("string", "app_name", "SyrChat Hotels")
+        }
         create("syrcom") {
             dimension = "app"
             applicationId = "online.shamell.syrcom"

@@ -40,7 +40,7 @@ Output:
     qr-*.png
 
 Options:
-  --flavors LIST   Comma-separated subset of: user, ride, driver, operator, bus_operator
+  --flavors LIST   Comma-separated subset of: user, ride, driver, operator, bus_operator, hotel_operator
 EOF
 }
 
@@ -455,7 +455,7 @@ release_id="android-apk-${version_name//[^0-9A-Za-z._-]/-}-${release_stamp}"
 printf 'APP_RELEASE_ID=%s\n' "$release_id" >> "$release_dart_defines_file"
 printf 'APP_VERSION=%s\n' "$version_name" >> "$release_dart_defines_file"
 
-all_flavors=(user ride driver operator busOperator)
+all_flavors=(user ride driver operator busOperator hotelOperator)
 flavors=()
 if [[ -z "${REQUESTED_FLAVORS_RAW// }" ]]; then
   flavors=("${all_flavors[@]}")
@@ -465,9 +465,10 @@ else
     # Accept both the snake_case shorthand and the canonical Android camelCase form.
     case "$flavor" in
       bus_operator|busoperator) flavor="busOperator" ;;
+      hotel_operator|hoteloperator|hotels_operator|hotel) flavor="hotelOperator" ;;
     esac
     case "$flavor" in
-      user|ride|driver|operator|busOperator)
+      user|ride|driver|operator|busOperator|hotelOperator)
         case " ${flavors[*]-} " in
           *" $flavor "*) ;;
           *)
@@ -495,6 +496,7 @@ target_for_flavor() {
     driver) printf '%s\n' "lib/main_driver.dart" ;;
     operator) printf '%s\n' "lib/main_operator.dart" ;;
     busOperator) printf '%s\n' "lib/main_bus_operator.dart" ;;
+    hotelOperator) printf '%s\n' "lib/main_hotel_operator.dart" ;;
     *) return 1 ;;
   esac
 }
@@ -506,6 +508,7 @@ title_for_flavor() {
     driver) printf '%s\n' "Shamell Driver" ;;
     operator) printf '%s\n' "Shamell Control" ;;
     busOperator) printf '%s\n' "Shamell Bus" ;;
+    hotelOperator) printf '%s\n' "Shamell Hotels" ;;
     *) return 1 ;;
   esac
 }
@@ -517,6 +520,7 @@ summary_for_flavor() {
     driver) printf '%s\n' "Driver app for taxi dispatch, navigation, and trip execution." ;;
     operator) printf '%s\n' "Operations console for ride supervision (Shamell Control)." ;;
     busOperator) printf '%s\n' "Bus-operations console: dispatch, boarding, and on-the-ground field ops (Shamell Bus)." ;;
+    hotelOperator) printf '%s\n' "Hotels console for front-desk and partner staff: bookings, room-service orders, and settlement." ;;
     *) return 1 ;;
   esac
 }
@@ -528,6 +532,7 @@ package_for_flavor() {
     driver) printf '%s\n' "online.shamell.driver" ;;
     operator) printf '%s\n' "online.shamell.operator" ;;
     busOperator) printf '%s\n' "online.shamell.busoperator" ;;
+    hotelOperator) printf '%s\n' "online.shamell.hoteloperator" ;;
     *) return 1 ;;
   esac
 }
@@ -541,6 +546,7 @@ slug_for_flavor() {
     driver) printf '%s\n' "driver" ;;
     operator) printf '%s\n' "operator" ;;
     busOperator) printf '%s\n' "busoperator" ;;
+    hotelOperator) printf '%s\n' "hoteloperator" ;;
     *) return 1 ;;
   esac
 }

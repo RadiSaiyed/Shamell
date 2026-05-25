@@ -134,6 +134,11 @@ String? _firebaseAndroidAppIdForSurface(ShamellAppSurface surface) {
       return _usableFirebaseValue(_firebaseAndroidAppIdOperator);
     case ShamellAppSurface.busOperator:
       return _usableFirebaseValue(_firebaseAndroidAppIdBusOperator);
+    case ShamellAppSurface.hotelOperator:
+      // Hotel operator flavor ships without Firebase (no push, no analytics)
+      // until a real Android app is registered in the shamell Firebase
+      // project for online.shamell.hoteloperator.
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseAndroidAppIdSyrCom);
     case ShamellAppSurface.superapp:
@@ -151,6 +156,8 @@ String? _firebaseIosAppIdForSurface(ShamellAppSurface surface) {
       return _usableFirebaseValue(_firebaseIosAppIdOperator);
     case ShamellAppSurface.busOperator:
       return _usableFirebaseValue(_firebaseIosAppIdBusOperator);
+    case ShamellAppSurface.hotelOperator:
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseIosAppIdSyrCom);
     case ShamellAppSurface.superapp:
@@ -168,6 +175,8 @@ String? _firebaseIosBundleIdForSurface(ShamellAppSurface surface) {
       return _usableFirebaseValue(_firebaseIosBundleIdOperator);
     case ShamellAppSurface.busOperator:
       return _usableFirebaseValue(_firebaseIosBundleIdBusOperator);
+    case ShamellAppSurface.hotelOperator:
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseIosBundleIdSyrCom);
     case ShamellAppSurface.superapp:

@@ -1,6 +1,14 @@
 import 'package:flutter/material.dart';
 
-enum ShamellAppSurface { superapp, ride, driver, operator, busOperator, syrcom }
+enum ShamellAppSurface {
+  superapp,
+  ride,
+  driver,
+  operator,
+  busOperator,
+  hotelOperator,
+  syrcom,
+}
 
 const String _configuredAppSurfaceRaw = String.fromEnvironment(
   'SHAMELL_APP_SURFACE',
@@ -32,6 +40,14 @@ ShamellAppSurface shamellParseAppSurface(String raw) {
     case 'coach_operator':
     case 'bus':
       return ShamellAppSurface.busOperator;
+    case 'hotel_operator':
+    case 'hoteloperator':
+    case 'hotel_ops':
+    case 'hotelops':
+    case 'hotels_operator':
+    case 'hotels_admin':
+    case 'hotel':
+      return ShamellAppSurface.hotelOperator;
     case 'syrcom':
     case 'sirkom':
     case 'work':
@@ -64,12 +80,16 @@ bool shamellIsRideOperatorSurface([ShamellAppSurface? surface]) =>
 bool shamellIsBusOperatorSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.busOperator;
 
+bool shamellIsHotelOperatorSurface([ShamellAppSurface? surface]) =>
+    (surface ?? shamellActiveAppSurface) == ShamellAppSurface.hotelOperator;
+
 bool shamellIsSyrComSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.syrcom;
 
 bool shamellIsAnyOperatorSurface([ShamellAppSurface? surface]) =>
     shamellIsRideOperatorSurface(surface) ||
-    shamellIsBusOperatorSurface(surface);
+    shamellIsBusOperatorSurface(surface) ||
+    shamellIsHotelOperatorSurface(surface);
 
 bool shamellIsManagedAccountSurface([ShamellAppSurface? surface]) =>
     shamellIsAnyOperatorSurface(surface) || shamellIsSyrComSurface(surface);
