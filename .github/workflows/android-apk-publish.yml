@@ -1,0 +1,126 @@
+name: Android APK Publish
+
+'on':
+  workflow_dispatch:
+    inputs:
+      sync_nginx:
+        description: Sync Hetzner Nginx before publishing the APK bundle
+        required: false
+        type: boolean
+        default: true
+      publish_to_production:
+        description: Publish the signed APK bundle to https://shamell.online/downloads/android/
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      REQUIRE_PRODUCTION_SIGNING: "true"
+      SHAMELL_ALLOW_DEBUG_RELEASE_SIGNING: "false"
+      SHAMELL_RELEASE_STORE_BASE64: ${{ secrets.SHAMELL_RELEASE_STORE_BASE64 }}
+      SHAMELL_RELEASE_STORE_PASSWORD: ${{ secrets.SHAMELL_RELEASE_STORE_PASSWORD }}
+      SHAMELL_RELEASE_KEY_ALIAS: ${{ secrets.SHAMELL_RELEASE_KEY_ALIAS }}
+      SHAMELL_RELEASE_KEY_PASSWORD: ${{ secrets.SHAMELL_RELEASE_KEY_PASSWORD }}
+      SHAMELL_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: ${{ secrets.SHAMELL_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER }}
+      TRUSTED_TLS_CERTIFICATES_DER_BASE64: ${{ secrets.TRUSTED_TLS_CERTIFICATES_DER_BASE64 }}
+      FLUTTER_BUILD_DART_DEFINES: TRUSTED_TLS_CERTIFICATES_DER_BASE64=${{ secrets.TRUSTED_TLS_CERTIFICATES_DER_BASE64 }}
+      ORG_GRADLE_PROJECT_playIntegrityCloudProjectNumber: ${{ secrets.SHAMELL_PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER }}
+      SHAMELL_ANDROID_APK_OUTPUT_DIR: ${{ github.workspace }}/.artifacts/android-apk-release
+      SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR: ${{ github.workspace }}/.artifacts/android-apk-split-debug-info
+      HETZNER_HOST: ${{ secrets.SHAMELL_HETZNER_HOST }}
+      HETZNER_USER: ${{ secrets.SHAMELL_HETZNER_USER }}
+      REMOTE_SUDO_PASSWORD: ${{ secrets.SHAMELL_HETZNER_SUDO_PASSWORD }}
+      NGINX_INTERNAL_API_SECRET: ${{ secrets.INTERNAL_API_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Install Java 17 and QR encoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk qrencode
+          java -version
+          qrencode --version
+
+      - name: Verify Android signing environment
+        run: ./scripts/check_android_release_signing_env.sh
+
+      - name: Guard mobile release security env
+        env:
+          FLUTTER_BUILD_ARGS: >-
+            flutter build apk --release --flavor user --no-pub --obfuscate
+            --split-debug-info=${{ env.SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR }}
+            --dart-define=TRUSTED_TLS_CERTIFICATES_DER_BASE64=${{ secrets.TRUSTED_TLS_CERTIFICATES_DER_BASE64 }}
+        run: ./scripts/check_mobile_release_security_env.sh
+
+      - name: Prepare release keystore from secret
+        run: |
+          set -euo pipefail
+          keystore_path="$(mktemp "${RUNNER_TEMP:-/tmp}/shamell-release.keystore.XXXXXX")"
+          chmod 600 "$keystore_path"
+          printf '%s' "$SHAMELL_RELEASE_STORE_BASE64" | base64 --decode > "$keystore_path"
+          chmod 600 "$keystore_path"
+          echo "SHAMELL_RELEASE_STORE_FILE=$keystore_path" >> "$GITHUB_ENV"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
+        with:
+          flutter-version: "3.38.5"
+
+      - name: Flutter pub get
+        working-directory: clients/shamell_flutter
+        run: flutter pub get
+
+      - name: Build signed APK bundle
+        run: |
+          ./scripts/build_android_release_apks.sh \
+            --output-dir "${SHAMELL_ANDROID_APK_OUTPUT_DIR}" \
+            --split-debug-info-dir "${SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR}"
+
+      - name: Upload Android APK bundle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-android-release-apks
+          path: ${{ env.SHAMELL_ANDROID_APK_OUTPUT_DIR }}
+          if-no-files-found: error
+
+      - name: Upload Android APK split-debug-info artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shamell-android-release-apk-split-debug-info
+          path: ${{ env.SHAMELL_ANDROID_APK_SPLIT_DEBUG_INFO_DIR }}
+          if-no-files-found: error
+
+      - name: Install SSH key
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${{ secrets.SHAMELL_HETZNER_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${HETZNER_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Sync Hetzner Nginx
+        if: ${{ inputs.publish_to_production && inputs.sync_nginx }}
+        run: |
+          ./scripts/sync_hetzner_nginx.sh "${HETZNER_USER}@${HETZNER_HOST}"
+
+      - name: Publish APK bundle to production
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          ./scripts/publish_android_apk_downloads.sh \
+            --source-dir "${SHAMELL_ANDROID_APK_OUTPUT_DIR}" \
+            --host "${HETZNER_USER}@${HETZNER_HOST}"
+
+      - name: Verify public APK index
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          curl -fsSI https://shamell.online/downloads/android/
+          curl -fsS https://shamell.online/downloads/android/release-manifest.json >/dev/null
