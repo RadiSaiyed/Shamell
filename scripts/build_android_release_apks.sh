@@ -589,10 +589,19 @@ for flavor in "${flavors[@]}"; do
     "${build_args[@]}"
   )
 
-  source_apk="${CLIENT_DIR}/build/app/outputs/flutter-apk/app-${flavor}-release.apk"
+  # Flutter normalises the output filename to lowercase even when the
+  # flavor id is camelCase (e.g. busOperator → app-busoperator-release.apk).
+  flavor_lower="$(printf '%s' "$flavor" | tr '[:upper:]' '[:lower:]')"
+  source_apk="${CLIENT_DIR}/build/app/outputs/flutter-apk/app-${flavor_lower}-release.apk"
   if [[ ! -f "$source_apk" ]]; then
-    echo "Built APK missing for flavor ${flavor}: ${source_apk}" >&2
-    exit 1
+    # Back-compat: older Flutter versions kept the camelCase filename.
+    fallback="${CLIENT_DIR}/build/app/outputs/flutter-apk/app-${flavor}-release.apk"
+    if [[ -f "$fallback" ]]; then
+      source_apk="$fallback"
+    else
+      echo "Built APK missing for flavor ${flavor}: ${source_apk}" >&2
+      exit 1
+    fi
   fi
 
   slug="$(slug_for_flavor "$flavor")"
