@@ -44,29 +44,34 @@ jobs:
 
       - name: Restore gitignored Firebase flavor configs
         # google-services.json for user/ride/driver/operator are gitignored
-        # (Firebase API keys + client OAuth IDs). On the self-hosted Hetzner
-        # runner they live at /home/shamell/shamell-src/.../google-services.json
-        # — copy them into the workspace after checkout so the flavor build
-        # can pick them up. busOperator is committed (no sensitive keys).
+        # (contain Firebase API keys + OAuth client IDs). Decode each from
+        # a base64 GH secret and drop it into the workspace so the per-
+        # flavor Gradle plugin picks it up. busOperator is committed.
+        env:
+          FIREBASE_USER_GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_USER_GOOGLE_SERVICES_JSON_B64 }}
+          FIREBASE_RIDE_GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_RIDE_GOOGLE_SERVICES_JSON_B64 }}
+          FIREBASE_DRIVER_GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_DRIVER_GOOGLE_SERVICES_JSON_B64 }}
+          FIREBASE_OPERATOR_GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_OPERATOR_GOOGLE_SERVICES_JSON_B64 }}
         run: |
           set -euo pipefail
-          REF_DIR=/home/shamell/shamell-src/clients/shamell_flutter/android/app/src
           DST_DIR=clients/shamell_flutter/android/app/src
           for flavor in user ride driver operator; do
-            src="$REF_DIR/$flavor/google-services.json"
-            dst="$DST_DIR/$flavor/google-services.json"
-            if [[ -f "$src" ]]; then
-              cp "$src" "$dst"
-              echo "restored $dst"
-            else
-              echo "WARNING: $src not present on runner" >&2
+            varname="FIREBASE_$(echo $flavor | tr a-z A-Z)_GOOGLE_SERVICES_JSON_B64"
+            b64="${!varname:-}"
+            if [[ -z "$b64" ]]; then
+              echo "ERROR: secret $varname not set" >&2
+              exit 1
             fi
+            dst="$DST_DIR/$flavor/google-services.json"
+            mkdir -p "$(dirname "$dst")"
+            printf '%s' "$b64" | base64 --decode > "$dst"
+            echo "restored $dst ($(wc -c < "$dst") bytes)"
           done
 
       - name: Install Java 17 and QR encoder
         run: |
-          echo "$REMOTE_SUDO_PASSWORD" | sudo -S apt-get update
-          echo "$REMOTE_SUDO_PASSWORD" | sudo -S apt-get install -y --no-install-recommends openjdk-17-jdk qrencode
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk qrencode
           java -version
           qrencode --version
 
