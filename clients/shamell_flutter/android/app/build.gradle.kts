@@ -361,6 +361,7 @@ androidComponents {
             appFlavor != "driver" &&
             appFlavor != "operator" &&
             appFlavor != "busOperator" &&
+            appFlavor != "hotelOperator" &&
             appFlavor != "syrcom"
         ) {
             variant.enable = false
