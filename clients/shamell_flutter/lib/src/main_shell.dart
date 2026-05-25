@@ -647,6 +647,15 @@ Widget shamellBuildSignedInHome({
       accent: const Color(0xFF2563EB),
     );
   }
+  if (shamellIsHotelOperatorSurface(appSurface)) {
+    // Standalone Hotel Operator app: skip the superapp shell and land
+    // straight in the admin console. Construct a light SuperappAPI
+    // since the page only needs baseUrl + HTTP plumbing — operator
+    // auth is handled inside HotelAdminConsolePage's own bootstrap.
+    return HotelAdminConsolePage(
+      api: SuperappAPI.light(baseUrl: baseUrlOverride ?? ''),
+    );
+  }
   if (shamellIsSyrComSurface(appSurface)) {
     return SyrComWorkbenchPage(baseUrl: baseUrlOverride);
   }
