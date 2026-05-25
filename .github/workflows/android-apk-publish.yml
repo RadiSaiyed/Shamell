@@ -68,10 +68,10 @@ jobs:
             echo "restored $dst ($(wc -c < "$dst") bytes)"
           done
 
-      - name: Install Java 17 and QR encoder
+      - name: Install Java 21 and QR encoder
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends openjdk-17-jdk qrencode
+          sudo apt-get install -y --no-install-recommends openjdk-21-jdk qrencode
           java -version
           qrencode --version
 
