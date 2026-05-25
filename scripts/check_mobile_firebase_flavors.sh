@@ -47,7 +47,7 @@ check_flavor() {
     return 0
   fi
 
-  if rg -q "$placeholder_re" "$config_path"; then
+  if grep -Eq "$placeholder_re" "$config_path"; then
     if [[ "$required" == "true" ]]; then
       echo "[FAIL] $flavor -> placeholder values detected in $config_path"
       return 1
@@ -56,7 +56,7 @@ check_flavor() {
     return 0
   fi
 
-  if ! rg -q "\"package_name\"[[:space:]]*:[[:space:]]*\"$package_name\"" "$config_path"; then
+  if ! grep -Eq "\"package_name\"[[:space:]]*:[[:space:]]*\"$package_name\"" "$config_path"; then
     echo "[FAIL] $flavor -> expected package_name $package_name in $config_path"
     return 1
   fi

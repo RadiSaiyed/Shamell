@@ -42,10 +42,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - name: Restore gitignored Firebase flavor configs
+        # google-services.json for user/ride/driver/operator are gitignored
+        # (Firebase API keys + client OAuth IDs). On the self-hosted Hetzner
+        # runner they live at /home/shamell/shamell-src/.../google-services.json
+        # — copy them into the workspace after checkout so the flavor build
+        # can pick them up. busOperator is committed (no sensitive keys).
+        run: |
+          set -euo pipefail
+          REF_DIR=/home/shamell/shamell-src/clients/shamell_flutter/android/app/src
+          DST_DIR=clients/shamell_flutter/android/app/src
+          for flavor in user ride driver operator; do
+            src="$REF_DIR/$flavor/google-services.json"
+            dst="$DST_DIR/$flavor/google-services.json"
+            if [[ -f "$src" ]]; then
+              cp "$src" "$dst"
+              echo "restored $dst"
+            else
+              echo "WARNING: $src not present on runner" >&2
+            fi
+          done
+
       - name: Install Java 17 and QR encoder
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends openjdk-17-jdk qrencode
+          echo "$REMOTE_SUDO_PASSWORD" | sudo -S apt-get update
+          echo "$REMOTE_SUDO_PASSWORD" | sudo -S apt-get install -y --no-install-recommends openjdk-17-jdk qrencode
           java -version
           qrencode --version
 
