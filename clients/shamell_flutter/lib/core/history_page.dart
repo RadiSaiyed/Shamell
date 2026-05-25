@@ -1,41 +1,267 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../main.dart' show LoginPage;
 import 'glass.dart';
 import 'skeleton.dart';
 import 'offline_queue.dart';
 import 'format.dart' show fmtCents;
-import 'ui_kit.dart';
 import 'l10n.dart';
+import 'http_error.dart';
+import 'payment_event_bus.dart';
+import 'payment_event_gateway.dart';
+import 'payments/currency_symbol_store.dart';
+import 'payments/payments_card_style.dart';
+import 'device_binding_reauth.dart';
 import 'design_tokens.dart';
 import 'app_shell_widgets.dart' show AppBG; // reuse background only
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'base_url.dart';
+import 'safe_set_state.dart';
+
+const Duration _historyRequestTimeout = Duration(seconds: 15);
+const int _historyPageSize = 25;
+const String _historyDirLegacyPrefKey = 'ph_dir';
+const String _historyKindLegacyPrefKey = 'ph_kind';
+const String _historyDateLegacyPrefKey = 'ph_date';
+const String _historyFromLegacyPrefKey = 'ph_from';
+const String _historyToLegacyPrefKey = 'ph_to';
+const String _historyDirScopedPrefKeyPrefix = 'ph_dir.v2.';
+const String _historyKindScopedPrefKeyPrefix = 'ph_kind.v2.';
+const String _historyDateScopedPrefKeyPrefix = 'ph_date.v2.';
+const String _historyFromScopedPrefKeyPrefix = 'ph_from.v2.';
+const String _historyToScopedPrefKeyPrefix = 'ph_to.v2.';
+const String _historyUnknownScope = 'unknown';
+
+class HistoryFilterPreferenceState {
+  final String dir;
+  final String kind;
+  final String date;
+  final DateTime? fromDate;
+  final DateTime? toDate;
+
+  const HistoryFilterPreferenceState({
+    this.dir = 'all',
+    this.kind = 'all',
+    this.date = 'all',
+    this.fromDate,
+    this.toDate,
+  });
+}
+
+Future<HistoryFilterPreferenceState> loadHistoryFilterPreferences({
+  required String baseUrl,
+  SharedPreferences? sp,
+}) async {
+  final prefs = sp ?? await SharedPreferences.getInstance();
+  final scope = _historyFilterScopeForBaseUrl(baseUrl);
+  final dirScopedKey =
+      _historyFilterScopedPrefKey(_historyDirScopedPrefKeyPrefix, scope);
+  final kindScopedKey =
+      _historyFilterScopedPrefKey(_historyKindScopedPrefKeyPrefix, scope);
+  final dateScopedKey =
+      _historyFilterScopedPrefKey(_historyDateScopedPrefKeyPrefix, scope);
+  final fromScopedKey =
+      _historyFilterScopedPrefKey(_historyFromScopedPrefKeyPrefix, scope);
+  final toScopedKey =
+      _historyFilterScopedPrefKey(_historyToScopedPrefKeyPrefix, scope);
+
+  String dir = (prefs.getString(dirScopedKey) ?? '').trim();
+  String kind = (prefs.getString(kindScopedKey) ?? '').trim();
+  String date = (prefs.getString(dateScopedKey) ?? '').trim();
+  DateTime? fromDate =
+      DateTime.tryParse((prefs.getString(fromScopedKey) ?? '').trim());
+  DateTime? toDate =
+      DateTime.tryParse((prefs.getString(toScopedKey) ?? '').trim());
+
+  final legacyDir = (prefs.getString(_historyDirLegacyPrefKey) ?? '').trim();
+  final legacyKind = (prefs.getString(_historyKindLegacyPrefKey) ?? '').trim();
+  final legacyDate = (prefs.getString(_historyDateLegacyPrefKey) ?? '').trim();
+  final legacyFrom = DateTime.tryParse(
+      (prefs.getString(_historyFromLegacyPrefKey) ?? '').trim());
+  final legacyTo = DateTime.tryParse(
+      (prefs.getString(_historyToLegacyPrefKey) ?? '').trim());
+
+  if (_isUnknownHistoryFilterScope(scope)) {
+    if (dir.isEmpty && legacyDir.isNotEmpty) {
+      dir = legacyDir;
+      await prefs.setString(dirScopedKey, legacyDir);
+    }
+    if (kind.isEmpty && legacyKind.isNotEmpty) {
+      kind = legacyKind;
+      await prefs.setString(kindScopedKey, legacyKind);
+    }
+    if (date.isEmpty && legacyDate.isNotEmpty) {
+      date = legacyDate;
+      await prefs.setString(dateScopedKey, legacyDate);
+    }
+    if (fromDate == null && legacyFrom != null) {
+      fromDate = legacyFrom;
+      await prefs.setString(fromScopedKey, legacyFrom.toIso8601String());
+    }
+    if (toDate == null && legacyTo != null) {
+      toDate = legacyTo;
+      await prefs.setString(toScopedKey, legacyTo.toIso8601String());
+    }
+  }
+
+  await prefs.remove(_historyDirLegacyPrefKey);
+  await prefs.remove(_historyKindLegacyPrefKey);
+  await prefs.remove(_historyDateLegacyPrefKey);
+  await prefs.remove(_historyFromLegacyPrefKey);
+  await prefs.remove(_historyToLegacyPrefKey);
+
+  return HistoryFilterPreferenceState(
+    dir: dir.isEmpty ? 'all' : dir,
+    kind: kind.isEmpty ? 'all' : kind,
+    date: date.isEmpty ? 'all' : date,
+    fromDate: fromDate,
+    toDate: toDate,
+  );
+}
+
+Future<void> saveHistoryFilterPreferences({
+  required String baseUrl,
+  required String dir,
+  required String kind,
+  required String date,
+  DateTime? fromDate,
+  DateTime? toDate,
+  SharedPreferences? sp,
+}) async {
+  final prefs = sp ?? await SharedPreferences.getInstance();
+  final scope = _historyFilterScopeForBaseUrl(baseUrl);
+  await prefs.setString(
+    _historyFilterScopedPrefKey(_historyDirScopedPrefKeyPrefix, scope),
+    dir.trim(),
+  );
+  await prefs.setString(
+    _historyFilterScopedPrefKey(_historyKindScopedPrefKeyPrefix, scope),
+    kind.trim(),
+  );
+  await prefs.setString(
+    _historyFilterScopedPrefKey(_historyDateScopedPrefKeyPrefix, scope),
+    date.trim(),
+  );
+  final fromScopedKey =
+      _historyFilterScopedPrefKey(_historyFromScopedPrefKeyPrefix, scope);
+  final toScopedKey =
+      _historyFilterScopedPrefKey(_historyToScopedPrefKeyPrefix, scope);
+  if (fromDate == null) {
+    await prefs.remove(fromScopedKey);
+  } else {
+    await prefs.setString(fromScopedKey, fromDate.toIso8601String());
+  }
+  if (toDate == null) {
+    await prefs.remove(toScopedKey);
+  } else {
+    await prefs.setString(toScopedKey, toDate.toIso8601String());
+  }
+  await prefs.remove(_historyDirLegacyPrefKey);
+  await prefs.remove(_historyKindLegacyPrefKey);
+  await prefs.remove(_historyDateLegacyPrefKey);
+  await prefs.remove(_historyFromLegacyPrefKey);
+  await prefs.remove(_historyToLegacyPrefKey);
+}
+
+String _historyFilterScopeForBaseUrl(String baseUrl) {
+  final normalized = normalizeSecureApiBaseUrl(baseUrl) ?? '';
+  if (normalized.isEmpty) return _historyUnknownScope;
+  return Uri.parse(normalized).origin;
+}
+
+bool _isUnknownHistoryFilterScope(String scope) =>
+    scope == _historyUnknownScope;
+
+String _historyFilterScopedPrefKey(String prefix, String scope) =>
+    '$prefix$scope';
+
+class _HistoryCursor {
+  final String createdAt;
+  final String id;
+
+  const _HistoryCursor({required this.createdAt, required this.id});
+}
+
+List<Map<String, dynamic>> _normalizeHistoryTxnList(dynamic raw) {
+  if (raw is! List) return const <Map<String, dynamic>>[];
+  return raw
+      .whereType<Map>()
+      .map((item) => Map<String, dynamic>.from(item))
+      .toList(growable: false);
+}
+
+_HistoryCursor? _historyCursorFromTxn(Map<String, dynamic>? txn) {
+  if (txn == null) return null;
+  final createdAt = (txn['created_at'] ?? '').toString().trim();
+  final id = (txn['id'] ?? '').toString().trim();
+  if (createdAt.isEmpty || id.isEmpty) return null;
+  return _HistoryCursor(createdAt: createdAt, id: id);
+}
+
+List<Map<String, dynamic>> _mergeHistoryTxnPages(
+  List<Map<String, dynamic>> existing,
+  List<Map<String, dynamic>> incoming,
+) {
+  if (incoming.isEmpty) return existing;
+  final merged = <Map<String, dynamic>>[...existing];
+  final seenIds = existing
+      .map((txn) => (txn['id'] ?? '').toString().trim())
+      .where((id) => id.isNotEmpty)
+      .toSet();
+  for (final txn in incoming) {
+    final id = (txn['id'] ?? '').toString().trim();
+    if (id.isEmpty || seenIds.add(id)) {
+      merged.add(txn);
+    }
+  }
+  return merged;
+}
 
 class HistoryPage extends StatefulWidget {
   final String baseUrl;
   final String walletId;
   final List<Map<String, dynamic>>? initialTxns;
   final String? initialKind;
+  final http.Client? client;
+
+  /// Cycle 3C: injectable seam over the realtime payment-event source
+  /// (singleton [PaymentEventBus] + [PaymentEventStream] in production).
+  /// Defaults to a [DefaultPaymentEventGateway] when null, preserving the
+  /// pre-3C runtime behaviour exactly. Widget tests can pass a
+  /// `FakePaymentEventGateway` from `test/fakes/` to avoid the reconnect
+  /// `Timer` race that previously broke `history_page_session_guard_test`.
+  final PaymentEventGateway? paymentEventGateway;
+
   const HistoryPage(
       {super.key,
       required this.baseUrl,
       required this.walletId,
       this.initialTxns,
-      this.initialKind});
+      this.initialKind,
+      this.client,
+      this.paymentEventGateway});
   @override
   State<HistoryPage> createState() => _HistoryPageState();
 }
 
-class _HistoryPageState extends State<HistoryPage> {
-  List<dynamic> txns = [];
+class _HistoryPageState extends State<HistoryPage>
+    with SafeSetStateMixin<HistoryPage>, WidgetsBindingObserver {
+  List<Map<String, dynamic>> txns = [];
   String out = '';
   bool loading = true;
+  bool _loadingMore = false;
+  bool _hasMore = true;
   String _dirFilter = 'all';
   String _kindFilter = 'all';
   String _dateFilter = 'all';
   DateTime? _fromDate;
   DateTime? _toDate;
+  String? _beforeCreatedAt;
+  String? _beforeId;
   final _dirs = const ['all', 'out', 'in'];
   final _kinds = const [
     'all',
@@ -43,33 +269,133 @@ class _HistoryPageState extends State<HistoryPage> {
     'topup',
     'cash',
     'sonic',
-    'redpacket',
     'bill',
     'savings',
   ];
   final _dates = const ['all', '7d', '30d', 'custom'];
   String _curSym = 'SYP';
-  int _limit = 25;
-  bool _mirsaalOnly = false;
+
+  // Audit-fix (C-P2-30): subscribe to PaymentEventBus so transfers /
+  // refunds / top-ups landing while the user is staring at History
+  // appear without manual pull-to-refresh. The same realtime SSE
+  // singleton that PaymentOverviewTab consumes is reused — this
+  // listener just adds a second consumer of the existing stream.
+  StreamSubscription<PaymentEvent>? _paymentEventSub;
+
+  /// Cycle 3C: resolved [PaymentEventGateway]. Either the widget's
+  /// injected one (in tests) or the production default. Initialised once
+  /// in [initState] so subsequent calls hit a stable handle even if the
+  /// widget rebuilds.
+  late final PaymentEventGateway _paymentEventGateway;
+
+  /// Coalesces rapid back-to-back events so we never have two
+  /// `_load(reset: true)` calls in flight against the same wallet.
+  /// Whichever event arrives first kicks the reload; subsequent
+  /// events while the reload is running are dropped, since the
+  /// reload will already pick up every txn newer than its cursor.
+  Future<void>? _pendingRefreshFromEvent;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _paymentEventGateway =
+        widget.paymentEventGateway ?? DefaultPaymentEventGateway();
     _loadPrefs();
+    _paymentEventSub = _paymentEventGateway.stream.listen(_onPaymentEvent);
+    _maybeStartRealtimeStream();
     if (widget.initialKind != null && widget.initialKind!.trim().isNotEmpty) {
-      _kindFilter = widget.initialKind!.trim();
+      final v = widget.initialKind!.trim();
+      _kindFilter = _kinds.contains(v) ? v : 'all';
     }
     if (widget.initialTxns != null) {
-      txns = widget.initialTxns!;
+      txns = widget.initialTxns!
+          .map((txn) => Map<String, dynamic>.from(txn))
+          .toList(growable: false);
       loading = false;
+      final cursor = _historyCursorFromTxn(txns.isEmpty ? null : txns.last);
+      _beforeCreatedAt = cursor?.createdAt;
+      _beforeId = cursor?.id;
+      _hasMore = cursor != null;
     } else {
       _load();
     }
   }
 
-  Future<void> _load() async {
-    setState(() => loading = true);
+  void _maybeStartRealtimeStream() {
+    final base = widget.baseUrl.trim();
+    final wallet = widget.walletId.trim();
+    if (base.isEmpty || wallet.isEmpty) return;
+    // The stream singleton dedupes per-(base, wallet); calling start
+    // here is a no-op if PaymentOverviewTab has already initialised it.
+    // HistoryPage doesn't carry a deviceId — that's fine, the BFF
+    // accepts SSE subscriptions without it (auth is via the session
+    // cookie, deviceId is informational for telemetry).
+    //
+    // Cycle 3C: routed through [_paymentEventGateway] so widget tests can
+    // inject a fake whose `start` is a no-op (no reconnect Timer to leak).
+    unawaited(_paymentEventGateway.start(
+      baseUrl: base,
+      walletId: wallet,
+    ));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && mounted) {
+      // After the OS suspends us we may have missed SSE events. Kick
+      // the singleton off any stale socket + force a fresh page-1
+      // refresh so the on-screen list catches up to the wallet's
+      // authoritative recent activity. Cycle 3C: routed through the
+      // injected gateway for testability.
+      _paymentEventGateway.reconnectNow();
+      unawaited(_load(reset: true));
+    }
+  }
+
+  void _onPaymentEvent(PaymentEvent event) {
+    if (!mounted) return;
+    final wallet = widget.walletId.trim();
+    if (wallet.isEmpty) return;
+    if (event.walletId != null &&
+        event.walletId!.isNotEmpty &&
+        event.walletId != wallet) {
+      // Event for a different wallet (e.g. a secondary one); ignore.
+      return;
+    }
+    if (event.kind == PaymentEventKind.unknown) return;
+    final pending = _pendingRefreshFromEvent;
+    if (pending != null) return;
+    _pendingRefreshFromEvent = _load(reset: true).whenComplete(() {
+      _pendingRefreshFromEvent = null;
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _paymentEventSub?.cancel();
+    _paymentEventSub = null;
+    // PaymentEventStream is a process-wide singleton — we don't
+    // `stop()` it on every History dispose because PaymentOverviewTab
+    // (and any future surface) may still want the stream. The stream
+    // shuts down on logout via the same wipe path that closes
+    // session cookies.
+    super.dispose();
+  }
+
+  Future<void> _load({bool reset = true}) async {
+    if (reset) {
+      setState(() => loading = true);
+    } else {
+      if (loading || _loadingMore || !_hasMore) return;
+      setState(() => _loadingMore = true);
+    }
+    final httpClient = widget.client ?? shamellHttpClient();
+    final closeClient = widget.client == null;
     try {
-      final qp = <String, String>{'limit': _limit.toString()};
+      final qp = <String, String>{'limit': _historyPageSize.toString()};
       if (_dirFilter != 'all') qp['dir'] = _dirFilter;
       if (_kindFilter != 'all') qp['kind'] = _kindFilter;
       DateTime? f;
@@ -85,44 +411,95 @@ class _HistoryPageState extends State<HistoryPage> {
       String toIso(DateTime d) => d.toUtc().toIso8601String();
       if (f != null) qp['from_iso'] = toIso(f);
       if (t != null) qp['to_iso'] = toIso(t);
-      final u = Uri.parse('${widget.baseUrl}/wallets/' +
-              Uri.encodeComponent(widget.walletId) +
-              '/snapshot')
-          .replace(queryParameters: qp);
-      final r = await http.get(u, headers: await _hdr());
-      if (r.statusCode == 200) {
-        final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final arr = j['txns'];
-        if (arr is List) {
-          txns = arr;
-          out = '';
-        } else {
-          out = L10n.of(context).historyUnexpectedFormat;
-        }
-        final w = j['wallet'];
-        if (w is Map<String, dynamic>) {
-          final cur = (w['currency'] ?? '').toString();
-          if (cur.isNotEmpty) _curSym = cur;
-        }
+      if (!reset && _beforeCreatedAt != null && _beforeId != null) {
+        qp['before_created_at'] = _beforeCreatedAt!;
+        qp['before_id'] = _beforeId!;
+      }
+      final u = secureApiChildUri(
+        baseUrl: widget.baseUrl,
+        pathSegments: <String>['wallets', widget.walletId, 'snapshot'],
+        queryParameters: qp,
+      );
+      if (u == null) {
+        final isArabic =
+            Localizations.maybeLocaleOf(context)?.languageCode == 'ar';
+        txns = [];
+        out = isArabic ? 'عنوان الخادم غير صالح.' : 'Invalid server URL.';
       } else {
-        out = '${r.statusCode}: ${r.body}';
+        final r = await httpClient
+            .get(u, headers: await _hdr(widget.baseUrl))
+            .timeout(_historyRequestTimeout);
+        if (!mounted) return;
+        if (r.statusCode == 200) {
+          final j = jsonDecode(r.body) as Map<String, dynamic>;
+          final page = _normalizeHistoryTxnList(j['txns']);
+          if (j['txns'] is List) {
+            txns = reset ? page : _mergeHistoryTxnPages(txns, page);
+            final cursor =
+                page.isEmpty ? null : _historyCursorFromTxn(page.last);
+            _beforeCreatedAt = cursor?.createdAt;
+            _beforeId = cursor?.id;
+            _hasMore = page.length >= _historyPageSize && cursor != null;
+            out = '';
+          } else {
+            out = L10n.of(context).historyUnexpectedFormat;
+          }
+          final w = j['wallet'];
+          if (w is Map<String, dynamic>) {
+            final cur = (w['currency'] ?? '').toString();
+            if (cur.isNotEmpty) {
+              _curSym = cur;
+              unawaited(
+                saveStoredCurrencySymbol(cur, baseUrl: widget.baseUrl),
+              );
+            }
+          }
+        } else {
+          if (await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+            context,
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            loginPageBuilder: (_) => const LoginPage(),
+          )) {
+            return;
+          }
+          out = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
+        }
       }
     } catch (e) {
-      out = '${L10n.of(context).historyErrorPrefix}: $e';
+      if (!mounted) return;
+      if (await shamellForceReauthIfCriticalDeviceBindingDrift(
+        context,
+        error: e,
+        loginPageBuilder: (_) => const LoginPage(),
+      )) {
+        return;
+      }
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
+    } finally {
+      if (closeClient) {
+        httpClient.close();
+      }
     }
-    setState(() => loading = false);
+    if (!mounted) return;
+    setState(() {
+      if (reset) {
+        loading = false;
+      } else {
+        _loadingMore = false;
+      }
+    });
   }
 
   Future<void> _loadMore() async {
-    if (loading) return;
-    setState(() => loading = true);
-    try {
-      final next = _limit + 25;
-      _limit = next > 200 ? 200 : next;
-      await _load();
-    } finally {
-      if (mounted) setState(() => loading = false);
-    }
+    await _load(reset: false);
   }
 
   void _exportCsv() {
@@ -158,8 +535,12 @@ class _HistoryPageState extends State<HistoryPage> {
       Share.share(csv, subject: subject);
     } catch (e) {
       final l = L10n.of(context);
+      final detail = sanitizeExceptionForUi(
+        error: e,
+        isArabic: l.isArabic,
+      );
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${l.historyCsvErrorPrefix}: $e')),
+        SnackBar(content: Text('${l.historyCsvErrorPrefix}: $detail')),
       );
     }
   }
@@ -172,7 +553,7 @@ class _HistoryPageState extends State<HistoryPage> {
     } else if (_dateFilter == '30d') {
       minEpoch = now.subtract(const Duration(days: 30)).millisecondsSinceEpoch;
     }
-    return txns.whereType<Map<String, dynamic>>().where((t) {
+    return txns.where((t) {
       final from = (t['from_wallet_id'] ?? '').toString();
       final dirOkay = _dirFilter == 'all' ||
           (_dirFilter == 'out'
@@ -180,9 +561,6 @@ class _HistoryPageState extends State<HistoryPage> {
               : from != widget.walletId);
       final kind = (t['kind'] ?? '').toString().toLowerCase();
       final kindOkay = _kindFilter == 'all' || kind.contains(_kindFilter);
-      final groupId = (t['group_id'] ?? '').toString().toLowerCase();
-      final mirsaalOnlyActive = _mirsaalOnly && _kindFilter == 'redpacket';
-      final mirsaalOkay = !mirsaalOnlyActive || groupId.startsWith('mirsaal:');
       bool dateOkay = true;
       if (minEpoch != null) {
         try {
@@ -191,38 +569,37 @@ class _HistoryPageState extends State<HistoryPage> {
           if (ts != null) dateOkay = ts >= minEpoch;
         } catch (_) {}
       }
-      return dirOkay && kindOkay && dateOkay && mirsaalOkay;
+      return dirOkay && kindOkay && dateOkay;
     }).toList();
   }
 
   Future<void> _loadPrefs() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      _dirFilter = sp.getString('ph_dir') ?? _dirFilter;
-      _kindFilter = sp.getString('ph_kind') ?? _kindFilter;
-      _dateFilter = sp.getString('ph_date') ?? _dateFilter;
-      final f = sp.getString('ph_from');
-      final t = sp.getString('ph_to');
-      if (f != null) _fromDate = DateTime.tryParse(f);
-      if (t != null) _toDate = DateTime.tryParse(t);
-      final cs = sp.getString('currency_symbol');
+      final state = await loadHistoryFilterPreferences(baseUrl: widget.baseUrl);
+      _dirFilter = state.dir;
+      _kindFilter = state.kind;
+      _dateFilter = state.date;
+      _fromDate = state.fromDate;
+      _toDate = state.toDate;
+      final cs = await loadStoredCurrencySymbol(baseUrl: widget.baseUrl);
       if (cs != null && cs.isNotEmpty) _curSym = cs;
-      _mirsaalOnly = sp.getBool('ph_mirsaal_only') ?? _mirsaalOnly;
+      if (!_dirs.contains(_dirFilter)) _dirFilter = 'all';
+      if (!_kinds.contains(_kindFilter)) _kindFilter = 'all';
+      if (!_dates.contains(_dateFilter)) _dateFilter = 'all';
       if (mounted) setState(() {});
     } catch (_) {}
   }
 
   Future<void> _savePrefs() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('ph_dir', _dirFilter);
-      await sp.setString('ph_kind', _kindFilter);
-      await sp.setString('ph_date', _dateFilter);
-      if (_fromDate != null)
-        await sp.setString('ph_from', _fromDate!.toIso8601String());
-      if (_toDate != null)
-        await sp.setString('ph_to', _toDate!.toIso8601String());
-      await sp.setBool('ph_mirsaal_only', _mirsaalOnly);
+      await saveHistoryFilterPreferences(
+        baseUrl: widget.baseUrl,
+        dir: _dirFilter,
+        kind: _kindFilter,
+        date: _dateFilter,
+        fromDate: _fromDate,
+        toDate: _toDate,
+      );
     } catch (_) {}
   }
 
@@ -283,29 +660,18 @@ class _HistoryPageState extends State<HistoryPage> {
       int inCnt = 0, outCnt = 0;
       int savDepC = 0, savWdrC = 0;
       int savDepCnt = 0, savWdrCnt = 0;
-      int rpInC = 0, rpOutC = 0;
-      int rpInCnt = 0, rpOutCnt = 0;
       for (final t in list) {
         final amt = (t['amount_cents'] ?? 0) as int;
         final isOut = (t['from_wallet_id'] ?? '') == widget.walletId;
         final kind = (t['kind'] ?? '').toString().toLowerCase();
         final isSavDep = kind.startsWith('savings_deposit');
         final isSavWdr = kind.startsWith('savings_withdraw');
-        final isRedpacket = kind == 'redpacket';
         if (isOut) {
           outC += amt;
           outCnt++;
-          if (isRedpacket) {
-            rpOutC += amt;
-            rpOutCnt++;
-          }
         } else {
           inC += amt;
           inCnt++;
-          if (isRedpacket) {
-            rpInC += amt;
-            rpInCnt++;
-          }
         }
         if (isSavDep) {
           savDepC += amt;
@@ -321,7 +687,6 @@ class _HistoryPageState extends State<HistoryPage> {
       final totalCents = inC + outC;
       final isBillsView = _kindFilter == 'bill';
       final isSavingsView = _kindFilter == 'savings';
-      final isRedpacketView = _kindFilter == 'redpacket';
       final l = L10n.of(context);
       final theme = Theme.of(context);
       final muted = theme.colorScheme.onSurface.withValues(alpha: .70);
@@ -379,37 +744,6 @@ class _HistoryPageState extends State<HistoryPage> {
             ),
           ],
         );
-      } else if (isRedpacketView) {
-        inner = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              l.isArabic ? 'ملخص الحزم الحمراء' : 'Red packet summary',
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              l.isArabic
-                  ? 'أرسلت: ${fmtCents(rpOutC)} $_curSym'
-                  : 'Sent: ${fmtCents(rpOutC)} $_curSym',
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              l.isArabic
-                  ? 'استلمت: ${fmtCents(rpInC)} $_curSym'
-                  : 'Received: ${fmtCents(rpInC)} $_curSym',
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              l.isArabic
-                  ? 'عدد الحزم: ${rpOutCnt + rpInCnt}'
-                  : 'Packets: ${rpOutCnt + rpInCnt}',
-              style: TextStyle(fontSize: 11, color: muted),
-            ),
-          ],
-        );
       } else {
         inner = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -436,6 +770,8 @@ class _HistoryPageState extends State<HistoryPage> {
                       const SizedBox(height: 2),
                       Text(
                         '${fmtCents(outC)} $_curSym ($outCnt)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
@@ -460,6 +796,8 @@ class _HistoryPageState extends State<HistoryPage> {
                       const SizedBox(height: 2),
                       Text(
                         '${fmtCents(inC)} $_curSym ($inCnt)',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 13,
@@ -482,9 +820,11 @@ class _HistoryPageState extends State<HistoryPage> {
       }
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: GlassPanel(
-          padding: const EdgeInsets.all(12),
-          radius: 18,
+        child: ShamellPaymentCardSurface(
+          tone: ShamellPaymentCardTone.soft,
+          accent: Tokens.colorPayments,
+          radius: 22,
+          padding: const EdgeInsets.all(14),
           child: inner,
         ),
       );
@@ -502,7 +842,6 @@ class _HistoryPageState extends State<HistoryPage> {
     final kind = kindRaw.toLowerCase();
     final isSavDep = kind.startsWith('savings_deposit');
     final isSavWdr = kind.startsWith('savings_withdraw');
-    final isRedpacket = kind == 'redpacket';
     final isBill = kind.startsWith('bill');
     final sign = isSavDep ? '-' : (isSavWdr ? '+' : (isOut ? '-' : '+'));
     final who = isOut ? toWallet : fromWallet;
@@ -520,23 +859,14 @@ class _HistoryPageState extends State<HistoryPage> {
       subtitleText = createdAt;
     }
 
-    final amountColor = isRedpacket
-        ? Colors.red.shade400
-        : (isBill
-            ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.90)
-            : (sign == '+'
-                ? Tokens.colorPayments
-                : Theme.of(context)
-                    .colorScheme
-                    .onSurface
-                    .withValues(alpha: 0.85)));
+    final amountColor = isBill
+        ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.90)
+        : (sign == '+'
+            ? Tokens.colorPayments
+            : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.85));
 
     String mainLabel;
-    if (isRedpacket) {
-      mainLabel = l.isArabic
-          ? (isOut ? 'حزمة حمراء مرسلة' : 'حزمة حمراء مستلمة')
-          : (isOut ? 'Red packet sent' : 'Red packet received');
-    } else if (kind.startsWith('transfer')) {
+    if (kind.startsWith('transfer')) {
       mainLabel = l.isArabic ? 'تحويل' : 'Transfer';
     } else if (kind.startsWith('topup')) {
       mainLabel = l.isArabic ? 'شحن رصيد' : 'Top‑up';
@@ -551,24 +881,17 @@ class _HistoryPageState extends State<HistoryPage> {
     } else if (kind.startsWith('savings_withdraw')) {
       mainLabel = l.isArabic ? 'سحب ادخار' : 'Savings withdrawal';
     } else {
-      mainLabel = kindRaw;
+      mainLabel = l.isArabic ? 'حركة' : 'Transaction';
     }
 
     final bool isIncoming = sign == '+';
-    final Color iconColor = isRedpacket
-        ? Colors.red.shade400
-        : (isBill
-            ? Theme.of(context).colorScheme.primary
-            : Tokens.colorPayments);
-    final Color iconBg = isRedpacket
-        ? Colors.red.shade50
-        : (isBill
-            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.06)
-            : Tokens.colorPayments.withValues(alpha: 0.08));
+    final Color iconColor =
+        isBill ? Theme.of(context).colorScheme.primary : Tokens.colorPayments;
+    final Color iconBg = isBill
+        ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.06)
+        : Tokens.colorPayments.withValues(alpha: 0.08);
     final IconData iconData;
-    if (isRedpacket) {
-      iconData = Icons.card_giftcard;
-    } else if (isBill) {
+    if (isBill) {
       iconData = Icons.receipt_long_outlined;
     } else if (isIncoming) {
       iconData = Icons.call_received_rounded;
@@ -576,66 +899,69 @@ class _HistoryPageState extends State<HistoryPage> {
       iconData = Icons.call_made_rounded;
     }
 
-    return GestureDetector(
+    return ShamellPaymentListTileCard(
       onTap: () {
         _showTxnDetailSheet(t, currency, l,
             mainLabel: mainLabel,
             sign: sign,
-            isRedpacket: isRedpacket,
             amountColor: amountColor,
             iconData: iconData,
             iconBg: iconBg);
       },
-      child: StandardListTile(
-        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        leading: Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: iconBg,
-            shape: BoxShape.circle,
-          ),
-          child: Icon(iconData, color: iconColor, size: 20),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      accent:
+          isBill ? Theme.of(context).colorScheme.primary : Tokens.colorPayments,
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: iconBg,
+          borderRadius: BorderRadius.circular(12),
         ),
-        title: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Expanded(
-              child: Text(
-                mainLabel,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                ),
+        child: Icon(iconData, color: iconColor, size: 20),
+      ),
+      title: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Text(
+              mainLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
               '$sign$amt $currency',
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+              textAlign: TextAlign.end,
               style: TextStyle(
                 fontWeight: FontWeight.w700,
                 fontSize: 14,
                 color: amountColor,
               ),
             ),
-          ],
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Text(
-            subtitleText,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 10,
-              color: Theme.of(context)
-                  .colorScheme
-                  .onSurface
-                  .withValues(alpha: 0.70),
-            ),
+          ),
+        ],
+      ),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(
+          subtitleText,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 10,
+            color:
+                Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.70),
           ),
         ),
       ),
@@ -648,7 +974,6 @@ class _HistoryPageState extends State<HistoryPage> {
     L10n l, {
     required String mainLabel,
     required String sign,
-    required bool isRedpacket,
     required Color amountColor,
     required IconData iconData,
     required Color iconBg,
@@ -901,12 +1226,57 @@ class _HistoryPageState extends State<HistoryPage> {
     );
   }
 
+  int _responsiveColumnCount(
+    double maxWidth, {
+    required double minItemWidth,
+    required double spacing,
+    required int maxColumns,
+  }) {
+    for (var columns = maxColumns; columns > 1; columns--) {
+      final requiredWidth =
+          (minItemWidth * columns) + (spacing * (columns - 1));
+      if (maxWidth >= requiredWidth) {
+        return columns;
+      }
+    }
+    return 1;
+  }
+
+  Widget _buildHistoryFilterField({
+    required double width,
+    required String label,
+    required String value,
+    required List<String> options,
+    required ValueChanged<String?> onChanged,
+  }) {
+    return ShamellPaymentFilterField(
+      width: width,
+      label: label,
+      value: value,
+      options: options,
+      onChanged: onChanged,
+      accent: Tokens.colorPayments,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final pTransfer = OfflineQueue.pending(tag: 'payments_transfer');
-    final pTopup = OfflineQueue.pending(tag: 'payments_topup');
-    final pSonic = OfflineQueue.pending(tag: 'payments_sonic');
-    final pCash = OfflineQueue.pending(tag: 'payments_cash');
+    final pTransfer = OfflineQueue.pending(
+      tag: 'payments_transfer',
+      baseUrlOverride: widget.baseUrl,
+    );
+    final pTopup = OfflineQueue.pending(
+      tag: 'payments_topup',
+      baseUrlOverride: widget.baseUrl,
+    );
+    final pSonic = OfflineQueue.pending(
+      tag: 'payments_sonic',
+      baseUrlOverride: widget.baseUrl,
+    );
+    final pCash = OfflineQueue.pending(
+      tag: 'payments_cash',
+      baseUrlOverride: widget.baseUrl,
+    );
     List<Widget> sections = [];
     Widget section(String title, List pending) {
       if (pending.isEmpty) return const SizedBox.shrink();
@@ -934,141 +1304,180 @@ class _HistoryPageState extends State<HistoryPage> {
     final filtered = _filtered();
     final header = Padding(
       padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Text(l.historyDirLabel),
-              const SizedBox(width: 6),
-              DropdownButton<String>(
-                  value: _dirFilter,
-                  items: _dirs
-                      .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                      .toList(),
-                  onChanged: (v) {
-                    if (v == null) return;
-                    setState(() => _dirFilter = v);
-                    _savePrefs();
-                  }),
-              const SizedBox(width: 12),
-              Text(l.historyTypeLabel),
-              const SizedBox(width: 6),
-              DropdownButton<String>(
-                  value: _kindFilter,
-                  items: _kinds
-                      .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                      .toList(),
-                  onChanged: (v) {
-                    if (v == null) return;
-                    setState(() => _kindFilter = v);
-                    _savePrefs();
-                  }),
-              const SizedBox(width: 12),
-              Text(l.historyPeriodLabel),
-              const SizedBox(width: 6),
-              DropdownButton<String>(
-                  value: _dateFilter,
-                  items: _dates
-                      .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                      .toList(),
-                  onChanged: (v) async {
-                    if (v == null) return;
-                    setState(() => _dateFilter = v);
-                    if (v == 'custom') {
-                      await _pickDates(context);
-                    }
-                    _savePrefs();
+      child: ShamellPaymentCardSurface(
+        tone: ShamellPaymentCardTone.soft,
+        accent: Tokens.colorPayments,
+        radius: 24,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            LayoutBuilder(
+              builder: (context, constraints) {
+                const spacing = 12.0;
+                final columns = _responsiveColumnCount(
+                  constraints.maxWidth,
+                  minItemWidth: 180,
+                  spacing: spacing,
+                  maxColumns: 3,
+                );
+                final fieldWidth = columns == 1
+                    ? constraints.maxWidth
+                    : (constraints.maxWidth - (spacing * (columns - 1))) /
+                        columns;
+                return Wrap(
+                  spacing: spacing,
+                  runSpacing: 10,
+                  children: [
+                    _buildHistoryFilterField(
+                      width: fieldWidth,
+                      label: l.historyDirLabel,
+                      value: _dirFilter,
+                      options: _dirs,
+                      onChanged: (v) async {
+                        if (v == null || v == _dirFilter) return;
+                        setState(() => _dirFilter = v);
+                        await _savePrefs();
+                        await _load();
+                      },
+                    ),
+                    _buildHistoryFilterField(
+                      width: fieldWidth,
+                      label: l.historyTypeLabel,
+                      value: _kindFilter,
+                      options: _kinds,
+                      onChanged: (v) async {
+                        if (v == null || v == _kindFilter) return;
+                        setState(() => _kindFilter = v);
+                        await _savePrefs();
+                        await _load();
+                      },
+                    ),
+                    _buildHistoryFilterField(
+                      width: fieldWidth,
+                      label: l.historyPeriodLabel,
+                      value: _dateFilter,
+                      options: _dates,
+                      onChanged: (v) async {
+                        if (v == null || v == _dateFilter) return;
+                        setState(() => _dateFilter = v);
+                        if (v == 'custom') {
+                          await _pickDates(context);
+                          return;
+                        }
+                        await _savePrefs();
+                        await _load();
+                      },
+                    ),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ShamellPaymentPillButton(
+                  icon: const Icon(Icons.receipt_long_outlined),
+                  label: Text(l.isArabic ? 'الفواتير' : 'Bills'),
+                  selected: _kindFilter == 'bill',
+                  onPressed: () async {
+                    setState(() =>
+                        _kindFilter = _kindFilter == 'bill' ? 'all' : 'bill');
+                    await _savePrefs();
                     await _load();
-                  }),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              FilterChip(
-                avatar: const Icon(Icons.receipt_long_outlined, size: 16),
-                label: Text(l.isArabic ? 'الفواتير' : 'Bills'),
-                selected: _kindFilter == 'bill',
-                onSelected: (sel) {
-                  setState(() => _kindFilter = sel ? 'bill' : 'all');
-                  _savePrefs();
-                },
-              ),
-              FilterChip(
-                label: Text(l.isArabic ? 'الحزم الحمراء' : 'Red packets'),
-                selected: _kindFilter == 'redpacket',
-                onSelected: (sel) {
-                  setState(() => _kindFilter = sel ? 'redpacket' : 'all');
-                  _savePrefs();
-                },
-              ),
-              if (_kindFilter == 'redpacket')
-                FilterChip(
-                  label: Text(
-                    l.isArabic
-                        ? (_mirsaalOnly
-                            ? 'كل الحزم الحمراء'
-                            : 'حزم Mirsaal فقط')
-                        : (_mirsaalOnly
-                            ? 'All red packets'
-                            : 'Only Mirsaal red packets'),
-                  ),
-                  selected: _mirsaalOnly,
-                  onSelected: (sel) {
-                    setState(() => _mirsaalOnly = sel);
-                    _savePrefs();
                   },
                 ),
-              FilterChip(
-                label: Text(l.isArabic ? 'الادخار' : 'Savings'),
-                selected: _kindFilter == 'savings',
-                onSelected: (sel) {
-                  setState(() => _kindFilter = sel ? 'savings' : 'all');
-                  _savePrefs();
-                },
-              ),
-              ActionChip(
-                label: Text(l.isArabic ? 'هذا الشهر' : 'This month'),
-                onPressed: () async {
-                  await _setMonthRange(0);
-                },
-              ),
-              ActionChip(
-                label: Text(l.isArabic ? 'الشهر السابق' : 'Last month'),
-                onPressed: () async {
-                  await _setMonthRange(-1);
-                },
-              ),
-            ],
-          ),
-        ],
+                ShamellPaymentPillButton(
+                  icon: const Icon(Icons.savings_outlined),
+                  label: Text(l.isArabic ? 'الادخار' : 'Savings'),
+                  selected: _kindFilter == 'savings',
+                  onPressed: () async {
+                    setState(() => _kindFilter =
+                        _kindFilter == 'savings' ? 'all' : 'savings');
+                    await _savePrefs();
+                    await _load();
+                  },
+                ),
+                ShamellPaymentPillButton(
+                  icon: const Icon(Icons.calendar_month_outlined),
+                  label: Text(l.isArabic ? 'هذا الشهر' : 'This month'),
+                  onPressed: () async {
+                    await _setMonthRange(0);
+                  },
+                ),
+                ShamellPaymentPillButton(
+                  icon: const Icon(Icons.history_toggle_off_rounded),
+                  label: Text(l.isArabic ? 'الشهر السابق' : 'Last month'),
+                  onPressed: () async {
+                    await _setMonthRange(-1);
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
     final customRow = (_dateFilter == 'custom')
         ? Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(children: [
-              OutlinedButton.icon(
-                  onPressed: () async {
-                    await _pickDate(context, true);
-                  },
-                  icon: const Icon(Icons.date_range),
-                  label: Text(_fromDate == null
-                      ? l.historyFromLabel
-                      : _fromDate!.toLocal().toString().split(' ').first)),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                  onPressed: () async {
-                    await _pickDate(context, false);
-                  },
-                  icon: const Icon(Icons.date_range),
-                  label: Text(_toDate == null
-                      ? l.historyToLabel
-                      : _toDate!.toLocal().toString().split(' ').first)),
-            ]))
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                const spacing = 8.0;
+                final columns = _responsiveColumnCount(
+                  constraints.maxWidth,
+                  minItemWidth: 180,
+                  spacing: spacing,
+                  maxColumns: 2,
+                );
+                final buttonWidth = columns == 1
+                    ? constraints.maxWidth
+                    : (constraints.maxWidth - spacing) / 2;
+                return Wrap(
+                  spacing: spacing,
+                  runSpacing: spacing,
+                  children: [
+                    SizedBox(
+                      width: buttonWidth,
+                      child: ShamellPaymentPillButton(
+                        onPressed: () async {
+                          await _pickDate(context, true);
+                        },
+                        icon: const Icon(Icons.date_range),
+                        label: Text(
+                          _fromDate == null
+                              ? l.historyFromLabel
+                              : _fromDate!
+                                  .toLocal()
+                                  .toString()
+                                  .split(' ')
+                                  .first,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: buttonWidth,
+                      child: ShamellPaymentPillButton(
+                        onPressed: () async {
+                          await _pickDate(context, false);
+                        },
+                        icon: const Icon(Icons.date_range),
+                        label: Text(
+                          _toDate == null
+                              ? l.historyToLabel
+                              : _toDate!.toLocal().toString().split(' ').first,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          )
         : const SizedBox.shrink();
     final summary = _buildPhSummary(filtered);
     final cs = _curSym;
@@ -1086,15 +1495,35 @@ class _HistoryPageState extends State<HistoryPage> {
           }),
       const SizedBox(height: 8),
       OutlinedButton.icon(
-        onPressed: filtered.isEmpty || loading
+        onPressed: loading || _loadingMore || !_hasMore
             ? null
             : () async {
                 await _loadMore();
               },
-        icon: const Icon(Icons.expand_more),
-        label: Text(L10n.of(context).isArabic
-            ? 'تحميل المزيد (الحد: $_limit)'
-            : 'Load more (limit: $_limit)'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: Tokens.colorPayments,
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          side: BorderSide(
+            color: Tokens.colorPayments.withValues(alpha: 0.26),
+          ),
+        ),
+        icon: _loadingMore
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.expand_more),
+        label: Text(_loadingMore
+            ? (L10n.of(context).isArabic ? 'جارٍ التحميل...' : 'Loading...')
+            : (_hasMore
+                ? (L10n.of(context).isArabic ? 'تحميل المزيد' : 'Load more')
+                : (L10n.of(context).isArabic
+                    ? 'لا مزيد من الحركات'
+                    : 'No more transactions'))),
       ),
     ]);
     Widget listWidget = loading
@@ -1124,44 +1553,47 @@ class _HistoryPageState extends State<HistoryPage> {
               txnList,
             ],
           );
-    const bg = AppBG();
+    // Wallet History migrated off the liquid-glass shell (AppBG + a
+    // GlassPanel with BackdropFilter blur) onto the same flat surface
+    // / hairline-border treatment the rest of the app uses for list
+    // views. Two reasons:
+    //   1. The blur was visibly stuttering on mid-range Androids when
+    //      scrolling long transaction lists.
+    //   2. It was the last screen still rendering the legacy look,
+    //      which made the Wallet hub feel inconsistent next to the
+    //      tweet-style chat bubbles and the flat Discover surfaces.
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Scaffold(
       appBar: AppBar(
-          title: Text(l.historyTitle),
-          actions: [
-            IconButton(
-                onPressed: _exportCsv,
-                icon: const Icon(Icons.ios_share_outlined))
-          ],
-          backgroundColor: Colors.transparent),
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
-      body: Stack(children: [
-        bg,
-        Positioned.fill(
-            child: SafeArea(
-                child: GlassPanel(
-                    padding: const EdgeInsets.all(16),
-                    child: RefreshIndicator(
-                        onRefresh: () async {
-                          await OfflineQueue.flush();
-                          await _load();
-                        },
-                        child: listWidget))))
-      ]),
+        title: Text(l.historyTitle),
+        actions: [
+          IconButton(
+            onPressed: _exportCsv,
+            icon: const Icon(Icons.ios_share_outlined),
+          ),
+        ],
+        elevation: 0.5,
+      ),
+      backgroundColor: isDark
+          ? theme.colorScheme.surface
+          : theme.colorScheme.surfaceContainerLowest,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          child: RefreshIndicator(
+            onRefresh: () async {
+              await OfflineQueue.flush(baseUrlOverride: widget.baseUrl);
+              await _load();
+            },
+            child: listWidget,
+          ),
+        ),
+      ),
     );
   }
 }
 
-Future<String?> _getCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
-}
-
-Future<Map<String, String>> _hdr({bool json = false}) async {
-  final h = <String, String>{};
-  if (json) h['content-type'] = 'application/json';
-  final c = await _getCookie();
-  if (c != null && c.isNotEmpty) h['Cookie'] = c;
-  return h;
+Future<Map<String, String>> _hdr(String baseUrl, {bool json = false}) async {
+  return shamellSessionHeadersForBaseUrl(baseUrl, json: json);
 }

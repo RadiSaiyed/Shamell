@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shamell_flutter/mini_apps/payments/payments_utils.dart';
+import 'package:shamell_flutter/core/payments/payments_utils.dart';
 
 void main() {
   group('parseCents', () {
@@ -12,9 +12,15 @@ void main() {
       expect(parseCents('12.50'), 1250);
       expect(parseCents('12,50'), 1250);
       expect(parseCents('  1,2  '), 120);
+      expect(parseCents('1,234.00'), 123400);
     });
-    test('ignore non-numeric', () {
-      expect(parseCents('SYP 1,234.00'), 123400);
+    test('reject malformed or unsafe inputs', () {
+      expect(parseCents('-5'), 0);
+      expect(parseCents('+5'), 0);
+      expect(parseCents('1e3'), 0);
+      expect(parseCents('SYP 1,234.00'), 0);
+      expect(parseCents('12,34.56'), 0);
+      expect(parseCents('999999999999999999999999999999'), 0);
       expect(parseCents('--'), 0);
     });
   });
@@ -25,9 +31,9 @@ void main() {
       expect(m.containsKey('to_alias'), true);
       expect(m['to_alias'], '@alice');
     });
-    test('resolved phone to wallet id', () {
-      final m = buildTransferTarget('+963999', resolvedWalletId: 'w123');
-      expect(m['to_wallet_id'], 'w123');
+    test('phone numbers are rejected', () {
+      final m = buildTransferTarget('+963999');
+      expect(m.isEmpty, true);
     });
     test('plain wallet id passthrough', () {
       final m = buildTransferTarget('w555');

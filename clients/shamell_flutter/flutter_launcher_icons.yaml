@@ -1,0 +1,16 @@
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: ../../SyrChat_Icon.png
+  adaptive_icon_background: "#111827"
+  adaptive_icon_foreground: ../../SyrChat_Icon.png
+  remove_alpha_ios: true
+  min_sdk_android: 21
+  macos:
+    generate: false
+    image_path: ../../SyrChat_Icon.png
+  web:
+    generate: true
+    image_path: ../../SyrChat_Icon.png
+    background_color: "#111827"
+    theme_color: "#111827"

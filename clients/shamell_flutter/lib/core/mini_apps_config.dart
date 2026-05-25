@@ -3,9 +3,9 @@ import 'mini_app_registry.dart';
 
 export 'mini_app_descriptor.dart';
 
-/// Global mini-app registry for the enduser Shamell app.
+/// Global mini-app registry for the enduser SyrChat app.
 ///
-/// WeChat‑style: this list is derived from the single MiniAppRegistry
+/// SyrChat Super-App: this list is derived from the single MiniAppRegistry
 /// source of truth.
 List<MiniAppDescriptor> get kMiniApps => MiniAppRegistry.descriptors;
 
@@ -28,6 +28,12 @@ List<MiniAppDescriptor> visibleMiniApps() {
     if (!m.enabled) return false;
     if (!kMiniAppsShowPartner && !m.official) return false;
     if (!kMiniAppsShowBeta && m.beta) return false;
+    // Operator-side surfaces (e.g. hotel-staff admin console) must
+    // not surface in the consumer Discover directory. The runtime
+    // still resolves them via MiniAppRegistry.byId, so deep-link
+    // routing for an authenticated operator client continues to
+    // work — only the consumer tile-grid hides them.
+    if (m.operatorOnly) return false;
     return true;
   }).toList();
 }

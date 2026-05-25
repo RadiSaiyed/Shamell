@@ -2,23 +2,61 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'mini_program_runtime.dart';
 import 'mini_programs_my_page_insights.dart';
-import 'moments_page.dart';
+import 'session_cookie_store.dart';
+import 'shamell_empty_state.dart';
+import 'shamell_moments_page.dart';
 
-Future<Map<String, String>> _hdrMiniPrograms() async {
-  final headers = <String, String>{};
-  try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
-    if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
-    }
-  } catch (_) {}
-  return headers;
+Future<Map<String, String>> _hdrMiniPrograms(
+  String baseUrl, {
+  bool json = false,
+}) {
+  return shamellSessionHeadersForBaseUrl(baseUrl, json: json);
+}
+
+bool _miniProgramStatusIsPublished(Object? raw) {
+  final status = (raw ?? '').toString().trim().toLowerCase();
+  return status == 'active' || status == 'published';
+}
+
+String? _miniProgramStatusLabel(Object? raw, {required bool isArabic}) {
+  final status = (raw ?? '').toString().trim().toLowerCase();
+  switch (status) {
+    case 'active':
+    case 'published':
+      return isArabic ? 'منشور' : 'Published';
+    case 'pending_review':
+      return isArabic ? 'قيد المراجعة' : 'In review';
+    case 'draft':
+      return isArabic ? 'مسودة' : 'Draft';
+    case 'suspended':
+      return isArabic ? 'موقوف' : 'Suspended';
+    case 'archived':
+      return isArabic ? 'مؤرشف' : 'Archived';
+    default:
+      return status.isNotEmpty ? status : null;
+  }
+}
+
+bool _miniProgramReviewIsInReview(String raw) {
+  final review = raw.trim().toLowerCase();
+  return review == 'submitted' || review == 'pending';
+}
+
+String _miniProgramReviewLabel(String raw, {required bool isArabic}) {
+  final review = raw.trim().toLowerCase();
+  if (review == 'approved') return isArabic ? 'مقبول للنشر' : 'Approved';
+  if (_miniProgramReviewIsInReview(review)) {
+    return isArabic ? 'قيد المراجعة' : 'In review';
+  }
+  if (review == 'rejected') return isArabic ? 'مرفوض' : 'Rejected';
+  if (review == 'changes_requested') {
+    return isArabic ? 'تغييرات مطلوبة' : 'Changes requested';
+  }
+  return isArabic ? 'غير مرسَل للمراجعة' : 'Not submitted';
 }
 
 class MyMiniProgramsPage extends StatefulWidget {
@@ -62,7 +100,10 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs/developer_json');
-      final resp = await http.get(uri, headers: await _hdrMiniPrograms());
+      final resp = await http.get(
+        uri,
+        headers: await _hdrMiniPrograms(widget.baseUrl),
+      );
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -221,20 +262,16 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                           : (titleEn.isNotEmpty ? titleEn : appId);
                       final desc =
                           isArabic && descAr.isNotEmpty ? descAr : descEn;
-                      final statusLabel = () {
-                        switch (status) {
-                          case 'active':
-                            return isArabic ? 'نشط' : 'Active';
-                          case 'draft':
-                            return isArabic ? 'مسودة' : 'Draft';
-                          default:
-                            return status.isNotEmpty ? status : null;
-                        }
-                      }();
+                      final statusLabel = _miniProgramStatusLabel(
+                        status,
+                        isArabic: isArabic,
+                      );
                       final reviewLower = reviewStatus.toLowerCase();
-                      final bool canSubmit =
-                          reviewLower == 'draft' || reviewLower == 'rejected';
-                      final bool canWithdraw = reviewLower == 'submitted';
+                      final bool canSubmit = reviewLower == 'draft' ||
+                          reviewLower == 'rejected' ||
+                          reviewLower == 'changes_requested';
+                      final bool canWithdraw =
+                          _miniProgramReviewIsInReview(reviewLower);
 
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 6),
@@ -331,39 +368,20 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                       if (statusLabel != null)
                                         _MiniStatusChip(
                                           label: statusLabel,
-                                          tone: status == 'active'
+                                          tone: _miniProgramStatusIsPublished(
+                                            status,
+                                          )
                                               ? _MiniStatusTone.success
                                               : _MiniStatusTone.neutral,
                                         ),
                                       _MiniStatusChip(
-                                        label: () {
-                                          if (isArabic) {
-                                            switch (reviewLower) {
-                                              case 'submitted':
-                                                return 'قيد المراجعة';
-                                              case 'approved':
-                                                return 'مقبول للنشر';
-                                              case 'rejected':
-                                                return 'مرفوض';
-                                              case 'draft':
-                                              default:
-                                                return 'غير مرسَل للمراجعة';
-                                            }
-                                          } else {
-                                            switch (reviewLower) {
-                                              case 'submitted':
-                                                return 'In review';
-                                              case 'approved':
-                                                return 'Approved';
-                                              case 'rejected':
-                                                return 'Rejected';
-                                              case 'draft':
-                                              default:
-                                                return 'Not submitted';
-                                            }
-                                          }
-                                        }(),
-                                        tone: reviewLower == 'submitted'
+                                        label: _miniProgramReviewLabel(
+                                          reviewLower,
+                                          isArabic: isArabic,
+                                        ),
+                                        tone: _miniProgramReviewIsInReview(
+                                          reviewLower,
+                                        )
                                             ? _MiniStatusTone.info
                                             : (reviewLower == 'approved'
                                                 ? _MiniStatusTone.success
@@ -507,41 +525,15 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
 
   Widget _buildEmptyState(BuildContext context) {
     final l = L10n.of(context);
-    final theme = Theme.of(context);
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.widgets_outlined,
-              size: 40,
-              color: theme.colorScheme.onSurface.withValues(alpha: .45),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              l.isArabic
-                  ? 'لم تقم بعد بتسجيل أي برنامج مصغّر.'
-                  : 'You have not registered any mini‑programs yet.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: .75),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              l.isArabic
-                  ? 'استخدم خيار "تسجيل برنامج مصغر" في تبويب "أنا/Me" لبدء التسجيل، أو افتح صفحة المطور لمزيد من التفاصيل.'
-                  : 'Use the "Register mini‑program" entry in the Me tab to get started, or open the developer page for more details.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: .65),
-              ),
-            ),
-          ],
-        ),
+      child: ShamellEmptyState.empty(
+        icon: Icons.widgets_outlined,
+        title: l.isArabic
+            ? 'لم تقم بعد بتسجيل أي برنامج مصغّر.'
+            : 'You have not registered any mini‑programs yet.',
+        description: l.isArabic
+            ? 'استخدم خيار "تسجيل برنامج مصغر" في تبويب "أنا/Me" لبدء التسجيل، أو افتح صفحة المطور لمزيد من التفاصيل.'
+            : 'Use the "Register mini‑program" entry in the Me tab to get started, or open the developer page for more details.',
       ),
     );
   }
@@ -642,20 +634,26 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
     final avgRatingText = rating > 0
         ? rating.toStringAsFixed(1)
         : (isAr ? 'لا بيانات' : 'No data');
-    var slug = appId.toLowerCase().trim();
-    slug = slug.replaceAll(RegExp(r'[^a-z0-9_]'), '_');
-    final topicTag = slug.isNotEmpty ? '#mp_$slug' : '#ShamellMiniApp';
     int statsSharesTotal = 0;
     int statsShares30d = 0;
     int statsUniqueTotal = 0;
     int statsUnique30d = 0;
     int statsActiveDays30d = 0;
     int statsPeakSharesDay30d = 0;
+    int dashboardEventsTotal = 0;
+    int dashboardEvents30d = 0;
+    int dashboardActiveUsers = 0;
+    int dashboardActiveUsers30d = 0;
+    List<Map<String, dynamic>> dashboardFeatures =
+        const <Map<String, dynamic>>[];
     try {
       final uri = Uri.parse(
         '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(appId)}/moments_stats',
       );
-      final resp = await http.get(uri, headers: await _hdrMiniPrograms());
+      final resp = await http.get(
+        uri,
+        headers: await _hdrMiniPrograms(widget.baseUrl),
+      );
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         final decoded = jsonDecode(resp.body);
         if (decoded is Map) {
@@ -684,6 +682,49 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
             }
             statsActiveDays30d = activeDays;
             statsPeakSharesDay30d = peak;
+          }
+        }
+      }
+    } catch (_) {}
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(appId)}/dashboard',
+      );
+      final resp = await http.get(
+        uri,
+        headers: await _hdrMiniPrograms(widget.baseUrl),
+      );
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        final decoded = jsonDecode(resp.body);
+        if (decoded is Map) {
+          final events = decoded['events'];
+          if (events is Map) {
+            final eTotal = events['total_events'];
+            final e30 = events['events_30d'];
+            final users = events['active_users'];
+            final users30 = events['active_users_30d'];
+            if (eTotal is num) dashboardEventsTotal = eTotal.toInt();
+            if (e30 is num) dashboardEvents30d = e30.toInt();
+            if (users is num) dashboardActiveUsers = users.toInt();
+            if (users30 is num) dashboardActiveUsers30d = users30.toInt();
+          }
+          final features = decoded['features'];
+          if (features is List) {
+            dashboardFeatures = features
+                .whereType<Map>()
+                .map((e) => e.cast<String, dynamic>())
+                .toList(growable: false);
+          }
+          final moments = decoded['moments'];
+          if (moments is Map) {
+            final totalRaw = moments['shares_total'];
+            final total30Raw = moments['shares_30d'];
+            final uniqRaw = moments['unique_sharers_total'];
+            final uniq30Raw = moments['unique_sharers_30d'];
+            if (totalRaw is num) statsSharesTotal = totalRaw.toInt();
+            if (total30Raw is num) statsShares30d = total30Raw.toInt();
+            if (uniqRaw is num) statsUniqueTotal = uniqRaw.toInt();
+            if (uniq30Raw is num) statsUnique30d = uniq30Raw.toInt();
           }
         }
       }
@@ -825,6 +866,59 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                       ],
                     ),
                   ],
+                  if (dashboardEventsTotal > 0 ||
+                      dashboardEvents30d > 0 ||
+                      dashboardActiveUsers > 0 ||
+                      dashboardActiveUsers30d > 0) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: [
+                        MiniProgramInsightChip(
+                          icon: Icons.analytics_outlined,
+                          label: isAr
+                              ? 'أحداث الخادم (إجمالي/٣٠ي)'
+                              : 'Server events (total/30d)',
+                          value: '$dashboardEventsTotal / $dashboardEvents30d',
+                        ),
+                        MiniProgramInsightChip(
+                          icon: Icons.people_alt_outlined,
+                          label: isAr
+                              ? 'مستخدمون نشطون (إجمالي/٣٠ي)'
+                              : 'Active users (total/30d)',
+                          value:
+                              '$dashboardActiveUsers / $dashboardActiveUsers30d',
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (dashboardFeatures.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      isAr ? 'أهم الأحداث' : 'Top server events',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: dashboardFeatures.take(6).map((feature) {
+                        final key =
+                            (feature['feature_key'] ?? '').toString().trim();
+                        final count = feature['event_count'];
+                        final value = count is num ? count.toInt() : 0;
+                        return Chip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(
+                            key.isEmpty ? value.toString() : '$key · $value',
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   Text(
                     isAr ? 'الحالة' : 'Status',
@@ -915,9 +1009,9 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                           Navigator.of(ctx).pop();
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (_) => MomentsPage(
+                              builder: (_) => ShamellMomentsPage(
                                 baseUrl: widget.baseUrl,
-                                topicTag: topicTag,
+                                miniProgramId: appId,
                               ),
                             ),
                           );
@@ -949,9 +1043,9 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                           Navigator.of(ctx).pop();
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (_) => MomentsPage(
+                              builder: (_) => ShamellMomentsPage(
                                 baseUrl: widget.baseUrl,
-                                topicTag: topicTag,
+                                miniProgramId: appId,
                               ),
                             ),
                           );
@@ -962,8 +1056,8 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                   const SizedBox(height: 12),
                   Text(
                     isAr
-                        ? 'الأرقام تقريبية وتعكس الفتحات والتقييمات ومشاركات Mini‑Program في اللحظات، مع إبراز آخر ٣٠ يوماً كما في تحليلات WeChat. استخدم الوسوم مثل #ShamellMiniApp و #mp_<app_id> لبناء مواضيع خاصة ببرنامجك المصغّر.'
-                        : 'Numbers are approximate and reflect opens, ratings and Mini‑Program links shared in Moments, with an emphasis on the last 30 days similar to WeChat analytics. Use hashtags like #ShamellMiniApp and #mp_<app_id> to build Mini‑program topic feeds for your app.',
+                        ? 'الأرقام تقريبية وتعكس الفتحات والتقييمات ومشاركات Mini‑Program في اللحظات، مع إبراز آخر ٣٠ يوماً كما في تحليلات SyrChat. استخدم الوسوم مثل #ShamellMiniApp و #mp_<app_id> لبناء مواضيع خاصة ببرنامجك المصغّر.'
+                        : 'Numbers are approximate and reflect opens, ratings and Mini‑Program links shared in Moments, with an emphasis on the last 30 days aligned with SyrChat analytics. Use hashtags like #ShamellMiniApp and #mp_<app_id> to build Mini‑program topic feeds for your app.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),
@@ -988,7 +1082,8 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
     bool submitting = false;
     String? error;
 
-    await showModalBottomSheet<void>(
+    try {
+      await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
@@ -1133,7 +1228,10 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                       };
                                       final resp = await http.post(
                                         uri,
-                                        headers: await _hdrMiniPrograms(),
+                                        headers: await _hdrMiniPrograms(
+                                          widget.baseUrl,
+                                          json: true,
+                                        ),
                                         body: jsonEncode(payload),
                                       );
                                       if (resp.statusCode < 200 ||
@@ -1208,7 +1306,9 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                   );
                                   final resp = await http.post(
                                     uri,
-                                    headers: await _hdrMiniPrograms(),
+                                    headers: await _hdrMiniPrograms(
+                                      widget.baseUrl,
+                                    ),
                                   );
                                   if (resp.statusCode < 200 ||
                                       resp.statusCode >= 300) {
@@ -1235,8 +1335,8 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
                                     SnackBar(
                                       content: Text(
                                         isAr
-                                            ? 'تم إرسال البرنامج للمراجعة. يمكن لفريق Shamell مراجعته وتفعيله.'
-                                            : 'Mini‑program submitted for review. The Shamell team can now review and activate it.',
+                                            ? 'تم إرسال البرنامج للمراجعة. يمكن لفريق SyrChat مراجعته وتفعيله.'
+                                            : 'Mini‑program submitted for review. The SyrChat team can now review and activate it.',
                                       ),
                                     ),
                                   );
@@ -1264,6 +1364,12 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
         );
       },
     );
+    } finally {
+      versionCtrl.dispose();
+      bundleCtrl.dispose();
+      changelogEnCtrl.dispose();
+      changelogArCtrl.dispose();
+    }
   }
 
   Future<void> _submitForReview(BuildContext context, String appId) async {
@@ -1272,7 +1378,10 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(appId)}/submit_review',
       );
-      final resp = await http.post(uri, headers: await _hdrMiniPrograms());
+      final resp = await http.post(
+        uri,
+        headers: await _hdrMiniPrograms(widget.baseUrl),
+      );
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         String msg =
             resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
@@ -1318,8 +1427,8 @@ class _MyMiniProgramsPageState extends State<MyMiniProgramsPage> {
           ),
           content: Text(
             l.isArabic
-                ? 'لسحب طلب المراجعة، يرجى التواصل مع فريق Shamell أو تعديل حالة التطبيق من مركز المراجعة الإداري.'
-                : 'To withdraw a review request, please contact the Shamell team or adjust the status from the admin review center.',
+                ? 'لسحب طلب المراجعة، يرجى التواصل مع فريق SyrChat أو تعديل حالة التطبيق من مركز المراجعة الإداري.'
+                : 'To withdraw a review request, please contact the SyrChat team or adjust the status from the admin review center.',
           ),
           actions: [
             TextButton(

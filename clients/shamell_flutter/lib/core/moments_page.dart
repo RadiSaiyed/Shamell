@@ -8,31 +8,43 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
+import 'call_signaling.dart';
 import 'glass.dart';
+import 'deep_link_parsing.dart';
 import 'l10n.dart';
+import 'mini_app_registry.dart';
+import 'network_image_helpers.dart';
 import 'perf.dart';
 import 'mini_apps_config.dart';
+import 'moments_action_meta.dart';
+import 'moments_comment_meta.dart';
+import 'moments_composer_meta.dart';
+import 'moments_discovery_meta.dart';
+import 'moments_feed_meta.dart';
+import 'moments_media_meta.dart';
+import 'moments_mini_program_attachment_meta.dart';
+import 'moments_official_attachment_meta.dart';
+import 'moments_page_meta.dart';
+import 'moments_preset_store.dart';
+import 'moments_social_meta.dart';
+import 'mini_program_runtime.dart';
+import 'official_accounts_page.dart';
+import 'payments/payments_shell.dart';
+import 'session_cookie_store.dart';
+import 'shamell_loading_shimmer.dart';
 import 'ui_kit.dart';
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'favorites_page.dart' show addFavoriteItemQuick;
 import 'wechat_ui.dart';
 import 'wechat_moments_composer_page.dart';
 import 'wechat_photo_viewer_page.dart';
 
-Future<Map<String, String>> _hdrMoments({bool json = false}) async {
-  final headers = <String, String>{};
-  if (json) {
-    headers['content-type'] = 'application/json';
-  }
-  try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
-    if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
-    }
-  } catch (_) {}
-  return headers;
+Future<Map<String, String>> _hdrMoments(
+  String baseUrl, {
+  bool json = false,
+}) async {
+  return shamellSessionHeadersForBaseUrl(baseUrl, json: json);
 }
 
 class MomentsPage extends StatefulWidget {
@@ -44,6 +56,7 @@ class MomentsPage extends StatefulWidget {
   final String? originOfficialAccountId;
   final String? officialCategory;
   final String? officialCity;
+  final String? miniProgramId;
   final bool showOnlyMine;
   final bool initialRedpacketOnly;
   final String? topicTag;
@@ -61,6 +74,7 @@ class MomentsPage extends StatefulWidget {
     this.originOfficialAccountId,
     this.officialCategory,
     this.officialCity,
+    this.miniProgramId,
     this.showOnlyMine = false,
     this.initialRedpacketOnly = false,
     this.topicTag,
@@ -96,6 +110,7 @@ class _MomentsPageState extends State<MomentsPage> {
   String? _pendingImageMime;
   String? _presetText;
   Uint8List? _presetImage;
+  String? _presetMiniProgramId;
   String _visibilityScope = 'public';
   String? _visibilityTag;
   String _visibilityTagMode = 'only'; // 'only' or 'except'
@@ -184,19 +199,10 @@ class _MomentsPageState extends State<MomentsPage> {
         ? name.substring(0, 1).toUpperCase()
         : (isArabic ? 'أ' : 'Y');
     final isDark = theme.brightness == Brightness.dark;
-
-    final List<Color> coverGradient = isDark
-        ? const [
-            Color(0xFF0B1220),
-            Color(0xFF111827),
-          ]
-        : const [
-            Color(0xFF64748B),
-            Color(0xFF334155),
-          ];
+    final coverMeta = momentCoverHeaderMeta(isDark: isDark);
 
     return SizedBox(
-      height: 280,
+      height: coverMeta.height,
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -205,23 +211,23 @@ class _MomentsPageState extends State<MomentsPage> {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: coverGradient,
+                colors: coverMeta.gradientColors,
               ),
             ),
           ),
           Opacity(
-            opacity: isDark ? .12 : .16,
+            opacity: coverMeta.assetOpacity,
             child: Image.asset(
-              'assets/shamell_steering.png',
+              coverMeta.assetPath,
               fit: BoxFit.cover,
             ),
           ),
           Positioned(
-            right: isArabic ? null : 16,
-            left: isArabic ? 16 : null,
-            bottom: 16,
+            right: isArabic ? null : coverMeta.horizontalInset,
+            left: isArabic ? coverMeta.horizontalInset : null,
+            bottom: coverMeta.bottomInset,
             child: InkWell(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(coverMeta.tapRadius),
               onTap: (widget.showOnlyMine || isFriendTimeline)
                   ? null
                   : () {
@@ -239,34 +245,40 @@ class _MomentsPageState extends State<MomentsPage> {
                 children: [
                   Text(
                     name,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
+                    style: TextStyle(
+                      color: coverMeta.nameColor,
+                      fontSize: coverMeta.nameFontSize,
+                      fontWeight: coverMeta.nameFontWeight,
                       shadows: [
                         Shadow(
-                          blurRadius: 10,
-                          color: Colors.black45,
+                          blurRadius: coverMeta.nameShadowBlurRadius,
+                          color: coverMeta.nameShadowColor,
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  SizedBox(width: coverMeta.nameAvatarGap),
                   Container(
-                    width: 64,
-                    height: 64,
+                    width: coverMeta.avatarSize,
+                    height: coverMeta.avatarSize,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: .92),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: .95),
-                        width: 1,
+                      color: coverMeta.avatarFillColor.withValues(
+                        alpha: coverMeta.avatarFillAlpha,
                       ),
-                      boxShadow: const [
+                      borderRadius: BorderRadius.circular(
+                        coverMeta.avatarRadius,
+                      ),
+                      border: Border.all(
+                        color: coverMeta.avatarBorderColor.withValues(
+                          alpha: coverMeta.avatarBorderAlpha,
+                        ),
+                        width: coverMeta.avatarBorderWidth,
+                      ),
+                      boxShadow: [
                         BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 8,
-                          offset: Offset(0, 4),
+                          color: coverMeta.avatarShadowColor,
+                          blurRadius: coverMeta.avatarShadowBlurRadius,
+                          offset: coverMeta.avatarShadowOffset,
                         ),
                       ],
                     ),
@@ -275,14 +287,376 @@ class _MomentsPageState extends State<MomentsPage> {
                         initial,
                         style: TextStyle(
                           color: theme.colorScheme.onSurface,
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
+                          fontSize: coverMeta.initialFontSize,
+                          fontWeight: coverMeta.initialFontWeight,
                         ),
                       ),
                     ),
                   ),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _activeMiniProgramId() {
+    return (widget.miniProgramId ?? '').trim().toLowerCase();
+  }
+
+  String _inlineComposerMiniProgramId() {
+    return momentInlineComposerMiniProgramId(
+      activeMiniProgramId: _activeMiniProgramId(),
+      presetMiniProgramId: _presetMiniProgramId ?? '',
+    );
+  }
+
+  String _miniProgramContextMomentsTitle(L10n l) {
+    final id = _activeMiniProgramId();
+    final meta = momentMiniProgramContextMeta(
+      id: id,
+      descriptor: _miniAppDescriptorById(id),
+      isArabic: l.isArabic,
+    );
+    return meta?.momentsTitle ?? '';
+  }
+
+  Widget _buildMiniProgramContextBar(
+    L10n l, {
+    String? miniProgramId,
+  }) {
+    final id = (miniProgramId ?? _activeMiniProgramId()).trim().toLowerCase();
+    final descriptor = _miniAppDescriptorById(id);
+    final meta = momentMiniProgramContextMeta(
+      id: id,
+      descriptor: descriptor,
+      isArabic: l.isArabic,
+    );
+    if (meta == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final accent = momentMiniProgramAccentColor(id);
+    final chrome = momentMiniProgramContextChromeMeta();
+    final borderColor = theme.dividerColor.withValues(
+      alpha: isDark ? chrome.darkBorderAlpha : chrome.lightBorderAlpha,
+    );
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: chrome.horizontalPadding,
+        vertical: chrome.verticalPadding,
+      ),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(
+          top: BorderSide(color: borderColor, width: chrome.borderWidth),
+          bottom: BorderSide(color: borderColor, width: chrome.borderWidth),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: meta.iconBoxSize,
+            height: meta.iconBoxSize,
+            decoration: BoxDecoration(
+              color: accent.withValues(
+                alpha: isDark
+                    ? chrome.iconFillDarkAlpha
+                    : chrome.iconFillLightAlpha,
+              ),
+              borderRadius: BorderRadius.circular(meta.iconRadius),
+            ),
+            child: Icon(
+              meta.icon,
+              size: meta.iconSize,
+              color: accent,
+            ),
+          ),
+          SizedBox(width: chrome.iconTitleGap),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  meta.momentsTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontSize: meta.titleFontSize,
+                    fontWeight: chrome.titleFontWeight,
+                  ),
+                ),
+                SizedBox(height: chrome.categoryTopGap),
+                Text(
+                  meta.category,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: meta.categoryFontSize,
+                    color: theme.colorScheme.onSurface.withValues(
+                      alpha: chrome.categoryAlpha,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(width: chrome.actionGap),
+          TextButton(
+            onPressed: () {
+              Perf.action(meta.allPerfKey);
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(
+                  builder: (_) => MomentsPage(baseUrl: widget.baseUrl),
+                ),
+              );
+            },
+            style: TextButton.styleFrom(
+              minimumSize: Size(chrome.actionMinWidth, chrome.actionHeight),
+              padding: EdgeInsets.symmetric(
+                horizontal: chrome.actionHorizontalPadding,
+              ),
+              visualDensity: chrome.actionVisualDensity,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(meta.allLabel),
+                SizedBox(width: chrome.actionIconGap),
+                Icon(meta.allIcon, size: chrome.actionIconSize),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMomentsQuickComposer(L10n l, ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
+    final headerMeta = momentQuickComposerHeaderMeta(
+      displayName: _myDisplayName,
+      isArabic: l.isArabic,
+    );
+    final chrome = momentQuickComposerChromeMeta();
+    final borderColor = theme.dividerColor.withValues(
+      alpha: isDark ? chrome.darkBorderAlpha : chrome.lightBorderAlpha,
+    );
+
+    Future<void> openWithImage(ImageSource source) async {
+      final picked = await _pickImageBytes(source: source);
+      if (picked == null || !mounted) return;
+      await _openWeChatComposer(
+        initialImageBytes: picked.bytes,
+        initialImageMime: picked.mime,
+      );
+    }
+
+    void runQuickAction(MomentQuickComposerActionMeta action) {
+      switch (action.kind) {
+        case MomentQuickComposerActionKind.camera:
+          Perf.action(action.perfKey);
+          unawaited(openWithImage(ImageSource.camera));
+          break;
+        case MomentQuickComposerActionKind.album:
+          Perf.action(action.perfKey);
+          unawaited(openWithImage(ImageSource.gallery));
+          break;
+        case MomentQuickComposerActionKind.friends:
+          Perf.action(action.perfKey);
+          unawaited(_openWeChatComposer(initialVisibilityScope: 'friends'));
+          break;
+        case MomentQuickComposerActionKind.closeFriends:
+          Perf.action(action.perfKey);
+          unawaited(
+            _openWeChatComposer(initialVisibilityScope: 'close_friends'),
+          );
+          break;
+        case MomentQuickComposerActionKind.onlyMe:
+          Perf.action(action.perfKey);
+          unawaited(_openWeChatComposer(initialVisibilityScope: 'only_me'));
+          break;
+        case MomentQuickComposerActionKind.filters:
+          setState(() {
+            _enableAdvancedFilters = !_enableAdvancedFilters;
+          });
+          Perf.action(action.perfKey);
+          break;
+      }
+    }
+
+    Widget quickAction({
+      required IconData icon,
+      required String label,
+      required VoidCallback onTap,
+      bool selected = false,
+    }) {
+      final color = selected
+          ? WeChatPalette.green
+          : theme.colorScheme.onSurface.withValues(
+              alpha: chrome.unselectedTextAlpha,
+            );
+      final fill = selected
+          ? WeChatPalette.green.withValues(
+              alpha: isDark
+                  ? chrome.selectedFillDarkAlpha
+                  : chrome.selectedFillLightAlpha,
+            )
+          : Colors.transparent;
+      return Padding(
+        padding: EdgeInsetsDirectional.only(end: chrome.actionEndSpacing),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(chrome.actionRadius),
+          onTap: onTap,
+          child: Container(
+            height: chrome.actionHeight,
+            padding: EdgeInsets.symmetric(
+              horizontal: chrome.actionHorizontalPadding,
+            ),
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(chrome.actionRadius),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: chrome.actionIconSize, color: color),
+                SizedBox(width: chrome.actionIconGap),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: chrome.actionFontSize,
+                    fontWeight: selected
+                        ? chrome.selectedFontWeight
+                        : chrome.unselectedFontWeight,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark ? theme.colorScheme.surface : chrome.lightSurfaceColor,
+        border: Border(
+          top: BorderSide(color: borderColor, width: chrome.borderWidth),
+          bottom: BorderSide(color: borderColor, width: chrome.borderWidth),
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () {
+              Perf.action(headerMeta.openPerfKey);
+              unawaited(_openWeChatComposer());
+            },
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: chrome.headerHorizontalPadding,
+                vertical: chrome.headerVerticalPadding,
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: chrome.initialBoxSize,
+                    height: chrome.initialBoxSize,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: WeChatPalette.green.withValues(
+                        alpha: chrome.initialBackgroundAlpha,
+                      ),
+                      borderRadius: BorderRadius.circular(
+                        chrome.initialBoxRadius,
+                      ),
+                    ),
+                    child: Text(
+                      headerMeta.initial,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: chrome.initialFontWeight,
+                        color: WeChatPalette.green,
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: chrome.initialFieldGap),
+                  Expanded(
+                    child: Container(
+                      height: chrome.fieldHeight,
+                      alignment: Alignment.centerLeft,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: chrome.fieldHorizontalPadding,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? WeChatPalette.searchFillDark
+                            : WeChatPalette.searchFill,
+                        borderRadius: BorderRadius.circular(chrome.fieldRadius),
+                      ),
+                      child: Text(
+                        headerMeta.placeholder,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: chrome.placeholderAlpha),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: chrome.trailingGap),
+                  Icon(
+                    headerMeta.trailingIcon,
+                    size: chrome.trailingIconSize,
+                    color: theme.colorScheme.onSurface.withValues(
+                      alpha: chrome.trailingIconAlpha,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Divider(
+            height: chrome.dividerHeight,
+            thickness: chrome.dividerThickness,
+            indent: chrome.dividerIndent,
+            color: borderColor,
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: EdgeInsets.fromLTRB(
+              chrome.actionsStartPadding,
+              chrome.actionsVerticalPadding,
+              chrome.actionsEndPadding,
+              chrome.actionsVerticalPadding,
+            ),
+            child: Column(
+              children: [
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Row(
+                    children: momentQuickComposerActionMetas(
+                      isArabic: l.isArabic,
+                      filtersSelected: _enableAdvancedFilters,
+                    )
+                        .map(
+                          (action) => quickAction(
+                            icon: action.icon,
+                            label: action.label,
+                            selected: action.selected,
+                            onTap: () => runQuickAction(action),
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -339,8 +713,14 @@ class _MomentsPageState extends State<MomentsPage> {
     Uint8List? initialImageBytes,
     String? initialImageMime,
     String initialVisibilityScope = 'public',
+    String? initialMiniProgramId,
     bool clearPresetOnClose = false,
   }) async {
+    final activeMiniProgramId = _activeMiniProgramId();
+    final presetMiniProgramId = (initialMiniProgramId ?? '').trim();
+    final composerMiniProgramId = presetMiniProgramId.isNotEmpty
+        ? presetMiniProgramId
+        : (activeMiniProgramId.isEmpty ? null : activeMiniProgramId);
     final draft = await Navigator.of(context).push<WeChatMomentDraft>(
       MaterialPageRoute(
         builder: (_) => WeChatMomentsComposerPage(
@@ -349,6 +729,10 @@ class _MomentsPageState extends State<MomentsPage> {
           initialImageBytes: initialImageBytes,
           initialImageMime: initialImageMime,
           initialVisibilityScope: initialVisibilityScope,
+          initialVisibilityTag: _visibilityTag,
+          initialVisibilityTagMode: _visibilityTagMode,
+          initialMiniProgramId: composerMiniProgramId,
+          availableAudienceTags: _availableAudienceTags,
         ),
       ),
     );
@@ -359,6 +743,7 @@ class _MomentsPageState extends State<MomentsPage> {
         setState(() {
           _presetText = null;
           _presetImage = null;
+          _presetMiniProgramId = null;
         });
       }
       return;
@@ -368,14 +753,17 @@ class _MomentsPageState extends State<MomentsPage> {
     final images = draft.imageBytes.where((b) => b.isNotEmpty).toList();
     final hasImages = images.isNotEmpty;
     final locationLabel = (draft.locationLabel ?? '').trim();
-    if (text.isEmpty && !hasImages) return;
+    final miniProgramId = (draft.miniProgramId ?? '').trim();
+    if (text.isEmpty && !hasImages && miniProgramId.isEmpty) return;
 
     if (!mounted) return;
     setState(() {
       _visibilityScope = draft.visibilityScope;
-      _visibilityTag = null;
-      _visibilityTagMode = 'only';
-      _visibilityTagCtrl.clear();
+      final tag = (draft.visibilityTag ?? '').trim();
+      _visibilityTag = tag.isEmpty ? null : tag;
+      _visibilityTagMode =
+          draft.visibilityTagMode == 'except' ? 'except' : 'only';
+      _visibilityTagCtrl.text = tag;
     });
 
     final imagesB64 = <String>[];
@@ -390,6 +778,7 @@ class _MomentsPageState extends State<MomentsPage> {
         text,
         imagesB64: imagesB64,
         locationLabel: locationLabel.isNotEmpty ? locationLabel : null,
+        miniProgramId: miniProgramId.isNotEmpty ? miniProgramId : null,
       );
     }
     if (!posted) {
@@ -397,6 +786,7 @@ class _MomentsPageState extends State<MomentsPage> {
         text,
         imagesB64: imagesB64,
         locationLabel: locationLabel.isNotEmpty ? locationLabel : null,
+        miniProgramId: miniProgramId.isNotEmpty ? miniProgramId : null,
         clearInlineComposer: false,
       );
     }
@@ -405,6 +795,7 @@ class _MomentsPageState extends State<MomentsPage> {
     setState(() {
       _presetText = null;
       _presetImage = null;
+      _presetMiniProgramId = null;
     });
     try {
       if (_scrollCtrl.hasClients) {
@@ -471,6 +862,108 @@ class _MomentsPageState extends State<MomentsPage> {
         alignment: 0.35,
       );
     } catch (_) {}
+  }
+
+  void _applyMomentAudienceFilter(MomentAudienceMeta meta) {
+    if (!meta.actionable) return;
+    setState(() {
+      switch (meta.key) {
+        case 'close_friends':
+          _filterCloseFriendsOnly = true;
+          _filterAudienceTag = null;
+          break;
+        case 'friends_tag':
+          final tag = (meta.audienceTag ?? '').trim();
+          _filterCloseFriendsOnly = false;
+          _filterAudienceTag = tag.isEmpty ? null : tag;
+          break;
+        case 'public':
+        case 'friends':
+        default:
+          _filterCloseFriendsOnly = false;
+          _filterAudienceTag = null;
+          break;
+      }
+    });
+    Perf.action('moments_audience_chip_tap');
+  }
+
+  Widget _buildMomentAudiencePill(
+    MomentAudienceMeta meta,
+    ThemeData theme,
+  ) {
+    final isDark = theme.brightness == Brightness.dark;
+    final isPublic = meta.key == 'public';
+    final chrome = momentAudiencePillChromeMeta();
+    final baseColor = isPublic
+        ? theme.colorScheme.onSurface.withValues(alpha: chrome.publicTextAlpha)
+        : theme.colorScheme.primary.withValues(alpha: chrome.privateTextAlpha);
+    final bgColor = isPublic
+        ? theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: isDark
+                ? chrome.publicDarkBackgroundAlpha
+                : chrome.publicLightBackgroundAlpha,
+          )
+        : theme.colorScheme.primary.withValues(
+            alpha: isDark
+                ? chrome.privateDarkBackgroundAlpha
+                : chrome.privateLightBackgroundAlpha,
+          );
+    final borderColor = isPublic
+        ? theme.dividerColor.withValues(
+            alpha: isDark
+                ? chrome.publicDarkBorderAlpha
+                : chrome.publicLightBorderAlpha,
+          )
+        : theme.colorScheme.primary.withValues(
+            alpha: isDark
+                ? chrome.privateDarkBorderAlpha
+                : chrome.privateLightBorderAlpha,
+          );
+
+    final pill = Container(
+      constraints: BoxConstraints(maxWidth: chrome.maxWidth),
+      padding: EdgeInsets.symmetric(
+        horizontal: chrome.horizontalPadding,
+        vertical: chrome.verticalPadding,
+      ),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(chrome.radius),
+        border: Border.all(color: borderColor, width: chrome.borderWidth),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(meta.icon, size: chrome.iconSize, color: baseColor),
+          SizedBox(width: chrome.iconGap),
+          Flexible(
+            child: Text(
+              meta.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: chrome.fontSize,
+                height: chrome.lineHeight,
+                fontWeight: chrome.labelWeight,
+                color: baseColor,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Padding(
+      padding: EdgeInsets.only(top: chrome.topGap),
+      child: meta.actionable
+          ? InkWell(
+              borderRadius: BorderRadius.circular(chrome.radius),
+              onTap: () => _applyMomentAudienceFilter(meta),
+              child: pill,
+            )
+          : pill,
+    );
   }
 
   void _dismissInlineComment({bool clearText = true}) {
@@ -685,7 +1178,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       final list = <_MomentOfficialAccount>[];
@@ -722,7 +1215,7 @@ class _MomentsPageState extends State<MomentsPage> {
   Future<void> _loadMyOfficialStats() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/official_moments_stats');
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
@@ -735,10 +1228,27 @@ class _MomentsPageState extends State<MomentsPage> {
 
   Future<void> _loadFriendsSummary() async {
     try {
-      final friendsUri = Uri.parse('${widget.baseUrl}/me/friends');
-      final friendsResp =
-          await http.get(friendsUri, headers: await _hdrMoments());
       final tags = <String>{};
+      final tagUri = Uri.parse('${widget.baseUrl}/me/friends/tags');
+      final tagResp =
+          await http.get(tagUri, headers: await _hdrMoments(widget.baseUrl));
+      if (tagResp.statusCode >= 200 && tagResp.statusCode < 300) {
+        final decoded = jsonDecode(tagResp.body);
+        if (decoded is Map && decoded['items'] is List) {
+          for (final e in decoded['items'] as List) {
+            if (e is! Map || e['tags'] is! List) continue;
+            for (final t in e['tags'] as List) {
+              final v = (t ?? '').toString().trim();
+              if (v.isNotEmpty) {
+                tags.add(v);
+              }
+            }
+          }
+        }
+      }
+      final friendsUri = Uri.parse('${widget.baseUrl}/me/friends');
+      final friendsResp = await http.get(friendsUri,
+          headers: await _hdrMoments(widget.baseUrl));
       if (friendsResp.statusCode >= 200 && friendsResp.statusCode < 300) {
         final decoded = jsonDecode(friendsResp.body);
         if (decoded is Map && decoded['friends'] is List) {
@@ -784,65 +1294,53 @@ class _MomentsPageState extends State<MomentsPage> {
     });
   }
 
-  String _audienceSummaryLabel(L10n l) {
-    final tag = (_visibilityTag ?? '').trim();
-    switch (_visibilityScope) {
-      case 'public':
-        return l.isArabic ? 'عام (كل المستخدمين)' : 'Public (all users)';
-      case 'only_me':
-        return l.isArabic ? 'أنا فقط' : 'Only me';
-      case 'close_friends':
-        return l.isArabic ? 'الأصدقاء المقرّبون' : 'Close friends';
-      case 'friends':
-      default:
-        if (tag.isNotEmpty) {
-          if (_visibilityTagMode == 'except') {
-            return l.isArabic
-                ? 'الأصدقاء باستثناء $tag'
-                : 'Friends except $tag';
-          } else {
-            return l.isArabic ? 'فقط $tag' : 'Only $tag';
-          }
-        }
-        return l.isArabic ? 'الأصدقاء فقط' : 'Friends only';
-    }
-  }
-
-  IconData _audienceSummaryIcon() {
-    if (_visibilityScope == 'public') return Icons.public;
-    if (_visibilityScope == 'only_me') return Icons.lock_outline;
-    return Icons.group_outlined;
+  MomentComposerVisibilityMeta _audienceSummaryMeta(L10n l) {
+    return momentComposerVisibilityMetaFor(
+      visibilityScope: _visibilityScope,
+      visibilityTag: _visibilityTag ?? '',
+      visibilityTagMode: _visibilityTagMode,
+      isArabic: l.isArabic,
+    );
   }
 
   Widget _buildAudienceSummaryPill(L10n l, ThemeData theme) {
-    final prefix = l.isArabic ? 'المشاركة مع: ' : 'Share to: ';
-    final text = '$prefix${_audienceSummaryLabel(l)}';
+    final meta = _audienceSummaryMeta(l);
     final isDark = theme.brightness == Brightness.dark;
+    final chrome = momentComposerAudienceSummaryPillChromeMeta();
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: chrome.horizontalPadding,
+        vertical: chrome.verticalPadding,
+      ),
       decoration: BoxDecoration(
-        color: theme.colorScheme.primary.withValues(alpha: isDark ? .12 : .06),
-        borderRadius: BorderRadius.circular(999),
+        color: theme.colorScheme.primary.withValues(
+          alpha:
+              isDark ? chrome.darkBackgroundAlpha : chrome.lightBackgroundAlpha,
+        ),
+        borderRadius: BorderRadius.circular(chrome.radius),
         border: Border.all(
-          color: theme.colorScheme.primary.withValues(alpha: .35),
+          color:
+              theme.colorScheme.primary.withValues(alpha: chrome.borderAlpha),
         ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            _audienceSummaryIcon(),
-            size: 16,
-            color: theme.colorScheme.primary.withValues(alpha: .95),
+            meta.icon,
+            size: chrome.iconSize,
+            color:
+                theme.colorScheme.primary.withValues(alpha: chrome.iconAlpha),
           ),
-          const SizedBox(width: 6),
+          SizedBox(width: chrome.iconGap),
           Text(
-            text,
+            meta.summaryLabel,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.bodySmall?.copyWith(
-              fontSize: 11,
-              color: theme.colorScheme.onSurface.withValues(alpha: .90),
+              fontSize: chrome.fontSize,
+              color: theme.colorScheme.onSurface
+                  .withValues(alpha: chrome.textAlpha),
             ),
           ),
         ],
@@ -852,10 +1350,10 @@ class _MomentsPageState extends State<MomentsPage> {
 
   bool _isRedPacketText(String text) {
     final t = text.toLowerCase();
-    if (t.contains('red packet')) return true;
-    if (t.contains('red packets')) return true;
-    if (t.contains('i am sending red packets via shamell pay')) return true;
-    if (text.contains('حزمة حمراء')) return true;
+    if (t.contains('Green Paket')) return true;
+    if (t.contains('Green Pakets')) return true;
+    if (t.contains('i am sending Green Pakets via shamell pay')) return true;
+    if (text.contains('حزمة خضراء')) return true;
     if (text.contains('حزمًا حمراء')) return true;
     return false;
   }
@@ -886,30 +1384,44 @@ class _MomentsPageState extends State<MomentsPage> {
     });
   }
 
+  void _clearInlineComposerFields() {
+    _postCtrl.clear();
+    _pendingImage = null;
+    _pendingImageMime = null;
+    _presetText = null;
+    _presetImage = null;
+    _presetMiniProgramId = null;
+  }
+
+  void _clearInlineComposerDraft() {
+    setState(_clearInlineComposerFields);
+  }
+
+  MomentInlineComposerPublishStateMeta _inlineComposerPublishState() {
+    return momentInlineComposerPublishStateMeta(
+      draftText: _postCtrl.text,
+      presetText: _presetText ?? '',
+      hasPendingImage: _pendingImage != null,
+      hasPresetImage: _presetImage != null,
+      miniProgramId: _inlineComposerMiniProgramId(),
+    );
+  }
+
   Future<void> _loadPreset() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final text = sp.getString('moments_preset_text');
-      final imgB64 = sp.getString('moments_preset_image');
+      final preset = await loadAndClearMomentsPreset();
       if (!mounted) return;
       setState(() {
-        _presetText = (text ?? '').trim().isEmpty ? null : text;
-        if (imgB64 != null && imgB64.isNotEmpty) {
-          try {
-            _presetImage = base64Decode(imgB64);
-          } catch (_) {
-            _presetImage = null;
-          }
-        }
+        _presetText = preset.text;
+        _presetImage = preset.imageBytes;
+        _presetMiniProgramId = preset.miniProgramId;
       });
-      // Clear preset once loaded so it is single-use.
-      await sp.remove('moments_preset_text');
-      await sp.remove('moments_preset_image');
     } catch (_) {}
 
     if (!mounted) return;
     final hasPreset = (_presetText != null && _presetText!.trim().isNotEmpty) ||
-        _presetImage != null;
+        _presetImage != null ||
+        (_presetMiniProgramId != null && _presetMiniProgramId!.isNotEmpty);
     final isFriendTimeline = (widget.timelineAuthorId ?? '').trim().isNotEmpty;
     if (widget.showComposer && !isFriendTimeline && hasPreset) {
       if (_openedPresetComposer) return;
@@ -921,6 +1433,7 @@ class _MomentsPageState extends State<MomentsPage> {
             initialText: (_presetText ?? '').trim(),
             initialImageBytes: _presetImage,
             initialImageMime: null,
+            initialMiniProgramId: _presetMiniProgramId,
             clearPresetOnClose: true,
           ),
         );
@@ -1042,11 +1555,11 @@ class _MomentsPageState extends State<MomentsPage> {
 
   Future<void> _loadMyMomentsPseudonym() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = (sp.getString('sa_cookie') ?? '').trim();
-      final pseudo = cookie.isEmpty
+      final token =
+          (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
+      final pseudo = token.isEmpty
           ? null
-          : 'User ${crypto.sha1.convert(utf8.encode(cookie)).toString().substring(0, 6)}';
+          : 'User ${crypto.sha1.convert(utf8.encode(token)).toString().substring(0, 6)}';
       if (!mounted) return;
       setState(() {
         _myMomentsPseudonym = pseudo;
@@ -1058,7 +1571,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/topics/trending')
           .replace(queryParameters: const {'limit': '8'});
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -1086,6 +1599,7 @@ class _MomentsPageState extends State<MomentsPage> {
   Future<void> _openModerationOverview() async {
     final l = L10n.of(context);
     final theme = Theme.of(context);
+    final chrome = momentModerationOverviewSheetChromeMeta();
     final muted = _mutedAuthors.toList()..sort();
     final hidden = _posts
         .where((p) => _hiddenPostIds.contains((p['id'] ?? '').toString()))
@@ -1097,14 +1611,15 @@ class _MomentsPageState extends State<MomentsPage> {
       builder: (ctx) {
         return Padding(
           padding: EdgeInsets.only(
-            left: 12,
-            right: 12,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 12,
-            top: 12,
+            left: chrome.sheetEdgePadding,
+            right: chrome.sheetEdgePadding,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom +
+                chrome.viewInsetBottomGap,
+            top: chrome.sheetEdgePadding,
           ),
           child: GlassPanel(
-            radius: 16,
-            padding: const EdgeInsets.all(12),
+            radius: chrome.panelRadius,
+            padding: EdgeInsets.all(chrome.panelPadding),
             child: StatefulBuilder(
               builder: (ctx, setModalState) {
                 final hasMuted = muted.isNotEmpty;
@@ -1118,19 +1633,21 @@ class _MomentsPageState extends State<MomentsPage> {
                           ? 'إدارة اللحظات المخفية والمستخدمين المكتومين'
                           : 'Manage hidden posts and muted users',
                       style: theme.textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700),
+                          ?.copyWith(fontWeight: chrome.titleFontWeight),
                     ),
-                    const SizedBox(height: 8),
+                    SizedBox(height: chrome.titleBottomGap),
                     if (!hasMuted && !hasHidden)
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
+                        padding: EdgeInsets.only(
+                          bottom: chrome.emptyBottomPadding,
+                        ),
                         child: Text(
                           l.isArabic
                               ? 'لا توجد عناصر مخفية أو مكتومة حاليًا.'
                               : 'You do not have any hidden posts or muted users yet.',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface
-                                .withValues(alpha: .70),
+                                .withValues(alpha: chrome.emptyTextAlpha),
                           ),
                         ),
                       ),
@@ -1140,13 +1657,13 @@ class _MomentsPageState extends State<MomentsPage> {
                             ? 'المستخدمون المكتومون'
                             : 'Muted users in Moments',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w700,
+                          fontWeight: chrome.sectionTitleFontWeight,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: chrome.sectionTitleBottomGap),
                       Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
+                        spacing: chrome.chipSpacing,
+                        runSpacing: chrome.chipRunSpacing,
                         children: muted.map((name) {
                           return FilterChip(
                             label: Text(name),
@@ -1160,30 +1677,32 @@ class _MomentsPageState extends State<MomentsPage> {
                               });
                               await _saveMutedAuthors();
                             },
-                            avatar: const Icon(
+                            avatar: Icon(
                               Icons.volume_off_outlined,
-                              size: 16,
+                              size: chrome.chipIconSize,
                             ),
                           );
                         }).toList(),
                       ),
-                      const SizedBox(height: 12),
+                      SizedBox(height: chrome.mutedSectionBottomGap),
                     ],
                     if (hasHidden) ...[
                       Text(
                         l.isArabic ? 'المنشورات المخفية' : 'Hidden posts',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w700,
+                          fontWeight: chrome.sectionTitleFontWeight,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: chrome.sectionTitleBottomGap),
                       ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 260),
+                        constraints: BoxConstraints(
+                          maxHeight: chrome.hiddenListMaxHeight,
+                        ),
                         child: ListView.separated(
                           shrinkWrap: true,
                           itemCount: hidden.length,
                           separatorBuilder: (_, __) =>
-                              const SizedBox(height: 6),
+                              SizedBox(height: chrome.hiddenRowGap),
                           itemBuilder: (_, i) {
                             final p = hidden[i];
                             final id = (p['id'] ?? '').toString();
@@ -1192,12 +1711,12 @@ class _MomentsPageState extends State<MomentsPage> {
                                 ? (l.isArabic
                                     ? 'منشور بدون نص'
                                     : 'Post without text')
-                                : (text.length > 80
-                                    ? '${text.substring(0, 80)}…'
+                                : (text.length > chrome.hiddenPreviewMaxChars
+                                    ? '${text.substring(0, chrome.hiddenPreviewMaxChars)}…'
                                     : text);
                             return ListTile(
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
+                              dense: chrome.hiddenTileDense,
+                              contentPadding: chrome.hiddenTileContentPadding,
                               title: Text(
                                 preview,
                                 maxLines: 2,
@@ -1208,9 +1727,10 @@ class _MomentsPageState extends State<MomentsPage> {
                                     ? 'اضغط لإلغاء إخفاء هذا المنشور'
                                     : 'Tap to unhide this post',
                                 style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withValues(alpha: .65),
-                                  fontSize: 11,
+                                  color: theme.colorScheme.onSurface.withValues(
+                                    alpha: chrome.hiddenSubtitleAlpha,
+                                  ),
+                                  fontSize: chrome.hiddenSubtitleFontSize,
                                 ),
                               ),
                               onTap: () async {
@@ -1313,6 +1833,8 @@ class _MomentsPageState extends State<MomentsPage> {
       if ((raw['origin_official_item_id'] ?? '').toString().isNotEmpty)
         'origin_official_item_id':
             (raw['origin_official_item_id'] ?? '').toString(),
+      if ((raw['mini_program_id'] ?? '').toString().isNotEmpty)
+        'mini_program_id': (raw['mini_program_id'] ?? '').toString(),
       if (audienceTag.isNotEmpty) 'audience_tag': audienceTag,
       if (raw['has_official_reply'] is bool)
         'has_official_reply': raw['has_official_reply'] as bool,
@@ -1331,6 +1853,10 @@ class _MomentsPageState extends State<MomentsPage> {
             .replace(queryParameters: const {'limit': '50'});
       } else {
         final qp = <String, String>{'limit': '50'};
+        final miniProgramId = (widget.miniProgramId ?? '').trim();
+        if (miniProgramId.isNotEmpty) {
+          qp['mini_program_id'] = miniProgramId;
+        }
         final originAcc = (widget.originOfficialAccountId ?? '').trim();
         if (originAcc.isNotEmpty) {
           qp['official_account_id'] = originAcc;
@@ -1350,7 +1876,7 @@ class _MomentsPageState extends State<MomentsPage> {
         uri = Uri.parse('${widget.baseUrl}/moments/feed')
             .replace(queryParameters: qp);
       }
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(widget.baseUrl));
       if (r.statusCode != 200) return;
       final body = r.body;
       if (body.isEmpty) return;
@@ -1398,7 +1924,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$postId/comments')
           .replace(queryParameters: const {'limit': '100'});
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return const [];
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -1451,7 +1977,7 @@ class _MomentsPageState extends State<MomentsPage> {
       }
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(widget.baseUrl, json: true),
         body: jsonEncode(payload),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) return null;
@@ -1492,7 +2018,7 @@ class _MomentsPageState extends State<MomentsPage> {
           : Uri.parse('${widget.baseUrl}/moments/comments/$id');
       final r = await http.delete(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(widget.baseUrl, json: true),
       );
       return r.statusCode >= 200 && r.statusCode < 300;
     } catch (_) {
@@ -1538,7 +2064,8 @@ class _MomentsPageState extends State<MomentsPage> {
     if (id.isEmpty) return;
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$id/like');
-      await http.post(uri, headers: await _hdrMoments(json: true));
+      await http.post(uri,
+          headers: await _hdrMoments(widget.baseUrl, json: true));
     } catch (_) {}
   }
 
@@ -1574,8 +2101,57 @@ class _MomentsPageState extends State<MomentsPage> {
     if (id.isEmpty) return;
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$id/like');
-      await http.delete(uri, headers: await _hdrMoments(json: true));
+      await http.delete(uri,
+          headers: await _hdrMoments(widget.baseUrl, json: true));
     } catch (_) {}
+  }
+
+  String _momentShareText(Map<String, dynamic> post, L10n l) {
+    final text = (post['text'] ?? post['content'] ?? '').toString().trim();
+    final author = (post['author_name'] ?? '').toString().trim();
+    final location = (post['location_label'] ?? '').toString().trim();
+    final postId = (post['id'] ?? '').toString().trim();
+    final buf = StringBuffer();
+    if (text.isNotEmpty) {
+      buf.writeln(text);
+    }
+    if (author.isNotEmpty) {
+      if (buf.isNotEmpty) buf.writeln();
+      buf.writeln(l.isArabic ? 'من $author' : 'From $author');
+    }
+    if (location.isNotEmpty) {
+      buf.writeln(location);
+    }
+    if (postId.isNotEmpty) {
+      buf.writeln('shamell://moments?post_id=$postId');
+    } else {
+      buf.writeln('shamell://moments');
+    }
+    return buf.toString().trim();
+  }
+
+  Future<void> _shareMomentPost(Map<String, dynamic> post) async {
+    final l = L10n.of(context);
+    final text = _momentShareText(post, l);
+    if (text.isEmpty) return;
+    await Share.share(text);
+  }
+
+  Future<void> _saveMomentPost(Map<String, dynamic> post) async {
+    final l = L10n.of(context);
+    final text = _momentShareText(post, l);
+    if (text.isEmpty) return;
+    await addFavoriteItemQuick(text, baseUrlOverride: widget.baseUrl);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          l.isArabic
+              ? 'تم حفظ اللحظة في المفضلة.'
+              : 'Moment saved to Favorites.',
+        ),
+      ),
+    );
   }
 
   Future<void> _showMomentPostActionsPopover(
@@ -1594,36 +2170,46 @@ class _MomentsPageState extends State<MomentsPage> {
     final likedByMe = (post['liked_by_me'] as bool?) ?? false;
     final likes = (post['likes'] as int?) ?? 0;
     final isLiked = likedByMe || (!_usingApi && likes > 0);
-    final likeLabel = isLiked
-        ? (isArabic ? 'إلغاء الإعجاب' : 'Unlike')
-        : (isArabic ? 'إعجاب' : 'Like');
-    final commentLabel = isArabic ? 'تعليق' : 'Comment';
+    final actions = momentPostQuickActionMetas(
+      isLiked: isLiked,
+      isArabic: isArabic,
+    );
+    final menuChrome = momentPostActionMenuChromeMeta();
+    final popoverChrome = momentPostActionPopoverChromeMeta();
 
     final anchorOffset =
         anchorBox.localToGlobal(Offset.zero, ancestor: overlayBox);
     final anchorSize = anchorBox.size;
 
-    const menuWidth = 184.0;
-    const menuHeight = 42.0;
-    const margin = 8.0;
+    final menuHeight = menuChrome.height;
+    final margin = popoverChrome.margin;
 
     final overlaySize = overlayBox.size;
+    final menuWidth = math.min(
+      popoverChrome.maxMenuWidth,
+      math.max(popoverChrome.minMenuWidth, overlaySize.width - margin * 2),
+    );
 
-    var left = anchorOffset.dx - menuWidth - 10;
+    var left = anchorOffset.dx - menuWidth - popoverChrome.anchorGap;
     left = left.clamp(margin, overlaySize.width - menuWidth - margin);
 
     var top = anchorOffset.dy + (anchorSize.height / 2) - (menuHeight / 2);
     top = top.clamp(margin, overlaySize.height - menuHeight - margin);
 
-    final arrowTopRaw = anchorOffset.dy + (anchorSize.height / 2) - 6;
-    final arrowTop = arrowTopRaw.clamp(top + 8, top + menuHeight - 14);
+    final arrowTopRaw = anchorOffset.dy +
+        (anchorSize.height / 2) -
+        popoverChrome.arrowAnchorCenterOffset;
+    final arrowTop = arrowTopRaw.clamp(
+      top + popoverChrome.arrowTopInset,
+      top + menuHeight - popoverChrome.arrowBottomInset,
+    );
 
     await showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
       barrierLabel: isArabic ? 'إغلاق' : 'Dismiss',
       barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 160),
+      transitionDuration: popoverChrome.transitionDuration,
       pageBuilder: (ctx, a1, a2) {
         final curved = CurvedAnimation(
           parent: a1,
@@ -1632,8 +2218,11 @@ class _MomentsPageState extends State<MomentsPage> {
         );
 
         final menu = _WeChatMomentActionMenu(
-          likeLabel: likeLabel,
-          commentLabel: commentLabel,
+          likeAction: actions[0],
+          commentAction: actions[1],
+          shareAction: actions[2],
+          saveAction: actions[3],
+          width: menuWidth,
           likeEnabled: true,
           onLike: () async {
             Navigator.of(ctx).pop();
@@ -1647,14 +2236,22 @@ class _MomentsPageState extends State<MomentsPage> {
             Navigator.of(ctx).pop();
             _startInlineComment(post);
           },
+          onShare: () async {
+            Navigator.of(ctx).pop();
+            await _shareMomentPost(post);
+          },
+          onSave: () async {
+            Navigator.of(ctx).pop();
+            await _saveMomentPost(post);
+          },
         );
 
         final arrow = ClipPath(
           clipper: _WeChatPopoverArrowClipper(),
           child: Container(
-            width: 10,
-            height: 12,
-            color: const Color(0xFF4C4C4C),
+            width: popoverChrome.arrowWidth,
+            height: popoverChrome.arrowHeight,
+            color: popoverChrome.arrowColor,
           ),
         );
 
@@ -1672,7 +2269,7 @@ class _MomentsPageState extends State<MomentsPage> {
                 animation: curved,
                 builder: (context, _) {
                   final t = curved.value;
-                  final dx = 18 * (1 - t);
+                  final dx = popoverChrome.slideDx * (1 - t);
                   return Stack(
                     children: [
                       Positioned(
@@ -1687,7 +2284,9 @@ class _MomentsPageState extends State<MomentsPage> {
                         ),
                       ),
                       Positioned(
-                        left: left + menuWidth - 1,
+                        left: left +
+                            menuWidth -
+                            popoverChrome.arrowHorizontalOverlap,
                         top: arrowTop,
                         child: Opacity(
                           opacity: t,
@@ -1830,15 +2429,18 @@ class _MomentsPageState extends State<MomentsPage> {
       final overlayBox = overlay.context.findRenderObject() as RenderBox?;
       if (overlayBox != null) {
         final overlaySize = overlayBox.size;
-        final anchor = overlayBox.globalToLocal(globalPos) - const Offset(0, 8);
+        final chrome = momentCommentActionPopoverChromeMeta();
+        final anchor = overlayBox.globalToLocal(globalPos) -
+            Offset(0, chrome.anchorYOffset);
 
         final actionsCount = canDelete ? 2 : 1;
-        final menuWidth = actionsCount == 2 ? 168.0 : 104.0;
-        const menuHeight = 40.0;
-        const arrowW = 14.0;
-        const arrowH = 10.0;
-        const margin = 8.0;
-        const gap = 10.0;
+        final menuWidth =
+            actionsCount == 2 ? chrome.copyDeleteWidth : chrome.copyOnlyWidth;
+        final menuHeight = chrome.height;
+        final arrowW = chrome.arrowWidth;
+        final arrowH = chrome.arrowHeight;
+        final margin = chrome.margin;
+        final gap = chrome.gap;
 
         final canShowAbove = anchor.dy - gap - arrowH - menuHeight >= margin;
         final canShowBelow = anchor.dy + gap + arrowH + menuHeight <=
@@ -1857,25 +2459,20 @@ class _MomentsPageState extends State<MomentsPage> {
         top = top.clamp(margin, overlaySize.height - menuHeight - margin);
 
         var arrowLeft = anchor.dx - (arrowW / 2);
-        arrowLeft = arrowLeft.clamp(left + 10, left + menuWidth - arrowW - 10);
+        arrowLeft = arrowLeft.clamp(
+          left + chrome.arrowHorizontalInset,
+          left + menuWidth - arrowW - chrome.arrowHorizontalInset,
+        );
         final arrowTop = showAbove ? (top + menuHeight) : (top - arrowH);
 
-        final bg = const Color(0xFF2C2C2C);
         final menu = Material(
           color: Colors.transparent,
           child: Container(
             width: menuWidth,
             height: menuHeight,
             decoration: BoxDecoration(
-              color: bg,
-              borderRadius: BorderRadius.circular(6),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 10,
-                  offset: Offset(0, 6),
-                ),
-              ],
+              color: chrome.backgroundColor,
+              borderRadius: BorderRadius.circular(chrome.borderRadius),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -1889,10 +2486,10 @@ class _MomentsPageState extends State<MomentsPage> {
                     child: Center(
                       child: Text(
                         copyLabel,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
+                        style: TextStyle(
+                          color: chrome.copyTextColor,
+                          fontWeight: chrome.copyFontWeight,
+                          fontSize: chrome.labelFontSize,
                         ),
                       ),
                     ),
@@ -1900,9 +2497,9 @@ class _MomentsPageState extends State<MomentsPage> {
                 ),
                 if (canDelete) ...[
                   Container(
-                    width: 1,
-                    height: 22,
-                    color: Colors.white.withValues(alpha: .14),
+                    width: chrome.dividerWidth,
+                    height: chrome.dividerHeight,
+                    color: Colors.white.withValues(alpha: chrome.dividerAlpha),
                   ),
                   Expanded(
                     child: InkWell(
@@ -1913,10 +2510,10 @@ class _MomentsPageState extends State<MomentsPage> {
                       child: Center(
                         child: Text(
                           deleteLabel,
-                          style: const TextStyle(
-                            color: Color(0xFFFA5151),
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
+                          style: TextStyle(
+                            color: chrome.deleteTextColor,
+                            fontWeight: chrome.deleteFontWeight,
+                            fontSize: chrome.labelFontSize,
                           ),
                         ),
                       ),
@@ -1935,7 +2532,7 @@ class _MomentsPageState extends State<MomentsPage> {
           child: Container(
             width: arrowW,
             height: arrowH,
-            color: bg,
+            color: chrome.backgroundColor,
           ),
         );
 
@@ -1944,7 +2541,7 @@ class _MomentsPageState extends State<MomentsPage> {
           barrierDismissible: true,
           barrierLabel: cancelLabel,
           barrierColor: Colors.transparent,
-          transitionDuration: const Duration(milliseconds: 150),
+          transitionDuration: chrome.transitionDuration,
           pageBuilder: (ctx, a1, _) {
             final curved = CurvedAnimation(
               parent: a1,
@@ -1965,7 +2562,7 @@ class _MomentsPageState extends State<MomentsPage> {
                     animation: curved,
                     builder: (context, _) {
                       final t = curved.value;
-                      final dx = 14 * (1 - t);
+                      final dx = chrome.slideDx * (1 - t);
                       return Stack(
                         children: [
                           Positioned(
@@ -2009,23 +2606,37 @@ class _MomentsPageState extends State<MomentsPage> {
       backgroundColor: Colors.transparent,
       builder: (ctx) {
         final sheetTheme = Theme.of(ctx);
+        final sheetChrome = momentCommentActionSheetChromeMeta();
+        final isSheetDark = sheetTheme.brightness == Brightness.dark;
+        final dividerColor = sheetTheme.dividerColor.withValues(
+          alpha: isSheetDark
+              ? sheetChrome.darkDividerAlpha
+              : sheetChrome.lightDividerAlpha,
+        );
+        final cardColor = sheetTheme.colorScheme.surface.withValues(
+          alpha: isSheetDark
+              ? sheetChrome.darkRowAlpha
+              : sheetChrome.lightRowAlpha,
+        );
 
         Widget actionRow({
           required String label,
           Color? color,
+          FontWeight? fontWeight,
           required VoidCallback onTap,
         }) {
           return InkWell(
             onTap: onTap,
             child: SizedBox(
-              height: 54,
+              height: sheetChrome.rowHeight,
               width: double.infinity,
               child: Center(
                 child: Text(
                   label,
                   textAlign: TextAlign.center,
                   style: sheetTheme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+                    fontSize: sheetChrome.labelFontSize,
+                    fontWeight: fontWeight ?? sheetChrome.actionFontWeight,
                     color: color ?? sheetTheme.colorScheme.onSurface,
                   ),
                 ),
@@ -2036,8 +2647,8 @@ class _MomentsPageState extends State<MomentsPage> {
 
         Widget card(List<Widget> children) {
           return Material(
-            color: sheetTheme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(14),
+            color: cardColor,
+            borderRadius: BorderRadius.circular(sheetChrome.fallbackCardRadius),
             clipBehavior: Clip.antiAlias,
             child: Column(mainAxisSize: MainAxisSize.min, children: children),
           );
@@ -2045,7 +2656,12 @@ class _MomentsPageState extends State<MomentsPage> {
 
         return SafeArea(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            padding: EdgeInsets.fromLTRB(
+              sheetChrome.fallbackHorizontalPadding,
+              sheetChrome.fallbackTopPadding,
+              sheetChrome.fallbackHorizontalPadding,
+              sheetChrome.fallbackBottomPadding,
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -2058,10 +2674,15 @@ class _MomentsPageState extends State<MomentsPage> {
                     },
                   ),
                   if (canDelete) ...[
-                    const Divider(height: 1),
+                    Divider(
+                      height: sheetChrome.dividerHeight,
+                      thickness: sheetChrome.dividerThickness,
+                      color: dividerColor,
+                    ),
                     actionRow(
                       label: deleteLabel,
-                      color: const Color(0xFFFA5151),
+                      color: sheetChrome.deleteTextColor,
+                      fontWeight: sheetChrome.actionFontWeight,
                       onTap: () async {
                         Navigator.of(ctx).pop();
                         await doDelete();
@@ -2069,10 +2690,11 @@ class _MomentsPageState extends State<MomentsPage> {
                     ),
                   ],
                 ]),
-                const SizedBox(height: 8),
+                SizedBox(height: sheetChrome.sectionGap),
                 card([
                   actionRow(
                     label: cancelLabel,
+                    fontWeight: sheetChrome.cancelFontWeight,
                     onTap: () => Navigator.of(ctx).pop(),
                   ),
                 ]),
@@ -2089,6 +2711,7 @@ class _MomentsPageState extends State<MomentsPage> {
     String? imageB64,
     List<String>? imagesB64,
     String? locationLabel,
+    String? miniProgramId,
   }) async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments');
@@ -2128,9 +2751,18 @@ class _MomentsPageState extends State<MomentsPage> {
       if (loc.isNotEmpty) {
         payload['location_label'] = loc;
       }
+      final explicitMiniProgramId = (miniProgramId ?? '').trim();
+      if (explicitMiniProgramId.isNotEmpty) {
+        payload['mini_program_id'] = explicitMiniProgramId;
+      } else {
+        final miniProgramTarget = parseMiniProgramDeepLinkFromText(text);
+        if (miniProgramTarget != null) {
+          payload['mini_program_id'] = miniProgramTarget.id;
+        }
+      }
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(widget.baseUrl, json: true),
         body: jsonEncode(payload),
       );
       if (r.statusCode >= 200 && r.statusCode < 300) {
@@ -2171,6 +2803,7 @@ class _MomentsPageState extends State<MomentsPage> {
     String text, {
     List<String>? imagesB64,
     String? locationLabel,
+    String? miniProgramId,
     bool clearInlineComposer = true,
   }) async {
     final id =
@@ -2215,6 +2848,14 @@ class _MomentsPageState extends State<MomentsPage> {
           'audience_tag': audienceTag,
         if (loc.isNotEmpty) 'location_label': loc,
       };
+      final miniProgramTarget = parseMiniProgramDeepLinkFromText(text);
+      if (miniProgramTarget != null) {
+        post['mini_program_id'] = miniProgramTarget.id;
+      }
+      final explicitMiniProgramId = (miniProgramId ?? '').trim();
+      if (explicitMiniProgramId.isNotEmpty) {
+        post['mini_program_id'] = explicitMiniProgramId;
+      }
       if (images.length > 1) {
         post['images'] = images;
         post['image_b64'] = images.first;
@@ -2226,31 +2867,35 @@ class _MomentsPageState extends State<MomentsPage> {
       }
       _posts.insert(0, post);
       if (clearInlineComposer) {
-        _postCtrl.clear();
-        _pendingImage = null;
-        _pendingImageMime = null;
+        _clearInlineComposerFields();
       }
     });
     await _saveLocal();
   }
 
   Future<void> _addPost() async {
-    final text = _postCtrl.text.trim().isEmpty && _presetText != null
-        ? _presetText!
-        : _postCtrl.text.trim();
-    if (text.isEmpty) return;
+    final publishState = _inlineComposerPublishState();
+    if (!publishState.canPublish) return;
+    final text = publishState.effectiveText;
     final imgB64 = _pendingImage != null
         ? base64Encode(_pendingImage!)
         : (_presetImage != null ? base64Encode(_presetImage!) : null);
+    final miniProgramId = publishState.miniProgramId;
     if (_usingApi) {
-      final ok = await _addPostApi(text, imageB64: imgB64);
+      final ok = await _addPostApi(
+        text,
+        imageB64: imgB64,
+        miniProgramId: miniProgramId.isNotEmpty ? miniProgramId : null,
+      );
       if (ok) {
-        _postCtrl.clear();
-        _clearPendingImage();
+        _clearInlineComposerDraft();
         return;
       }
     }
-    await _addPostLocal(text);
+    await _addPostLocal(
+      text,
+      miniProgramId: miniProgramId.isNotEmpty ? miniProgramId : null,
+    );
   }
 
   Future<void> _deletePost(Map<String, dynamic> p) async {
@@ -2282,7 +2927,7 @@ class _MomentsPageState extends State<MomentsPage> {
       final payload = jsonEncode(<String, dynamic>{'visibility': next});
       await http.patch(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(widget.baseUrl, json: true),
         body: payload,
       );
     } catch (_) {}
@@ -2298,7 +2943,7 @@ class _MomentsPageState extends State<MomentsPage> {
       });
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(widget.baseUrl, json: true),
         body: payload,
       );
       if (!mounted) return;
@@ -2329,156 +2974,225 @@ class _MomentsPageState extends State<MomentsPage> {
 
   Future<void> _openPostActions(Map<String, dynamic> p) async {
     final l = L10n.of(context);
-    final text = (p['text'] ?? '').toString();
+    final shareText = _momentShareText(p, l);
     final isLocal = (p['id'] ?? '').toString().startsWith('local_');
     final visibility = (p['visibility'] ?? 'public').toString();
     final postId = (p['id'] ?? '').toString();
     final authorName = (p['author_name'] ?? '').toString().trim();
     final hasAuthor = authorName.isNotEmpty;
     final isMutedAuthor = hasAuthor && _mutedAuthors.contains(authorName);
-    final bool canToggleVisibility =
+    final canToggleVisibility =
         isLocal || (_usingApi && widget.showOnlyMine && postId.isNotEmpty);
+    final isPrivate = visibility == 'only_me' || visibility == 'private';
+    final sheetActions = momentPostSheetActionMetas(
+      hasShareText: shareText.trim().isNotEmpty,
+      canToggleVisibility: canToggleVisibility,
+      isPrivate: isPrivate,
+      isLocal: isLocal,
+      canHideOrReport: !isLocal && postId.isNotEmpty,
+      hasAuthor: hasAuthor,
+      isMutedAuthor: isMutedAuthor,
+      isArabic: l.isArabic,
+    );
+
+    Future<void> handleSheetAction(MomentPostSheetActionMeta action) async {
+      switch (action.kind) {
+        case MomentPostSheetActionKind.copy:
+          await Clipboard.setData(ClipboardData(text: shareText));
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                l.isArabic
+                    ? 'تم نسخ رابط اللحظة'
+                    : 'Moment link copied to clipboard',
+              ),
+            ),
+          );
+          return;
+        case MomentPostSheetActionKind.share:
+          await _shareMomentPost(p);
+          return;
+        case MomentPostSheetActionKind.save:
+          await _saveMomentPost(p);
+          return;
+        case MomentPostSheetActionKind.toggleVisibility:
+          await _toggleVisibility(p);
+          return;
+        case MomentPostSheetActionKind.delete:
+          await _deletePost(p);
+          return;
+        case MomentPostSheetActionKind.hide:
+          setState(() {
+            _hiddenPostIds.add(postId);
+          });
+          await _saveHiddenPosts();
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                l.isArabic
+                    ? 'تم إخفاء هذا المنشور من موجز اللحظات.'
+                    : 'This post was hidden from your Moments feed.',
+              ),
+            ),
+          );
+          return;
+        case MomentPostSheetActionKind.report:
+          await _reportPost(postId);
+          return;
+        case MomentPostSheetActionKind.muteAuthor:
+          setState(() {
+            _mutedAuthors.add(authorName);
+          });
+          await _saveMutedAuthors();
+          return;
+        case MomentPostSheetActionKind.unmuteAuthor:
+          setState(() {
+            _mutedAuthors.remove(authorName);
+          });
+          await _saveMutedAuthors();
+          return;
+      }
+    }
+
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return Padding(
-          padding: const EdgeInsets.all(12),
-          child: GlassPanel(
-            padding: const EdgeInsets.all(12),
+        final sheetTheme = Theme.of(ctx);
+        final isDark = sheetTheme.brightness == Brightness.dark;
+        final sheetBg =
+            isDark ? sheetTheme.colorScheme.surface : WeChatPalette.background;
+        final actionSheetChrome = momentPostActionSheetChromeMeta();
+        final rowBg = sheetTheme.colorScheme.surface.withValues(
+          alpha: isDark
+              ? actionSheetChrome.darkRowAlpha
+              : actionSheetChrome.lightRowAlpha,
+        );
+        final dividerColor = sheetTheme.dividerColor.withValues(
+          alpha: isDark
+              ? actionSheetChrome.darkDividerAlpha
+              : actionSheetChrome.lightDividerAlpha,
+        );
+
+        Widget section(List<Widget> rows) {
+          if (rows.isEmpty) return const SizedBox.shrink();
+          return Container(
+            color: rowBg,
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  l.isArabic ? 'خيارات المنشور' : 'Post actions',
-                  style: Theme.of(ctx)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w700),
+                Divider(
+                  height: actionSheetChrome.dividerHeight,
+                  thickness: actionSheetChrome.dividerThickness,
+                  color: dividerColor,
                 ),
-                const SizedBox(height: 8),
-                if (text.trim().isNotEmpty)
-                  ListTile(
-                    leading: const Icon(Icons.copy, size: 20),
-                    title: Text(l.isArabic ? 'نسخ' : 'Copy'),
-                    onTap: () async {
-                      await Clipboard.setData(ClipboardData(text: text));
-                      Navigator.of(ctx).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(l.isArabic
-                              ? 'تم نسخ النص'
-                              : 'Text copied to clipboard'),
-                        ),
-                      );
-                    },
-                  ),
-                if (text.trim().isNotEmpty)
-                  ListTile(
-                    leading: const Icon(Icons.share_outlined, size: 20),
-                    title: Text(l.isArabic ? 'مشاركة' : 'Share'),
-                    onTap: () {
-                      Navigator.of(ctx).pop();
-                      Share.share(text.trim());
-                    },
-                  ),
-                if (canToggleVisibility)
-                  ListTile(
-                    leading: Icon(
-                      (visibility == 'only_me' || visibility == 'private')
-                          ? Icons.public_outlined
-                          : Icons.lock_outline,
-                      size: 20,
+                for (var i = 0; i < rows.length; i++) ...[
+                  if (i > 0)
+                    Divider(
+                      height: actionSheetChrome.dividerHeight,
+                      thickness: actionSheetChrome.dividerThickness,
+                      indent: actionSheetChrome.innerDividerIndent,
+                      color: dividerColor,
                     ),
-                    title: Text(
-                      (visibility == 'only_me' || visibility == 'private')
-                          ? (l.isArabic ? 'جعلها عامة' : 'Make post public')
-                          : (l.isArabic
-                              ? 'جعلها مرئية لي فقط'
-                              : 'Make visible to me only'),
-                    ),
-                    onTap: () async {
-                      Navigator.of(ctx).pop();
-                      await _toggleVisibility(p);
-                    },
+                  rows[i],
+                ],
+                Divider(
+                  height: actionSheetChrome.dividerHeight,
+                  thickness: actionSheetChrome.dividerThickness,
+                  color: dividerColor,
+                ),
+              ],
+            ),
+          );
+        }
+
+        Widget actionRow({
+          required IconData icon,
+          required String title,
+          Color? color,
+          required Future<void> Function() onTap,
+        }) {
+          final effectiveColor = color ?? sheetTheme.colorScheme.onSurface;
+          return InkWell(
+            onTap: () async {
+              Navigator.of(ctx).pop();
+              await onTap();
+            },
+            child: SizedBox(
+              height: actionSheetChrome.rowHeight,
+              width: double.infinity,
+              child: Row(
+                children: [
+                  SizedBox(width: actionSheetChrome.edgeGap),
+                  Icon(
+                    icon,
+                    size: actionSheetChrome.iconSize,
+                    color: effectiveColor,
                   ),
-                if (isLocal)
-                  ListTile(
-                    leading: const Icon(Icons.delete_outline, size: 20),
-                    title:
-                        Text(l.isArabic ? 'حذف المنشور' : 'Delete this post'),
-                    onTap: () async {
-                      Navigator.of(ctx).pop();
-                      await _deletePost(p);
-                    },
-                  ),
-                if (!isLocal && postId.isNotEmpty)
-                  ListTile(
-                    leading:
-                        const Icon(Icons.visibility_off_outlined, size: 20),
-                    title: Text(
-                      l.isArabic ? 'إخفاء هذا المنشور' : 'Hide this post',
+                  SizedBox(width: actionSheetChrome.iconTextGap),
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: sheetTheme.textTheme.bodyLarge?.copyWith(
+                        fontSize: actionSheetChrome.labelFontSize,
+                        fontWeight: actionSheetChrome.actionFontWeight,
+                        color: effectiveColor,
+                      ),
                     ),
-                    onTap: () async {
-                      Navigator.of(ctx).pop();
-                      setState(() {
-                        _hiddenPostIds.add(postId);
-                      });
-                      await _saveHiddenPosts();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            l.isArabic
-                                ? 'تم إخفاء هذا المنشور من موجز اللحظات.'
-                                : 'This post was hidden from your Moments feed.',
-                          ),
-                        ),
-                      );
-                    },
                   ),
-                if (!isLocal && postId.isNotEmpty)
-                  ListTile(
-                    leading: const Icon(Icons.flag_outlined, size: 20),
-                    title: Text(
-                      l.isArabic
-                          ? 'الإبلاغ عن هذا المنشور'
-                          : 'Report this post',
-                    ),
-                    onTap: () async {
-                      Navigator.of(ctx).pop();
-                      await _reportPost(postId);
-                    },
+                  SizedBox(width: actionSheetChrome.edgeGap),
+                ],
+              ),
+            ),
+          );
+        }
+
+        Widget cancelRow() {
+          return InkWell(
+            onTap: () => Navigator.of(ctx).pop(),
+            child: SizedBox(
+              height: actionSheetChrome.rowHeight,
+              width: double.infinity,
+              child: Center(
+                child: Text(
+                  l.isArabic ? 'إلغاء' : 'Cancel',
+                  style: sheetTheme.textTheme.bodyLarge?.copyWith(
+                    fontSize: actionSheetChrome.labelFontSize,
+                    fontWeight: actionSheetChrome.cancelFontWeight,
+                    color: sheetTheme.colorScheme.primary,
                   ),
-                if (!isLocal && hasAuthor)
-                  ListTile(
-                    leading: Icon(
-                      isMutedAuthor
-                          ? Icons.volume_up_outlined
-                          : Icons.volume_off_outlined,
-                      size: 20,
-                    ),
-                    title: Text(
-                      isMutedAuthor
-                          ? (l.isArabic
-                              ? 'إلغاء كتم هذا المستخدم في اللحظات'
-                              : 'Unmute this user in Moments')
-                          : (l.isArabic
-                              ? 'كتم هذا المستخدم في اللحظات'
-                              : 'Mute this user in Moments'),
-                    ),
-                    onTap: () async {
-                      Navigator.of(ctx).pop();
-                      setState(() {
-                        if (isMutedAuthor) {
-                          _mutedAuthors.remove(authorName);
-                        } else {
-                          _mutedAuthors.add(authorName);
-                        }
-                      });
-                      await _saveMutedAuthors();
-                    },
-                  ),
+                ),
+              ),
+            ),
+          );
+        }
+
+        final rows = <Widget>[
+          for (final action in sheetActions)
+            actionRow(
+              icon: action.icon,
+              title: action.label,
+              color: action.destructive
+                  ? actionSheetChrome.destructiveColor
+                  : null,
+              onTap: () => handleSheetAction(action),
+            ),
+        ];
+
+        return SafeArea(
+          top: false,
+          child: Container(
+            color: sheetBg,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                section(rows),
+                SizedBox(height: actionSheetChrome.sectionGap),
+                section([cancelRow()]),
               ],
             ),
           ),
@@ -2492,7 +3206,7 @@ class _MomentsPageState extends State<MomentsPage> {
         (p['origin_official_account_id'] ?? '').toString().trim();
     if (originAccId.isNotEmpty) return true;
     final text = (p['text'] ?? '').toString();
-    return text.contains('shamell://official/');
+    return parseOfficialDeepLinkFromText(text) != null;
   }
 
   bool _isOfficialInPreferredCity(Map<String, dynamic> p) {
@@ -2536,10 +3250,10 @@ class _MomentsPageState extends State<MomentsPage> {
     final youLabel = l.isArabic ? 'أنت' : 'You';
     String? myPseudonym;
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = (sp.getString('sa_cookie') ?? '').trim();
-      if (cookie.isNotEmpty) {
-        final hex = crypto.sha1.convert(utf8.encode(cookie)).toString();
+      final token =
+          (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
+      if (token.isNotEmpty) {
+        final hex = crypto.sha1.convert(utf8.encode(token)).toString();
         if (hex.length >= 6) {
           myPseudonym = 'User ${hex.substring(0, 6)}';
         }
@@ -2547,10 +3261,11 @@ class _MomentsPageState extends State<MomentsPage> {
     } catch (_) {}
 
     String displayNameForAuthor(String authorName) {
-      final raw = authorName.trim();
-      if (raw.isEmpty) return youLabel;
-      if (raw == 'You' || raw == 'أنت') return youLabel;
-      if (myPseudonym != null && raw == myPseudonym) return youLabel;
+      final raw = normalizeMomentPersonLabel(
+        rawName: authorName,
+        youLabel: youLabel,
+        myPseudonym: myPseudonym,
+      );
       if (raw.startsWith('Official ·')) {
         final parts = raw.split('Official ·');
         if (parts.length >= 2) {
@@ -2622,39 +3337,54 @@ class _MomentsPageState extends State<MomentsPage> {
     String? replyToId;
     String? replyToName;
     ScrollController? listScrollCtrl;
+    final sheetChrome = momentCommentSheetChromeMeta();
 
-    await showModalBottomSheet<void>(
+    try {
+      await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: .28),
+      barrierColor: Colors.black.withValues(alpha: sheetChrome.barrierAlpha),
       builder: (ctx) {
         final theme = Theme.of(ctx);
         final isDark = theme.brightness == Brightness.dark;
+        final commentChrome = momentInlineCommentBarChromeMeta();
         final sheetBg = isDark ? theme.colorScheme.surface : Colors.white;
         final inputBg =
             isDark ? theme.colorScheme.surface : WeChatPalette.background;
         final dividerColor =
             isDark ? theme.dividerColor : WeChatPalette.divider;
-        final nameColor =
-            isDark ? theme.colorScheme.primary : const Color(0xFF576B95);
+        final feedTextChrome = momentFeedTextChromeMeta();
+        final nameColor = isDark
+            ? theme.colorScheme.primary
+            : feedTextChrome.nameLinkLightColor;
         final fieldBg = isDark
-            ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55)
+            ? theme.colorScheme.surfaceContainerHighest.withValues(
+                alpha: commentChrome.darkFieldFillAlpha,
+              )
             : Colors.white;
         final fieldBorder = isDark ? theme.dividerColor : WeChatPalette.divider;
         final sendDisabledBg = isDark
-            ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .45)
+            ? theme.colorScheme.surfaceContainerHighest.withValues(
+                alpha: commentChrome.darkDisabledSendAlpha,
+              )
             : WeChatPalette.searchFill;
 
-        final baseStyle = theme.textTheme.bodyMedium?.copyWith(fontSize: 13) ??
-            const TextStyle(fontSize: 13);
+        final baseStyle = theme.textTheme.bodyMedium?.copyWith(
+              fontSize: commentChrome.baseFontSize,
+            ) ??
+            TextStyle(fontSize: commentChrome.baseFontSize);
         final secondaryStyle = theme.textTheme.bodySmall?.copyWith(
-              fontSize: 11,
-              color: theme.colorScheme.onSurface.withValues(alpha: .60),
+              fontSize: commentChrome.secondaryFontSize,
+              color: theme.colorScheme.onSurface.withValues(
+                alpha: commentChrome.secondaryTextAlpha,
+              ),
             ) ??
             TextStyle(
-              fontSize: 11,
-              color: theme.colorScheme.onSurface.withValues(alpha: .60),
+              fontSize: commentChrome.secondaryFontSize,
+              color: theme.colorScheme.onSurface.withValues(
+                alpha: commentChrome.secondaryTextAlpha,
+              ),
             );
 
         return StatefulBuilder(
@@ -2741,21 +3471,25 @@ class _MomentsPageState extends State<MomentsPage> {
                   : displayNameForAuthor(replyName);
 
               final authorRaw = authorName.trim();
-              final isMine = authorRaw == youLabel ||
-                  authorRaw == 'You' ||
-                  authorRaw == 'أنت' ||
-                  (myPseudonym != null && authorRaw == myPseudonym);
+              final isMine = isMomentPersonMe(
+                rawName: authorRaw,
+                youLabel: youLabel,
+                myPseudonym: myPseudonym,
+              );
               final canDelete = isMine || _isAdmin;
+              final tileChrome = momentCommentTileChromeMeta();
 
               final commentTextSpan = TextSpan(
                 style: baseStyle.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: .92),
+                  color: theme.colorScheme.onSurface.withValues(
+                    alpha: tileChrome.textAlpha,
+                  ),
                 ),
                 children: [
                   TextSpan(
                     text: displayName,
                     style: baseStyle.copyWith(
-                      fontWeight: FontWeight.w600,
+                      fontWeight: tileChrome.authorFontWeight,
                       color: nameColor,
                     ),
                   ),
@@ -2763,14 +3497,15 @@ class _MomentsPageState extends State<MomentsPage> {
                     TextSpan(
                       text: l.isArabic ? ' ردًا على ' : ' replied to ',
                       style: baseStyle.copyWith(
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .70),
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: tileChrome.replyConnectorAlpha,
+                        ),
                       ),
                     ),
                     TextSpan(
                       text: replyDisplayName,
                       style: baseStyle.copyWith(
-                        fontWeight: FontWeight.w600,
+                        fontWeight: tileChrome.authorFontWeight,
                         color: nameColor,
                       ),
                     ),
@@ -2796,65 +3531,149 @@ class _MomentsPageState extends State<MomentsPage> {
                   } catch (_) {}
                   final action = await showModalBottomSheet<String>(
                     context: ctx,
-                    backgroundColor: sheetBg,
-                    shape: const RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.vertical(top: Radius.circular(14)),
-                    ),
+                    backgroundColor: Colors.transparent,
                     builder: (actx) {
+                      final actTheme = Theme.of(actx);
                       final l2 = L10n.of(actx);
-                      Widget tile({
+                      final actIsDark = actTheme.brightness == Brightness.dark;
+                      final actionSheetChrome =
+                          momentCommentActionSheetChromeMeta();
+                      final actSheetBg = actIsDark
+                          ? actTheme.colorScheme.surface
+                          : WeChatPalette.background;
+                      final rowBg = actTheme.colorScheme.surface.withValues(
+                        alpha: actIsDark
+                            ? actionSheetChrome.darkRowAlpha
+                            : actionSheetChrome.lightRowAlpha,
+                      );
+                      final actionDivider = actTheme.dividerColor.withValues(
+                        alpha: actIsDark
+                            ? actionSheetChrome.darkDividerAlpha
+                            : actionSheetChrome.lightDividerAlpha,
+                      );
+
+                      Widget section(List<Widget> rows) {
+                        return Container(
+                          color: rowBg,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Divider(
+                                height: actionSheetChrome.dividerHeight,
+                                thickness: actionSheetChrome.dividerThickness,
+                                color: actionDivider,
+                              ),
+                              for (var i = 0; i < rows.length; i++) ...[
+                                if (i > 0)
+                                  Divider(
+                                    height: actionSheetChrome.dividerHeight,
+                                    thickness:
+                                        actionSheetChrome.dividerThickness,
+                                    indent:
+                                        actionSheetChrome.innerDividerIndent,
+                                    color: actionDivider,
+                                  ),
+                                rows[i],
+                              ],
+                              Divider(
+                                height: actionSheetChrome.dividerHeight,
+                                thickness: actionSheetChrome.dividerThickness,
+                                color: actionDivider,
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      Widget actionRow({
                         required IconData icon,
                         required String title,
                         required String value,
                         Color? color,
                       }) {
-                        return ListTile(
-                          leading: Icon(icon, color: color),
-                          title: Text(
-                            title,
-                            style: color == null
-                                ? null
-                                : TextStyle(
-                                    color: color,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                          ),
+                        final effectiveColor =
+                            color ?? actTheme.colorScheme.onSurface;
+                        return InkWell(
                           onTap: () => Navigator.of(actx).pop(value),
+                          child: SizedBox(
+                            height: actionSheetChrome.rowHeight,
+                            width: double.infinity,
+                            child: Row(
+                              children: [
+                                SizedBox(width: actionSheetChrome.edgeGap),
+                                Icon(
+                                  icon,
+                                  size: actionSheetChrome.iconSize,
+                                  color: effectiveColor,
+                                ),
+                                SizedBox(width: actionSheetChrome.iconTextGap),
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style:
+                                        actTheme.textTheme.bodyLarge?.copyWith(
+                                      fontSize: actionSheetChrome.labelFontSize,
+                                      fontWeight:
+                                          actionSheetChrome.actionFontWeight,
+                                      color: effectiveColor,
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(width: actionSheetChrome.edgeGap),
+                              ],
+                            ),
+                          ),
                         );
                       }
 
                       return SafeArea(
                         top: false,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            tile(
-                              icon: Icons.copy,
-                              title: l2.isArabic ? 'نسخ' : 'Copy',
-                              value: 'copy',
-                            ),
-                            if (canDelete)
-                              tile(
-                                icon: Icons.delete_outline,
-                                title: l2.isArabic ? 'حذف' : 'Delete',
-                                value: 'delete',
-                                color: Colors.redAccent,
-                              ),
-                            const Divider(height: 1),
-                            ListTile(
-                              title: Center(
-                                child: Text(
-                                  l2.isArabic ? 'إلغاء' : 'Cancel',
-                                  style: TextStyle(
-                                    color: Theme.of(actx).colorScheme.primary,
-                                    fontWeight: FontWeight.w600,
+                        child: Container(
+                          color: actSheetBg,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              section([
+                                actionRow(
+                                  icon: Icons.copy,
+                                  title: l2.isArabic ? 'نسخ' : 'Copy',
+                                  value: 'copy',
+                                ),
+                                if (canDelete)
+                                  actionRow(
+                                    icon: Icons.delete_outline,
+                                    title: l2.isArabic ? 'حذف' : 'Delete',
+                                    value: 'delete',
+                                    color: actionSheetChrome.deleteTextColor,
+                                  ),
+                              ]),
+                              SizedBox(height: actionSheetChrome.sectionGap),
+                              section([
+                                InkWell(
+                                  onTap: () => Navigator.of(actx).pop(),
+                                  child: SizedBox(
+                                    height: actionSheetChrome.rowHeight,
+                                    width: double.infinity,
+                                    child: Center(
+                                      child: Text(
+                                        l2.isArabic ? 'إلغاء' : 'Cancel',
+                                        style: actTheme.textTheme.bodyLarge
+                                            ?.copyWith(
+                                          fontSize:
+                                              actionSheetChrome.labelFontSize,
+                                          fontWeight: actionSheetChrome
+                                              .cancelFontWeight,
+                                          color: actTheme.colorScheme.primary,
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ),
-                              onTap: () => Navigator.of(actx).pop(),
-                            ),
-                          ],
+                              ]),
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -2956,18 +3775,25 @@ class _MomentsPageState extends State<MomentsPage> {
                   }
                 },
                 child: Container(
-                  margin: isHighlighted ? const EdgeInsets.only(top: 4) : null,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  margin: isHighlighted
+                      ? EdgeInsets.only(top: sheetChrome.highlightedTopMargin)
+                      : null,
+                  padding: EdgeInsets.symmetric(
+                    vertical: sheetChrome.commentVerticalPadding,
+                  ),
                   decoration: isHighlighted
                       ? BoxDecoration(
-                          color:
-                              theme.colorScheme.primary.withValues(alpha: .06),
-                          borderRadius: BorderRadius.circular(8),
+                          color: theme.colorScheme.primary.withValues(
+                            alpha: sheetChrome.highlightedFillAlpha,
+                          ),
+                          borderRadius: BorderRadius.circular(
+                            sheetChrome.highlightedRadius,
+                          ),
                         )
                       : null,
                   child: RichText(
                     text: commentTextSpan,
-                    maxLines: 3,
+                    maxLines: tileChrome.maxLines,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -2979,54 +3805,57 @@ class _MomentsPageState extends State<MomentsPage> {
                 existing.isNotEmpty ? '(${existing.length})' : '';
 
             return AnimatedPadding(
-              duration: const Duration(milliseconds: 180),
+              duration: sheetChrome.keyboardInsetDuration,
               curve: Curves.easeOut,
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(ctx).viewInsets.bottom,
               ),
               child: DraggableScrollableSheet(
                 expand: false,
-                initialChildSize: existing.isEmpty ? 0.55 : 0.75,
-                minChildSize: 0.35,
-                maxChildSize: 0.95,
+                initialChildSize: existing.isEmpty
+                    ? sheetChrome.emptyInitialChildSize
+                    : sheetChrome.populatedInitialChildSize,
+                minChildSize: sheetChrome.minChildSize,
+                maxChildSize: sheetChrome.maxChildSize,
                 builder: (ctx, scrollController) {
                   listScrollCtrl = scrollController;
                   return ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(14),
-                    ),
+                    borderRadius: BorderRadius.zero,
                     child: Material(
                       color: sheetBg,
                       child: SafeArea(
                         top: false,
                         child: Column(
                           children: [
-                            const SizedBox(height: 8),
+                            SizedBox(height: sheetChrome.handleTopGap),
                             Container(
-                              width: 36,
-                              height: 4,
+                              width: sheetChrome.handleWidth,
+                              height: sheetChrome.handleHeight,
                               decoration: BoxDecoration(
                                 color: theme.colorScheme.onSurface
-                                    .withValues(alpha: .20),
-                                borderRadius: BorderRadius.circular(2),
+                                    .withValues(alpha: sheetChrome.handleAlpha),
+                                borderRadius: BorderRadius.circular(
+                                  sheetChrome.handleRadius,
+                                ),
                               ),
                             ),
-                            const SizedBox(height: 6),
+                            SizedBox(height: sheetChrome.handleBottomGap),
                             SizedBox(
-                              height: 44,
+                              height: sheetChrome.headerHeight,
                               child: Stack(
                                 children: [
                                   PositionedDirectional(
-                                    start: 2,
+                                    start: sheetChrome.headerActionInset,
                                     top: 0,
                                     bottom: 0,
                                     child: IconButton(
                                       tooltip: l.isArabic ? 'إغلاق' : 'Close',
-                                      icon: const Icon(
+                                      icon: Icon(
                                         Icons.arrow_back,
-                                        size: 20,
+                                        size: sheetChrome.headerIconSize,
                                       ),
-                                      visualDensity: VisualDensity.compact,
+                                      visualDensity:
+                                          sheetChrome.headerActionVisualDensity,
                                       onPressed: () => Navigator.of(ctx).pop(),
                                     ),
                                   ),
@@ -3038,11 +3867,12 @@ class _MomentsPageState extends State<MomentsPage> {
                                           title,
                                           style: theme.textTheme.titleSmall
                                               ?.copyWith(
-                                            fontWeight: FontWeight.w600,
+                                            fontWeight:
+                                                sheetChrome.titleFontWeight,
                                           ),
                                         ),
                                         if (countSuffix.isNotEmpty) ...[
-                                          const SizedBox(width: 6),
+                                          SizedBox(width: sheetChrome.countGap),
                                           Text(
                                             countSuffix,
                                             style: secondaryStyle,
@@ -3052,7 +3882,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                     ),
                                   ),
                                   PositionedDirectional(
-                                    end: 2,
+                                    end: sheetChrome.headerActionInset,
                                     top: 0,
                                     bottom: 0,
                                     child: Row(
@@ -3063,12 +3893,12 @@ class _MomentsPageState extends State<MomentsPage> {
                                             tooltip: l.isArabic
                                                 ? 'رد كحساب خدمة'
                                                 : 'Reply as service',
-                                            icon: const Icon(
+                                            icon: Icon(
                                               Icons.campaign_outlined,
-                                              size: 20,
+                                              size: sheetChrome.headerIconSize,
                                             ),
-                                            visualDensity:
-                                                VisualDensity.compact,
+                                            visualDensity: sheetChrome
+                                                .headerActionVisualDensity,
                                             onPressed: () async {
                                               final originAcc =
                                                   _officialAccounts[
@@ -3077,6 +3907,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                                   originAccId;
                                               final textCtrl =
                                                   TextEditingController();
+                                              try {
                                               await showDialog<void>(
                                                 context: ctx,
                                                 builder: (dctx) {
@@ -3101,8 +3932,10 @@ class _MomentsPageState extends State<MomentsPage> {
                                                               .textTheme
                                                               .bodySmall,
                                                         ),
-                                                        const SizedBox(
-                                                            height: 8),
+                                                        SizedBox(
+                                                          height: sheetChrome
+                                                              .officialReplyDialogFieldTopGap,
+                                                        ),
                                                         TextField(
                                                           controller: textCtrl,
                                                           minLines: 2,
@@ -3176,6 +4009,9 @@ class _MomentsPageState extends State<MomentsPage> {
                                                   );
                                                 },
                                               );
+                                              } finally {
+                                                textCtrl.dispose();
+                                              }
                                             },
                                           ),
                                       ],
@@ -3185,15 +4021,17 @@ class _MomentsPageState extends State<MomentsPage> {
                               ),
                             ),
                             Divider(
-                              height: 1,
-                              thickness: 0.5,
+                              height: sheetChrome.dividerHeight,
+                              thickness: sheetChrome.dividerThickness,
                               color: dividerColor,
                             ),
                             Expanded(
                               child: visible.isEmpty
                                   ? Center(
                                       child: Padding(
-                                        padding: const EdgeInsets.all(20),
+                                        padding: EdgeInsets.all(
+                                          sheetChrome.emptyPadding,
+                                        ),
                                         child: Text(
                                           l.isArabic
                                               ? 'كن أول من يعلّق على هذه اللحظة.'
@@ -3205,11 +4043,11 @@ class _MomentsPageState extends State<MomentsPage> {
                                     )
                                   : ListView.builder(
                                       controller: scrollController,
-                                      padding: const EdgeInsets.fromLTRB(
-                                        16,
-                                        10,
-                                        16,
-                                        10,
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal:
+                                            sheetChrome.listHorizontalPadding,
+                                        vertical:
+                                            sheetChrome.listVerticalPadding,
                                       ),
                                       itemCount: visible.length,
                                       itemBuilder: (ctx, i) {
@@ -3218,13 +4056,18 @@ class _MomentsPageState extends State<MomentsPage> {
                                     ),
                             ),
                             Container(
-                              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                              padding: EdgeInsets.symmetric(
+                                horizontal:
+                                    commentChrome.containerHorizontalPadding,
+                                vertical:
+                                    commentChrome.containerVerticalPadding,
+                              ),
                               decoration: BoxDecoration(
                                 color: inputBg,
                                 border: Border(
                                   top: BorderSide(
                                     color: dividerColor,
-                                    width: 0.5,
+                                    width: commentChrome.topBorderWidth,
                                   ),
                                 ),
                               ),
@@ -3233,8 +4076,8 @@ class _MomentsPageState extends State<MomentsPage> {
                                 children: [
                                   if ((replyToName ?? '').trim().isNotEmpty)
                                     Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 6,
+                                      padding: EdgeInsets.only(
+                                        bottom: commentChrome.replyBottomGap,
                                       ),
                                       child: Row(
                                         children: [
@@ -3249,18 +4092,23 @@ class _MomentsPageState extends State<MomentsPage> {
                                             ),
                                           ),
                                           IconButton(
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(
-                                              minWidth: 28,
-                                              minHeight: 28,
+                                            visualDensity: commentChrome
+                                                .closeVisualDensity,
+                                            padding: commentChrome.closePadding,
+                                            constraints: BoxConstraints(
+                                              minWidth:
+                                                  commentChrome.closeMinSize,
+                                              minHeight:
+                                                  commentChrome.closeMinSize,
                                             ),
                                             icon: Icon(
                                               Icons.close,
-                                              size: 18,
+                                              size: commentChrome.closeIconSize,
                                               color: theme.colorScheme.onSurface
-                                                  .withValues(alpha: .60),
+                                                  .withValues(
+                                                alpha: commentChrome
+                                                    .closeIconAlpha,
+                                              ),
                                             ),
                                             onPressed: () {
                                               setModalState(() {
@@ -3278,19 +4126,23 @@ class _MomentsPageState extends State<MomentsPage> {
                                         child: Container(
                                           decoration: BoxDecoration(
                                             color: fieldBg,
-                                            borderRadius:
-                                                BorderRadius.circular(6),
+                                            borderRadius: BorderRadius.circular(
+                                              commentChrome.fieldRadius,
+                                            ),
                                             border: Border.all(
                                               color: fieldBorder,
-                                              width: 0.8,
+                                              width: commentChrome
+                                                  .fieldBorderWidth,
                                             ),
                                           ),
                                           child: TextField(
                                             controller: ctrl,
                                             focusNode: inputFocus,
                                             autofocus: focusInput,
-                                            minLines: 1,
-                                            maxLines: 4,
+                                            minLines:
+                                                commentChrome.fieldMinLines,
+                                            maxLines:
+                                                commentChrome.fieldMaxLines,
                                             textInputAction:
                                                 TextInputAction.send,
                                             onSubmitted: (_) {
@@ -3305,9 +4157,11 @@ class _MomentsPageState extends State<MomentsPage> {
                                               border: InputBorder.none,
                                               isDense: true,
                                               contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                horizontal: 10,
-                                                vertical: 10,
+                                                  EdgeInsets.symmetric(
+                                                horizontal: commentChrome
+                                                    .fieldContentHorizontalPadding,
+                                                vertical: commentChrome
+                                                    .fieldContentVerticalPadding,
                                               ),
                                               hintText: replyToName == null
                                                   ? (l.isArabic
@@ -3320,7 +4174,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                           ),
                                         ),
                                       ),
-                                      const SizedBox(width: 8),
+                                      SizedBox(width: commentChrome.sendGap),
                                       ValueListenableBuilder<TextEditingValue>(
                                         valueListenable: ctrl,
                                         builder: (ctx, value, _) {
@@ -3341,22 +4195,32 @@ class _MomentsPageState extends State<MomentsPage> {
                                               foregroundColor: Colors.white,
                                               disabledForegroundColor: theme
                                                   .colorScheme.onSurface
-                                                  .withValues(alpha: .38),
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                horizontal: 14,
-                                                vertical: 9,
+                                                  .withValues(
+                                                alpha: commentChrome
+                                                    .disabledForegroundAlpha,
                                               ),
-                                              minimumSize: const Size(0, 34),
+                                              padding: EdgeInsets.symmetric(
+                                                horizontal: commentChrome
+                                                    .sendHorizontalPadding,
+                                                vertical: commentChrome
+                                                    .sendVerticalPadding,
+                                              ),
+                                              minimumSize: Size(
+                                                commentChrome.sendMinWidth,
+                                                commentChrome.sendMinHeight,
+                                              ),
                                               shape: RoundedRectangleBorder(
                                                 borderRadius:
-                                                    BorderRadius.circular(4),
+                                                    BorderRadius.circular(
+                                                  commentChrome.sendRadius,
+                                                ),
                                               ),
                                             ),
                                             child: Text(
                                               l.isArabic ? 'إرسال' : 'Send',
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w600,
+                                              style: TextStyle(
+                                                fontWeight: commentChrome
+                                                    .sendFontWeight,
                                               ),
                                             ),
                                           );
@@ -3379,45 +4243,60 @@ class _MomentsPageState extends State<MomentsPage> {
         );
       },
     );
-    ctrl.dispose();
-    inputFocus.dispose();
+    } finally {
+      ctrl.dispose();
+      inputFocus.dispose();
+    }
   }
 
   Widget _buildInlineCommentBar(L10n l, ThemeData theme) {
     final isDark = theme.brightness == Brightness.dark;
+    final chrome = momentInlineCommentBarChromeMeta();
     final inputBg =
         isDark ? theme.colorScheme.surface : WeChatPalette.background;
     final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
     final fieldBg = isDark
-        ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55)
+        ? theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: chrome.darkFieldFillAlpha,
+          )
         : Colors.white;
     final fieldBorder = isDark ? theme.dividerColor : WeChatPalette.divider;
     final sendDisabledBg = isDark
-        ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .45)
+        ? theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: chrome.darkDisabledSendAlpha,
+          )
         : WeChatPalette.searchFill;
 
-    final baseStyle = theme.textTheme.bodyMedium?.copyWith(fontSize: 13) ??
-        const TextStyle(fontSize: 13);
+    final baseStyle =
+        theme.textTheme.bodyMedium?.copyWith(fontSize: chrome.baseFontSize) ??
+            TextStyle(fontSize: chrome.baseFontSize);
     final secondaryStyle = theme.textTheme.bodySmall?.copyWith(
-          fontSize: 11,
-          color: theme.colorScheme.onSurface.withValues(alpha: .60),
+          fontSize: chrome.secondaryFontSize,
+          color: theme.colorScheme.onSurface.withValues(
+            alpha: chrome.secondaryTextAlpha,
+          ),
         ) ??
         TextStyle(
-          fontSize: 11,
-          color: theme.colorScheme.onSurface.withValues(alpha: .60),
+          fontSize: chrome.secondaryFontSize,
+          color: theme.colorScheme.onSurface.withValues(
+            alpha: chrome.secondaryTextAlpha,
+          ),
         );
     final replyName = (_inlineReplyToName ?? '').trim();
 
     return SafeArea(
       top: false,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        padding: EdgeInsets.symmetric(
+          horizontal: chrome.containerHorizontalPadding,
+          vertical: chrome.containerVerticalPadding,
+        ),
         decoration: BoxDecoration(
           color: inputBg,
           border: Border(
             top: BorderSide(
               color: dividerColor,
-              width: 0.5,
+              width: chrome.topBorderWidth,
             ),
           ),
         ),
@@ -3426,7 +4305,7 @@ class _MomentsPageState extends State<MomentsPage> {
           children: [
             if (replyName.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(bottom: 6),
+                padding: EdgeInsets.only(bottom: chrome.replyBottomGap),
                 child: Row(
                   children: [
                     Expanded(
@@ -3440,17 +4319,18 @@ class _MomentsPageState extends State<MomentsPage> {
                       ),
                     ),
                     IconButton(
-                      visualDensity: VisualDensity.compact,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(
-                        minWidth: 28,
-                        minHeight: 28,
+                      visualDensity: chrome.closeVisualDensity,
+                      padding: chrome.closePadding,
+                      constraints: BoxConstraints(
+                        minWidth: chrome.closeMinSize,
+                        minHeight: chrome.closeMinSize,
                       ),
                       icon: Icon(
                         Icons.close,
-                        size: 18,
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .60),
+                        size: chrome.closeIconSize,
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: chrome.closeIconAlpha,
+                        ),
                       ),
                       onPressed: () {
                         setState(() {
@@ -3468,17 +4348,17 @@ class _MomentsPageState extends State<MomentsPage> {
                   child: Container(
                     decoration: BoxDecoration(
                       color: fieldBg,
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(chrome.fieldRadius),
                       border: Border.all(
                         color: fieldBorder,
-                        width: 0.8,
+                        width: chrome.fieldBorderWidth,
                       ),
                     ),
                     child: TextField(
                       controller: _inlineCommentCtrl,
                       focusNode: _inlineCommentFocus,
-                      minLines: 1,
-                      maxLines: 4,
+                      minLines: chrome.fieldMinLines,
+                      maxLines: chrome.fieldMaxLines,
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => unawaited(_submitInlineComment()),
                       style: baseStyle.copyWith(
@@ -3487,9 +4367,9 @@ class _MomentsPageState extends State<MomentsPage> {
                       decoration: InputDecoration(
                         border: InputBorder.none,
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 10,
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: chrome.fieldContentHorizontalPadding,
+                          vertical: chrome.fieldContentVerticalPadding,
                         ),
                         hintText: replyName.isEmpty
                             ? (l.isArabic
@@ -3502,7 +4382,7 @@ class _MomentsPageState extends State<MomentsPage> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                SizedBox(width: chrome.sendGap),
                 ValueListenableBuilder<TextEditingValue>(
                   valueListenable: _inlineCommentCtrl,
                   builder: (ctx, value, _) {
@@ -3517,31 +4397,39 @@ class _MomentsPageState extends State<MomentsPage> {
                         disabledBackgroundColor: sendDisabledBg,
                         foregroundColor: Colors.white,
                         disabledForegroundColor:
-                            theme.colorScheme.onSurface.withValues(alpha: .38),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 9,
+                            theme.colorScheme.onSurface.withValues(
+                          alpha: chrome.disabledForegroundAlpha,
                         ),
-                        minimumSize: const Size(0, 34),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: chrome.sendHorizontalPadding,
+                          vertical: chrome.sendVerticalPadding,
+                        ),
+                        minimumSize: Size(
+                          chrome.sendMinWidth,
+                          chrome.sendMinHeight,
+                        ),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(4),
+                          borderRadius:
+                              BorderRadius.circular(chrome.sendRadius),
                         ),
                       ),
                       child: _inlineCommentSending
                           ? SizedBox(
-                              width: 14,
-                              height: 14,
+                              width: chrome.progressSize,
+                              height: chrome.progressSize,
                               child: CircularProgressIndicator(
-                                strokeWidth: 2,
+                                strokeWidth: chrome.progressStrokeWidth,
                                 valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white.withValues(alpha: .90),
+                                  Colors.white.withValues(
+                                    alpha: chrome.progressAlpha,
+                                  ),
                                 ),
                               ),
                             )
                           : Text(
                               l.isArabic ? 'إرسال' : 'Send',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
+                              style: TextStyle(
+                                fontWeight: chrome.sendFontWeight,
                               ),
                             ),
                     );
@@ -3560,6 +4448,26 @@ class _MomentsPageState extends State<MomentsPage> {
     final l = L10n.of(context);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final pageChrome = momentPageChromeMeta();
+    final composerAudienceCopy = momentComposerAudienceCopyMeta(
+      isArabic: l.isArabic,
+    );
+    final composerOfficialDirectoryLink =
+        momentComposerOfficialDirectoryLinkMeta(
+      city: _preferredCity ?? '',
+      isArabic: l.isArabic,
+    );
+    final composerMediaAction = momentComposerMediaActionMeta(
+      isArabic: l.isArabic,
+    );
+    final inlineComposerText = momentInlineComposerTextMeta(
+      isArabic: l.isArabic,
+    );
+    final visibilityChipChrome = momentComposerVisibilityChipChromeMeta();
+    final audienceTagChipChrome = momentComposerAudienceTagChipChromeMeta();
+    final audienceFieldChrome = momentComposerAudienceFieldChromeMeta();
+    final feedListChrome = momentFeedListChromeMeta();
+    final inlinePublishState = _inlineComposerPublishState();
 
     Widget buildPost(Map<String, dynamic> p) {
       final text = (p['text'] ?? '').toString();
@@ -3584,6 +4492,11 @@ class _MomentsPageState extends State<MomentsPage> {
       final avatarUrl = (p['avatar_url'] ?? '').toString();
       final isLocal = p['id']?.toString().startsWith('local_') ?? false;
       final visibility = (p['visibility'] ?? 'public').toString();
+      final audienceMeta = momentAudienceMetaFor(
+        visibility: visibility,
+        audienceTag: (p['audience_tag'] ?? '').toString(),
+        isArabic: l.isArabic,
+      );
       final isRedPacket = _isRedPacketText(text);
       final hasOfficialReply = (p['has_official_reply'] as bool?) ?? false;
       final originAccId =
@@ -3591,122 +4504,162 @@ class _MomentsPageState extends State<MomentsPage> {
       final originAcc =
           originAccId.isNotEmpty ? _officialAccounts[originAccId] : null;
 
-      DateTime? dt;
-      try {
-        dt = DateTime.parse(rawTs).toLocal();
-      } catch (_) {}
-      final ts = dt == null
-          ? ''
-          : '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}'
-              ' · ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      final footerMeta = momentFooterMetaFor(
+        rawTimestamp: rawTs,
+        hasOfficialReply: hasOfficialReply,
+        postId: postId,
+        isArabic: l.isArabic,
+      );
 
       final heroBase = postId.isNotEmpty
           ? postId
           : '${rawTs}_${authorName}_${text.hashCode}';
 
       Widget? imageWidget;
+      final mediaChrome = momentMediaChromeMeta();
       if (imagesList.isNotEmpty) {
+        final mediaMeta = momentMediaLayoutMeta(imageCount: imagesList.length);
+        final visibleImages = imagesList.take(mediaMeta.visibleCount).toList();
         final heroTags = List<String>.generate(
           imagesList.length,
           (i) => 'moment:$heroBase:$i',
         );
-        final count = imagesList.length;
-        final columns = count == 1
-            ? 1
-            : count == 2
-                ? 2
-                : count == 4
-                    ? 2
-                    : 3;
-        imageWidget = ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: columns,
-              crossAxisSpacing: 4,
-              mainAxisSpacing: 4,
+        imageWidget = _buildMomentMediaFrame(
+          mediaMeta: mediaMeta,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(mediaChrome.frameRadius),
+            child: GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: mediaMeta.columns,
+                crossAxisSpacing: mediaMeta.spacing,
+                mainAxisSpacing: mediaMeta.spacing,
+                childAspectRatio: mediaMeta.childAspectRatio,
+              ),
+              itemCount: visibleImages.length,
+              itemBuilder: (ctx, i) {
+                final raw = visibleImages[i].trim();
+                final heroTag = heroTags[i];
+                final isHttp =
+                    raw.startsWith('http://') || raw.startsWith('https://');
+                Widget tile;
+                if (isHttp) {
+                  tile = GestureDetector(
+                    onTap: () => unawaited(
+                      _openPhotoViewer(
+                        imagesList,
+                        initialIndex: i,
+                        heroTags: heroTags,
+                      ),
+                    ),
+                    child: Hero(
+                      tag: heroTag,
+                      child: shamellCachedNetworkImage(
+                        raw,
+                        context: context,
+                        logicalWidth: mediaMeta.tileLogicalSize,
+                        logicalHeight: mediaMeta.tileLogicalSize,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  );
+                } else {
+                  final b64 =
+                      raw.contains('base64,') ? raw.split('base64,').last : raw;
+                  try {
+                    final bytes = base64Decode(b64);
+                    tile = GestureDetector(
+                      onTap: () => unawaited(
+                        _openPhotoViewer(
+                          imagesList,
+                          initialIndex: i,
+                          heroTags: heroTags,
+                        ),
+                      ),
+                      child: Hero(
+                        tag: heroTag,
+                        child: Image.memory(bytes, fit: BoxFit.cover),
+                      ),
+                    );
+                  } catch (_) {
+                    tile = GestureDetector(
+                      onTap: () => unawaited(
+                        _openPhotoViewer(
+                          imagesList,
+                          initialIndex: i,
+                          heroTags: heroTags,
+                        ),
+                      ),
+                      child: Hero(
+                        tag: heroTag,
+                        child: Container(
+                          color: theme.colorScheme.surfaceContainerHighest
+                              .withValues(
+                            alpha: isDark
+                                ? mediaChrome.placeholderDarkAlpha
+                                : mediaChrome.placeholderLightAlpha,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                }
+                if (mediaMeta.hiddenCount <= 0 ||
+                    i != mediaMeta.visibleCount - 1) {
+                  return tile;
+                }
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    tile,
+                    IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(
+                            alpha: mediaChrome.hiddenOverlayAlpha,
+                          ),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '+${mediaMeta.hiddenCount}',
+                            style: TextStyle(
+                              color: mediaChrome.hiddenCountTextColor,
+                              fontSize: mediaChrome.hiddenCountFontSize,
+                              fontWeight: mediaChrome.hiddenCountFontWeight,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
-            itemCount: imagesList.length,
-            itemBuilder: (ctx, i) {
-              final raw = imagesList[i].trim();
-              final heroTag = heroTags[i];
-              final isHttp =
-                  raw.startsWith('http://') || raw.startsWith('https://');
-              if (isHttp) {
-                return GestureDetector(
-                  onTap: () => unawaited(
-                    _openPhotoViewer(
-                      imagesList,
-                      initialIndex: i,
-                      heroTags: heroTags,
-                    ),
-                  ),
-                  child: Hero(
-                    tag: heroTag,
-                    child: Image.network(raw, fit: BoxFit.cover),
-                  ),
-                );
-              }
-              final b64 =
-                  raw.contains('base64,') ? raw.split('base64,').last : raw;
-              try {
-                final bytes = base64Decode(b64);
-                return GestureDetector(
-                  onTap: () => unawaited(
-                    _openPhotoViewer(
-                      imagesList,
-                      initialIndex: i,
-                      heroTags: heroTags,
-                    ),
-                  ),
-                  child: Hero(
-                    tag: heroTag,
-                    child: Image.memory(bytes, fit: BoxFit.cover),
-                  ),
-                );
-              } catch (_) {
-                return GestureDetector(
-                  onTap: () => unawaited(
-                    _openPhotoViewer(
-                      imagesList,
-                      initialIndex: i,
-                      heroTags: heroTags,
-                    ),
-                  ),
-                  child: Hero(
-                    tag: heroTag,
-                    child: Container(
-                      color: theme.colorScheme.surfaceContainerHighest
-                          .withValues(alpha: isDark ? .30 : .55),
-                    ),
-                  ),
-                );
-              }
-            },
           ),
         );
       } else if (imageB64.isNotEmpty) {
         try {
           final bytes = base64Decode(imageB64);
           final heroTag = 'moment:$heroBase:0';
-          imageWidget = GestureDetector(
-            onTap: () => unawaited(
-              _openPhotoViewer(
-                [imageB64],
-                heroTags: [heroTag],
+          final mediaMeta = momentMediaLayoutMeta(imageCount: 1);
+          imageWidget = _buildMomentMediaFrame(
+            mediaMeta: mediaMeta,
+            child: GestureDetector(
+              onTap: () => unawaited(
+                _openPhotoViewer(
+                  [imageB64],
+                  heroTags: [heroTag],
+                ),
               ),
-            ),
-            child: Hero(
-              tag: heroTag,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.memory(
-                  bytes,
-                  height: 200,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
+              child: Hero(
+                tag: heroTag,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(mediaChrome.frameRadius),
+                  child: AspectRatio(
+                    aspectRatio: mediaMeta.childAspectRatio,
+                    child: Image.memory(bytes, fit: BoxFit.cover),
+                  ),
                 ),
               ),
             ),
@@ -3714,52 +4667,72 @@ class _MomentsPageState extends State<MomentsPage> {
         } catch (_) {}
       } else if (imageUrl.isNotEmpty) {
         final heroTag = 'moment:$heroBase:0';
-        imageWidget = GestureDetector(
-          onTap: () => unawaited(
-            _openPhotoViewer(
-              [imageUrl],
-              heroTags: [heroTag],
+        final mediaMeta = momentMediaLayoutMeta(imageCount: 1);
+        imageWidget = _buildMomentMediaFrame(
+          mediaMeta: mediaMeta,
+          child: GestureDetector(
+            onTap: () => unawaited(
+              _openPhotoViewer(
+                [imageUrl],
+                heroTags: [heroTag],
+              ),
             ),
-          ),
-          child: Hero(
-            tag: heroTag,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.network(
-                imageUrl,
-                height: 200,
-                width: double.infinity,
-                fit: BoxFit.cover,
+            child: Hero(
+              tag: heroTag,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(mediaChrome.frameRadius),
+                child: AspectRatio(
+                  aspectRatio: mediaMeta.childAspectRatio,
+                  child: shamellCachedNetworkImage(
+                    imageUrl,
+                    context: context,
+                    logicalWidth: mediaMeta.preferredWidth,
+                    logicalHeight: mediaMeta.preferredWidth,
+                    fit: BoxFit.cover,
+                  ),
+                ),
               ),
             ),
           ),
         );
       }
 
+      final textChrome = momentFeedTextChromeMeta();
+      final contentChrome = momentFeedContentChromeMeta();
       final nameColor =
-          isDark ? theme.colorScheme.primary : const Color(0xFF576B95);
+          isDark ? theme.colorScheme.primary : textChrome.nameLinkLightColor;
+      final contextLineChrome = momentContextLineChromeMeta();
+      final avatarMeta = momentAvatarMetaFor(
+        authorName: authorName,
+        avatarUrl: avatarUrl,
+        isLocal: isLocal,
+        isArabic: l.isArabic,
+      );
       final avatar = SizedBox(
-        width: 40,
-        height: 40,
+        width: avatarMeta.size,
+        height: avatarMeta.size,
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: avatarUrl.isNotEmpty
-              ? Image.network(
-                  avatarUrl,
+          borderRadius: BorderRadius.circular(avatarMeta.radius),
+          child: avatarMeta.hasImage
+              ? shamellCachedNetworkImage(
+                  avatarMeta.imageUrl,
+                  context: context,
                   fit: BoxFit.cover,
+                  logicalWidth: avatarMeta.size,
+                  logicalHeight: avatarMeta.size,
                 )
               : Container(
-                  color: theme.colorScheme.primary
-                      .withValues(alpha: isDark ? .30 : .15),
+                  color: theme.colorScheme.primary.withValues(
+                    alpha: isDark
+                        ? avatarMeta.fallbackDarkAlpha
+                        : avatarMeta.fallbackLightAlpha,
+                  ),
                   alignment: Alignment.center,
                   child: Text(
-                    (authorName.isNotEmpty
-                            ? authorName[0]
-                            : (isLocal ? (l.isArabic ? 'أ' : 'Y') : '?'))
-                        .toUpperCase(),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
+                    avatarMeta.fallbackText,
+                    style: TextStyle(
+                      fontWeight: avatarMeta.fallbackFontWeight,
+                      fontSize: avatarMeta.fallbackFontSize,
                     ),
                   ),
                 ),
@@ -3776,41 +4749,39 @@ class _MomentsPageState extends State<MomentsPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    authorName.isNotEmpty
-                        ? authorName
-                        : (isLocal
-                            ? (l.isArabic ? 'أنت' : 'You')
-                            : (l.isArabic ? 'مستخدم' : 'User')),
+                    momentAuthorNameLabel(
+                      authorName: authorName,
+                      isLocal: isLocal,
+                      isArabic: l.isArabic,
+                    ),
                     style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+                      fontWeight: textChrome.authorNameWeight,
                       color: nameColor,
                     ),
                   ),
                   if (hasOfficialReply)
                     Padding(
-                      padding: const EdgeInsets.only(top: 2),
+                      padding: EdgeInsets.only(top: contextLineChrome.topGap),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
-                            Icons.verified_outlined,
-                            size: 14,
-                            color: theme.colorScheme.primary
-                                .withValues(alpha: .85),
+                            contextLineChrome.officialReplyIcon,
+                            size: contextLineChrome.iconSize,
+                            color: theme.colorScheme.primary.withValues(
+                                alpha: contextLineChrome.officialAlpha),
                           ),
-                          const SizedBox(width: 4),
+                          SizedBox(width: contextLineChrome.iconGap),
                           Builder(
                             builder: (ctx) {
-                              final originAccName =
-                                  originAcc?.name ?? originAccId;
-                              final baseLabel = l.isArabic
-                                  ? 'تم الرد من حساب رسمي'
-                                  : 'Replied by an official account';
-                              final label = originAccName.isNotEmpty
-                                  ? (l.isArabic
-                                      ? '$baseLabel: $originAccName'
-                                      : '$baseLabel: $originAccName')
-                                  : baseLabel;
+                              final label = momentOfficialReplyLabel(
+                                hasOfficialReply: hasOfficialReply,
+                                accountName: originAcc?.name ?? originAccId,
+                                isArabic: l.isArabic,
+                              );
+                              if (label == null) {
+                                return const SizedBox.shrink();
+                              }
                               return InkWell(
                                 onTap: () {
                                   if (originAccId.isEmpty) return;
@@ -3819,9 +4790,10 @@ class _MomentsPageState extends State<MomentsPage> {
                                 child: Text(
                                   label,
                                   style: theme.textTheme.bodySmall?.copyWith(
-                                    fontSize: 11,
-                                    color: theme.colorScheme.primary
-                                        .withValues(alpha: .85),
+                                    fontSize: contextLineChrome.fontSize,
+                                    color: theme.colorScheme.primary.withValues(
+                                      alpha: contextLineChrome.officialAlpha,
+                                    ),
                                   ),
                                 ),
                               );
@@ -3830,145 +4802,35 @@ class _MomentsPageState extends State<MomentsPage> {
                         ],
                       ),
                     ),
-                  () {
-                    String? scopeLabel;
-                    String? audienceTag;
-                    if (visibility == 'friends' ||
-                        visibility == 'friends_only') {
-                      scopeLabel = l.isArabic ? 'الأصدقاء فقط' : 'Friends only';
-                    } else if (visibility == 'close_friends') {
-                      scopeLabel =
-                          l.isArabic ? 'الأصدقاء المقرّبون' : 'Close friends';
-                    } else if (visibility == 'only_me' ||
-                        visibility == 'private') {
-                      scopeLabel = l.isArabic ? 'أنا فقط' : 'Only me';
-                    } else if (visibility == 'friends_tag') {
-                      final tagRaw =
-                          (p['audience_tag'] ?? '').toString().trim();
-                      if (tagRaw.isNotEmpty) {
-                        scopeLabel = l.isArabic
-                            ? 'الأصدقاء الموسومون: $tagRaw'
-                            : 'Friends with tag: $tagRaw';
-                        audienceTag = tagRaw;
-                      } else {
-                        scopeLabel = l.isArabic
-                            ? 'الأصدقاء (موسومون)'
-                            : 'Tagged friends';
-                      }
-                    } else if (visibility == 'friends_except_tag') {
-                      final tagRaw =
-                          (p['audience_tag'] ?? '').toString().trim();
-                      if (tagRaw.isNotEmpty) {
-                        scopeLabel = l.isArabic
-                            ? 'الأصدقاء باستثناء: $tagRaw'
-                            : 'Friends except: $tagRaw';
-                        audienceTag = tagRaw;
-                      } else {
-                        scopeLabel = l.isArabic
-                            ? 'الأصدقاء (مع استثناء)'
-                            : 'Friends with exclusion';
-                      }
-                    }
-                    if (scopeLabel == null) {
-                      return const SizedBox.shrink();
-                    }
-                    final bg = theme.colorScheme.primary.withValues(
-                      alpha: theme.brightness == Brightness.dark ? .20 : .10,
-                    );
-                    final fg = theme.colorScheme.primary.withValues(alpha: .85);
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(999),
-                        onTap: () {
-                          setState(() {
-                            if (visibility == 'close_friends') {
-                              _filterCloseFriendsOnly = true;
-                              _filterAudienceTag = null;
-                            } else if (visibility == 'friends_tag' &&
-                                audienceTag != null &&
-                                audienceTag!.isNotEmpty) {
-                              _filterAudienceTag = audienceTag;
-                              _filterCloseFriendsOnly = false;
-                            } else if (visibility == 'friends' ||
-                                visibility == 'friends_only') {
-                              _filterCloseFriendsOnly = false;
-                              _filterAudienceTag = null;
-                            } else if (visibility == 'friends_except_tag') {
-                              _filterCloseFriendsOnly = false;
-                              _filterAudienceTag = null;
-                            }
-                          });
-                          Perf.action('moments_scope_chip_tap');
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: bg,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            scopeLabel,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              fontSize: 10,
-                              color: fg,
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  }(),
+                  if (audienceMeta != null)
+                    _buildMomentAudiencePill(audienceMeta, theme),
                 ],
               ),
-            ),
-            const SizedBox(width: 4),
-            Builder(
-              builder: (ctx) {
-                IconData? icon;
-                if (visibility == 'only_me' || visibility == 'private') {
-                  icon = Icons.lock_outline;
-                } else if (visibility == 'close_friends') {
-                  icon = Icons.star_outline;
-                } else if (visibility == 'friends' ||
-                    visibility == 'friends_only' ||
-                    visibility == 'friends_tag' ||
-                    visibility == 'friends_except_tag') {
-                  icon = Icons.group_outlined;
-                }
-                if (icon == null) return const SizedBox.shrink();
-                return Icon(
-                  icon,
-                  size: 16,
-                  color: theme.colorScheme.primary.withValues(alpha: .75),
-                );
-              },
             ),
           ],
         ),
       );
 
       if (originAcc != null) {
-        final featuredSuffix = originAcc.featured
-            ? (l.isArabic ? ' · خدمة مميزة' : ' · Featured service')
-            : '';
+        final originShareLabel = momentOfficialShareLabel(
+          accountName: originAcc.name,
+          featured: originAcc.featured,
+          isArabic: l.isArabic,
+        );
         content.add(
           Padding(
-            padding: const EdgeInsets.only(top: 2),
+            padding: EdgeInsets.only(top: contextLineChrome.topGap),
             child: InkWell(
               onTap: () {
                 if (originAccId.isEmpty) return;
                 _openOfficialFromMoment(originAccId, null);
               },
               child: Text(
-                l.isArabic
-                    ? 'مُشارَكة من ${originAcc.name}$featuredSuffix'
-                    : 'Shared from ${originAcc.name}$featuredSuffix',
+                originShareLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  fontSize: 11,
-                  color: theme.colorScheme.primary.withValues(alpha: .85),
+                  fontSize: contextLineChrome.fontSize,
+                  color: theme.colorScheme.primary
+                      .withValues(alpha: contextLineChrome.officialAlpha),
                 ),
               ),
             ),
@@ -3976,20 +4838,22 @@ class _MomentsPageState extends State<MomentsPage> {
         );
       }
 
-      // Small hint when this Moment was shared from a Shamell mini‑app.
+      // Small hint when this Moment was shared from a SyrChat mini‑app.
       final miniMeta = _miniAppFromText(text);
       if (miniMeta != null) {
         final miniLabel = miniMeta.title(isArabic: l.isArabic);
         content.add(
           Padding(
-            padding: const EdgeInsets.only(top: 2),
+            padding: EdgeInsets.only(top: contextLineChrome.topGap),
             child: Text(
-              l.isArabic
-                  ? 'من تطبيق مصغر: $miniLabel'
-                  : 'Shared from mini‑app: $miniLabel',
+              momentMiniProgramShareLabel(
+                title: miniLabel,
+                isArabic: l.isArabic,
+              ),
               style: theme.textTheme.bodySmall?.copyWith(
-                fontSize: 11,
-                color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                fontSize: contextLineChrome.fontSize,
+                color: theme.colorScheme.onSurface
+                    .withValues(alpha: contextLineChrome.miniProgramAlpha),
               ),
             ),
           ),
@@ -3999,23 +4863,27 @@ class _MomentsPageState extends State<MomentsPage> {
       if (isRedPacket) {
         content.add(
           Padding(
-            padding: const EdgeInsets.only(top: 2),
+            padding: EdgeInsets.only(top: contextLineChrome.topGap),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.card_giftcard,
-                  size: 14,
+                  contextLineChrome.greenPaketIcon,
+                  size: contextLineChrome.iconSize,
                   color: theme.colorScheme.primary.withValues(
-                      alpha: theme.brightness == Brightness.dark ? .90 : .80),
+                    alpha: theme.brightness == Brightness.dark
+                        ? contextLineChrome.greenPaketIconDarkAlpha
+                        : contextLineChrome.greenPaketIconLightAlpha,
+                  ),
                 ),
-                const SizedBox(width: 4),
+                SizedBox(width: contextLineChrome.iconGap),
                 Text(
-                  l.isArabic ? 'حزمة حمراء' : 'Red packet',
+                  momentGreenPaketLabel(isArabic: l.isArabic),
                   style: theme.textTheme.bodySmall?.copyWith(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface.withValues(alpha: .80),
+                    fontSize: contextLineChrome.fontSize,
+                    fontWeight: contextLineChrome.accentFontWeight,
+                    color: theme.colorScheme.onSurface.withValues(
+                        alpha: contextLineChrome.greenPaketLabelAlpha),
                   ),
                 ),
               ],
@@ -4024,17 +4892,20 @@ class _MomentsPageState extends State<MomentsPage> {
         );
         final originItemId =
             (p['origin_official_item_id'] ?? '').toString().trim();
-        if (originItemId.isNotEmpty) {
+        final campaignLabel = momentGreenPaketCampaignLabel(
+          campaignId: originItemId,
+          isArabic: l.isArabic,
+        );
+        if (campaignLabel != null) {
           content.add(
             Padding(
-              padding: const EdgeInsets.only(top: 2),
+              padding: EdgeInsets.only(top: contextLineChrome.topGap),
               child: Text(
-                l.isArabic
-                    ? 'من حملة حزم حمراء: $originItemId'
-                    : 'From red‑packet campaign: $originItemId',
+                campaignLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  fontSize: 11,
-                  color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                  fontSize: contextLineChrome.fontSize,
+                  color: theme.colorScheme.onSurface
+                      .withValues(alpha: contextLineChrome.campaignAlpha),
                 ),
               ),
             ),
@@ -4042,60 +4913,62 @@ class _MomentsPageState extends State<MomentsPage> {
         }
       }
 
-      content.add(const SizedBox(height: 6));
+      content.add(SizedBox(height: contextLineChrome.bodyBottomGap));
 
       var displayText = text;
       if (displayText.isNotEmpty) {
-        final linkPattern = RegExp(
-          r'^\s*shamell://official/.*$',
-          multiLine: true,
+        displayText = stripMiniProgramDeepLinksFromText(
+          stripOfficialDeepLinksFromText(displayText),
         );
-        final miniAppPattern = RegExp(
-          r'^\s*shamell://miniapp/.*$',
-          multiLine: true,
-        );
-        final miniProgramPattern = RegExp(
-          r'^\s*shamell://mini_program/.*$',
-          multiLine: true,
-        );
-        displayText = displayText
-            .replaceAll(linkPattern, '')
-            .replaceAll(miniAppPattern, '')
-            .replaceAll(miniProgramPattern, '')
-            .trim();
       }
 
       if (displayText.isNotEmpty) {
-        final tags = _extractHashtags(displayText);
+        final tags = momentHashtagMetasFromText(displayText);
         content.add(
           Text(
             displayText,
             style: theme.textTheme.bodyMedium?.copyWith(
-              fontSize: 14,
-              fontWeight: FontWeight.w400,
+              fontSize: textChrome.bodyFontSize,
+              fontWeight: textChrome.bodyWeight,
             ),
           ),
         );
         if (tags.isNotEmpty) {
-          content.add(const SizedBox(height: 4));
+          content.add(SizedBox(height: textChrome.topicTopGap));
           content.add(
             Wrap(
-              spacing: 6,
-              runSpacing: 4,
+              spacing: textChrome.topicSpacing,
+              runSpacing: textChrome.topicRunSpacing,
               children: tags.map((tag) {
-                final label = '#$tag';
-                return ActionChip(
-                  label: Text(label),
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () {
-                    _openTopic(label);
+                return InkWell(
+                  borderRadius: BorderRadius.circular(textChrome.topicRadius),
+                  onTap: () {
+                    Perf.action(tag.perfKey);
+                    _openTopic(tag.tag);
                   },
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                      vertical: textChrome.topicVerticalPadding,
+                    ),
+                    child: Text(
+                      tag.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontSize: textChrome.topicFontSize,
+                        fontWeight: textChrome.topicWeight,
+                        color: isDark
+                            ? theme.colorScheme.primary
+                            : WeChatPalette.linkBlue,
+                      ),
+                    ),
+                  ),
                 );
               }).toList(),
             ),
           );
         }
-        content.add(const SizedBox(height: 6));
+        content.add(SizedBox(height: textChrome.bottomGap));
       }
 
       final originItemId =
@@ -4109,85 +4982,132 @@ class _MomentsPageState extends State<MomentsPage> {
       );
       if (officialAttachment != null) {
         content.add(officialAttachment);
-        content.add(const SizedBox(height: 6));
+        content
+            .add(SizedBox(height: contentChrome.officialAttachmentBottomGap));
       }
 
-      final miniAppAttachment = _buildMiniAppAttachment(text, theme, l);
+      final miniAppAttachment = _buildMiniAppAttachment(p, text, theme, l);
       if (miniAppAttachment != null) {
         content.add(miniAppAttachment);
-        content.add(const SizedBox(height: 6));
+        content.add(
+          SizedBox(height: contentChrome.miniProgramAttachmentBottomGap),
+        );
       }
 
       if (imageWidget != null) {
         content.add(imageWidget);
-        content.add(const SizedBox(height: 8));
+        content.add(SizedBox(height: contentChrome.mediaBottomGap));
       }
 
-      final locationLabel = (p['location_label'] ?? '').toString().trim();
-      if (locationLabel.isNotEmpty) {
+      final locationMeta = momentLocationMetaFor(
+        (p['location_label'] ?? '').toString(),
+      );
+      if (locationMeta != null) {
         final linkColor =
             isDark ? theme.colorScheme.primary : WeChatPalette.linkBlue;
         content.add(
-          Text(
-            locationLabel,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: linkColor,
+          InkWell(
+            borderRadius: BorderRadius.circular(locationMeta.radius),
+            onTap: () => Perf.action(locationMeta.perfKey),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                vertical: locationMeta.verticalPadding,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    locationMeta.icon,
+                    size: locationMeta.iconSize,
+                    color: linkColor,
+                  ),
+                  SizedBox(width: locationMeta.iconGap),
+                  Flexible(
+                    child: Text(
+                      locationMeta.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontSize: locationMeta.fontSize,
+                        fontWeight: locationMeta.fontWeight,
+                        color: linkColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         );
-        content.add(const SizedBox(height: 6));
+        content.add(SizedBox(height: locationMeta.bottomGap));
       }
 
       content.add(
         Row(
           children: [
-            if (ts.isNotEmpty)
+            if (footerMeta.timestampLabel.isNotEmpty)
               Text(
-                ts,
+                footerMeta.timestampLabel,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  fontSize: 11,
-                  color: theme.colorScheme.onSurface.withValues(alpha: .55),
+                  fontSize: footerMeta.timestampFontSize,
+                  color: theme.colorScheme.onSurface
+                      .withValues(alpha: footerMeta.timestampAlpha),
                 ),
               ),
-            if (hasOfficialReply)
+            if (footerMeta.showOfficialReplyIndicator)
               Padding(
-                padding: const EdgeInsets.only(left: 8),
+                padding: EdgeInsets.only(
+                  left: footerMeta.replyIndicatorLeftGap,
+                ),
                 child: Container(
-                  width: 6,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                    color: Colors.redAccent,
+                  width: footerMeta.replyIndicatorSize,
+                  height: footerMeta.replyIndicatorSize,
+                  decoration: BoxDecoration(
+                    color: footerMeta.replyIndicatorColor,
                     shape: BoxShape.circle,
                   ),
                 ),
               ),
             const Spacer(),
-            if (postId.isNotEmpty)
+            if (footerMeta.canOpenActions)
               Builder(
                 builder: (btnCtx) {
                   final bg = isDark
                       ? theme.colorScheme.surfaceContainerHighest.withValues(
-                          alpha: .55,
+                          alpha: footerMeta.actionButtonDarkFillAlpha,
                         )
                       : WeChatPalette.searchFill;
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(4),
-                    onTap: () => _showMomentPostActionsPopover(btnCtx, p),
-                    child: Container(
-                      width: 34,
-                      height: 22,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: bg,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Icon(
-                        Icons.more_horiz,
-                        size: 18,
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .70),
+                  return Tooltip(
+                    message: footerMeta.actionTooltip,
+                    child: InkWell(
+                      borderRadius:
+                          BorderRadius.circular(footerMeta.actionButtonRadius),
+                      onTap: () {
+                        Perf.action(footerMeta.actionPerfKey);
+                        _showMomentPostActionsPopover(btnCtx, p);
+                      },
+                      child: Container(
+                        width: footerMeta.actionButtonWidth,
+                        height: footerMeta.actionButtonHeight,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: bg,
+                          borderRadius: BorderRadius.circular(
+                            footerMeta.actionButtonRadius,
+                          ),
+                          border: Border.all(
+                            color: theme.dividerColor.withValues(
+                              alpha: footerMeta.actionButtonBorderAlpha,
+                            ),
+                            width: footerMeta.actionButtonBorderWidth,
+                          ),
+                        ),
+                        child: Icon(
+                          footerMeta.actionIcon,
+                          size: footerMeta.actionIconSize,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: footerMeta.actionIconAlpha),
+                        ),
                       ),
                     ),
                   );
@@ -4202,50 +5122,65 @@ class _MomentsPageState extends State<MomentsPage> {
               _comments[postId] ?? const <Map<String, dynamic>>[],
             )
           : const <Map<String, dynamic>>[];
-      final showSocial =
-          likes > 0 || commentCount > 0 || previewComments.isNotEmpty;
-      if (showSocial) {
+      final socialMeta = momentSocialSummaryMeta(
+        likeCount: likes,
+        commentCount: commentCount,
+        loadedPreviewCount: previewComments.length,
+        likedByMe: likedByMe,
+      );
+      if (socialMeta.showSocial) {
+        final socialChrome = momentSocialBubbleChromeMeta();
         final bubbleBg = isDark
-            ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55)
+            ? theme.colorScheme.surfaceContainerHighest
+                .withValues(alpha: socialChrome.darkBubbleAlpha)
             : WeChatPalette.searchFill;
+        final bubbleBorder = theme.dividerColor.withValues(
+          alpha: isDark
+              ? socialChrome.darkBorderAlpha
+              : socialChrome.lightBorderAlpha,
+        );
         final baseStyle = theme.textTheme.bodySmall?.copyWith(
-              fontSize: 12,
-              color: theme.colorScheme.onSurface.withValues(alpha: .82),
+              fontSize: socialChrome.baseFontSize,
+              color: theme.colorScheme.onSurface
+                  .withValues(alpha: socialChrome.baseTextAlpha),
             ) ??
             TextStyle(
-              fontSize: 12,
-              color: theme.colorScheme.onSurface.withValues(alpha: .82),
+              fontSize: socialChrome.baseFontSize,
+              color: theme.colorScheme.onSurface
+                  .withValues(alpha: socialChrome.baseTextAlpha),
             );
         final authorStyle = baseStyle.copyWith(
-          fontWeight: FontWeight.w600,
+          fontWeight: socialChrome.authorWeight,
           color: nameColor,
         );
 
         Widget inlineComment(Map<String, dynamic> c) {
-          final authorRaw = (c['author_name'] ?? '').toString().trim();
-          final author =
-              authorRaw.isNotEmpty ? authorRaw : (l.isArabic ? 'أنت' : 'You');
-          final text = (c['text'] ?? '').toString().trim();
-          final replyName = (c['reply_to_name'] ?? '').toString().trim();
-          final replyToRaw = (c['reply_to'] ?? '').toString().trim();
-          final hasReply = replyName.isNotEmpty && replyToRaw.isNotEmpty;
+          final you = l.isArabic ? 'أنت' : 'You';
+          final meta = momentCommentPreviewMeta(
+            authorName: (c['author_name'] ?? '').toString(),
+            text: (c['text'] ?? '').toString(),
+            replyToId: (c['reply_to'] ?? '').toString(),
+            replyToName: (c['reply_to_name'] ?? '').toString(),
+            youLabel: you,
+            myPseudonym: _myMomentsPseudonym,
+          );
+          if (meta == null) return const SizedBox.shrink();
           final commentId = (c['id'] ?? '').toString().trim();
 
           final spans = <TextSpan>[
-            TextSpan(text: author, style: authorStyle),
-            if (hasReply) ...[
+            TextSpan(text: meta.authorLabel, style: authorStyle),
+            if (meta.hasReply) ...[
               TextSpan(
                 text: l.isArabic ? ' ردًا على ' : ' replied to ',
                 style: baseStyle,
               ),
-              TextSpan(text: replyName, style: authorStyle),
+              TextSpan(text: meta.replyToLabel, style: authorStyle),
             ],
-            TextSpan(text: ': $text'),
+            TextSpan(text: ': ${meta.text}'),
           ];
 
           Offset? downPos;
           return InkWell(
-            borderRadius: BorderRadius.circular(6),
             onTapDown: (d) => downPos = d.globalPosition,
             onLongPress: () => unawaited(
               _showMomentCommentActionsMenu(
@@ -4259,14 +5194,16 @@ class _MomentsPageState extends State<MomentsPage> {
                     _startInlineComment(
                       p,
                       replyToId: commentId,
-                      replyToName: author,
+                      replyToName: meta.authorLabel,
                     );
                   }
                 : null,
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 1),
+              padding: EdgeInsets.symmetric(
+                vertical: socialChrome.commentVerticalPadding,
+              ),
               child: RichText(
-                maxLines: 2,
+                maxLines: socialChrome.commentMaxLines,
                 overflow: TextOverflow.ellipsis,
                 text: TextSpan(
                   style: baseStyle,
@@ -4277,64 +5214,69 @@ class _MomentsPageState extends State<MomentsPage> {
           );
         }
 
-        final preview = previewComments.take(2).toList();
-        final likeIcon =
-            likedByMe ? Icons.thumb_up_alt : Icons.thumb_up_alt_outlined;
+        final preview =
+            previewComments.take(socialMeta.visiblePreviewCount).toList();
+        final likeIcon = socialMeta.likeIcon;
         final likeColor = likedByMe
             ? (isDark ? theme.colorScheme.secondary : WeChatPalette.green)
-            : theme.colorScheme.onSurface.withValues(alpha: .65);
+            : theme.colorScheme.onSurface
+                .withValues(alpha: socialChrome.unlikedIconAlpha);
 
         content.add(
           Padding(
-            padding: const EdgeInsets.only(top: 6),
+            padding: EdgeInsets.only(top: socialChrome.topGap),
             child: Stack(
               clipBehavior: Clip.none,
               children: [
                 Container(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: socialChrome.horizontalPadding,
+                    vertical: socialChrome.verticalPadding,
+                  ),
                   decoration: BoxDecoration(
                     color: bubbleBg,
-                    borderRadius: BorderRadius.circular(4),
+                    border: Border.symmetric(
+                      horizontal: BorderSide(
+                        color: bubbleBorder,
+                        width: socialChrome.borderWidth,
+                      ),
+                    ),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (likes > 0) ...[
+                      if (socialMeta.showLikeRow) ...[
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Icon(
                               likeIcon,
-                              size: 14,
+                              size: socialChrome.likeIconSize,
                               color: likeColor,
                             ),
-                            const SizedBox(width: 4),
+                            SizedBox(width: socialChrome.likeIconGap),
                             Expanded(
                               child: Builder(
                                 builder: (ctx) {
                                   final you = l.isArabic ? 'أنت' : 'You';
-                                  final myPseudo =
-                                      (_myMomentsPseudonym ?? '').trim();
-                                  final names = <String>[];
-                                  final seen = <String>{};
-                                  for (final raw in likedByList) {
-                                    final v = raw.trim();
-                                    if (v.isEmpty) continue;
-                                    final mapped =
-                                        myPseudo.isNotEmpty && v == myPseudo
-                                            ? you
-                                            : v;
-                                    if (seen.add(mapped)) names.add(mapped);
-                                  }
-                                  if (likedByMe && !seen.contains(you)) {
-                                    names.insert(0, you);
-                                  }
+                                  final names = momentLikerLabels(
+                                    likedBy: likedByList,
+                                    likedByMe: likedByMe,
+                                    myPseudonym: _myMomentsPseudonym ?? '',
+                                    youLabel: you,
+                                  );
+                                  final overflow = momentLikerOverflowLabel(
+                                    likeCount: likes,
+                                    visibleLabelCount: names.length,
+                                    isArabic: l.isArabic,
+                                  );
 
                                   if (names.isEmpty) {
                                     return Text(
-                                      l.isArabic
-                                          ? '$likes إعجاب'
-                                          : '$likes likes',
+                                      momentLikeCountLabel(
+                                        likeCount: likes,
+                                        isArabic: l.isArabic,
+                                      ),
                                       style: baseStyle,
                                     );
                                   }
@@ -4353,6 +5295,18 @@ class _MomentsPageState extends State<MomentsPage> {
                                       style: authorStyle,
                                     ));
                                   }
+                                  if (overflow != null) {
+                                    if (spans.isNotEmpty) {
+                                      spans.add(TextSpan(
+                                        text: sep,
+                                        style: baseStyle,
+                                      ));
+                                    }
+                                    spans.add(TextSpan(
+                                      text: overflow,
+                                      style: baseStyle,
+                                    ));
+                                  }
                                   return RichText(
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
@@ -4366,54 +5320,63 @@ class _MomentsPageState extends State<MomentsPage> {
                             ),
                           ],
                         ),
-                        if (commentCount > 0 || preview.isNotEmpty)
+                        if (socialMeta.showDivider)
                           Divider(
-                            height: 12,
-                            thickness: 0.5,
+                            height: socialChrome.dividerHeight,
+                            thickness: socialChrome.dividerThickness,
                             color: theme.colorScheme.onSurface
-                                .withValues(alpha: .10),
+                                .withValues(alpha: socialChrome.dividerAlpha),
                           ),
                       ],
                       if (preview.isNotEmpty) ...[
                         for (final c in preview) inlineComment(c),
-                        if (commentCount > preview.length)
+                        if (socialMeta.showAllCommentsLink)
                           Padding(
-                            padding: const EdgeInsets.only(top: 2),
+                            padding: EdgeInsets.only(
+                                top: socialChrome.commentsLinkTopGap),
                             child: InkWell(
-                              borderRadius: BorderRadius.circular(6),
                               onTap: postId.isNotEmpty
                                   ? () => unawaited(_openComments(p))
                                   : null,
                               child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 2),
+                                padding: EdgeInsets.symmetric(
+                                  vertical: socialChrome.commentVerticalPadding,
+                                ),
                                 child: Text(
-                                  l.isArabic
-                                      ? 'عرض كل التعليقات ($commentCount)'
-                                      : 'View all comments ($commentCount)',
+                                  momentCommentLinkLabel(
+                                    commentCount: socialMeta.commentLinkCount,
+                                    showAll: true,
+                                    isArabic: l.isArabic,
+                                  ),
                                   style: baseStyle.copyWith(
-                                    color: theme.colorScheme.onSurface
-                                        .withValues(alpha: .60),
+                                    color:
+                                        theme.colorScheme.onSurface.withValues(
+                                      alpha: socialChrome.commentLinkAlpha,
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                      ] else if (commentCount > 0) ...[
+                      ] else if (socialMeta.showCommentCountOnlyLink) ...[
                         InkWell(
-                          borderRadius: BorderRadius.circular(6),
                           onTap: postId.isNotEmpty
                               ? () => unawaited(_openComments(p))
                               : null,
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            padding: EdgeInsets.symmetric(
+                              vertical: socialChrome.commentVerticalPadding,
+                            ),
                             child: Text(
-                              l.isArabic
-                                  ? 'عرض $commentCount تعليق'
-                                  : 'View $commentCount comments',
+                              momentCommentLinkLabel(
+                                commentCount: socialMeta.commentLinkCount,
+                                showAll: false,
+                                isArabic: l.isArabic,
+                              ),
                               style: baseStyle.copyWith(
-                                color: theme.colorScheme.onSurface
-                                    .withValues(alpha: .60),
+                                color: theme.colorScheme.onSurface.withValues(
+                                  alpha: socialChrome.commentLinkAlpha,
+                                ),
                               ),
                             ),
                           ),
@@ -4423,14 +5386,26 @@ class _MomentsPageState extends State<MomentsPage> {
                   ),
                 ),
                 PositionedDirectional(
-                  end: 26,
-                  top: -4,
+                  start: socialChrome.pointerStart,
+                  top: socialChrome.pointerTop,
                   child: Transform.rotate(
-                    angle: math.pi / 4,
+                    angle: socialChrome.pointerRotationRadians,
                     child: Container(
-                      width: 8,
-                      height: 8,
-                      color: bubbleBg,
+                      width: socialChrome.pointerSize,
+                      height: socialChrome.pointerSize,
+                      decoration: BoxDecoration(
+                        color: bubbleBg,
+                        border: Border(
+                          top: BorderSide(
+                            color: bubbleBorder,
+                            width: socialChrome.borderWidth,
+                          ),
+                          left: BorderSide(
+                            color: bubbleBorder,
+                            width: socialChrome.borderWidth,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -4444,15 +5419,20 @@ class _MomentsPageState extends State<MomentsPage> {
         onLongPress: () => _openPostActions(p),
         child: Container(
           key: postId.isNotEmpty ? _postKeyFor(postId) : null,
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+          padding: EdgeInsets.symmetric(
+            horizontal: feedListChrome.postHorizontalPadding,
+            vertical: feedListChrome.postVerticalPadding,
+          ),
           decoration: BoxDecoration(
-            color: isDark ? theme.colorScheme.surface : Colors.white,
+            color: isDark
+                ? theme.colorScheme.surface
+                : feedListChrome.lightSurfaceColor,
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               avatar,
-              const SizedBox(width: 10),
+              SizedBox(width: feedListChrome.postAvatarGap),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -4472,6 +5452,17 @@ class _MomentsPageState extends State<MomentsPage> {
         base = base.where((p) {
           final pid = (p['author_id'] ?? '').toString().trim();
           return pid == authorId;
+        });
+      }
+      final activeMiniProgramId = _activeMiniProgramId();
+      if (activeMiniProgramId.isNotEmpty) {
+        base = base.where((p) {
+          final mid =
+              (p['mini_program_id'] ?? '').toString().trim().toLowerCase();
+          if (mid == activeMiniProgramId) return true;
+          final text = ((p['text'] ?? p['content'] ?? '')).toString();
+          final target = parseMiniProgramDeepLinkFromText(text);
+          return (target?.id ?? '').trim().toLowerCase() == activeMiniProgramId;
         });
       }
 
@@ -4513,8 +5504,9 @@ class _MomentsPageState extends State<MomentsPage> {
       if (_filterMiniProgramOnly) {
         base = base.where((p) {
           final t = ((p['text'] ?? p['content'] ?? '')).toString();
-          return t.contains('shamell://miniapp/') ||
-              t.contains('shamell://mini_program/') ||
+          final mid = (p['mini_program_id'] ?? '').toString().trim();
+          if (mid.isNotEmpty) return true;
+          return parseMiniProgramDeepLinkFromText(t) != null ||
               t.contains('#ShamellMiniApp') ||
               t.contains('#ShamellMiniProgram') ||
               t.contains('#mp_');
@@ -4526,7 +5518,7 @@ class _MomentsPageState extends State<MomentsPage> {
       if (_filterOfficialLinkedOnly) {
         base = base.where((p) {
           final t = ((p['text'] ?? p['content'] ?? '')).toString();
-          if (t.contains('shamell://official/')) {
+          if (parseOfficialDeepLinkFromText(t) != null) {
             return true;
           }
           final originId =
@@ -4584,16 +5576,18 @@ class _MomentsPageState extends State<MomentsPage> {
       if (filtered.isEmpty) {
         final isFriendTimeline =
             (widget.timelineAuthorId ?? '').trim().isNotEmpty;
+        final emptyMeta = momentFeedEmptyMetaFor(
+          isArabic: l.isArabic,
+          isFriendTimeline: isFriendTimeline,
+        );
         return Padding(
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.all(feedListChrome.emptyPadding),
           child: Text(
-            isFriendTimeline
-                ? (l.isArabic ? 'لا توجد لحظات بعد.' : 'No moments yet.')
-                : (l.isArabic
-                    ? 'لا توجد لحظات بعد. شارك أول لحظة لك!'
-                    : 'No moments yet. Share your first moment!'),
+            emptyMeta.label,
             style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: .70),
+              color: theme.colorScheme.onSurface.withValues(
+                alpha: feedListChrome.emptyTextAlpha,
+              ),
             ),
           ),
         );
@@ -4602,12 +5596,12 @@ class _MomentsPageState extends State<MomentsPage> {
       return ListView.separated(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(top: 4),
+        padding: EdgeInsets.only(top: feedListChrome.listTopPadding),
         itemCount: filtered.length,
         separatorBuilder: (_, __) => Divider(
-          height: 1,
-          thickness: 0.5,
-          indent: 64,
+          height: feedListChrome.separatorHeight,
+          thickness: feedListChrome.separatorThickness,
+          indent: feedListChrome.separatorIndent,
           color: isDark ? theme.dividerColor : WeChatPalette.divider,
         ),
         itemBuilder: (_, i) {
@@ -4624,7 +5618,7 @@ class _MomentsPageState extends State<MomentsPage> {
     final showAdvancedFilters = _enableAdvancedFilters;
 
     final body = _loading
-        ? const Center(child: CircularProgressIndicator())
+        ? const ShamellSkeletonList(itemCount: 5)
         : SingleChildScrollView(
             controller: _scrollCtrl,
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -4633,198 +5627,182 @@ class _MomentsPageState extends State<MomentsPage> {
               children: [
                 _buildWeChatCoverHeader(l, theme),
                 Container(
-                  color: isDark ? theme.colorScheme.surface : Colors.white,
+                  color: isDark
+                      ? theme.colorScheme.surface
+                      : feedListChrome.lightSurfaceColor,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      if (!showInlineComposer &&
+                          widget.showComposer &&
+                          !isFriendTimeline)
+                        _buildMomentsQuickComposer(l, theme),
                       if (showInlineComposer &&
                           widget.showComposer &&
                           !isFriendTimeline)
                         Container(
                           key: _composerKey,
-                          padding: const EdgeInsets.all(12),
+                          padding: EdgeInsets.all(
+                            inlineComposerText.panelPadding,
+                          ),
                           decoration: BoxDecoration(
                             color: theme.colorScheme.surface,
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                l.isArabic
-                                    ? 'مشاركة لحظة جديدة'
-                                    : 'Share a new moment',
-                                style: theme.textTheme.titleSmall
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                              const SizedBox(height: 8),
-                              TextField(
-                                controller: _postCtrl,
-                                focusNode: _postFocus,
-                                maxLines: 3,
-                                minLines: 1,
-                                decoration: InputDecoration(
-                                  hintText: l.isArabic
-                                      ? 'ما الذي يدور في بالك؟'
-                                      : 'What\'s on your mind?',
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              _buildAudienceSummaryPill(l, theme),
-                              const SizedBox(height: 8),
                               Row(
+                                mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  ChoiceChip(
-                                    label: Text(
-                                      l.isArabic ? 'عام' : 'Public',
+                                  Icon(
+                                    inlineComposerText.titleIcon,
+                                    size: inlineComposerText.titleIconSize,
+                                    color: theme.colorScheme.primary.withValues(
+                                      alpha: inlineComposerText.titleIconAlpha,
                                     ),
-                                    selected: _visibilityScope == 'public',
-                                    onSelected: (sel) {
-                                      if (!sel) return;
-                                      setState(() {
-                                        _visibilityScope = 'public';
-                                        _visibilityTag = null;
-                                        _visibilityTagMode = 'only';
-                                        _visibilityTagCtrl.clear();
-                                      });
-                                    },
                                   ),
-                                  const SizedBox(width: 8),
-                                  ChoiceChip(
-                                    label: Text(
-                                      l.isArabic
-                                          ? 'الأصدقاء فقط'
-                                          : 'Friends only',
-                                    ),
-                                    selected: _visibilityScope == 'friends',
-                                    onSelected: (sel) {
-                                      if (!sel) return;
-                                      setState(() {
-                                        _visibilityScope = 'friends';
-                                      });
-                                    },
+                                  SizedBox(
+                                    width: inlineComposerText.titleIconGap,
                                   ),
-                                  const SizedBox(width: 8),
-                                  ChoiceChip(
-                                    label: Text(
-                                      l.isArabic
-                                          ? 'الأصدقاء المقرّبون'
-                                          : 'Close friends',
+                                  Text(
+                                    inlineComposerText.titleLabel,
+                                    style: theme.textTheme.titleSmall?.copyWith(
+                                      fontWeight:
+                                          inlineComposerText.titleWeight,
                                     ),
-                                    selected:
-                                        _visibilityScope == 'close_friends',
-                                    onSelected: (sel) {
-                                      if (!sel) return;
-                                      setState(() {
-                                        _visibilityScope = 'close_friends';
-                                      });
-                                    },
-                                  ),
-                                  const SizedBox(width: 8),
-                                  ChoiceChip(
-                                    label: Text(
-                                      l.isArabic ? 'أنا فقط' : 'Only me',
-                                    ),
-                                    selected: _visibilityScope == 'only_me',
-                                    onSelected: (sel) {
-                                      if (!sel) return;
-                                      setState(() {
-                                        _visibilityScope = 'only_me';
-                                        _visibilityTag = null;
-                                        _visibilityTagMode = 'only';
-                                        _visibilityTagCtrl.clear();
-                                      });
-                                    },
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 4),
+                              SizedBox(
+                                height: inlineComposerText.titleBottomGap,
+                              ),
+                              TextField(
+                                controller: _postCtrl,
+                                focusNode: _postFocus,
+                                maxLines: inlineComposerText.maxLines,
+                                minLines: inlineComposerText.minLines,
+                                decoration: InputDecoration(
+                                  hintText: inlineComposerText.textHint,
+                                ),
+                                onChanged: (_) => setState(() {}),
+                              ),
+                              SizedBox(
+                                height: inlineComposerText.textFieldBottomGap,
+                              ),
+                              _buildAudienceSummaryPill(l, theme),
+                              SizedBox(
+                                height: visibilityChipChrome.summaryBottomGap,
+                              ),
+                              Wrap(
+                                spacing: visibilityChipChrome.wrapSpacing,
+                                runSpacing: visibilityChipChrome.wrapRunSpacing,
+                                children: momentComposerVisibilityOptionMetas(
+                                  isArabic: l.isArabic,
+                                  selectedScope: _visibilityScope,
+                                ).map((meta) {
+                                  final iconColor = meta.selected
+                                      ? theme.colorScheme.primary.withValues(
+                                          alpha: visibilityChipChrome
+                                              .selectedIconAlpha,
+                                        )
+                                      : theme.colorScheme.onSurface.withValues(
+                                          alpha: visibilityChipChrome
+                                              .unselectedIconAlpha,
+                                        );
+                                  return ChoiceChip(
+                                    avatar: Icon(
+                                      meta.icon,
+                                      size: visibilityChipChrome.iconSize,
+                                      color: iconColor,
+                                    ),
+                                    label: Text(meta.label),
+                                    selected: meta.selected,
+                                    onSelected: (sel) {
+                                      if (!sel) return;
+                                      setState(() {
+                                        _visibilityScope = meta.scope;
+                                        if (meta.clearsAudienceTag) {
+                                          _visibilityTag = null;
+                                          _visibilityTagMode = 'only';
+                                          _visibilityTagCtrl.clear();
+                                        }
+                                      });
+                                    },
+                                  );
+                                }).toList(),
+                              ),
+                              SizedBox(
+                                height: visibilityChipChrome.helperTopGap,
+                              ),
                               Text(
-                                l.isArabic
-                                    ? 'حدد من يمكنه رؤية هذه اللحظة (كما في WeChat).'
-                                    : 'Choose who can see this moment (similar to WeChat).',
+                                composerAudienceCopy.privacyHelperLabel,
                                 style: theme.textTheme.bodySmall?.copyWith(
-                                  fontSize: 11,
-                                  color: theme.colorScheme.onSurface
-                                      .withValues(alpha: .65),
+                                  fontSize: visibilityChipChrome.helperFontSize,
+                                  color: theme.colorScheme.onSurface.withValues(
+                                    alpha: visibilityChipChrome.helperAlpha,
+                                  ),
                                 ),
                               ),
-                              const SizedBox(height: 6),
+                              SizedBox(
+                                height: visibilityChipChrome.helperBottomGap,
+                              ),
                               if (_availableAudienceTags.isNotEmpty) ...[
                                 Wrap(
-                                  spacing: 8,
-                                  runSpacing: 4,
+                                  spacing: audienceTagChipChrome.wrapSpacing,
+                                  runSpacing:
+                                      audienceTagChipChrome.wrapRunSpacing,
                                   children:
-                                      _availableAudienceTags.expand((tag) {
-                                    final bool isOnlySelected =
-                                        _visibilityTag == tag &&
-                                            _visibilityTagMode == 'only';
-                                    final bool isExceptSelected =
-                                        _visibilityTag == tag &&
-                                            _visibilityTagMode == 'except';
-                                    final widgets = <Widget>[
-                                      FilterChip(
-                                        label: Text(
-                                          l.isArabic ? 'فقط $tag' : 'Only $tag',
-                                        ),
-                                        selected: isOnlySelected,
-                                        onSelected: (sel) {
-                                          setState(() {
-                                            if (sel) {
-                                              _visibilityTag = tag;
-                                              _visibilityTagMode = 'only';
-                                              _visibilityScope = 'friends';
-                                              _visibilityTagCtrl.text = tag;
-                                            } else if (_visibilityTag == tag &&
-                                                _visibilityTagMode == 'only') {
-                                              _visibilityTag = null;
-                                              _visibilityTagCtrl.clear();
-                                            }
-                                          });
-                                        },
+                                      momentComposerAudienceTagActionMetas(
+                                    tags: _availableAudienceTags,
+                                    selectedTag: _visibilityTag ?? '',
+                                    selectedTagMode: _visibilityTagMode,
+                                    isArabic: l.isArabic,
+                                  ).map((meta) {
+                                    return FilterChip(
+                                      avatar: Icon(
+                                        meta.icon,
+                                        size: audienceTagChipChrome.iconSize,
                                       ),
-                                      FilterChip(
-                                        label: Text(
-                                          l.isArabic
-                                              ? 'الأصدقاء باستثناء $tag'
-                                              : 'Friends except $tag',
-                                        ),
-                                        selected: isExceptSelected,
-                                        onSelected: (sel) {
-                                          setState(() {
-                                            if (sel) {
-                                              _visibilityTag = tag;
-                                              _visibilityTagMode = 'except';
-                                              _visibilityScope = 'friends';
-                                              _visibilityTagCtrl.text = tag;
-                                            } else if (_visibilityTag == tag &&
-                                                _visibilityTagMode ==
-                                                    'except') {
-                                              _visibilityTag = null;
-                                              _visibilityTagCtrl.clear();
-                                            }
-                                          });
-                                        },
-                                      ),
-                                    ];
-                                    return widgets;
+                                      label: Text(meta.label),
+                                      selected: meta.selected,
+                                      onSelected: (sel) {
+                                        setState(() {
+                                          if (sel) {
+                                            _visibilityTag = meta.tag;
+                                            _visibilityTagMode = meta.tagMode;
+                                            _visibilityScope = 'friends';
+                                            _visibilityTagCtrl.text = meta.tag;
+                                          } else if (_visibilityTag ==
+                                                  meta.tag &&
+                                              _visibilityTagMode ==
+                                                  meta.tagMode) {
+                                            _visibilityTag = null;
+                                            _visibilityTagCtrl.clear();
+                                          }
+                                        });
+                                      },
+                                    );
                                   }).toList(),
                                 ),
-                                const SizedBox(height: 6),
+                                SizedBox(
+                                  height: audienceTagChipChrome.bottomGap,
+                                ),
                               ],
                               TextField(
                                 controller: _visibilityTagCtrl,
                                 decoration: InputDecoration(
                                   isDense: true,
-                                  prefixIcon:
-                                      const Icon(Icons.label_outline, size: 18),
-                                  labelText: l.isArabic
-                                      ? 'وسم الجمهور (اختياري، مثل Family)'
-                                      : 'Audience label (optional, e.g. Family)',
-                                  hintText: l.isArabic
-                                      ? 'يجب أن يطابق الوسوم في قائمة الأصدقاء'
-                                      : 'Must match your friend labels',
+                                  prefixIcon: Icon(
+                                    composerAudienceCopy.tagFieldIcon,
+                                    size:
+                                        audienceFieldChrome.fieldPrefixIconSize,
+                                  ),
+                                  labelText: composerAudienceCopy.tagFieldLabel,
+                                  hintText: composerAudienceCopy.tagFieldHint,
                                   border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
+                                    borderRadius: BorderRadius.circular(
+                                      audienceFieldChrome.fieldBorderRadius,
+                                    ),
                                   ),
                                 ),
                                 onChanged: (v) {
@@ -4841,48 +5819,77 @@ class _MomentsPageState extends State<MomentsPage> {
                               ),
                               if (_showAudienceOnboardingHint &&
                                   _availableAudienceTags.isNotEmpty) ...[
-                                const SizedBox(height: 6),
+                                SizedBox(
+                                  height: audienceFieldChrome.onboardingTopGap,
+                                ),
                                 Container(
-                                  padding: const EdgeInsets.all(8),
+                                  padding: EdgeInsets.all(
+                                    audienceFieldChrome.onboardingPadding,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: theme.colorScheme.surface
-                                        .withValues(alpha: .06),
-                                    borderRadius: BorderRadius.circular(8),
+                                    color: theme.colorScheme.surface.withValues(
+                                      alpha: audienceFieldChrome
+                                          .onboardingBackgroundAlpha,
+                                    ),
+                                    borderRadius: BorderRadius.circular(
+                                      audienceFieldChrome.onboardingRadius,
+                                    ),
                                   ),
                                   child: Row(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
                                       Icon(
-                                        Icons.info_outline,
-                                        size: 16,
+                                        composerAudienceCopy.onboardingIcon,
+                                        size: audienceFieldChrome
+                                            .onboardingIconSize,
                                         color: theme.colorScheme.primary
-                                            .withValues(alpha: .80),
+                                            .withValues(
+                                          alpha: audienceFieldChrome
+                                              .onboardingIconAlpha,
+                                        ),
                                       ),
-                                      const SizedBox(width: 6),
+                                      SizedBox(
+                                        width: audienceFieldChrome
+                                            .onboardingIconGap,
+                                      ),
                                       Expanded(
                                         child: Text(
-                                          l.mirsaalMomentsAudienceHint,
+                                          composerAudienceCopy.onboardingHint,
                                           style: theme.textTheme.bodySmall
                                               ?.copyWith(
-                                            fontSize: 11,
+                                            fontSize: audienceFieldChrome
+                                                .onboardingFontSize,
                                             color: theme.colorScheme.onSurface
-                                                .withValues(alpha: .70),
+                                                .withValues(
+                                              alpha: audienceFieldChrome
+                                                  .onboardingTextAlpha,
+                                            ),
                                           ),
                                         ),
                                       ),
                                       IconButton(
-                                        visualDensity: VisualDensity.compact,
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(
-                                          minWidth: 28,
-                                          minHeight: 28,
+                                        visualDensity: audienceFieldChrome
+                                            .onboardingDismissVisualDensity,
+                                        padding: audienceFieldChrome
+                                            .onboardingDismissPadding,
+                                        constraints: BoxConstraints(
+                                          minWidth: audienceFieldChrome
+                                              .onboardingDismissMinSize,
+                                          minHeight: audienceFieldChrome
+                                              .onboardingDismissMinSize,
                                         ),
+                                        tooltip: composerAudienceCopy
+                                            .onboardingDismissTooltip,
                                         icon: Icon(
                                           Icons.close,
-                                          size: 16,
+                                          size: audienceFieldChrome
+                                              .onboardingDismissIconSize,
                                           color: theme.colorScheme.onSurface
-                                              .withValues(alpha: .60),
+                                              .withValues(
+                                            alpha: audienceFieldChrome
+                                                .onboardingDismissIconAlpha,
+                                          ),
                                         ),
                                         onPressed: _dismissAudienceHint,
                                       ),
@@ -4891,167 +5898,139 @@ class _MomentsPageState extends State<MomentsPage> {
                                 ),
                               ],
                               if (_availableAudienceTags.isNotEmpty) ...[
-                                const SizedBox(height: 6),
+                                SizedBox(
+                                  height: audienceFieldChrome.suggestedTopGap,
+                                ),
                                 Text(
-                                  l.isArabic
-                                      ? 'وسوم مقترحة للجمهور'
-                                      : 'Suggested audience labels',
+                                  composerAudienceCopy.suggestedTagsLabel,
                                   style: theme.textTheme.bodySmall?.copyWith(
-                                    fontSize: 11,
-                                    color: theme.colorScheme.onSurface
-                                        .withValues(alpha: .65),
+                                    fontSize: audienceFieldChrome
+                                        .suggestedLabelFontSize,
+                                    color:
+                                        theme.colorScheme.onSurface.withValues(
+                                      alpha: audienceFieldChrome
+                                          .suggestedLabelAlpha,
+                                    ),
                                   ),
                                 ),
-                                const SizedBox(height: 4),
-                                SingleChildScrollView(
-                                  scrollDirection: Axis.horizontal,
-                                  child: Row(
-                                    children: _availableAudienceTags
-                                        .take(8)
-                                        .map((tag) => Padding(
-                                              padding: const EdgeInsets.only(
-                                                  right: 6.0),
-                                              child: ActionChip(
-                                                label: Text(tag),
-                                                visualDensity:
-                                                    VisualDensity.compact,
-                                                onPressed: () {
-                                                  setState(() {
-                                                    _visibilityTag = tag;
-                                                    _visibilityTagCtrl.text =
-                                                        tag;
-                                                  });
-                                                },
-                                              ),
-                                            ))
-                                        .toList(),
-                                  ),
+                                SizedBox(
+                                  height:
+                                      audienceFieldChrome.suggestedChipsTopGap,
                                 ),
-                              ],
-                              if (_trendingTopics.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  l.isArabic
-                                      ? 'المواضيع الشائعة'
-                                      : 'Trending topics',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                SingleChildScrollView(
-                                  scrollDirection: Axis.horizontal,
-                                  child: Row(
-                                    children: [
-                                      Padding(
-                                        padding:
-                                            const EdgeInsets.only(right: 6),
-                                        child: ActionChip(
-                                          label: Text(
-                                            l.isArabic
-                                                ? 'من مشاركات البرامج المصغّرة'
-                                                : 'Mini‑program shares',
-                                          ),
-                                          visualDensity: VisualDensity.compact,
-                                          onPressed: () {
-                                            _openTopic('#ShamellMiniApp');
-                                          },
-                                        ),
+                                Wrap(
+                                  spacing:
+                                      audienceFieldChrome.suggestedWrapSpacing,
+                                  runSpacing: audienceFieldChrome
+                                      .suggestedWrapRunSpacing,
+                                  children:
+                                      momentComposerSuggestedAudienceTagMetas(
+                                    tags: _availableAudienceTags,
+                                    selectedTag: _visibilityTag ?? '',
+                                  ).map((meta) {
+                                    return ActionChip(
+                                      avatar: Icon(
+                                        meta.icon,
+                                        size: audienceFieldChrome
+                                            .suggestedChipIconSize,
                                       ),
-                                      ..._trendingTopics
-                                          .map((it) => (it['tag'] ?? '')
-                                              .toString()
-                                              .trim())
-                                          .where((rawTag) => rawTag.isNotEmpty)
-                                          .map<Widget>((rawTag) {
-                                        final lower = rawTag.toLowerCase();
-                                        final isMiniProgramTopic =
-                                            lower.startsWith('mp_');
-                                        final topicTag = '#$rawTag';
-                                        String label;
-                                        if (isMiniProgramTopic) {
-                                          final core = rawTag.substring(3);
-                                          label = l.isArabic
-                                              ? 'برنامج مصغّر: $core'
-                                              : 'Mini‑program: $core';
-                                        } else {
-                                          label = topicTag;
-                                        }
-                                        return Padding(
-                                          padding:
-                                              const EdgeInsets.only(right: 6),
-                                          child: ActionChip(
-                                            avatar: isMiniProgramTopic
-                                                ? Icon(
-                                                    Icons.widgets_outlined,
-                                                    size: 16,
-                                                    color: theme
-                                                        .colorScheme.primary
-                                                        .withValues(alpha: .90),
-                                                  )
-                                                : null,
-                                            label: Text(label),
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                            onPressed: () {
-                                              _openTopic(topicTag);
-                                            },
-                                          ),
-                                        );
-                                      }).toList(),
-                                    ],
-                                  ),
+                                      label: Text(meta.label),
+                                      visualDensity: audienceFieldChrome
+                                          .suggestedChipVisualDensity,
+                                      side: meta.selected
+                                          ? BorderSide(
+                                              color: theme.colorScheme.primary
+                                                  .withValues(
+                                                alpha: audienceFieldChrome
+                                                    .suggestedSelectedBorderAlpha,
+                                              ),
+                                            )
+                                          : null,
+                                      onPressed: () {
+                                        setState(() {
+                                          _visibilityTag = meta.tag;
+                                          _visibilityTagMode = 'only';
+                                          _visibilityScope = 'friends';
+                                          _visibilityTagCtrl.text = meta.tag;
+                                        });
+                                      },
+                                    );
+                                  }).toList(),
                                 ),
                               ],
-                              if (_preferredCity != null &&
-                                  _preferredCity!.isNotEmpty &&
+                              ..._buildTrendingTopicComposerRows(l, theme),
+                              if (composerOfficialDirectoryLink != null &&
                                   widget.onOpenOfficialDirectory != null) ...[
-                                const SizedBox(height: 6),
+                                SizedBox(
+                                  height: composerOfficialDirectoryLink.topGap,
+                                ),
                                 InkWell(
-                                  borderRadius: BorderRadius.circular(6),
-                                  onTap: () =>
-                                      widget.onOpenOfficialDirectory!(context),
+                                  borderRadius: BorderRadius.circular(
+                                    composerOfficialDirectoryLink.radius,
+                                  ),
+                                  onTap: () {
+                                    Perf.action(
+                                      composerOfficialDirectoryLink.perfKey,
+                                    );
+                                    widget.onOpenOfficialDirectory!(context);
+                                  },
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Icon(
-                                        Icons.verified_outlined,
-                                        size: 16,
+                                        composerOfficialDirectoryLink.icon,
+                                        size: composerOfficialDirectoryLink
+                                            .iconSize,
                                         color: theme.colorScheme.primary,
                                       ),
-                                      const SizedBox(width: 4),
+                                      SizedBox(
+                                        width: composerOfficialDirectoryLink
+                                            .iconGap,
+                                      ),
                                       Text(
-                                        l.isArabic
-                                            ? 'من خدمات في ${_preferredCity!}'
-                                            : 'From services in ${_preferredCity!}',
+                                        composerOfficialDirectoryLink.label,
                                         style:
                                             theme.textTheme.bodySmall?.copyWith(
-                                          fontSize: 11,
+                                          fontSize:
+                                              composerOfficialDirectoryLink
+                                                  .fontSize,
                                           color: theme.colorScheme.primary,
                                         ),
                                       ),
-                                      const SizedBox(width: 2),
+                                      SizedBox(
+                                        width: composerOfficialDirectoryLink
+                                            .trailingGap,
+                                      ),
                                       Icon(
-                                        Icons.chevron_right,
-                                        size: 14,
+                                        composerOfficialDirectoryLink
+                                            .trailingIcon,
+                                        size: composerOfficialDirectoryLink
+                                            .trailingIconSize,
                                         color: theme.colorScheme.primary
-                                            .withValues(alpha: .80),
+                                            .withValues(
+                                          alpha: composerOfficialDirectoryLink
+                                              .trailingIconAlpha,
+                                        ),
                                       ),
                                     ],
                                   ),
                                 ),
                               ],
-                              const SizedBox(height: 8),
+                              SizedBox(
+                                height: composerMediaAction.controlsTopGap,
+                              ),
                               if (_pendingImage != null)
                                 Column(
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
                                   children: [
                                     ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
+                                      borderRadius: BorderRadius.circular(
+                                        composerMediaAction.previewBorderRadius,
+                                      ),
                                       child: Image.memory(
                                         _pendingImage!,
-                                        height: 180,
+                                        height:
+                                            composerMediaAction.previewHeight,
                                         width: double.infinity,
                                         fit: BoxFit.cover,
                                       ),
@@ -5059,188 +6038,80 @@ class _MomentsPageState extends State<MomentsPage> {
                                     Align(
                                       alignment: Alignment.centerRight,
                                       child: IconButton(
-                                        icon: const Icon(Icons.close),
-                                        tooltip: l.isArabic
-                                            ? 'إزالة الصورة'
-                                            : 'Remove photo',
-                                        onPressed: _clearPendingImage,
+                                        icon: Icon(
+                                          composerMediaAction.removePhotoIcon,
+                                          size: composerMediaAction
+                                              .removePhotoIconSize,
+                                        ),
+                                        tooltip: composerMediaAction
+                                            .removePhotoTooltip,
+                                        onPressed: () {
+                                          Perf.action(
+                                            composerMediaAction
+                                                .removePhotoPerfKey,
+                                          );
+                                          _clearPendingImage();
+                                        },
                                       ),
                                     ),
-                                    const SizedBox(height: 4),
+                                    SizedBox(
+                                      height:
+                                          composerMediaAction.previewBottomGap,
+                                    ),
                                   ],
                                 ),
                               Row(
                                 children: [
                                   IconButton(
-                                    icon:
-                                        const Icon(Icons.photo_camera_outlined),
+                                    icon: Icon(
+                                      composerMediaAction.addPhotoIcon,
+                                      size:
+                                          composerMediaAction.addPhotoIconSize,
+                                    ),
                                     tooltip:
-                                        l.isArabic ? 'إضافة صورة' : 'Add photo',
-                                    onPressed: _pickImage,
+                                        composerMediaAction.addPhotoTooltip,
+                                    onPressed: () {
+                                      Perf.action(
+                                        composerMediaAction.addPhotoPerfKey,
+                                      );
+                                      unawaited(_pickImage());
+                                    },
                                   ),
                                   const Spacer(),
                                   PrimaryButton(
-                                    label: l.isArabic ? 'نشر' : 'Post',
-                                    onPressed: _addPost,
+                                    label: composerMediaAction.publishLabel,
+                                    icon: composerMediaAction.publishIcon,
+                                    onPressed: inlinePublishState.canPublish
+                                        ? () {
+                                            Perf.action(
+                                              composerMediaAction
+                                                  .publishPerfKey,
+                                            );
+                                            unawaited(_addPost());
+                                          }
+                                        : null,
                                   ),
                                 ],
                               ),
                             ],
                           ),
                         ),
-                      const SizedBox(height: 12),
-                      if (!isFriendTimeline && _myOfficialStats != null)
-                        Builder(
-                          builder: (ctx) {
-                            final theme = Theme.of(ctx);
-                            final isAr = l.isArabic;
-                            final totalRaw = _myOfficialStats?['total_shares'];
-                            final svcRaw = _myOfficialStats?['service_shares'];
-                            final subRaw =
-                                _myOfficialStats?['subscription_shares'];
-                            final rpRaw =
-                                _myOfficialStats?['redpacket_shares_30d'];
-                            final hotRaw = _myOfficialStats?['hot_accounts'];
-                            final total =
-                                totalRaw is num ? totalRaw.toInt() : 0;
-                            final svc = svcRaw is num ? svcRaw.toInt() : 0;
-                            final sub = subRaw is num ? subRaw.toInt() : 0;
-                            final rp = rpRaw is num ? rpRaw.toInt() : 0;
-                            final hot = hotRaw is num ? hotRaw.toInt() : 0;
-                            if (total <= 0 && rp <= 0 && hot <= 0) {
-                              return const SizedBox.shrink();
-                            }
-
-                            Widget pill(IconData icon, String label) {
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.primary
-                                      .withValues(alpha: .06),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      icon,
-                                      size: 14,
-                                      color: theme.colorScheme.primary
-                                          .withValues(alpha: .85),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      label,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: theme.colorScheme.onSurface
-                                            .withValues(alpha: .8),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-
-                            final pills = <Widget>[
-                              pill(
-                                Icons.share_outlined,
-                                isAr
-                                    ? 'مشاركات الحسابات الرسمية: $total'
-                                    : 'Official shares: $total',
-                              ),
-                            ];
-                            if (svc > 0 || sub > 0) {
-                              pills.add(
-                                pill(
-                                  Icons.verified_outlined,
-                                  isAr
-                                      ? 'خدمات: $svc · اشتراكات: $sub'
-                                      : 'Services: $svc · Subscriptions: $sub',
-                                ),
-                              );
-                            }
-                            if (rp > 0) {
-                              pills.add(
-                                pill(
-                                  Icons.redeem_outlined,
-                                  isAr
-                                      ? 'حزم حمراء في ٣٠ يوماً: $rp'
-                                      : 'Red‑packet moments (30d): $rp',
-                                ),
-                              );
-                            }
-                            if (hot > 0) {
-                              pills.add(
-                                pill(
-                                  Icons.local_fire_department_outlined,
-                                  isAr
-                                      ? 'حسابات رائجة: $hot'
-                                      : 'Hot official accounts: $hot',
-                                ),
-                              );
-                            }
-
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.surface
-                                    .withValues(alpha: .95),
-                                borderRadius: BorderRadius.circular(10),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: theme.colorScheme.shadow
-                                        .withValues(alpha: .03),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        Icons.insights_outlined,
-                                        size: 18,
-                                        color: theme.colorScheme.primary
-                                            .withValues(alpha: .9),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        isAr
-                                            ? 'أثرك مع الحسابات الرسمية'
-                                            : 'Your impact with official accounts',
-                                        style: theme.textTheme.bodyMedium
-                                            ?.copyWith(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 4,
-                                    children: pills,
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
+                      SizedBox(height: pageChrome.inlineComposerBottomGap),
+                      if (inlinePublishState.miniProgramId.isNotEmpty)
+                        _buildMiniProgramContextBar(
+                          l,
+                          miniProgramId: inlinePublishState.miniProgramId,
                         ),
+                      if (inlinePublishState.miniProgramId.isNotEmpty)
+                        SizedBox(
+                          height: pageChrome.miniProgramContextBottomGap,
+                        ),
+                      if (!isFriendTimeline) _buildOfficialImpactStrip(l),
+                      if (showAdvancedFilters && !isFriendTimeline)
+                        _buildMomentsDiscoveryFilterBar(l),
                       if (showAdvancedFilters && !isFriendTimeline)
                         _buildOfficialFiltersRow(l),
-                      if (showAdvancedFilters && !isFriendTimeline)
-                        const SizedBox(height: 8),
-                      // Topic bar – WeChat-like Moments topics (Wallet)
+                      // Topic bar – SyrChat-style Moments topics (Wallet)
                       if (showAdvancedFilters && !isFriendTimeline)
                         _buildTopicBar(l),
                       _buildFeedList(),
@@ -5251,99 +6122,205 @@ class _MomentsPageState extends State<MomentsPage> {
             ),
           );
 
-    String titleText() {
-      if (!isFriendTimeline) {
-        return l.isArabic ? 'اللحظات' : 'Moments';
-      }
-      final explicit = (widget.timelineAuthorName ?? '').trim();
-      if (explicit.isNotEmpty) return explicit;
-      final id = (widget.timelineAuthorId ?? '').trim();
-      return id.isNotEmpty ? id : (l.isArabic ? 'اللحظات' : 'Moments');
-    }
+    final pageTitle = momentPageTitleLabel(
+      isArabic: l.isArabic,
+      isFriendTimeline: isFriendTimeline,
+      miniProgramMomentsTitle: _miniProgramContextMomentsTitle(l),
+      timelineAuthorName: widget.timelineAuthorName ?? '',
+      timelineAuthorId: widget.timelineAuthorId ?? '',
+    );
+    final appBarAction = momentPageAppBarActionMeta(
+      showComposer: widget.showComposer,
+      isFriendTimeline: isFriendTimeline,
+      isArabic: l.isArabic,
+    );
 
     return Scaffold(
       backgroundColor: bgColor,
       appBar: AppBar(
-        title: Text(titleText()),
+        title: Text(pageTitle),
         backgroundColor: bgColor,
         elevation: 0.5,
         actions: [
-          if (widget.showComposer && !isFriendTimeline)
+          if (appBarAction.showComposerAction)
             GestureDetector(
               onLongPress: () {
+                Perf.action(appBarAction.quickOpenPerfKey);
                 unawaited(_openWeChatComposer());
               },
               child: IconButton(
-                tooltip: l.isArabic ? 'إضافة لحظة' : 'New moment',
-                icon: const Icon(Icons.photo_camera_outlined),
+                tooltip: appBarAction.tooltip,
+                icon: Icon(appBarAction.icon),
                 onPressed: () async {
-                  final sheetBg =
-                      isDark ? theme.colorScheme.surface : Colors.white;
+                  Perf.action(appBarAction.openSheetPerfKey);
                   await showModalBottomSheet<void>(
                     context: context,
-                    backgroundColor: sheetBg,
-                    shape: const RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.vertical(top: Radius.circular(14)),
-                    ),
+                    backgroundColor: Colors.transparent,
                     builder: (ctx) {
+                      final sheetTheme = Theme.of(ctx);
                       final l2 = L10n.of(ctx);
-                      return SafeArea(
-                        top: false,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            ListTile(
-                              leading: const Icon(Icons.photo_camera_outlined),
-                              title: Text(
-                                l2.isArabic ? 'التقاط صورة' : 'Take Photo',
+                      final isSheetDark =
+                          sheetTheme.brightness == Brightness.dark;
+                      final sheetBg = isSheetDark
+                          ? sheetTheme.colorScheme.surface
+                          : WeChatPalette.background;
+                      final sheetChrome = momentComposerSheetChromeMeta();
+                      final rowBg = sheetTheme.colorScheme.surface.withValues(
+                        alpha: isSheetDark
+                            ? sheetChrome.darkRowAlpha
+                            : sheetChrome.lightRowAlpha,
+                      );
+                      final dividerColor = sheetTheme.dividerColor.withValues(
+                        alpha: isSheetDark
+                            ? sheetChrome.darkDividerAlpha
+                            : sheetChrome.lightDividerAlpha,
+                      );
+                      final sheetMeta = momentComposerSheetMeta(
+                        isArabic: l2.isArabic,
+                      );
+
+                      Widget section(List<Widget> rows) {
+                        return Container(
+                          color: rowBg,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Divider(
+                                height: sheetChrome.dividerHeight,
+                                thickness: sheetChrome.dividerThickness,
+                                color: dividerColor,
                               ),
-                              onTap: () async {
-                                Navigator.of(ctx).pop();
-                                final picked = await _pickImageBytes(
-                                  source: ImageSource.camera,
-                                );
-                                if (picked == null) return;
-                                if (!mounted) return;
-                                await _openWeChatComposer(
-                                  initialImageBytes: picked.bytes,
-                                  initialImageMime: picked.mime,
-                                );
-                              },
-                            ),
-                            ListTile(
-                              leading: const Icon(Icons.photo_library_outlined),
-                              title: Text(
-                                l2.isArabic
-                                    ? 'اختيار من الألبوم'
-                                    : 'Choose from Album',
+                              for (var i = 0; i < rows.length; i++) ...[
+                                if (i > 0)
+                                  Divider(
+                                    height: sheetChrome.dividerHeight,
+                                    thickness: sheetChrome.dividerThickness,
+                                    indent: sheetChrome.innerDividerIndent,
+                                    color: dividerColor,
+                                  ),
+                                rows[i],
+                              ],
+                              Divider(
+                                height: sheetChrome.dividerHeight,
+                                thickness: sheetChrome.dividerThickness,
+                                color: dividerColor,
                               ),
-                              onTap: () async {
-                                Navigator.of(ctx).pop();
-                                final picked = await _pickImageBytes(
-                                  source: ImageSource.gallery,
-                                );
-                                if (picked == null) return;
-                                if (!mounted) return;
-                                await _openWeChatComposer(
-                                  initialImageBytes: picked.bytes,
-                                  initialImageMime: picked.mime,
-                                );
-                              },
-                            ),
-                            ListTile(
-                              title: Center(
-                                child: Text(
-                                  l2.isArabic ? 'إلغاء' : 'Cancel',
-                                  style: TextStyle(
-                                    color: Theme.of(ctx).colorScheme.primary,
-                                    fontWeight: FontWeight.w600,
+                            ],
+                          ),
+                        );
+                      }
+
+                      Future<void> runSheetAction(
+                        MomentComposerSheetActionMeta action,
+                      ) async {
+                        Perf.action(action.perfKey);
+                        switch (action.kind) {
+                          case MomentComposerSheetActionKind.text:
+                            await _openWeChatComposer();
+                            break;
+                          case MomentComposerSheetActionKind.camera:
+                            final picked = await _pickImageBytes(
+                              source: ImageSource.camera,
+                            );
+                            if (picked == null) return;
+                            if (!mounted) return;
+                            await _openWeChatComposer(
+                              initialImageBytes: picked.bytes,
+                              initialImageMime: picked.mime,
+                            );
+                            break;
+                          case MomentComposerSheetActionKind.album:
+                            final picked = await _pickImageBytes(
+                              source: ImageSource.gallery,
+                            );
+                            if (picked == null) return;
+                            if (!mounted) return;
+                            await _openWeChatComposer(
+                              initialImageBytes: picked.bytes,
+                              initialImageMime: picked.mime,
+                            );
+                            break;
+                        }
+                      }
+
+                      Widget actionRow({
+                        required IconData icon,
+                        required String title,
+                        required Future<void> Function() onTap,
+                      }) {
+                        return InkWell(
+                          onTap: () async {
+                            Navigator.of(ctx).pop();
+                            await onTap();
+                          },
+                          child: SizedBox(
+                            height: sheetChrome.rowHeight,
+                            child: Row(
+                              children: [
+                                SizedBox(width: sheetChrome.edgeGap),
+                                Icon(icon, size: sheetChrome.iconSize),
+                                SizedBox(width: sheetChrome.iconTextGap),
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: sheetTheme.textTheme.bodyLarge
+                                        ?.copyWith(
+                                      fontSize: sheetChrome.labelFontSize,
+                                      fontWeight: sheetChrome.actionFontWeight,
+                                    ),
                                   ),
                                 ),
-                              ),
-                              onTap: () => Navigator.of(ctx).pop(),
+                                SizedBox(width: sheetChrome.edgeGap),
+                              ],
                             ),
-                          ],
+                          ),
+                        );
+                      }
+
+                      return SafeArea(
+                        top: false,
+                        child: Container(
+                          color: sheetBg,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              section(
+                                sheetMeta.actions
+                                    .map(
+                                      (action) => actionRow(
+                                        icon: action.icon,
+                                        title: action.label,
+                                        onTap: () => runSheetAction(action),
+                                      ),
+                                    )
+                                    .toList(growable: false),
+                              ),
+                              SizedBox(height: sheetChrome.sectionGap),
+                              section([
+                                InkWell(
+                                  onTap: () => Navigator.of(ctx).pop(),
+                                  child: SizedBox(
+                                    height: sheetChrome.rowHeight,
+                                    width: double.infinity,
+                                    child: Center(
+                                      child: Text(
+                                        sheetMeta.cancelLabel,
+                                        style: sheetTheme.textTheme.bodyLarge
+                                            ?.copyWith(
+                                          fontSize: sheetChrome.labelFontSize,
+                                          fontWeight:
+                                              sheetChrome.cancelFontWeight,
+                                          color: sheetTheme.colorScheme.primary,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ]),
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -5366,137 +6343,467 @@ class _MomentsPageState extends State<MomentsPage> {
     );
   }
 
-  Widget _buildOfficialFiltersRow(L10n l) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
+  Widget _momentsFilterButton({
+    IconData? icon,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final chrome = momentFilterStripChromeMeta();
+    final color = selected
+        ? WeChatPalette.green
+        : theme.colorScheme.onSurface.withValues(
+            alpha: isDark
+                ? chrome.unselectedTextDarkAlpha
+                : chrome.unselectedTextLightAlpha,
+          );
+    final fill = selected
+        ? WeChatPalette.green.withValues(
+            alpha: isDark
+                ? chrome.selectedFillDarkAlpha
+                : chrome.selectedFillLightAlpha,
+          )
+        : Colors.transparent;
+    return Padding(
+      padding: EdgeInsetsDirectional.only(end: chrome.buttonEndSpacing),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(chrome.buttonRadius),
+        onTap: onTap,
+        child: Container(
+          height: chrome.buttonHeight,
+          padding: EdgeInsets.symmetric(
+            horizontal: chrome.buttonHorizontalPadding,
+          ),
+          decoration: BoxDecoration(
+            color: fill,
+            borderRadius: BorderRadius.circular(chrome.buttonRadius),
+            border: Border(
+              bottom: BorderSide(
+                color: selected ? WeChatPalette.green : Colors.transparent,
+                width: chrome.selectedUnderlineWidth,
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: chrome.iconSize, color: color),
+                SizedBox(width: chrome.iconGap),
+              ],
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: chrome.labelFontSize,
+                  fontWeight: selected
+                      ? chrome.selectedLabelWeight
+                      : chrome.unselectedLabelWeight,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _momentsFilterStrip({
+    required List<Widget> children,
+    bool topBorder = true,
+  }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final chrome = momentFilterStripChromeMeta();
+    final borderColor = theme.dividerColor.withValues(
+      alpha: isDark ? chrome.darkBorderAlpha : chrome.lightBorderAlpha,
+    );
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: topBorder
+            ? Border(
+                top: BorderSide(color: borderColor, width: chrome.borderWidth),
+                bottom:
+                    BorderSide(color: borderColor, width: chrome.borderWidth),
+              )
+            : Border(
+                bottom:
+                    BorderSide(color: borderColor, width: chrome.borderWidth),
+              ),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.symmetric(
+          horizontal: chrome.horizontalPadding,
+          vertical: chrome.verticalPadding,
+        ),
+        child: Row(children: children),
+      ),
+    );
+  }
+
+  Widget _buildMomentMediaFrame({
+    required MomentMediaLayoutMeta mediaMeta,
+    required Widget child,
+  }) {
+    if (!mediaMeta.hasMedia) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final width = mediaMeta.widthFor(constraints.maxWidth);
+        return Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: SizedBox(width: width, child: child),
+        );
+      },
+    );
+  }
+
+  List<Widget> _buildTrendingTopicComposerRows(L10n l, ThemeData theme) {
+    final sectionMeta = momentComposerTrendingTopicsSectionMeta(
+      isArabic: l.isArabic,
+    );
+    final topics = momentTrendingTopicMetas(
+      isArabic: l.isArabic,
+      rawTopics: _trendingTopics,
+    );
+    if (topics.isEmpty) return const <Widget>[];
+
+    return <Widget>[
+      SizedBox(height: sectionMeta.topGap),
+      Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'الكل' : 'All',
+          Icon(
+            sectionMeta.icon,
+            size: sectionMeta.headerIconSize,
+            color: theme.colorScheme.primary.withValues(
+              alpha: sectionMeta.headerIconAlpha,
             ),
-            selected: !_filterOfficialOnly &&
-                !_filterOfficialRepliesOnly &&
-                !_filterHotOfficialsOnly,
-            onSelected: (sel) {
-              if (!sel) return;
-              setState(() {
-                _filterOfficialOnly = false;
-                _filterOfficialRepliesOnly = false;
-                _filterHotOfficialsOnly = false;
-              });
-              Perf.action('moments_filter_official_only_off');
-            },
           ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'المشاركات الرسمية فقط' : 'Only official shares',
+          SizedBox(width: sectionMeta.headerIconGap),
+          Text(
+            sectionMeta.titleLabel,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontSize: sectionMeta.titleFontSize,
+              fontWeight: sectionMeta.titleWeight,
+              color: theme.colorScheme.onSurface.withValues(
+                alpha: sectionMeta.titleAlpha,
+              ),
             ),
-            selected: _filterOfficialOnly,
-            onSelected: (sel) {
-              if (!sel) return;
-              setState(() {
-                _filterOfficialOnly = true;
-                _filterOfficialRepliesOnly = false;
-                _filterHotOfficialsOnly = false;
-              });
-              Perf.action('moments_filter_official_only_on');
-            },
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'منشورات بها رد رسمي' : 'Only with official reply',
-            ),
-            selected: _filterOfficialRepliesOnly,
-            onSelected: (sel) {
-              if (!sel) return;
-              setState(() {
-                _filterOfficialRepliesOnly = true;
-                _filterOfficialOnly = false;
-                _filterHotOfficialsOnly = false;
-                _topicCategory = null;
-              });
-              Perf.action('moments_filter_official_replies_on');
-            },
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'الحسابات الرائجة فقط' : 'Only hot official shares',
-            ),
-            selected: _filterHotOfficialsOnly,
-            onSelected: (sel) {
-              if (!sel) return;
-              setState(() {
-                _filterHotOfficialsOnly = true;
-                _filterOfficialOnly = false;
-                _filterOfficialRepliesOnly = false;
-              });
-              Perf.action('moments_filter_hot_official_on');
-            },
           ),
         ],
       ),
+      SizedBox(height: sectionMeta.chipsTopGap),
+      Wrap(
+        spacing: sectionMeta.chipSpacing,
+        runSpacing: sectionMeta.chipRunSpacing,
+        children: topics.take(sectionMeta.visibleTopicLimit).map((topic) {
+          return ActionChip(
+            avatar: topic.icon == null
+                ? null
+                : Icon(
+                    topic.icon,
+                    size: sectionMeta.chipIconSize,
+                    color: theme.colorScheme.primary.withValues(
+                      alpha: sectionMeta.chipIconAlpha,
+                    ),
+                  ),
+            label: Text(topic.label),
+            visualDensity: sectionMeta.chipVisualDensity,
+            onPressed: () {
+              Perf.action(topic.perfKey);
+              _openTopic(topic.tag);
+            },
+          );
+        }).toList(growable: false),
+      ),
+    ];
+  }
+
+  Widget _buildOfficialImpactStrip(L10n l) {
+    final stripMeta = momentOfficialImpactStripMeta(isArabic: l.isArabic);
+    final metas = momentOfficialImpactMetas(
+      isArabic: l.isArabic,
+      stats: _myOfficialStats,
+    );
+    if (metas.isEmpty) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final maxPillWidth =
+        MediaQuery.sizeOf(context).width - stripMeta.maxWidthInset;
+    final borderColor = theme.dividerColor.withValues(
+      alpha: theme.brightness == Brightness.dark
+          ? stripMeta.darkBorderAlpha
+          : stripMeta.lightBorderAlpha,
+    );
+
+    Widget pill(MomentOfficialImpactMeta meta) {
+      return Container(
+        constraints: BoxConstraints(maxWidth: maxPillWidth),
+        padding: EdgeInsets.symmetric(
+          horizontal: stripMeta.pillHorizontalPadding,
+          vertical: stripMeta.pillVerticalPadding,
+        ),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primary
+              .withValues(alpha: stripMeta.pillBackgroundAlpha),
+          borderRadius: BorderRadius.circular(stripMeta.pillRadius),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              meta.icon,
+              size: stripMeta.pillIconSize,
+              color: theme.colorScheme.primary
+                  .withValues(alpha: stripMeta.pillIconAlpha),
+            ),
+            SizedBox(width: stripMeta.pillIconGap),
+            Flexible(
+              child: Text(
+                meta.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: stripMeta.pillFontSize,
+                  color: theme.colorScheme.onSurface
+                      .withValues(alpha: stripMeta.pillLabelAlpha),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      margin: EdgeInsets.only(bottom: stripMeta.bottomMargin),
+      padding: EdgeInsets.symmetric(
+        horizontal: stripMeta.horizontalPadding,
+        vertical: stripMeta.verticalPadding,
+      ),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(
+          top: BorderSide(color: borderColor, width: stripMeta.borderWidth),
+          bottom: BorderSide(color: borderColor, width: stripMeta.borderWidth),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                stripMeta.icon,
+                size: stripMeta.headerIconSize,
+                color: theme.colorScheme.primary
+                    .withValues(alpha: stripMeta.headerIconAlpha),
+              ),
+              SizedBox(width: stripMeta.headerIconGap),
+              Flexible(
+                child: Text(
+                  stripMeta.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: stripMeta.headerTitleWeight,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: stripMeta.pillTopGap),
+          Wrap(
+            spacing: stripMeta.pillSpacing,
+            runSpacing: stripMeta.pillRunSpacing,
+            children: metas.map(pill).toList(growable: false),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMomentsDiscoveryFilterBar(L10n l) {
+    final allClear = !_filterOfficialOnly &&
+        !_filterOfficialRepliesOnly &&
+        !_filterHotOfficialsOnly &&
+        !_filterRedpacketOnly &&
+        !_filterMiniProgramOnly &&
+        !_filterOfficialLinkedOnly &&
+        !_filterChannelClipsOnly &&
+        !_filterLast3Days &&
+        !_filterCloseFriendsOnly &&
+        (_topicCategory ?? '').isEmpty &&
+        (_filterAudienceTag ?? '').isEmpty;
+
+    final filters = momentDiscoveryFilterMetas(
+      isArabic: l.isArabic,
+      allSelected: allClear,
+      officialSelected: _filterOfficialOnly,
+      miniProgramsSelected: _filterMiniProgramOnly,
+      channelsSelected: _filterChannelClipsOnly,
+      greenPaketSelected: _filterRedpacketOnly,
+      recentSelected: _filterLast3Days,
+      closeFriendsSelected: _filterCloseFriendsOnly,
+    );
+
+    void applyFilter(MomentDiscoveryFilterMeta filter) {
+      setState(() {
+        switch (filter.kind) {
+          case MomentDiscoveryFilterKind.all:
+            _filterOfficialOnly = false;
+            _filterOfficialRepliesOnly = false;
+            _filterHotOfficialsOnly = false;
+            _filterRedpacketOnly = false;
+            _filterMiniProgramOnly = false;
+            _filterOfficialLinkedOnly = false;
+            _filterChannelClipsOnly = false;
+            _filterLast3Days = false;
+            _filterCloseFriendsOnly = false;
+            _topicCategory = null;
+            _filterAudienceTag = null;
+            break;
+          case MomentDiscoveryFilterKind.official:
+            _filterOfficialOnly = !_filterOfficialOnly;
+            if (_filterOfficialOnly) {
+              _filterOfficialRepliesOnly = false;
+              _filterHotOfficialsOnly = false;
+            }
+            break;
+          case MomentDiscoveryFilterKind.miniPrograms:
+            _filterMiniProgramOnly = !_filterMiniProgramOnly;
+            break;
+          case MomentDiscoveryFilterKind.channels:
+            _filterChannelClipsOnly = !_filterChannelClipsOnly;
+            break;
+          case MomentDiscoveryFilterKind.greenPaket:
+            _filterRedpacketOnly = !_filterRedpacketOnly;
+            break;
+          case MomentDiscoveryFilterKind.recent:
+            _filterLast3Days = !_filterLast3Days;
+            break;
+          case MomentDiscoveryFilterKind.closeFriends:
+            _filterCloseFriendsOnly = !_filterCloseFriendsOnly;
+            break;
+        }
+      });
+      Perf.action(filter.perfKey);
+    }
+
+    return _momentsFilterStrip(
+      children: filters
+          .map(
+            (filter) => _momentsFilterButton(
+              icon: filter.icon,
+              label: filter.label,
+              selected: filter.selected,
+              onTap: () => applyFilter(filter),
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  Widget _buildOfficialFiltersRow(L10n l) {
+    final filters = momentOfficialFilterMetas(
+      isArabic: l.isArabic,
+      officialOnlySelected: _filterOfficialOnly,
+      officialRepliesSelected: _filterOfficialRepliesOnly,
+      hotOfficialsSelected: _filterHotOfficialsOnly,
+    );
+
+    void applyFilter(MomentOfficialFilterMeta filter) {
+      setState(() {
+        switch (filter.kind) {
+          case MomentOfficialFilterKind.all:
+            _filterOfficialOnly = false;
+            _filterOfficialRepliesOnly = false;
+            _filterHotOfficialsOnly = false;
+            break;
+          case MomentOfficialFilterKind.officialShares:
+            _filterOfficialOnly = true;
+            _filterOfficialRepliesOnly = false;
+            _filterHotOfficialsOnly = false;
+            break;
+          case MomentOfficialFilterKind.officialReplies:
+            _filterOfficialRepliesOnly = true;
+            _filterOfficialOnly = false;
+            _filterHotOfficialsOnly = false;
+            _topicCategory = null;
+            break;
+          case MomentOfficialFilterKind.hotOfficialShares:
+            _filterHotOfficialsOnly = true;
+            _filterOfficialOnly = false;
+            _filterOfficialRepliesOnly = false;
+            break;
+        }
+      });
+      Perf.action(filter.perfKey);
+    }
+
+    return _momentsFilterStrip(
+      topBorder: false,
+      children: filters
+          .map(
+            (filter) => _momentsFilterButton(
+              icon: filter.icon,
+              label: filter.label,
+              selected: filter.selected,
+              onTap: () => applyFilter(filter),
+            ),
+          )
+          .toList(growable: false),
     );
   }
 
   Widget _buildTopicBar(L10n l) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-      child: Row(
-        children: [
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'الكل' : 'All',
-            ),
-            selected: (_topicCategory == null) &&
-                !_filterOfficialOnly &&
-                !_filterOfficialRepliesOnly,
-            onSelected: (sel) {
-              if (!sel) return;
-              setState(() {
-                _topicCategory = null;
-                _filterOfficialOnly = false;
-                _filterOfficialRepliesOnly = false;
-              });
-              Perf.action('moments_topic_all');
-            },
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(
-              l.isArabic ? 'المحفظة' : 'Wallet',
-            ),
-            selected: _topicCategory == 'wallet',
-            onSelected: (sel) {
-              setState(() {
-                _topicCategory = sel ? 'wallet' : null;
-                _filterOfficialOnly = true;
-                _filterOfficialRepliesOnly = false;
-              });
-              Perf.action(
-                sel ? 'moments_topic_wallet_on' : 'moments_topic_wallet_off',
-              );
-            },
-          ),
-        ],
-      ),
+    final filters = momentTopicFilterMetas(
+      isArabic: l.isArabic,
+      topicCategory: _topicCategory,
+      officialSelected: _filterOfficialOnly,
+      officialRepliesSelected: _filterOfficialRepliesOnly,
     );
-  }
 
-  List<String> _extractHashtags(String text) {
-    final re = RegExp(r'#([\w]+)', unicode: true);
-    final tags = <String>{};
-    for (final m in re.allMatches(text)) {
-      final raw = (m.group(1) ?? '').trim();
-      if (raw.isEmpty) continue;
-      tags.add(raw);
+    void applyFilter(MomentTopicFilterMeta filter) {
+      setState(() {
+        switch (filter.kind) {
+          case MomentTopicFilterKind.all:
+            _topicCategory = null;
+            _filterOfficialOnly = false;
+            _filterOfficialRepliesOnly = false;
+            break;
+          case MomentTopicFilterKind.wallet:
+            final enable = _topicCategory != 'wallet';
+            _topicCategory = enable ? 'wallet' : null;
+            _filterOfficialOnly = enable;
+            _filterOfficialRepliesOnly = false;
+            break;
+        }
+      });
+      Perf.action(filter.perfKey);
     }
-    final list = tags.toList()..sort();
-    return list;
+
+    return _momentsFilterStrip(
+      topBorder: false,
+      children: filters
+          .map(
+            (filter) => _momentsFilterButton(
+              icon: filter.icon,
+              label: filter.label,
+              selected: filter.selected,
+              onTap: () => applyFilter(filter),
+            ),
+          )
+          .toList(growable: false),
+    );
   }
 
   bool _isChannelClipMoment(Map<String, dynamic> p) {
@@ -5504,18 +6811,9 @@ class _MomentsPageState extends State<MomentsPage> {
     if (text.contains('#ch_')) return true;
     final originItem = (p['origin_official_item_id'] ?? '').toString().trim();
     if (originItem.isNotEmpty) return true;
-    if (text.contains('shamell://official/')) {
-      final pattern = RegExp(
-        r'shamell://official/([^/\s]+)(?:/([^\s]+))?',
-        caseSensitive: false,
-      );
-      final match = pattern.firstMatch(text);
-      if (match != null) {
-        final itemIdRaw = (match.group(2) ?? '').trim();
-        if (itemIdRaw.isNotEmpty) {
-          return true;
-        }
-      }
+    final target = parseOfficialDeepLinkFromText(text);
+    if ((target?.itemId ?? '').trim().isNotEmpty) {
+      return true;
     }
     return false;
   }
@@ -5542,199 +6840,182 @@ class _MomentsPageState extends State<MomentsPage> {
     String? originAccountId,
     String? originItemId,
   }) {
-    String accountId = (originAccountId ?? '').trim();
-    String? itemId = (originItemId ?? '').trim();
-    if (itemId.isEmpty) itemId = null;
-    if (accountId.isEmpty) {
-      final pattern = RegExp(
-        r'shamell://official/([^/\s]+)(?:/([^\s]+))?',
-        caseSensitive: false,
-      );
-      final match = pattern.firstMatch(text);
-      if (match == null) return null;
-      accountId = (match.group(1) ?? '').trim();
-      if (accountId.isEmpty) return null;
-      final itemIdRaw = (match.group(2) ?? '').trim();
-      itemId = itemIdRaw.isEmpty ? null : itemIdRaw;
-    }
+    final target = officialTargetFromExplicitOrText(
+      explicitAccountId: originAccountId,
+      explicitItemId: originItemId,
+      text: text,
+    );
+    if (target == null) return null;
+    final accountId = target.accountId.trim();
+    if (accountId.isEmpty) return null;
+    final itemId =
+        (target.itemId ?? '').trim().isEmpty ? null : target.itemId!.trim();
 
     final acc = _officialAccounts[accountId];
     final accountName = (acc?.name ?? '').isNotEmpty ? acc!.name : accountId;
-    final kind = (acc?.kind ?? 'service').toLowerCase();
-    final isService = kind == 'service';
-    final kindLabel = isService
-        ? (l.isArabic ? 'حساب خدمة' : 'Service account')
-        : (l.isArabic ? 'حساب اشتراك' : 'Subscription account');
-
-    String? itemTitle;
-    if (itemId != null) {
-      final lines = text
-          .split('\n')
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)
-          .toList();
-      if (lines.isNotEmpty) {
-        final first = lines.first;
-        final lower = first.toLowerCase();
-        if (!lower.startsWith('from ') && !lower.startsWith('من ')) {
-          itemTitle = first;
-        }
-      }
-    }
+    final officialMeta = momentOfficialAttachmentMeta(
+      accountName: accountName,
+      accountKind: acc?.kind ?? 'service',
+      itemId: itemId,
+      itemTitle: itemId == null
+          ? null
+          : officialAttachmentItemTitleFromMomentText(text),
+      linkedMiniProgramId: acc?.miniAppId,
+      isArabic: l.isArabic,
+    );
+    final chrome = momentOfficialAttachmentChromeMeta();
 
     final isDark = theme.brightness == Brightness.dark;
-    final bgColor =
-        theme.colorScheme.primary.withValues(alpha: isDark ? .20 : .06);
+    final bgColor = isDark
+        ? theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: chrome.darkSurfaceAlpha,
+          )
+        : WeChatPalette.searchFill;
+    final borderColor = theme.dividerColor.withValues(
+      alpha: isDark ? chrome.darkBorderAlpha : chrome.lightBorderAlpha,
+    );
+    final mutedColor = theme.colorScheme.onSurface.withValues(
+      alpha: chrome.mutedTextAlpha,
+    );
+
+    final actions = <Widget>[
+      if ((acc?.miniAppId ?? '').trim().isNotEmpty)
+        _momentAttachmentIconAction(
+          theme: theme,
+          tooltip: officialMeta.serviceActionLabel,
+          icon: officialMeta.serviceActionIcon,
+          buttonSize: officialMeta.actionButtonSize,
+          iconSize: officialMeta.actionIconSize,
+          onPressed: () {
+            final mid = acc!.miniAppId!.trim();
+            unawaited(
+              _openMiniProgramFromMoment(
+                MiniProgramDeepLinkTarget(id: mid),
+                accountName,
+              ),
+            );
+          },
+        ),
+      _momentAttachmentIconAction(
+        theme: theme,
+        tooltip: officialMeta.channelsActionLabel,
+        icon: officialMeta.channelsActionIcon,
+        buttonSize: officialMeta.actionButtonSize,
+        iconSize: officialMeta.actionIconSize,
+        onPressed: () => _openOfficialFromMoment(accountId, itemId),
+      ),
+      if (acc != null && !acc.followed)
+        _momentAttachmentIconAction(
+          theme: theme,
+          tooltip: officialMeta.followActionLabel,
+          icon: officialMeta.followActionIcon,
+          buttonSize: officialMeta.actionButtonSize,
+          iconSize: officialMeta.actionIconSize,
+          onPressed: () => _toggleOfficialFollowFromMoment(
+            accountId,
+            officialMeta.isServiceAccount,
+          ),
+        ),
+      if ((acc?.chatPeerId ?? '').trim().isNotEmpty)
+        _momentAttachmentIconAction(
+          theme: theme,
+          tooltip: officialMeta.chatActionLabel,
+          icon: officialMeta.chatActionIcon,
+          buttonSize: officialMeta.actionButtonSize,
+          iconSize: officialMeta.actionIconSize,
+          onPressed: () => _openOfficialChatFromMoment(acc!.chatPeerId!.trim()),
+        ),
+    ];
 
     return InkWell(
       onTap: () => _openOfficialFromMoment(accountId, itemId),
+      splashColor:
+          theme.colorScheme.primary.withValues(alpha: chrome.splashAlpha),
+      highlightColor:
+          theme.colorScheme.primary.withValues(alpha: chrome.highlightAlpha),
       child: Container(
-        padding: const EdgeInsets.all(8),
+        padding: EdgeInsets.symmetric(
+          horizontal: chrome.horizontalPadding,
+          vertical: chrome.verticalPadding,
+        ),
         decoration: BoxDecoration(
           color: bgColor,
-          borderRadius: BorderRadius.circular(8),
+          border: Border.symmetric(
+            horizontal: BorderSide(
+              color: borderColor,
+              width: chrome.borderWidth,
+            ),
+          ),
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             if ((acc?.avatarUrl ?? '').isNotEmpty)
               CircleAvatar(
-                radius: 16,
+                radius: officialMeta.avatarRadius,
                 backgroundImage: NetworkImage(acc!.avatarUrl!),
               )
             else
               Container(
-                width: 32,
-                height: 32,
+                width: officialMeta.fallbackIconBoxSize,
+                height: officialMeta.fallbackIconBoxSize,
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.primary
-                      .withValues(alpha: isDark ? .30 : .12),
-                  shape: BoxShape.circle,
+                  color: theme.colorScheme.primary.withValues(
+                    alpha: isDark
+                        ? chrome.fallbackIconFillDarkAlpha
+                        : chrome.fallbackIconFillLightAlpha,
+                  ),
+                  borderRadius:
+                      BorderRadius.circular(officialMeta.fallbackIconRadius),
                 ),
                 child: Icon(
-                  Icons.verified_outlined,
-                  size: 18,
+                  officialMeta.fallbackIcon,
+                  size: officialMeta.fallbackIconSize,
                   color: theme.colorScheme.primary,
                 ),
               ),
-            const SizedBox(width: 8),
+            SizedBox(width: chrome.iconTextGap),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    itemTitle ??
-                        (itemId != null
-                            ? (l.isArabic ? 'منشور رسمي' : 'Official update')
-                            : (l.isArabic ? 'حساب رسمي' : 'Official account')),
+                    officialMeta.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodyMedium?.copyWith(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
+                      fontSize: officialMeta.titleFontSize,
+                      fontWeight: chrome.titleFontWeight,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  SizedBox(height: chrome.subtitleTopGap),
                   Text(
-                    '$accountName · $kindLabel',
+                    officialMeta.subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall?.copyWith(
-                      fontSize: 11,
-                      color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                      fontSize: officialMeta.subtitleFontSize,
+                      color: mutedColor,
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 4),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if ((acc?.miniAppId ?? '').trim().isNotEmpty)
-                  TextButton(
-                    onPressed: () {
-                      final mid = acc!.miniAppId!.trim();
-                      try {
-                        final uri = Uri.parse('shamell://miniapp/$mid');
-                        launchUrl(uri);
-                      } catch (_) {}
-                    },
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      minimumSize: Size.zero,
-                    ),
-                    child: Text(
-                      () {
-                        final mid = acc?.miniAppId ?? '';
-                        if (mid == 'bus') {
-                          return l.isArabic ? 'فتح الباص' : 'Open bus';
-                        }
-                        if (mid == 'payments') {
-                          return l.isArabic ? 'فتح المحفظة' : 'Open wallet';
-                        }
-                        return l.isArabic ? 'فتح الخدمة' : 'Open service';
-                      }(),
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                if ((acc?.miniAppId ?? '').trim().isNotEmpty)
-                  const SizedBox(width: 4),
-                TextButton(
-                  onPressed: () {
-                    _openOfficialFromMoment(accountId, itemId);
-                  },
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    minimumSize: Size.zero,
-                  ),
-                  child: Text(
-                    l.isArabic ? 'القناة' : 'Channels',
-                    style: const TextStyle(fontSize: 11),
-                  ),
-                ),
-                if (acc != null && !acc.followed)
-                  TextButton(
-                    onPressed: () =>
-                        _toggleOfficialFollowFromMoment(accountId, isService),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      minimumSize: Size.zero,
-                    ),
-                    child: Text(
-                      l.isArabic ? 'متابعة' : 'Follow',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                if ((acc?.chatPeerId ?? '').trim().isNotEmpty)
-                  TextButton(
-                    onPressed: () =>
-                        _openOfficialChatFromMoment(acc!.chatPeerId!.trim()),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      minimumSize: Size.zero,
-                    ),
-                    child: Text(
-                      l.isArabic ? 'دردشة' : 'Chat',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                const Icon(
-                  Icons.chevron_right,
-                  size: 18,
-                ),
-              ],
+            SizedBox(width: chrome.actionGap),
+            ConstrainedBox(
+              constraints:
+                  BoxConstraints(maxWidth: officialMeta.actionsMaxWidth),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: chrome.actionWrapSpacing,
+                runSpacing: chrome.actionWrapRunSpacing,
+                children: actions,
+              ),
+            ),
+            Icon(
+              officialMeta.chevronIcon,
+              size: officialMeta.chevronSize,
+              color: mutedColor,
             ),
           ],
         ),
@@ -5742,62 +7023,243 @@ class _MomentsPageState extends State<MomentsPage> {
     );
   }
 
-  MiniAppDescriptor? _miniAppFromText(String text) {
-    final pattern = RegExp(
-      r'shamell://miniapp/([^\s/]+)',
-      caseSensitive: false,
+  Widget _momentAttachmentIconAction({
+    required ThemeData theme,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onPressed,
+    double buttonSize = 30,
+    double iconSize = 17,
+    Color? color,
+  }) {
+    final chrome = momentAttachmentIconActionChromeMeta();
+    final iconColor = color ??
+        theme.colorScheme.onSurface.withValues(
+          alpha: chrome.defaultIconAlpha,
+        );
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: iconSize, color: iconColor),
+      visualDensity: chrome.visualDensity,
+      padding: chrome.padding,
+      constraints:
+          BoxConstraints.tightFor(width: buttonSize, height: buttonSize),
+      style: IconButton.styleFrom(
+        tapTargetSize: chrome.tapTargetSize,
+        minimumSize: Size(buttonSize, buttonSize),
+        padding: chrome.padding,
+      ),
     );
-    final match = pattern.firstMatch(text);
-    if (match == null) return null;
-    final rawId = (match.group(1) ?? '').trim();
-    if (rawId.isEmpty) return null;
-    final id = rawId.toLowerCase();
-    return miniAppById(id);
+  }
+
+  MiniProgramDeepLinkTarget? _miniProgramTargetFromText(String text) {
+    return parseMiniProgramDeepLinkFromText(text);
+  }
+
+  MiniAppDescriptor? _miniAppDescriptorById(String id) {
+    final normalized = id.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+    for (final descriptor in MiniAppRegistry.descriptors) {
+      final runtimeId = (descriptor.runtimeAppId ?? descriptor.id).trim();
+      if (descriptor.id.toLowerCase() == normalized ||
+          runtimeId.toLowerCase() == normalized) {
+        return descriptor;
+      }
+    }
+    return miniAppById(normalized);
+  }
+
+  MiniAppDescriptor? _miniAppFromText(String text) {
+    final target = _miniProgramTargetFromText(text);
+    if (target == null) return null;
+    return _miniAppDescriptorById(target.id);
+  }
+
+  Future<void> _openMiniProgramFromMoment(
+    MiniProgramDeepLinkTarget target,
+    String title,
+  ) async {
+    final id = target.id.trim().toLowerCase();
+    if (id.isEmpty) return;
+    Perf.action('moments_open_mini_program');
+
+    String walletId = '';
+    String deviceId = 'moments';
+    try {
+      final sp = await SharedPreferences.getInstance();
+      walletId = sp.getString('wallet_id') ?? '';
+      deviceId = await CallSignalingClient.loadDeviceId(
+              baseUrlOverride: widget.baseUrl) ??
+          deviceId;
+    } catch (_) {}
+    if (!mounted) return;
+
+    if (_isPaymentMiniProgram(id)) {
+      _pushPaymentsMiniProgram(
+        id,
+        walletId: walletId,
+        deviceId: deviceId,
+        resourceId: target.resourceId,
+        contextLabel: title,
+      );
+      return;
+    }
+
+    late final void Function(String) openMod;
+    openMod = (next) {
+      final nextId = next.trim().toLowerCase();
+      if (nextId.isEmpty || !mounted) return;
+      if (_isPaymentMiniProgram(nextId)) {
+        _pushPaymentsMiniProgram(
+          nextId,
+          walletId: walletId,
+          deviceId: deviceId,
+          contextLabel: title,
+        );
+        return;
+      }
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => MiniProgramPage(
+            id: nextId,
+            baseUrl: widget.baseUrl,
+            walletId: walletId,
+            deviceId: deviceId,
+            onOpenMod: openMod,
+          ),
+        ),
+      );
+    };
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MiniProgramPage(
+          id: id,
+          baseUrl: widget.baseUrl,
+          walletId: walletId,
+          deviceId: deviceId,
+          onOpenMod: openMod,
+        ),
+      ),
+    );
+  }
+
+  bool _isPaymentMiniProgram(String id) {
+    final normalized = id.trim().toLowerCase();
+    return normalized == 'payments' ||
+        normalized == 'alias' ||
+        normalized == 'merchant' ||
+        normalized == 'green_paket';
+  }
+
+  void _pushPaymentsMiniProgram(
+    String id, {
+    required String walletId,
+    required String deviceId,
+    String? resourceId,
+    String? contextLabel,
+  }) {
+    if (!mounted) return;
+    final normalized = id.trim().toLowerCase();
+    final packetId = (resourceId ?? '').trim();
+    final initialSection = normalized == 'green_paket' && packetId.isNotEmpty
+        ? 'redpacket:$packetId'
+        : null;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PaymentsPage(
+          widget.baseUrl,
+          walletId,
+          deviceId,
+          initialSection: initialSection,
+          contextLabel: (contextLabel ?? '').trim().isNotEmpty
+              ? contextLabel!.trim()
+              : null,
+        ),
+      ),
+    );
   }
 
   Widget? _buildMiniAppAttachment(
+    Map<String, dynamic> post,
     String text,
     ThemeData theme,
     L10n l,
   ) {
-    final meta = _miniAppFromText(text);
-    if (meta == null) return null;
-    final id = meta.id;
-    final title = meta.title(isArabic: l.isArabic);
-    final cat = meta.category(isArabic: l.isArabic);
-    final icon = meta.icon;
+    final explicitId = (post['mini_program_id'] ?? '').toString().trim();
+    final target = miniProgramTargetFromExplicitOrText(
+      explicitId: explicitId,
+      text: text,
+    );
+    if (target == null) return null;
+    final meta = _miniAppDescriptorById(target.id);
+    final id = target.id;
+    final resourceId = (target.resourceId ?? '').trim();
+    final attachmentMeta = momentMiniProgramAttachmentMeta(
+      id: id,
+      resourceId: resourceId,
+      descriptor: meta,
+      isArabic: l.isArabic,
+    );
+    final title = attachmentMeta.title;
+    final accent = momentMiniProgramAccentColor(id);
+    final chrome = momentMiniProgramAttachmentChromeMeta();
 
     final isDark = theme.brightness == Brightness.dark;
-    final bgColor =
-        theme.colorScheme.surface.withValues(alpha: isDark ? .35 : .10);
+    final bgColor = isDark
+        ? theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: chrome.darkSurfaceAlpha,
+          )
+        : WeChatPalette.searchFill;
+    final borderColor = theme.dividerColor.withValues(
+      alpha: isDark ? chrome.darkBorderAlpha : chrome.lightBorderAlpha,
+    );
+    final mutedColor = theme.colorScheme.onSurface.withValues(
+      alpha: chrome.mutedTextAlpha,
+    );
 
     return InkWell(
       onTap: () {
-        // Reuse global module routing via deep-link.
-        try {
-          final uri = Uri.parse('shamell://miniapp/$id');
-          launchUrl(uri);
-        } catch (_) {}
+        unawaited(_openMiniProgramFromMoment(target, title));
       },
+      splashColor: accent.withValues(alpha: chrome.splashAlpha),
+      highlightColor: accent.withValues(alpha: chrome.highlightAlpha),
       child: Container(
-        padding: const EdgeInsets.all(8),
+        padding: EdgeInsets.symmetric(
+          horizontal: chrome.horizontalPadding,
+          vertical: chrome.verticalPadding,
+        ),
         decoration: BoxDecoration(
           color: bgColor,
-          borderRadius: BorderRadius.circular(10),
+          border: Border.symmetric(
+            horizontal: BorderSide(
+              color: borderColor,
+              width: chrome.borderWidth,
+            ),
+          ),
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Container(
-              width: 40,
-              height: 40,
+              width: attachmentMeta.iconBoxSize,
+              height: attachmentMeta.iconBoxSize,
               decoration: BoxDecoration(
-                color: theme.colorScheme.primary
-                    .withValues(alpha: isDark ? .30 : .12),
-                borderRadius: BorderRadius.circular(12),
+                color: accent.withValues(
+                  alpha: isDark
+                      ? chrome.iconFillDarkAlpha
+                      : chrome.iconFillLightAlpha,
+                ),
+                borderRadius: BorderRadius.circular(attachmentMeta.iconRadius),
               ),
-              child: Icon(icon, size: 22),
+              child: Icon(
+                attachmentMeta.icon,
+                size: attachmentMeta.iconSize,
+                color: accent,
+              ),
             ),
-            const SizedBox(width: 8),
+            SizedBox(width: chrome.iconTextGap),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -5807,39 +7269,47 @@ class _MomentsPageState extends State<MomentsPage> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodyMedium?.copyWith(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
+                      fontSize: attachmentMeta.titleFontSize,
+                      fontWeight: chrome.titleFontWeight,
                     ),
                   ),
-                  if (cat.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        cat,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontSize: 11,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .70),
-                        ),
-                      ),
+                  SizedBox(height: chrome.subtitleTopGap),
+                  Text(
+                    attachmentMeta.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontSize: attachmentMeta.subtitleFontSize,
+                      color: mutedColor,
                     ),
+                  ),
+                  SizedBox(height: chrome.footerTopGap),
+                  Text(
+                    attachmentMeta.footer,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontSize: attachmentMeta.footerFontSize,
+                      color: mutedColor,
+                    ),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(width: 6),
-            TextButton(
+            SizedBox(width: chrome.actionGap),
+            _momentAttachmentIconAction(
+              theme: theme,
+              tooltip: attachmentMeta.openTooltip,
+              icon: attachmentMeta.openIcon,
+              color: accent,
               onPressed: () {
-                try {
-                  final uri = Uri.parse('shamell://miniapp/$id');
-                  launchUrl(uri);
-                } catch (_) {}
+                unawaited(_openMiniProgramFromMoment(target, title));
               },
-              child: Text(
-                l.isArabic ? 'فتح التطبيق المصغر' : 'Open mini‑app',
-                style: const TextStyle(fontSize: 11),
-              ),
+            ),
+            Icon(
+              attachmentMeta.chevronIcon,
+              size: chrome.chevronSize,
+              color: mutedColor,
             ),
           ],
         ),
@@ -5853,16 +7323,41 @@ class _MomentsPageState extends State<MomentsPage> {
   ) async {
     if (accountId.isEmpty) return;
     try {
-      final uriStr = (itemId != null && itemId.isNotEmpty)
-          ? 'shamell://official/$accountId/$itemId'
-          : 'shamell://official/$accountId';
-      final uri = Uri.parse(uriStr);
       Perf.action('moments_open_official');
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(uri);
-      }
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) {
+            void openChat(String peerId) {
+              if (peerId.trim().isEmpty || !mounted) return;
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ShamellChatPage(
+                    baseUrl: widget.baseUrl,
+                    initialPeerId: peerId.trim(),
+                  ),
+                ),
+              );
+            }
+
+            final cleanItemId = (itemId ?? '').trim();
+            if (cleanItemId.isNotEmpty) {
+              return OfficialFeedItemDeepLinkPage(
+                baseUrl: widget.baseUrl,
+                accountId: accountId.trim(),
+                itemId: cleanItemId,
+                onOpenChat: openChat,
+              );
+            }
+            return OfficialAccountDeepLinkPage(
+              baseUrl: widget.baseUrl,
+              accountId: accountId.trim(),
+              onOpenChat: openChat,
+            );
+          },
+        ),
+      );
     } catch (_) {}
   }
 
@@ -5875,7 +7370,7 @@ class _MomentsPageState extends State<MomentsPage> {
         context,
         MaterialPageRoute(
           builder: (_) =>
-              ThreemaChatPage(baseUrl: widget.baseUrl, initialPeerId: peerId),
+              ShamellChatPage(baseUrl: widget.baseUrl, initialPeerId: peerId),
         ),
       );
     } catch (_) {}
@@ -5896,7 +7391,8 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/official_accounts/$accountId/$endpoint');
-      final r = await http.post(uri, headers: await _hdrMoments(json: true));
+      final r = await http.post(uri,
+          headers: await _hdrMoments(widget.baseUrl, json: true));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       setState(() {
         _officialAccounts[accountId] = _MomentOfficialAccount(
@@ -5940,7 +7436,7 @@ class _MomentsPageState extends State<MomentsPage> {
           Uri.parse('${widget.baseUrl}/moments/admin/posts/$postId/comment');
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(widget.baseUrl, json: true),
         body: jsonEncode(payload),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) {
@@ -5956,22 +7452,34 @@ class _MomentsPageState extends State<MomentsPage> {
 }
 
 class _WeChatMomentActionMenu extends StatelessWidget {
-  final String likeLabel;
-  final String commentLabel;
+  final MomentPostQuickActionMeta likeAction;
+  final MomentPostQuickActionMeta commentAction;
+  final MomentPostQuickActionMeta shareAction;
+  final MomentPostQuickActionMeta saveAction;
+  final double width;
   final bool likeEnabled;
   final VoidCallback onLike;
   final VoidCallback onComment;
+  final VoidCallback onShare;
+  final VoidCallback onSave;
 
   const _WeChatMomentActionMenu({
-    required this.likeLabel,
-    required this.commentLabel,
+    required this.likeAction,
+    required this.commentAction,
+    required this.shareAction,
+    required this.saveAction,
+    required this.width,
     required this.likeEnabled,
     required this.onLike,
     required this.onComment,
+    required this.onShare,
+    required this.onSave,
   });
 
   @override
   Widget build(BuildContext context) {
+    final chrome = momentPostActionMenuChromeMeta();
+
     Widget action({
       required IconData icon,
       required String label,
@@ -5981,26 +7489,33 @@ class _WeChatMomentActionMenu extends StatelessWidget {
       return InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          padding: EdgeInsets.symmetric(
+            horizontal: chrome.actionHorizontalPadding,
+            vertical: chrome.actionVerticalPadding,
+          ),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
                 icon,
-                size: 18,
+                size: chrome.iconSize,
                 color: enabled
-                    ? Colors.white.withValues(alpha: .95)
-                    : Colors.white.withValues(alpha: .45),
+                    ? Colors.white.withValues(alpha: chrome.enabledAlpha)
+                    : Colors.white.withValues(alpha: chrome.disabledAlpha),
               ),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: enabled
-                      ? Colors.white.withValues(alpha: .95)
-                      : Colors.white.withValues(alpha: .45),
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+              SizedBox(width: chrome.iconLabelGap),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: enabled
+                        ? Colors.white.withValues(alpha: chrome.enabledAlpha)
+                        : Colors.white.withValues(alpha: chrome.disabledAlpha),
+                    fontSize: chrome.labelFontSize,
+                    fontWeight: chrome.labelFontWeight,
+                  ),
                 ),
               ),
             ],
@@ -6012,39 +7527,56 @@ class _WeChatMomentActionMenu extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: Container(
-        width: 184,
-        height: 42,
+        width: width,
+        height: chrome.height,
         decoration: BoxDecoration(
-          color: const Color(0xFF4C4C4C),
-          borderRadius: BorderRadius.circular(6),
-          boxShadow: const [
-            BoxShadow(
-              color: Colors.black26,
-              blurRadius: 10,
-              offset: Offset(0, 6),
-            ),
-          ],
+          color: chrome.backgroundColor,
+          borderRadius: BorderRadius.circular(chrome.borderRadius),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Expanded(
               child: action(
-                icon: Icons.thumb_up_alt_outlined,
-                label: likeLabel,
+                icon: likeAction.icon,
+                label: likeAction.label,
                 onTap: likeEnabled ? onLike : null,
               ),
             ),
             Container(
-              width: 1,
-              height: 22,
-              color: Colors.white.withValues(alpha: .14),
+              width: chrome.dividerWidth,
+              height: chrome.dividerHeight,
+              color: Colors.white.withValues(alpha: chrome.dividerAlpha),
             ),
             Expanded(
               child: action(
-                icon: Icons.chat_bubble_outline,
-                label: commentLabel,
+                icon: commentAction.icon,
+                label: commentAction.label,
                 onTap: onComment,
+              ),
+            ),
+            Container(
+              width: chrome.dividerWidth,
+              height: chrome.dividerHeight,
+              color: Colors.white.withValues(alpha: chrome.dividerAlpha),
+            ),
+            Expanded(
+              child: action(
+                icon: shareAction.icon,
+                label: shareAction.label,
+                onTap: onShare,
+              ),
+            ),
+            Container(
+              width: chrome.dividerWidth,
+              height: chrome.dividerHeight,
+              color: Colors.white.withValues(alpha: chrome.dividerAlpha),
+            ),
+            Expanded(
+              child: action(
+                icon: saveAction.icon,
+                label: saveAction.label,
+                onTap: onSave,
               ),
             ),
           ],
@@ -6146,9 +7678,20 @@ class _MomentOfficialAccount {
           : (j['category'] ?? '').toString(),
       featured: (j['featured'] as bool?) ?? false,
       totalShares: (j['moments_total_shares'] as num?)?.toInt(),
-      miniAppId: (j['mini_app_id'] ?? '').toString().isEmpty
-          ? null
-          : (j['mini_app_id'] ?? '').toString(),
+      miniAppId: _momentMiniProgramId(j),
     );
   }
+}
+
+String? _momentMiniProgramId(Map<String, dynamic> raw) {
+  for (final key in const <String>[
+    'mini_program_id',
+    'mini_app_id',
+    'app_id',
+    'module_app_id',
+  ]) {
+    final value = (raw[key] ?? '').toString().trim();
+    if (value.isNotEmpty) return value;
+  }
+  return null;
 }

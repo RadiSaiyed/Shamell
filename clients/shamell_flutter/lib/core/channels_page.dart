@@ -7,28 +7,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'glass.dart';
 import 'l10n.dart';
+import 'network_image_helpers.dart';
 import 'official_accounts_page.dart' show OfficialFeedItemDeepLinkPage;
-import 'moments_page.dart' show MomentsPage;
 import 'mini_apps_config.dart';
 import 'call_signaling.dart';
-import '../mini_apps/payments/payments_shell.dart';
+import 'payments/payments_shell.dart';
 import 'mini_programs_my_page_insights.dart' show MiniProgramInsightChip;
+import 'shamell_empty_state.dart';
+import 'shamell_moments_page.dart';
 import 'wechat_ui.dart';
 import 'mini_program_runtime.dart';
+import 'session_cookie_store.dart';
 
-Future<Map<String, String>> _hdrChannels({bool json = false}) async {
-  final headers = <String, String>{};
-  if (json) {
-    headers['content-type'] = 'application/json';
-  }
-  try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
-    if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
-    }
-  } catch (_) {}
-  return headers;
+Future<Map<String, String>> _hdrChannels({
+  required String baseUrl,
+  bool json = false,
+}) {
+  return shamellSessionHeadersForBaseUrl(baseUrl, json: json);
 }
 
 class ChannelsPage extends StatefulWidget {
@@ -45,7 +40,7 @@ class ChannelsPage extends StatefulWidget {
   // frame to mimic a "Go live" action.
   final bool openLiveComposerOnStart;
   // Optional: start with the "Live only"
-  // filter enabled, WeChat-style live tab.
+  // filter enabled, SyrChat Super-App live tab.
   final bool initialLiveOnly;
 
   const ChannelsPage({
@@ -91,18 +86,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
   }
 
   Future<Map<String, String>> _hdrUpload({bool json = false}) async {
-    final headers = <String, String>{};
-    if (json) {
-      headers['content-type'] = 'application/json';
-    }
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return headers;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: json);
   }
 
   Future<void> _openUploadComposer({bool initialLive = false}) async {
@@ -118,7 +102,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
     bool submitting = false;
     String? error;
     bool isLive = initialLive;
-    await showModalBottomSheet<void>(
+    try {
+      await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
@@ -201,8 +186,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                         ),
                         subtitle: Text(
                           l.isArabic
-                              ? 'اجعل هذا المقطع بثًا مباشرًا في القنوات، بأسلوب WeChat Channels.'
-                              : 'Mark this as a live session in Channels, WeChat‑Channels style.',
+                              ? 'اجعل هذا المقطع بثًا مباشرًا في القنوات، بأسلوب SyrChat Channels.'
+                              : 'Mark this as a live session in Channels, SyrChat Channels style.',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurface
                                 .withValues(alpha: .70),
@@ -371,6 +356,12 @@ class _ChannelsPageState extends State<ChannelsPage> {
         );
       },
     );
+    } finally {
+      titleCtrl.dispose();
+      snippetCtrl.dispose();
+      thumbCtrl.dispose();
+      liveUrlCtrl.dispose();
+    }
   }
 
   Future<void> _load() async {
@@ -386,7 +377,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
       }
       final uri = Uri.parse('${widget.baseUrl}/channels/feed')
           .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdrChannels());
+      final r = await http.get(uri,
+          headers: await _hdrChannels(baseUrl: widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
@@ -427,7 +419,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/view',
       );
-      await http.post(uri, headers: await _hdrChannels());
+      await http.post(uri,
+          headers: await _hdrChannels(baseUrl: widget.baseUrl));
     } catch (_) {}
   }
 
@@ -439,7 +432,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       );
       final r = await http.post(
         uri,
-        headers: await _hdrChannels(json: true),
+        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(<String, dynamic>{}),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) return;
@@ -470,7 +463,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       );
       final r = await http.post(
         uri,
-        headers: await _hdrChannels(json: true),
+        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(<String, dynamic>{}),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) {
@@ -520,7 +513,10 @@ class _ChannelsPageState extends State<ChannelsPage> {
       final uri = Uri.parse(
         '${widget.baseUrl}/channels/accounts/${Uri.encodeComponent(accountId)}/$path',
       );
-      final r = await http.post(uri, headers: await _hdrChannels(json: true));
+      final r = await http.post(
+        uri,
+        headers: await _hdrChannels(baseUrl: widget.baseUrl, json: true),
+      );
       if (r.statusCode < 200 || r.statusCode >= 300) {
         return;
       }
@@ -629,8 +625,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                       const SizedBox(height: 6),
                       Text(
                         l2.isArabic
-                            ? 'الهدايا عبارة عن عملات افتراضية صغيرة لدعم المقاطع، بأسلوب WeChat‑Channels.'
-                            : 'Gifts are small virtual coins to support clips, WeChat‑Channels style.',
+                            ? 'الهدايا عبارة عن عملات افتراضية صغيرة لدعم المقاطع، بأسلوب SyrChat Channels.'
+                            : 'Gifts are small virtual coins to support clips, SyrChat Channels style.',
                         style: theme.textTheme.bodySmall?.copyWith(
                           fontSize: 11,
                           color: theme.colorScheme.onSurface
@@ -699,7 +695,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                   ? null
                                   : () => Navigator.of(ctx2).pop(),
                               child: Text(
-                                l2.mirsaalDialogCancel,
+                                l2.isArabic ? 'إلغاء' : 'Cancel',
                               ),
                             ),
                           ),
@@ -728,8 +724,10 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                             '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/gift');
                                         final r = await http.post(
                                           uri,
-                                          headers:
-                                              await _hdrChannels(json: true),
+                                          headers: await _hdrChannels(
+                                            baseUrl: widget.baseUrl,
+                                            json: true,
+                                          ),
                                           body: jsonEncode(<String, Object?>{
                                             'account_id': accId,
                                             'coins': coins,
@@ -819,7 +817,10 @@ class _ChannelsPageState extends State<ChannelsPage> {
     final uri = Uri.parse(
       '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/comments',
     ).replace(queryParameters: const {'limit': '50'});
-    final r = await http.get(uri, headers: await _hdrChannels());
+    final r = await http.get(
+      uri,
+      headers: await _hdrChannels(baseUrl: widget.baseUrl),
+    );
     if (r.statusCode < 200 || r.statusCode >= 300) {
       return const <Map<String, dynamic>>[];
     }
@@ -849,7 +850,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
     final TextEditingController textCtrl = TextEditingController();
     bool submitting = false;
     String? error;
-    await showModalBottomSheet<void>(
+    try {
+      await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
@@ -1029,7 +1031,10 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                       );
                                       final r = await http.post(
                                         uri,
-                                        headers: await _hdrChannels(json: true),
+                                        headers: await _hdrChannels(
+                                          baseUrl: widget.baseUrl,
+                                          json: true,
+                                        ),
                                         body: jsonEncode(
                                           <String, dynamic>{'text': text},
                                         ),
@@ -1073,6 +1078,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
         );
       },
     );
+    } finally {
+      textCtrl.dispose();
+    }
   }
 
   @override
@@ -1162,7 +1170,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
         }
         indices.add(i);
       }
-      // Lightweight WeChat-like "Channel insights" for the current view –
+      // Lightweight SyrChat-style "Channel insights" for the current view –
       // summarises clips, views, gifts and how many services are hot in Moments.
       int clipCount = indices.length;
       int totalViews = 0;
@@ -1607,10 +1615,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                     onPressed: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => MomentsPage(
+                          builder: (_) => ShamellMomentsPage(
                             baseUrl: widget.baseUrl,
-                            officialCity: cityLabel,
-                            initialHotOfficialsOnly: true,
                           ),
                         ),
                       );
@@ -1644,17 +1650,11 @@ class _ChannelsPageState extends State<ChannelsPage> {
           Expanded(
             child: indices.isEmpty
                 ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(
-                        l.isArabic
-                            ? 'لا توجد مقاطع مطابقة.'
-                            : 'No matching clips.',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .65),
-                        ),
-                      ),
+                    child: ShamellEmptyState.noResults(
+                      icon: Icons.live_tv_outlined,
+                      title: l.isArabic
+                          ? 'لا توجد مقاطع مطابقة.'
+                          : 'No matching clips.',
                     ),
                   )
                 : ListView.separated(
@@ -1705,8 +1705,12 @@ class _ChannelsPageState extends State<ChannelsPage> {
                       Map<String, dynamic>? deeplinkPayload;
                       final dl = raw['deeplink'];
                       if (dl is Map) {
-                        final midRaw =
-                            (dl['mini_app_id'] ?? '').toString().trim();
+                        final midRaw = (dl['mini_program_id'] ??
+                                dl['mini_app_id'] ??
+                                dl['app_id'] ??
+                                '')
+                            .toString()
+                            .trim();
                         if (midRaw.isNotEmpty) {
                           miniAppId = midRaw;
                         }
@@ -1742,8 +1746,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                   if (thumb.isNotEmpty)
                                     ClipRRect(
                                       borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
+                                      child: shamellCachedNetworkImage(
                                         thumb,
+                                        context: context,
                                         width: 80,
                                         height: 80,
                                         fit: BoxFit.cover,
@@ -2327,7 +2332,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                               text += ' $tag';
                                             } else {
                                               text += l.isArabic
-                                                  ? ' #شامل_حساب_رسمي'
+                                                  ? ' #سرتشات_حساب_رسمي'
                                                   : ' #ShamellOfficial';
                                             }
                                           }
@@ -2349,7 +2354,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                           if (!mounted) return;
                                           Navigator.of(context).push(
                                             MaterialPageRoute(
-                                              builder: (_) => MomentsPage(
+                                              builder: (_) =>
+                                                  ShamellMomentsPage(
                                                 baseUrl: widget.baseUrl,
                                               ),
                                             ),
@@ -2777,7 +2783,10 @@ class _ChannelsPageState extends State<ChannelsPage> {
         final uri = Uri.parse(
           '${widget.baseUrl}/channels/${Uri.encodeComponent(itemId)}/moments_stats',
         );
-        final r = await http.get(uri, headers: await _hdrChannels());
+        final r = await http.get(
+          uri,
+          headers: await _hdrChannels(baseUrl: widget.baseUrl),
+        );
         if (r.statusCode >= 200 && r.statusCode < 300) {
           final decoded = jsonDecode(r.body);
           if (decoded is Map) {
@@ -3001,8 +3010,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                   const SizedBox(height: 8),
                   Text(
                     isAr
-                        ? 'هذه الأرقام تقريبية وتعكس تطور هذا المقطع في القنوات واللحظات، على غرار لوحة منشئي المحتوى في WeChat Channels.'
-                        : 'Numbers are approximate and reflect how this clip performs in Channels and Moments, similar to creator analytics in WeChat Channels.',
+                        ? 'هذه الأرقام تقريبية وتعكس تطور هذا المقطع في القنوات واللحظات، على غرار لوحة منشئي المحتوى في SyrChat Channels.'
+                        : 'Numbers are approximate and reflect how this clip performs in Channels and Moments, similar to creator analytics in SyrChat Channels.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .75),
                     ),
@@ -3026,7 +3035,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                           final tag = '#ch_${itemId.toLowerCase()}';
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (_) => MomentsPage(
+                              builder: (_) => ShamellMomentsPage(
                                 baseUrl: widget.baseUrl,
                                 topicTag: tag,
                               ),

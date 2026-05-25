@@ -27,11 +27,18 @@ class FormSection extends StatelessWidget {
     if (children.isEmpty) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
+    final compact = MediaQuery.sizeOf(context).width < 430;
+    final effectivePadding = padding == const EdgeInsets.all(16)
+        ? EdgeInsets.all(compact ? 14 : 16)
+        : padding;
+    final effectiveMargin = margin == const EdgeInsets.only(bottom: 16)
+        ? EdgeInsets.only(bottom: compact ? 12 : 16)
+        : margin;
 
     return Padding(
-      padding: margin,
+      padding: effectiveMargin,
       child: GlassPanel(
-        padding: padding,
+        padding: effectivePadding,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -39,7 +46,7 @@ class FormSection extends StatelessWidget {
               title,
               style: TextStyle(
                 fontWeight: FontWeight.w700,
-                fontSize: 15,
+                fontSize: compact ? 14 : 15,
                 color: onSurface,
               ),
             ),
@@ -53,7 +60,7 @@ class FormSection extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: 12),
+            SizedBox(height: compact ? 10 : 12),
             ...children,
           ],
         ),
@@ -104,7 +111,7 @@ class StandardListTile extends StatelessWidget {
   }
 }
 
-/// Shared scaffold that applies the unified Shamell layout shell:
+/// Shared scaffold that applies the unified SyrChat layout shell:
 /// gradient background + full-screen GlassPanel card, as used in
 /// Mobility and other modernised flows.
 class DomainPageScaffold extends StatelessWidget {

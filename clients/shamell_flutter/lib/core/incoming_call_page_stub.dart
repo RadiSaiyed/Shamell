@@ -10,12 +10,20 @@ class IncomingCallPage extends StatelessWidget {
   final String fromDeviceId;
   final String mode; // 'audio' | 'video'
 
+  /// Mirrors the mobile widget's optional caller-name hint so callers
+  /// (e.g. the FCM remote-tap path in `main_bootstrap.dart`) can pass
+  /// `initialCallerName: …` on every platform without conditional code.
+  /// The web stub has no live ring UI to upgrade, so the value is accepted
+  /// for API parity and otherwise unused.
+  final String? initialCallerName;
+
   const IncomingCallPage({
     super.key,
     required this.baseUrl,
     required this.callId,
     required this.fromDeviceId,
     this.mode = 'video',
+    this.initialCallerName,
   });
 
   @override
@@ -48,8 +56,8 @@ class IncomingCallPage extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Text(
             l.isArabic
-                ? 'تلقي المكالمات عبر المتصفح غير مدعوم حالياً. يمكنك الرد من تطبيق Shamell على الهاتف.'
-                : 'Receiving calls in the browser is not supported yet. Please answer from the Shamell mobile app.',
+                ? 'تلقي المكالمات عبر المتصفح غير مدعوم حالياً. يمكنك الرد من تطبيق SyrChat على الهاتف.'
+                : 'Receiving calls in the browser is not supported yet. Please answer from the SyrChat mobile app.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context)

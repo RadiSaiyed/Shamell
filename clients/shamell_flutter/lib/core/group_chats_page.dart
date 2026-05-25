@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'http_error.dart';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:audio_session/audio_session.dart';
@@ -12,54 +14,196 @@ import 'package:just_audio/just_audio.dart';
 import 'package:proximity_sensor/proximity_sensor.dart';
 import 'package:record/record.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'favorites_page.dart';
+import 'favorites_store.dart';
+import 'account_identity_store.dart';
+import 'base64_bytes_cache.dart';
+import 'deep_link_parsing.dart';
+import 'design_tokens.dart';
 import 'friends_page.dart';
+import 'ephemeral_voice_file.dart';
+import 'external_launch_guard.dart';
+import 'green_paket_page.dart';
+import 'media_access_policy.dart';
+import 'device_binding_reauth.dart';
 import 'l10n.dart';
-import 'mini_program_runtime.dart';
-import 'mini_programs_discover_page.dart';
+import 'mini_app_descriptor.dart';
+import 'mini_app_registry.dart';
+import 'payments/payments_shell.dart';
+import 'safe_clipboard.dart';
 import 'ui_kit.dart';
 import 'glass.dart';
 import 'chat/chat_models.dart';
+import 'chat/group_message_presentation.dart';
 import 'chat/chat_service.dart';
-import 'chat/threema_chat_page.dart';
-import 'wechat_ui.dart';
-import 'wechat_group_chat_info_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'channels_page.dart';
+import 'safe_set_state.dart';
+import 'shamell_app_links.dart';
+import 'shamell_loading_shimmer.dart';
+import 'shamell_ui.dart';
+import 'shamell_group_chat_info_page.dart';
+import 'shamell_moments_page.dart';
+import 'official_accounts_page.dart';
+import 'nearby_page.dart';
+// import 'sticker_store_page.dart' — Sticker Store retired.
+import 'superapp_api.dart';
+import '../main.dart' show LoginPage;
 
-enum _WeChatGroupComposerPanel { none, stickers, more }
+enum _ShamellGroupComposerPanel { none, more }
 
 class GroupChatsPage extends StatefulWidget {
   final String baseUrl;
-  const GroupChatsPage({super.key, required this.baseUrl});
+  final ChatService? serviceOverride;
+  final VoidCallback? onCriticalSessionFailure;
+  const GroupChatsPage({
+    super.key,
+    required this.baseUrl,
+    this.serviceOverride,
+    this.onCriticalSessionFailure,
+  });
 
   @override
   State<GroupChatsPage> createState() => _GroupChatsPageState();
 }
 
-class _GroupChatsPageState extends State<GroupChatsPage> {
+class _GroupChatsPageState extends State<GroupChatsPage>
+    with SafeSetStateMixin<GroupChatsPage> {
+  static const int _groupListPageSize = 100;
   final TextEditingController _nameCtrl = TextEditingController();
   final TextEditingController _searchCtrl = TextEditingController();
   bool _loading = true;
   String? _deviceId;
   String _error = '';
   late final ChatService _service;
+  late final bool _ownsService;
   List<ChatGroup> _groups = const <ChatGroup>[];
+  bool _loadingMoreGroups = false;
+  bool _hasMoreGroups = false;
+  String? _groupsBeforeCreatedAt;
+  String? _groupsBeforeId;
   String _search = '';
+  final Base64BytesCache _avatarBytesCache = Base64BytesCache(maxEntries: 96);
+
+  Uint8List? _decodeInlineImageBytes(String? raw) {
+    return _avatarBytesCache.decode(raw);
+  }
 
   @override
   void initState() {
     super.initState();
-    _service = ChatService(widget.baseUrl);
+    _ownsService = widget.serviceOverride == null;
+    _service = widget.serviceOverride ?? ChatService(widget.baseUrl);
     _load();
   }
 
   @override
   void dispose() {
+    _avatarBytesCache.clear();
+    if (_ownsService) {
+      _service.close();
+    }
     _nameCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  Future<bool> _forceReauthOnCriticalGroupListFailure(Object error) async {
+    var forced = false;
+    if (error is ChatHttpException) {
+      forced = await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+        context,
+        statusCode: error.statusCode,
+        rawBody: error.body,
+        loginPageBuilder: (_) => const LoginPage(),
+      );
+    }
+    if (!forced) {
+      forced = await shamellForceReauthIfCriticalDeviceBindingDrift(
+        context,
+        error: error,
+        loginPageBuilder: (_) => const LoginPage(),
+      );
+    }
+    if (forced) {
+      widget.onCriticalSessionFailure?.call();
+    }
+    return forced;
+  }
+
+  String _sanitizeGroupListError(Object error) {
+    final isArabic = L10n.of(context).isArabic;
+    if (error is ChatHttpException) {
+      return sanitizeHttpError(
+        statusCode: error.statusCode,
+        rawBody: error.body,
+        isArabic: isArabic,
+      );
+    }
+    return sanitizeExceptionForUi(error: error, isArabic: isArabic);
+  }
+
+  @visibleForTesting
+  Future<void> debugLoadGroups() => _load();
+
+  @visibleForTesting
+  Future<void> debugCreateGroup(String name) async {
+    _nameCtrl.text = name;
+    await _createGroup();
+  }
+
+  @visibleForTesting
+  bool debugHasMoreGroups() => _hasMoreGroups;
+
+  @visibleForTesting
+  String? debugGroupsBeforeId() => _groupsBeforeId;
+
+  @visibleForTesting
+  Future<void> debugLoadMoreGroups() async => _loadMoreGroups();
+
+  List<ChatGroup> _mergeGroupPages(
+    List<ChatGroup> current,
+    List<ChatGroup> incoming,
+  ) {
+    if (incoming.isEmpty) {
+      return current;
+    }
+    final merged = <ChatGroup>[...current];
+    final seen = current.map((group) => group.id.trim()).toSet();
+    for (final group in incoming) {
+      final groupId = group.id.trim();
+      if (groupId.isEmpty) {
+        merged.add(group);
+        continue;
+      }
+      if (seen.add(groupId)) {
+        merged.add(group);
+      }
+    }
+    return merged;
+  }
+
+  ({String createdAt, String id})? _oldestGroupCursor(List<ChatGroup> groups) {
+    for (var i = groups.length - 1; i >= 0; i -= 1) {
+      final group = groups[i];
+      final groupId = group.id.trim();
+      final createdAt = group.createdAt?.toUtc().toIso8601String();
+      if (groupId.isEmpty || createdAt == null || createdAt.isEmpty) {
+        continue;
+      }
+      return (createdAt: createdAt, id: groupId);
+    }
+    return null;
+  }
+
+  void _setNextGroupCursorFromPage(List<ChatGroup> page) {
+    final cursor = _oldestGroupCursor(page);
+    final hasMore = page.length >= _groupListPageSize && cursor != null;
+    _hasMoreGroups = hasMore;
+    _groupsBeforeCreatedAt = hasMore ? cursor!.createdAt : null;
+    _groupsBeforeId = hasMore ? cursor.id : null;
   }
 
   Future<void> _load() async {
@@ -68,22 +212,90 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
       _error = '';
     });
     try {
-      final me = await ChatLocalStore().loadIdentity();
+      final me = await ChatLocalStore().loadIdentity(
+        baseUrlOverride: widget.baseUrl,
+      );
       if (me == null) {
         _deviceId = null;
         _groups = const <ChatGroup>[];
+        _hasMoreGroups = false;
+        _groupsBeforeCreatedAt = null;
+        _groupsBeforeId = null;
       } else {
         _deviceId = me.id;
-        _groups = await _service.listGroups(deviceId: me.id);
+        final firstPage = await _service.listGroupsPage(
+          deviceId: me.id,
+          limit: _groupListPageSize,
+        );
+        _groups = firstPage;
+        _setNextGroupCursorFromPage(firstPage);
       }
     } catch (e) {
-      _error = e.toString();
+      if (await _forceReauthOnCriticalGroupListFailure(e)) return;
+      _error = _sanitizeGroupListError(e);
       _groups = const <ChatGroup>[];
+      _hasMoreGroups = false;
+      _groupsBeforeCreatedAt = null;
+      _groupsBeforeId = null;
     }
     if (!mounted) return;
     setState(() {
       _loading = false;
+      _loadingMoreGroups = false;
     });
+  }
+
+  Future<void> _loadMoreGroups() async {
+    if (_loading ||
+        _loadingMoreGroups ||
+        !_hasMoreGroups ||
+        _deviceId == null ||
+        (_deviceId ?? '').isEmpty) {
+      return;
+    }
+    final beforeCreatedAt = _groupsBeforeCreatedAt;
+    final beforeId = _groupsBeforeId;
+    if (beforeCreatedAt == null ||
+        beforeCreatedAt.isEmpty ||
+        beforeId == null ||
+        beforeId.isEmpty) {
+      setState(() {
+        _hasMoreGroups = false;
+      });
+      return;
+    }
+    setState(() {
+      _loadingMoreGroups = true;
+    });
+    try {
+      final page = await _service.listGroupsPage(
+        deviceId: _deviceId!,
+        limit: _groupListPageSize,
+        beforeCreatedAt: beforeCreatedAt,
+        beforeId: beforeId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _groups = _mergeGroupPages(_groups, page);
+        final previousCursorCreatedAt = _groupsBeforeCreatedAt;
+        final previousCursorId = _groupsBeforeId;
+        _setNextGroupCursorFromPage(page);
+        if (_groupsBeforeCreatedAt == previousCursorCreatedAt &&
+            _groupsBeforeId == previousCursorId) {
+          _hasMoreGroups = false;
+          _groupsBeforeCreatedAt = null;
+          _groupsBeforeId = null;
+        }
+        _loadingMoreGroups = false;
+      });
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupListFailure(e)) return;
+      if (!mounted) return;
+      setState(() {
+        _error = _sanitizeGroupListError(e);
+        _loadingMoreGroups = false;
+      });
+    }
   }
 
   Future<void> _createGroup() async {
@@ -98,12 +310,19 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
       );
       try {
         final store = ChatLocalStore();
-        final existing = await store.loadGroupKey(g.id);
+        final existing = await store.loadGroupKey(
+          g.id,
+          baseUrlOverride: widget.baseUrl,
+        );
         if (existing == null || existing.isEmpty) {
           final rnd = Random.secure();
           final keyBytes = Uint8List.fromList(
               List<int>.generate(32, (_) => rnd.nextInt(256)));
-          await store.saveGroupKey(g.id, base64Encode(keyBytes));
+          await store.saveGroupKey(
+            g.id,
+            base64Encode(keyBytes),
+            baseUrlOverride: widget.baseUrl,
+          );
         }
       } catch (_) {}
       if (!mounted) return;
@@ -113,9 +332,10 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
       });
       await _openGroup(g);
     } catch (e) {
+      if (await _forceReauthOnCriticalGroupListFailure(e)) return;
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = _sanitizeGroupListError(e);
       });
     }
   }
@@ -143,7 +363,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     final surface = theme.colorScheme.surface;
     final fieldFill = isDark
         ? theme.colorScheme.surfaceContainerHighest
-        : WeChatPalette.searchFill;
+        : ShamellPalette.searchFill;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -209,7 +429,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                 const SizedBox(height: 12),
                 FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: WeChatPalette.green,
+                    backgroundColor: ShamellPalette.green,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
@@ -235,7 +455,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
     Icon chevron() => Icon(
           l.isArabic ? Icons.chevron_left : Icons.chevron_right,
@@ -254,13 +474,7 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     }
 
     Widget avatarFor(ChatGroup g) {
-      Uint8List? avatarBytes;
-      final gAvatar = g.avatarB64;
-      if (gAvatar != null && gAvatar.isNotEmpty) {
-        try {
-          avatarBytes = base64Decode(gAvatar);
-        } catch (_) {}
-      }
+      final avatarBytes = _decodeInlineImageBytes(g.avatarB64);
       final label =
           g.name.isNotEmpty ? g.name.characters.first.toUpperCase() : '#';
       final fallback = Container(
@@ -310,25 +524,25 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
     final groups = filteredGroups();
 
     final body = _loading
-        ? const Center(child: CircularProgressIndicator())
+        ? const ShamellSkeletonList(itemCount: 7)
         : RefreshIndicator(
             onRefresh: _load,
             child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 const SizedBox(height: 8),
-                WeChatSearchBar(
+                ShamellSearchBar(
                   hintText: l.isArabic ? 'بحث' : 'Search',
                   controller: _searchCtrl,
                   onChanged: (v) => setState(() => _search = v),
                 ),
-                WeChatSection(
+                ShamellSection(
                   children: [
                     ListTile(
                       dense: true,
-                      leading: const WeChatLeadingIcon(
+                      leading: const ShamellLeadingIcon(
                         icon: Icons.group_add_outlined,
-                        background: WeChatPalette.green,
+                        background: ShamellPalette.green,
                       ),
                       title:
                           Text(l.isArabic ? 'مجموعة جديدة' : 'New group chat'),
@@ -364,11 +578,34 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                     ),
                   )
                 else
-                  WeChatSection(
+                  ShamellSection(
                     margin: const EdgeInsets.only(top: 12, bottom: 12),
                     children: [
                       for (final g in groups) groupTile(g),
                     ],
+                  ),
+                if (_hasMoreGroups)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: FilledButton.tonal(
+                        onPressed: _loadingMoreGroups ? null : _loadMoreGroups,
+                        child: _loadingMoreGroups
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Text(
+                                l.isArabic
+                                    ? 'تحميل المزيد'
+                                    : 'Load more groups',
+                              ),
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -443,13 +680,13 @@ class _MentionCandidate {
   const _MentionCandidate({required this.id, required this.label});
 }
 
-class _WeChatGroupMessageMenuActionSpec {
+class _ShamellGroupMessageMenuActionSpec {
   final IconData icon;
   final String label;
   final Color color;
   final VoidCallback onTap;
 
-  const _WeChatGroupMessageMenuActionSpec({
+  const _ShamellGroupMessageMenuActionSpec({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -457,31 +694,128 @@ class _WeChatGroupMessageMenuActionSpec {
   });
 }
 
+class _GroupMessageOverviewEntry {
+  final ChatGroupMessage message;
+  final GroupMessagePresentation presentation;
+  final String searchText;
+
+  const _GroupMessageOverviewEntry({
+    required this.message,
+    required this.presentation,
+    required this.searchText,
+  });
+
+  bool get isVoice => presentation.isVoice;
+
+  bool get isMedia {
+    if (!presentation.hasAttachment || isVoice) return false;
+    final mime = presentation.mime.toLowerCase();
+    return mime.startsWith('image/') || mime.startsWith('video/');
+  }
+
+  bool get isFile => presentation.hasAttachment && !isVoice && !isMedia;
+
+  bool get hasLink =>
+      searchText.contains('http://') ||
+      searchText.contains('https://') ||
+      searchText.contains('www.');
+}
+
+class _GroupMessageOverview {
+  final List<_GroupMessageOverviewEntry> entries;
+  final List<_GroupMessageOverviewEntry> mediaEntries;
+  final List<_GroupMessageOverviewEntry> fileEntries;
+  final List<_GroupMessageOverviewEntry> linkEntries;
+  final List<_GroupMessageOverviewEntry> voiceEntries;
+
+  const _GroupMessageOverview({
+    required this.entries,
+    required this.mediaEntries,
+    required this.fileEntries,
+    required this.linkEntries,
+    required this.voiceEntries,
+  });
+
+  List<_GroupMessageOverviewEntry> filtered({
+    required String filter,
+    String query = '',
+  }) {
+    final source = switch (filter) {
+      'files' => fileEntries,
+      'links' => linkEntries,
+      'voice' => voiceEntries,
+      'media' => mediaEntries,
+      _ => entries,
+    };
+    final normalized = query.trim().toLowerCase();
+    if (normalized.isEmpty) return source;
+    return <_GroupMessageOverviewEntry>[
+      for (final entry in source)
+        if (entry.searchText.contains(normalized)) entry,
+    ];
+  }
+}
+
+int _compareGroupMessageCursor(ChatGroupMessage a, ChatGroupMessage b) {
+  final at = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+  final bt = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+  final byTime = at.compareTo(bt);
+  if (byTime != 0) return byTime;
+  return a.id.compareTo(b.id);
+}
+
 class GroupChatPage extends StatefulWidget {
   final String baseUrl;
   final String groupId;
   final String groupName;
   final String? initialMessageId;
+  final ChatService? serviceOverride;
+  final VoidCallback? onCriticalSessionFailure;
+  final Future<void> Function(String groupId, String themeKey)?
+      saveChatThemeForGroupOverride;
+  final Future<void> Function(String groupId, int unreadCount)?
+      saveUnreadCountForGroupOverride;
+  final Future<int> Function(String groupId)? loadUnreadCountForGroupOverride;
+  final Future<void> Function(String groupId, DateTime ts)?
+      saveGroupSeenForGroupOverride;
   const GroupChatPage({
     super.key,
     required this.baseUrl,
     required this.groupId,
     required this.groupName,
     this.initialMessageId,
+    this.serviceOverride,
+    this.onCriticalSessionFailure,
+    this.saveChatThemeForGroupOverride,
+    this.saveUnreadCountForGroupOverride,
+    this.loadUnreadCountForGroupOverride,
+    this.saveGroupSeenForGroupOverride,
   });
 
   @override
   State<GroupChatPage> createState() => _GroupChatPageState();
 }
 
-class _GroupChatPageState extends State<GroupChatPage> {
+class _GroupChatPageState extends State<GroupChatPage>
+    with SafeSetStateMixin<GroupChatPage> {
+  static const Duration _typingIndicatorTtl = Duration(seconds: 5);
+  static const Duration _typingHeartbeatInterval = Duration(seconds: 2);
+  static const Duration _typingIdleTimeout = Duration(seconds: 4);
+  static const int _maxGroupAvatarBytes = 256 * 1024;
+  static const int _groupOlderMessagesPageSize = 200;
+  static const double _groupOlderMessagesLoadThreshold = 96;
+  static const Duration _mentionPruneDebounce = Duration(milliseconds: 72);
   final TextEditingController _msgCtrl = TextEditingController();
   final FocusNode _msgFocus = FocusNode();
   final ScrollController _scrollCtrl = ScrollController();
   bool _loading = true;
+  bool _loadingOlderMessages = false;
+  bool _hasOlderMessages = false;
+  bool _sendingMessage = false;
   String? _deviceId;
   String _error = '';
   late final ChatService _service;
+  late final bool _ownsService;
   List<ChatGroupMessage> _messages = const <ChatGroupMessage>[];
   final Map<String, GlobalKey> _messageKeys = <String, GlobalKey>{};
   final Map<String, GlobalKey> _messageBubbleKeys = <String, GlobalKey>{};
@@ -490,6 +824,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Timer? _highlightTimer;
   List<ChatGroupMember> _members = const <ChatGroupMember>[];
   Map<String, String> _contactNameById = <String, String>{};
+  int _contactNamesRevision = 0;
+  Set<String> _directContactIds = <String>{};
+  final Set<String> _undiscoverableGroupMemberIds = <String>{};
+  final Set<String> _groupKeyShareBlockedPeerIds = <String>{};
   bool _isAdmin = false;
   String _groupName = '';
   String? _groupAvatarB64;
@@ -503,11 +841,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
   String? _attachedMime;
   String? _attachedName;
 
-  static const double _wechatMorePanelHeight = 276.0;
-  _WeChatGroupComposerPanel _composerPanel = _WeChatGroupComposerPanel.none;
-  bool _wechatVoiceMode = false;
-  final PageController _wechatMorePanelCtrl = PageController();
-  int _wechatMorePanelPage = 0;
+  static const double _shamellMorePanelHeight = 276.0;
+  _ShamellGroupComposerPanel _composerPanel = _ShamellGroupComposerPanel.none;
+  bool _shamellVoiceMode = false;
+  final PageController _shamellMorePanelCtrl = PageController();
+  int _shamellMorePanelPage = 0;
 
   bool _recordingVoice = false;
   DateTime? _voiceStart;
@@ -521,11 +859,19 @@ class _GroupChatPageState extends State<GroupChatPage> {
   StreamSubscription<PlayerState>? _playerStateSub;
   String? _playingVoiceId;
   bool _voicePlaying = false;
+  String? _voicePlaybackPath;
   bool _voiceUseSpeaker = true;
   StreamSubscription<int>? _proximitySub;
+  String? _voiceRecordingPath;
   Set<String> _playedVoiceMessageIds = <String>{};
   StreamSubscription<ChatGroupInboxUpdate>? _grpWsSub;
+  StreamSubscription<ChatTypingSignal>? _typingWsSub;
   bool _didSendMessage = false;
+  final Map<String, DateTime> _typingExpiresAtByDeviceId = <String, DateTime>{};
+  Timer? _typingIndicatorTimer;
+  Timer? _typingIdleTimer;
+  DateTime? _lastTypingSignalAt;
+  bool _typingAnnounced = false;
 
   bool _mentionActive = false;
   String _mentionQuery = '';
@@ -533,88 +879,746 @@ class _GroupChatPageState extends State<GroupChatPage> {
   int _pendingNewMessageCount = 0;
   String? _pendingNewMessageFirstId;
   List<String> _pendingMentionMessageIds = const <String>[];
+  final Base64BytesCache _inlineMediaBytesCache =
+      Base64BytesCache(maxEntries: 192);
+  late final GroupMessagePresentationCache _messagePresentationCache =
+      GroupMessagePresentationCache(
+    maxEntries: 512,
+    attachmentBytesCache: _inlineMediaBytesCache,
+  );
+  Timer? _pendingMentionPruneTimer;
+
+  Uint8List? _decodeInlineImageBytes(String? raw) {
+    return _inlineMediaBytesCache.decode(raw);
+  }
+
+  void _setContactNameMap(Map<String, String> next) {
+    if (mapEquals(_contactNameById, next)) return;
+    _contactNameById = next;
+    _contactNamesRevision += 1;
+  }
+
+  GroupMessagePresentation _groupMessagePresentation(
+    ChatGroupMessage message,
+    L10n l,
+  ) {
+    return _messagePresentationCache.build(
+      message,
+      isArabic: l.isArabic,
+      currentUserId: _deviceId ?? '',
+      displayNamesRevision: _contactNamesRevision,
+      displayName: (id, {fallback}) =>
+          _displayNameForDeviceId(id, l, fallback: fallback),
+      previewVoice: l.shamellPreviewVoice,
+      previewImage: l.shamellPreviewImage,
+      previewUnknown: l.shamellPreviewUnknown,
+      encryptedMessageLabel: l.isArabic ? 'رسالة مشفرة' : 'Encrypted message',
+    );
+  }
+
+  _GroupMessageOverview _buildGroupMessageOverview(L10n l) {
+    final entries = <_GroupMessageOverviewEntry>[];
+    final mediaEntries = <_GroupMessageOverviewEntry>[];
+    final fileEntries = <_GroupMessageOverviewEntry>[];
+    final linkEntries = <_GroupMessageOverviewEntry>[];
+    final voiceEntries = <_GroupMessageOverviewEntry>[];
+
+    for (final message in _messages) {
+      if (message.id.trim().isEmpty) continue;
+      final presentation = _groupMessagePresentation(message, l);
+      if (presentation.isSystem) continue;
+      final searchText = <String>[
+        presentation.body.plainText,
+        presentation.rawText.plainText,
+        presentation.senderDisplayName,
+        presentation.mime,
+        presentation.kind,
+        message.contactName ?? '',
+        message.contactId ?? '',
+      ].join('\n').toLowerCase();
+      final entry = _GroupMessageOverviewEntry(
+        message: message,
+        presentation: presentation,
+        searchText: searchText,
+      );
+      entries.add(entry);
+      if (entry.isMedia) {
+        mediaEntries.add(entry);
+      } else if (entry.isFile) {
+        fileEntries.add(entry);
+      }
+      if (entry.hasLink) {
+        linkEntries.add(entry);
+      }
+      if (entry.isVoice) {
+        voiceEntries.add(entry);
+      }
+    }
+
+    return _GroupMessageOverview(
+      entries: List<_GroupMessageOverviewEntry>.unmodifiable(entries),
+      mediaEntries: List<_GroupMessageOverviewEntry>.unmodifiable(mediaEntries),
+      fileEntries: List<_GroupMessageOverviewEntry>.unmodifiable(fileEntries),
+      linkEntries: List<_GroupMessageOverviewEntry>.unmodifiable(linkEntries),
+      voiceEntries: List<_GroupMessageOverviewEntry>.unmodifiable(voiceEntries),
+    );
+  }
+
+  String _formatGroupOverviewTimestamp(DateTime? timestamp) {
+    if (timestamp == null) return '';
+    final dt = timestamp.toLocal();
+    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _groupOverviewTitle(_GroupMessageOverviewEntry entry, L10n l) {
+    final text = entry.presentation.body.plainText.trim();
+    if (text.isNotEmpty) return text;
+    if (entry.isVoice) return l.shamellPreviewVoice;
+    if (entry.isMedia) return l.shamellPreviewImage;
+    if (entry.isFile) return l.shamellPreviewUnknown;
+    return l.isArabic ? 'رسالة دون محتوى نصي' : 'Non-text message';
+  }
+
+  void _scheduleVisibleMentionPrune() {
+    if (_pendingMentionMessageIds.isEmpty) return;
+    _pendingMentionPruneTimer?.cancel();
+    _pendingMentionPruneTimer = Timer(
+      _mentionPruneDebounce,
+      _pruneVisibleMentionsNow,
+    );
+  }
+
+  void _pruneVisibleMentionsNow() {
+    _pendingMentionPruneTimer?.cancel();
+    _pendingMentionPruneTimer = null;
+    if (!mounted || _pendingMentionMessageIds.isEmpty) return;
+    final nextMentions = _pruneVisibleMentions(_pendingMentionMessageIds);
+    if (nextMentions.length == _pendingMentionMessageIds.length) return;
+    setState(() {
+      _pendingMentionMessageIds = nextMentions;
+    });
+  }
+
+  String? _detectGroupAvatarMime(Uint8List bytes) {
+    if (bytes.length >= 8 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47 &&
+        bytes[4] == 0x0D &&
+        bytes[5] == 0x0A &&
+        bytes[6] == 0x1A &&
+        bytes[7] == 0x0A) {
+      return 'image/png';
+    }
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return 'image/jpeg';
+    }
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return 'image/webp';
+    }
+    return null;
+  }
 
   Uint8List _randomGroupKeyBytes() {
     final rnd = Random.secure();
     return Uint8List.fromList(List<int>.generate(32, (_) => rnd.nextInt(256)));
   }
 
+  bool _isFailClosedPeerLookup(Object error) {
+    if (error is ChatHttpException) {
+      if (error.statusCode == 404) {
+        return true;
+      }
+      final body = (error.body ?? '').toLowerCase();
+      return body.contains('not found') || body.contains('bundle unavailable');
+    }
+    final text = error.toString().trim().toLowerCase();
+    return text.contains('failed: 404') ||
+        text.contains('not found') ||
+        text.contains('bundle unavailable');
+  }
+
+  Future<void> _refreshKnownDirectContacts() async {
+    final contacts = await ChatLocalStore().loadContacts(
+      baseUrlOverride: widget.baseUrl,
+    );
+    final nextDirectContactIds = <String>{};
+    final nextNames = Map<String, String>.from(_contactNameById);
+    var changedNames = false;
+    for (final contact in contacts) {
+      final contactId = contact.id.trim();
+      if (contactId.isEmpty) continue;
+      nextDirectContactIds.add(contactId);
+      final name = (contact.name ?? '').trim();
+      if (name.isNotEmpty && (nextNames[contactId] ?? '').trim().isEmpty) {
+        nextNames[contactId] = name;
+        changedNames = true;
+      }
+    }
+    _directContactIds = nextDirectContactIds;
+    _undiscoverableGroupMemberIds.removeWhere(_directContactIds.contains);
+    _groupKeyShareBlockedPeerIds.removeWhere(_directContactIds.contains);
+    if (!changedNames) return;
+    if (!mounted) {
+      _setContactNameMap(nextNames);
+      return;
+    }
+    setState(() {
+      _setContactNameMap(nextNames);
+    });
+  }
+
+  String _groupKeyShareOutcomeText({
+    required bool isArabic,
+    required String successText,
+    required int blockedCount,
+    required int failedCount,
+  }) {
+    if (blockedCount <= 0 && failedCount <= 0) {
+      return successText;
+    }
+    if (blockedCount > 0 && failedCount == 0) {
+      return isArabic
+          ? '$successText بعض الأعضاء ما زالوا بحاجة إلى جهة اتصال مباشرة لاستلام المفتاح.'
+          : '$successText Some members still need a direct contact to receive the key.';
+    }
+    return isArabic
+        ? '$successText بعض الأعضاء لم يستلموا المفتاح الجديد بعد.'
+        : '$successText Some members have not received the new key yet.';
+  }
+
+  Future<void> _clearVoicePlaybackFile() async {
+    final path = _voicePlaybackPath;
+    _voicePlaybackPath = null;
+    await deleteEphemeralVoiceFile(path);
+  }
+
+  Future<void> _clearVoiceRecordingFile() async {
+    final path = _voiceRecordingPath;
+    _voiceRecordingPath = null;
+    await deleteEphemeralVoiceFile(path);
+  }
+
   Future<void> _unarchiveGroupIfNeeded() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cur = sp.getStringList('chat.archived_groups') ?? const <String>[];
-      if (!cur.contains(widget.groupId)) return;
-      final next = List<String>.from(cur)
-        ..removeWhere((x) => x == widget.groupId);
-      if (next.isEmpty) {
-        await sp.remove('chat.archived_groups');
-      } else {
-        await sp.setStringList('chat.archived_groups', next);
-      }
+      await ChatLocalStore().saveArchivedGroupState(
+        widget.groupId,
+        false,
+        baseUrlOverride: widget.baseUrl,
+      );
     } catch (_) {}
   }
 
   Future<void> _loadChatThemeKey() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('chat.wallpaper_theme') ?? '{}';
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return;
-      final k = _groupUnreadKey(widget.groupId);
-      final v = (decoded[k] ?? '').toString().trim();
+      final v = await ChatLocalStore().loadChatThemeForGroup(
+        widget.groupId,
+        baseUrlOverride: widget.baseUrl,
+      );
       if (!mounted) return;
-      setState(() => _chatThemeKey = v.isNotEmpty ? v : 'default');
+      setState(() => _chatThemeKey = v ?? 'default');
     } catch (_) {}
+  }
+
+  Future<bool> _forceReauthOnCriticalGroupFailure(Object error) async {
+    var forced = false;
+    if (error is ChatHttpException) {
+      forced = await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+        context,
+        statusCode: error.statusCode,
+        rawBody: error.body,
+        loginPageBuilder: (_) => const LoginPage(),
+      );
+    }
+    if (!forced) {
+      forced = await shamellForceReauthIfCriticalDeviceBindingDrift(
+        context,
+        error: error,
+        loginPageBuilder: (_) => const LoginPage(),
+      );
+    }
+    if (forced) {
+      widget.onCriticalSessionFailure?.call();
+    }
+    return forced;
+  }
+
+  String _sanitizeGroupError(
+    Object error, {
+    required bool isArabic,
+  }) {
+    if (error is ChatHttpException) {
+      return sanitizeHttpError(
+        statusCode: error.statusCode,
+        rawBody: error.body,
+        isArabic: isArabic,
+      );
+    }
+    return sanitizeExceptionForUi(
+      error: error,
+      isArabic: isArabic,
+    );
+  }
+
+  Future<void> _updateGroupMetadata({
+    String? name,
+    String? avatarB64,
+    String? avatarMime,
+    required bool isArabic,
+  }) async {
+    final did = _deviceId;
+    if (did == null || did.isEmpty) return;
+    try {
+      final updated = await _service.updateGroup(
+        groupId: widget.groupId,
+        actorId: did,
+        name: name,
+        avatarB64: avatarB64,
+        avatarMime: avatarMime,
+      );
+      if (!mounted) return;
+      setState(() {
+        _groupName = updated.name;
+        _groupAvatarB64 = updated.avatarB64;
+      });
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(() => _error = _sanitizeGroupError(e, isArabic: isArabic));
+    }
+  }
+
+  Future<void> _setGroupMemberRole({
+    required String targetId,
+    required String role,
+    required bool isArabic,
+  }) async {
+    final did = _deviceId;
+    if (did == null || did.isEmpty) return;
+    try {
+      await _service.setGroupRole(
+        groupId: widget.groupId,
+        actorId: did,
+        targetId: targetId,
+        role: role,
+      );
+      await _refreshMembers();
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(() => _error = _sanitizeGroupError(e, isArabic: isArabic));
+    }
+  }
+
+  Future<void> _inviteMembers({
+    required List<String> memberIds,
+    required bool isArabic,
+  }) async {
+    final did = _deviceId;
+    if (did == null || did.isEmpty || memberIds.isEmpty) return;
+    var shareBlockedCount = 0;
+    var shareFailedCount = 0;
+    try {
+      await _service.inviteGroupMembers(
+        groupId: widget.groupId,
+        inviterId: did,
+        memberIds: memberIds,
+      );
+      try {
+        final keyB64 = await _getOrCreateGroupKeyIfAdmin();
+        if (keyB64 != null && keyB64.isNotEmpty) {
+          final shareSummary = await _shareGroupKey(keyB64, memberIds);
+          shareBlockedCount = shareSummary.blockedCount;
+          shareFailedCount = shareSummary.failedCount;
+        }
+      } catch (_) {}
+      await _refreshMembers();
+      if (!mounted || _error.trim().isNotEmpty) return;
+      if (shareBlockedCount > 0 || shareFailedCount > 0) {
+        setState(() {
+          _error = _groupKeyShareOutcomeText(
+            isArabic: isArabic,
+            successText: isArabic ? 'تمت إضافة الأعضاء.' : 'Members invited.',
+            blockedCount: shareBlockedCount,
+            failedCount: shareFailedCount,
+          );
+        });
+      }
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(() => _error = _sanitizeGroupError(e, isArabic: isArabic));
+    }
+  }
+
+  Future<List<ChatGroupKeyEvent>> _loadGroupKeyEvents() async {
+    final did = _deviceId ?? '';
+    if (did.isEmpty) return const <ChatGroupKeyEvent>[];
+    try {
+      return await _service.listGroupKeyEventsPaged(
+        groupId: widget.groupId,
+        deviceId: did,
+        batchSize: 50,
+        maxPages: 20,
+      );
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) {
+        return const <ChatGroupKeyEvent>[];
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _updateGroupPrefs({
+    bool? muted,
+    bool? pinned,
+  }) async {
+    final did = _deviceId;
+    if (did == null || did.isEmpty) return;
+    await _service.setGroupPrefs(
+      deviceId: did,
+      groupId: widget.groupId,
+      muted: muted,
+      pinned: pinned,
+    );
+  }
+
+  Future<void> _performRotateGroupKey({
+    required bool isArabic,
+  }) async {
+    if (!_isAdmin) return;
+    final did = _deviceId;
+    if (did == null || did.isEmpty) return;
+    try {
+      final newKeyB64 = base64Encode(_randomGroupKeyBytes());
+      final fp = fingerprintForKey(newKeyB64);
+      final ver = await _service.rotateGroupKey(
+        groupId: widget.groupId,
+        actorId: did,
+        keyFp: fp,
+      );
+      await ChatLocalStore().saveGroupKey(
+        widget.groupId,
+        newKeyB64,
+        baseUrlOverride: widget.baseUrl,
+      );
+      await _refreshMembers();
+      final ids = _members.map((m) => m.deviceId).toList();
+      final shareSummary = await _shareGroupKey(newKeyB64, ids);
+      if (!mounted) return;
+      setState(() {
+        _error = _groupKeyShareOutcomeText(
+          isArabic: isArabic,
+          successText:
+              isArabic ? 'تم تدوير المفتاح (v$ver).' : 'Key rotated (v$ver).',
+          blockedCount: shareSummary.blockedCount,
+          failedCount: shareSummary.failedCount,
+        );
+      });
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(() => _error = _sanitizeGroupError(e, isArabic: isArabic));
+    }
+  }
+
+  Future<void> _appendSentGroupMessage(ChatGroupMessage msg) async {
+    _didSendMessage = true;
+    unawaited(_unarchiveGroupIfNeeded());
+    if (!mounted) return;
+    setState(() {
+      _messages = <ChatGroupMessage>[..._messages, msg];
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom(force: true);
+    });
+    try {
+      await ChatLocalStore().saveGroupMessages(
+        widget.groupId,
+        _messages,
+        baseUrlOverride: widget.baseUrl,
+      );
+    } catch (_) {}
+  }
+
+  Future<ChatGroupMessage?> _sendGroupMessageWithGuard({
+    required String senderId,
+    String text = '',
+    String? kind,
+    String? attachmentB64,
+    String? attachmentMime,
+    int? voiceSecs,
+    double? lat,
+    double? lon,
+    String? contactId,
+    String? contactName,
+  }) async {
+    if (_sendingMessage) return null;
+    if (mounted) {
+      setState(() => _sendingMessage = true);
+    } else {
+      _sendingMessage = true;
+    }
+    try {
+      return await _service.sendGroupMessage(
+        groupId: widget.groupId,
+        senderId: senderId,
+        text: text,
+        kind: kind,
+        attachmentB64: attachmentB64,
+        attachmentMime: attachmentMime,
+        voiceSecs: voiceSecs,
+        lat: lat,
+        lon: lon,
+        contactId: contactId,
+        contactName: contactName,
+      );
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) return null;
+      if (!mounted) return null;
+      setState(
+        () => _error = _sanitizeGroupError(
+          e,
+          isArabic: L10n.of(context).isArabic,
+        ),
+      );
+      return null;
+    } finally {
+      if (mounted) {
+        setState(() => _sendingMessage = false);
+      } else {
+        _sendingMessage = false;
+      }
+    }
+  }
+
+  @visibleForTesting
+  Future<void> debugRefreshMembers() => _refreshMembers();
+
+  @visibleForTesting
+  String debugErrorText() => _error;
+
+  @visibleForTesting
+  Future<void> debugUpdateGroup({
+    String? name,
+    String? avatarB64,
+    String? avatarMime,
+  }) =>
+      _updateGroupMetadata(
+        name: name,
+        avatarB64: avatarB64,
+        avatarMime: avatarMime,
+        isArabic: false,
+      );
+
+  @visibleForTesting
+  Future<void> debugSetGroupRole({
+    required String targetId,
+    required String role,
+  }) =>
+      _setGroupMemberRole(
+        targetId: targetId,
+        role: role,
+        isArabic: false,
+      );
+
+  @visibleForTesting
+  Future<void> debugInviteMembers(List<String> memberIds) =>
+      _inviteMembers(memberIds: memberIds, isArabic: false);
+
+  @visibleForTesting
+  Future<void> debugLeaveGroup() => _leaveGroup();
+
+  @visibleForTesting
+  Future<void> debugSetGroupMuted(bool muted) => _setGroupMuted(muted);
+
+  @visibleForTesting
+  Future<void> debugSetGroupPinned(bool pinned) => _setGroupPinned(pinned);
+
+  @visibleForTesting
+  Future<void> debugLoadGroupKeyEvents() => _loadGroupKeyEvents();
+
+  @visibleForTesting
+  Future<void> debugRotateGroupKey() => _performRotateGroupKey(isArabic: false);
+
+  @visibleForTesting
+  Future<void> debugSendTextQuick(String text) => _sendTextQuick(text);
+
+  @visibleForTesting
+  Future<void> debugLoadChatThemeKey() => _loadChatThemeKey();
+
+  @visibleForTesting
+  String debugChatThemeKey() => _chatThemeKey;
+
+  @visibleForTesting
+  Future<void> debugSetChatThemeKey(String themeKey) =>
+      _setChatThemeKey(themeKey);
+
+  @visibleForTesting
+  Future<void> debugMarkSeenAndClearUnread() async {
+    final did = _deviceId;
+    if (did == null || did.isEmpty) return;
+    await _markSeenAndClearUnread(did);
+  }
+
+  @visibleForTesting
+  Future<void> debugClearGroupChatHistory() => _clearGroupChatHistory();
+
+  @visibleForTesting
+  Future<void> debugUnarchiveGroupIfNeeded() => _unarchiveGroupIfNeeded();
+
+  @visibleForTesting
+  Future<void> debugLoadOlderMessages() => _loadOlderMessages();
+
+  @visibleForTesting
+  bool debugHasOlderMessages() => _hasOlderMessages;
+
+  ChatGroupMessage? _oldestLoadedGroupMessage() {
+    ChatGroupMessage? oldest;
+    for (final message in _messages) {
+      if (message.id.trim().isEmpty || message.createdAt == null) {
+        continue;
+      }
+      if (oldest == null || _compareGroupMessageCursor(message, oldest) < 0) {
+        oldest = message;
+      }
+    }
+    return oldest;
+  }
+
+  Future<void> _loadOlderMessages() async {
+    if (_loading || _loadingOlderMessages || !_hasOlderMessages) {
+      return;
+    }
+    final did = (_deviceId ?? '').trim();
+    if (did.isEmpty) {
+      return;
+    }
+    final oldest = _oldestLoadedGroupMessage();
+    final beforeCreatedAt = oldest?.createdAt?.toUtc().toIso8601String();
+    final beforeId = oldest?.id.trim() ?? '';
+    if ((beforeCreatedAt ?? '').isEmpty || beforeId.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _hasOlderMessages = false;
+      });
+      return;
+    }
+
+    final hadClients = _scrollCtrl.hasClients;
+    final beforeOffset = hadClients ? _scrollCtrl.offset : 0.0;
+    final beforeMaxExtent =
+        hadClients ? _scrollCtrl.position.maxScrollExtent : 0.0;
+
+    if (mounted) {
+      setState(() {
+        _loadingOlderMessages = true;
+      });
+    } else {
+      _loadingOlderMessages = true;
+    }
+
+    try {
+      final older = await _service.fetchGroupInbox(
+        groupId: widget.groupId,
+        deviceId: did,
+        limit: _groupOlderMessagesPageSize,
+        beforeCreatedAt: beforeCreatedAt,
+        beforeId: beforeId,
+      );
+      if (!mounted) return;
+      if (older.isEmpty) {
+        setState(() {
+          _loadingOlderMessages = false;
+          _hasOlderMessages = false;
+        });
+        return;
+      }
+
+      final mergedById = <String, ChatGroupMessage>{
+        for (final message in _messages)
+          if (message.id.trim().isNotEmpty) message.id: message,
+      };
+      for (final message in older) {
+        final mid = message.id.trim();
+        if (mid.isEmpty) continue;
+        mergedById[mid] = message;
+      }
+      final merged = mergedById.values.toList()
+        ..sort(_compareGroupMessageCursor);
+      final stillHasOlder = older.length >= _groupOlderMessagesPageSize;
+
+      setState(() {
+        _messages = merged;
+        _loadingOlderMessages = false;
+        _hasOlderMessages = stillHasOlder;
+      });
+      try {
+        await ChatLocalStore().saveGroupMessages(
+          widget.groupId,
+          merged,
+          baseUrlOverride: widget.baseUrl,
+        );
+      } catch (_) {}
+
+      if (hadClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_scrollCtrl.hasClients) return;
+          final delta = _scrollCtrl.position.maxScrollExtent - beforeMaxExtent;
+          final target = beforeOffset + max(0.0, delta);
+          try {
+            _scrollCtrl.jumpTo(target);
+          } catch (_) {}
+        });
+      }
+    } catch (e) {
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(() {
+        _loadingOlderMessages = false;
+        _error = _sanitizeGroupError(e, isArabic: L10n.of(context).isArabic);
+      });
+    }
   }
 
   Future<void> _setChatThemeKey(String themeKey) async {
     final next = themeKey.trim().isNotEmpty ? themeKey.trim() : 'default';
-    if (mounted) {
-      setState(() => _chatThemeKey = next);
-    }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('chat.wallpaper_theme') ?? '{}';
-      Map<String, dynamic> decoded;
-      try {
-        decoded = jsonDecode(raw) as Map<String, dynamic>;
-      } catch (_) {
-        decoded = <String, dynamic>{};
-      }
-
-      final k = _groupUnreadKey(widget.groupId);
-      if (next == 'default') {
-        decoded.remove(k);
+      final override = widget.saveChatThemeForGroupOverride;
+      if (override != null) {
+        await override(widget.groupId, next);
       } else {
-        decoded[k] = next;
+        await ChatLocalStore().saveChatThemeForGroup(
+          widget.groupId,
+          next,
+          baseUrlOverride: widget.baseUrl,
+        );
       }
-
-      if (decoded.isEmpty) {
-        await sp.remove('chat.wallpaper_theme');
-      } else {
-        await sp.setString('chat.wallpaper_theme', jsonEncode(decoded));
+      if (mounted) {
+        setState(() => _chatThemeKey = next);
       }
     } catch (_) {}
   }
 
-  static String _groupMessageReactionsPrefKey(String groupId) =>
-      'chat.group_message_reactions.${groupId.trim()}';
-
   Future<void> _loadMessageReactions() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString(_groupMessageReactionsPrefKey(widget.groupId));
-      if (raw == null || raw.trim().isEmpty) return;
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return;
-      final map = <String, String>{};
-      decoded.forEach((k, v) {
-        final key = (k ?? '').toString().trim();
-        final val = (v ?? '').toString().trim();
-        if (key.isNotEmpty && val.isNotEmpty) {
-          map[key] = val;
-        }
-      });
+      final map = await ChatLocalStore().loadGroupMessageReactions(
+        widget.groupId,
+        baseUrlOverride: widget.baseUrl,
+      );
       if (!mounted) return;
       setState(() => _messageReactions = map);
     } catch (_) {}
@@ -622,13 +1626,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   Future<void> _saveMessageReactions() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final key = _groupMessageReactionsPrefKey(widget.groupId);
-      if (_messageReactions.isEmpty) {
-        await sp.remove(key);
-      } else {
-        await sp.setString(key, jsonEncode(_messageReactions));
-      }
+      await ChatLocalStore().saveGroupMessageReactions(
+        widget.groupId,
+        _messageReactions,
+        baseUrlOverride: widget.baseUrl,
+      );
     } catch (_) {}
   }
 
@@ -650,24 +1652,56 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   Future<String?> _getOrCreateGroupKeyIfAdmin() async {
     final store = ChatLocalStore();
-    var keyB64 = await store.loadGroupKey(widget.groupId);
+    var keyB64 = await store.loadGroupKey(
+      widget.groupId,
+      baseUrlOverride: widget.baseUrl,
+    );
     if ((keyB64 == null || keyB64.isEmpty) && _isAdmin) {
       keyB64 = base64Encode(_randomGroupKeyBytes());
-      await store.saveGroupKey(widget.groupId, keyB64);
+      await store.saveGroupKey(
+        widget.groupId,
+        keyB64,
+        baseUrlOverride: widget.baseUrl,
+      );
     }
     return keyB64;
   }
 
-  Future<void> _shareGroupKey(String keyB64, List<String> ids) async {
-    if (keyB64.isEmpty) return;
+  Future<({int blockedCount, int failedCount})> _shareGroupKey(
+    String keyB64,
+    List<String> ids,
+  ) async {
+    if (keyB64.isEmpty) {
+      return (blockedCount: 0, failedCount: 0);
+    }
     final store = ChatLocalStore();
-    final me = await store.loadIdentity();
-    if (me == null) return;
+    final me = await store.loadIdentity(baseUrlOverride: widget.baseUrl);
+    if (me == null) {
+      return (blockedCount: 0, failedCount: 0);
+    }
+    await _refreshKnownDirectContacts();
+    final nextNames = Map<String, String>.from(_contactNameById);
+    var changedNames = false;
+    var blockedCount = 0;
+    var failedCount = 0;
     for (final id in ids) {
       final peerId = id.trim();
       if (peerId.isEmpty || peerId == me.id) continue;
+      if (_groupKeyShareBlockedPeerIds.contains(peerId) &&
+          !_directContactIds.contains(peerId)) {
+        blockedCount += 1;
+        continue;
+      }
       try {
         final peer = await _service.resolveDevice(peerId);
+        _undiscoverableGroupMemberIds.remove(peerId);
+        _groupKeyShareBlockedPeerIds.remove(peerId);
+        _directContactIds.add(peerId);
+        final name = (peer.name ?? '').trim();
+        if (name.isNotEmpty && (nextNames[peerId] ?? '').trim().isEmpty) {
+          nextNames[peerId] = name;
+          changedNames = true;
+        }
         final payload = jsonEncode({
           'kind': 'group_key',
           'group_id': widget.groupId,
@@ -677,9 +1711,29 @@ class _GroupChatPageState extends State<GroupChatPage> {
           me: me,
           peer: peer,
           plainText: payload,
+          sealedSender: true,
+          senderHint: me.fingerprint,
         );
-      } catch (_) {}
+      } catch (e) {
+        if (_isFailClosedPeerLookup(e)) {
+          _undiscoverableGroupMemberIds.add(peerId);
+          _groupKeyShareBlockedPeerIds.add(peerId);
+          blockedCount += 1;
+          continue;
+        }
+        failedCount += 1;
+      }
     }
+    if (changedNames) {
+      if (!mounted) {
+        _setContactNameMap(nextNames);
+      } else {
+        setState(() {
+          _setContactNameMap(nextNames);
+        });
+      }
+    }
+    return (blockedCount: blockedCount, failedCount: failedCount);
   }
 
   String _shortId(String id) {
@@ -702,7 +1756,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     return _shortId(raw);
   }
 
-  Widget _wechatGroupMessageAvatar({
+  Widget _shamellGroupMessageAvatar({
     required String senderId,
     required bool incoming,
     required L10n l,
@@ -740,11 +1794,17 @@ class _GroupChatPageState extends State<GroupChatPage> {
   }
 
   Future<void> _resolveMissingMemberNames(List<ChatGroupMember> members) async {
+    await _refreshKnownDirectContacts();
     final myId = (_deviceId ?? '').trim();
     final missing = members
         .map((m) => m.deviceId.trim())
         .where((id) => id.isNotEmpty && id != myId)
         .where((id) => (_contactNameById[id] ?? '').trim().isEmpty)
+        .where(
+          (id) =>
+              !_undiscoverableGroupMemberIds.contains(id) ||
+              _directContactIds.contains(id),
+        )
         .toSet()
         .toList();
     if (missing.isEmpty) return;
@@ -754,152 +1814,37 @@ class _GroupChatPageState extends State<GroupChatPage> {
     for (final id in missing) {
       try {
         final c = await _service.resolveDevice(id);
+        _undiscoverableGroupMemberIds.remove(id);
+        _groupKeyShareBlockedPeerIds.remove(id);
+        _directContactIds.add(id);
         final name = (c.name ?? '').trim();
         if (name.isNotEmpty && (next[id] ?? '').trim().isEmpty) {
           next[id] = name;
           changed = true;
         }
-      } catch (_) {}
+      } catch (e) {
+        if (_isFailClosedPeerLookup(e)) {
+          _undiscoverableGroupMemberIds.add(id);
+        }
+      }
     }
     if (!changed || !mounted) return;
     setState(() {
-      _contactNameById = next;
+      _setContactNameMap(next);
     });
   }
 
-  String _systemLabel(ChatGroupMessage m, L10n l) {
-    final raw = m.text.trim();
-    if (raw.isEmpty) {
-      return l.isArabic ? 'حدث في المجموعة' : 'Group event';
-    }
-    try {
-      final j = jsonDecode(raw);
-      if (j is Map) {
-        final ev = (j['event'] ?? '').toString();
-        final actor = (j['actor_id'] ?? '').toString();
-        if (ev == 'invite') {
-          final idsRaw = j['member_ids'];
-          final ids = <String>[];
-          if (idsRaw is List) {
-            for (final x in idsRaw) {
-              final s = x.toString().trim();
-              if (s.isNotEmpty) ids.add(s);
-            }
-          }
-          final who = _displayNameForDeviceId(actor, l);
-          final added = ids
-              .map((id) => _displayNameForDeviceId(id, l, fallback: id))
-              .join(', ');
-          if (l.isArabic) {
-            return ids.isEmpty
-                ? 'قام $who بإضافة أعضاء'
-                : 'قام $who بإضافة $added';
-          }
-          return ids.isEmpty ? '$who invited members' : '$who invited $added';
-        }
-        if (ev == 'create') {
-          final name = (j['name'] ?? '').toString();
-          final idsRaw = j['member_ids'];
-          final ids = <String>[];
-          if (idsRaw is List) {
-            for (final x in idsRaw) {
-              final s = x.toString().trim();
-              if (s.isNotEmpty) ids.add(s);
-            }
-          }
-          final who = _displayNameForDeviceId(actor, l);
-          final invited = ids
-              .map((id) => _displayNameForDeviceId(id, l, fallback: id))
-              .join(', ');
-          if (l.isArabic) {
-            final base = name.isNotEmpty
-                ? 'أنشأ $who المجموعة \"$name\"'
-                : 'أنشأ $who المجموعة';
-            return ids.isEmpty ? base : '$base وأضاف $invited';
-          }
-          final base = name.isNotEmpty
-              ? '$who created \"$name\"'
-              : '$who created the group';
-          return ids.isEmpty ? base : '$base and invited $invited';
-        }
-        if (ev == 'leave') {
-          final who = _displayNameForDeviceId(actor, l);
-          return l.isArabic ? 'غادر $who المجموعة' : '$who left the group';
-        }
-        if (ev == 'role') {
-          final target = (j['target_id'] ?? '').toString();
-          final role = (j['role'] ?? '').toString();
-          final who = _displayNameForDeviceId(actor, l);
-          final targetLabel = _displayNameForDeviceId(
-            target,
-            l,
-            fallback: l.isArabic ? 'عضو' : 'a member',
-          );
-          if (role == 'admin') {
-            return l.isArabic
-                ? 'قام $who بترقية $targetLabel إلى مشرف'
-                : '$who made $targetLabel admin';
-          }
-          return l.isArabic
-              ? 'قام $who بإزالة صلاحية المشرف من $targetLabel'
-              : '$who removed admin from $targetLabel';
-        }
-        if (ev == 'rename') {
-          final newName = (j['new_name'] ?? '').toString();
-          final who = _displayNameForDeviceId(actor, l);
-          if (l.isArabic) {
-            if (newName.isNotEmpty) {
-              return 'قام $who بتغيير اسم المجموعة إلى \"$newName\"';
-            }
-            return 'قام $who بتغيير اسم المجموعة';
-          }
-          if (newName.isNotEmpty) {
-            return '$who changed group name to \"$newName\"';
-          }
-          return '$who changed group name';
-        }
-        if (ev == 'avatar') {
-          final action = (j['action'] ?? '').toString();
-          final who = _displayNameForDeviceId(actor, l);
-          if (l.isArabic) {
-            if (action == 'remove') {
-              return 'قام $who بإزالة صورة المجموعة';
-            }
-            return 'قام $who بتغيير صورة المجموعة';
-          }
-          if (action == 'remove') {
-            return '$who removed group photo';
-          }
-          return '$who changed group photo';
-        }
-        if (ev == 'key_rotated') {
-          final ver = (j['version'] ?? '').toString();
-          final who = _displayNameForDeviceId(
-            actor,
-            l,
-            fallback: l.isArabic ? 'مشرف' : 'An admin',
-          );
-          return l.isArabic
-              ? 'قام $who بتدوير مفتاح التشفير${ver.isNotEmpty ? ' (v$ver)' : ''}'
-              : '$who rotated encryption key${ver.isNotEmpty ? ' (v$ver)' : ''}';
-        }
-      }
-    } catch (_) {}
-    return raw;
-  }
-
-  Widget _renderMentions(
-    String text,
+  Widget _renderMessageTextPresentation(
+    GroupMessageTextPresentation presentation,
     ThemeData theme, {
     TextStyle? baseStyle,
     int? maxLines,
     TextOverflow overflow = TextOverflow.clip,
   }) {
-    final l = L10n.of(context);
     final base = baseStyle ??
         theme.textTheme.bodyMedium ??
         const TextStyle(fontSize: 14);
-    const mentionBlueLight = Color(0xFF576B95); // WeChat-like mention color
+    const mentionBlueLight = Color(0xFF576B95); // SyrChat-like mention color
     const mentionBlueDark = Color(0xFF93C5FD);
     final mentionColor = theme.brightness == Brightness.dark
         ? mentionBlueDark
@@ -914,62 +1859,31 @@ class _GroupChatPageState extends State<GroupChatPage> {
         alpha: theme.brightness == Brightness.dark ? .18 : .14,
       ),
     );
-    final meId = (_deviceId ?? '').toLowerCase();
-    const arabicAllToken = '@الكل';
-    final reg = RegExp(r'@([A-Za-z0-9_-]{2,})');
-    final wsReg = RegExp(r'\s');
-    final matches = <({int start, int end, String rawId})>[];
-
-    for (final m in reg.allMatches(text)) {
-      if (m.start > 0 && !wsReg.hasMatch(text[m.start - 1])) continue;
-      final rawId = (m.group(1) ?? '').trim();
-      if (rawId.isEmpty) continue;
-      matches.add((start: m.start, end: m.end, rawId: rawId));
-    }
-
-    var idx = text.indexOf(arabicAllToken);
-    while (idx != -1) {
-      if (idx == 0 || wsReg.hasMatch(text[idx - 1])) {
-        matches
-            .add((start: idx, end: idx + arabicAllToken.length, rawId: 'all'));
-      }
-      idx = text.indexOf(arabicAllToken, idx + arabicAllToken.length);
-    }
-
-    matches.sort((a, b) => a.start.compareTo(b.start));
-    if (matches.isEmpty) {
+    if (!presentation.hasStyledSegments) {
       return Text(
-        text,
+        presentation.plainText,
         style: base,
         maxLines: maxLines,
         overflow: overflow,
       );
     }
-    final spans = <TextSpan>[];
-    var last = 0;
-    for (final m in matches) {
-      if (m.start > last) {
-        spans.add(TextSpan(text: text.substring(last, m.start)));
-      }
-      final rawId = m.rawId.trim();
-      final idLower = rawId.toLowerCase();
-      final display = idLower == 'all'
-          ? (l.isArabic ? '@الكل' : '@all')
-          : '@${_displayNameForDeviceId(rawId, l, fallback: rawId)}';
-      final isHighlight = idLower == meId || idLower == 'all';
-      spans.add(TextSpan(
-        text: display,
-        style: isHighlight ? highlightStyle : mentionStyle,
-      ));
-      last = m.end;
-    }
-    if (last < text.length) {
-      spans.add(TextSpan(text: text.substring(last)));
-    }
     return RichText(
       maxLines: maxLines,
       overflow: overflow,
-      text: TextSpan(style: base, children: spans),
+      text: TextSpan(
+        style: base,
+        children: [
+          for (final segment in presentation.segments)
+            TextSpan(
+              text: segment.text,
+              style: switch (segment.kind) {
+                GroupMessageTextSegmentKind.mention => mentionStyle,
+                GroupMessageTextSegmentKind.mentionHighlight => highlightStyle,
+                GroupMessageTextSegmentKind.text => null,
+              },
+            ),
+        ],
+      ),
     );
   }
 
@@ -988,6 +1902,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
           _mentionStart = -1;
         });
       }
+      _syncGroupTypingSignal();
       return;
     }
     final query = (m.group(1) ?? '').trim();
@@ -1000,6 +1915,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         _mentionStart = start;
       });
     }
+    _syncGroupTypingSignal();
   }
 
   List<_MentionCandidate> _mentionCandidates(L10n l) {
@@ -1069,32 +1985,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
       _mentionQuery = '';
       _mentionStart = -1;
     });
-  }
-
-  void _insertComposerText(String insert) {
-    if (insert.isEmpty) return;
-    final value = _msgCtrl.value;
-    final text = value.text;
-    final sel = value.selection;
-    final start =
-        (sel.start >= 0 && sel.start <= text.length) ? sel.start : text.length;
-    final end =
-        (sel.end >= 0 && sel.end <= text.length) ? sel.end : text.length;
-    final before = text.substring(0, start);
-    final after = text.substring(end);
-    final next = before + insert + after;
-    _msgCtrl.value = value.copyWith(
-      text: next,
-      selection: TextSelection.collapsed(offset: before.length + insert.length),
-      composing: TextRange.empty,
-    );
-    if (_mentionActive) {
-      setState(() {
-        _mentionActive = false;
-        _mentionQuery = '';
-        _mentionStart = -1;
-      });
-    }
   }
 
   Widget _buildMentionSuggestions(L10n l, ThemeData theme) {
@@ -1325,7 +2215,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
   @override
   void initState() {
     super.initState();
-    _service = ChatService(widget.baseUrl);
+    _ownsService = widget.serviceOverride == null;
+    _service = widget.serviceOverride ?? ChatService(widget.baseUrl);
     _groupName = widget.groupName;
     _msgCtrl.addListener(_onMessageChanged);
     _scrollCtrl.addListener(_onScrollChanged);
@@ -1334,19 +2225,25 @@ class _GroupChatPageState extends State<GroupChatPage> {
     _playerStateSub = _audioPlayer.playerStateStream.listen((st) {
       final playing =
           st.playing && st.processingState != ProcessingState.completed;
+      final completed = st.processingState == ProcessingState.completed;
+      String? completedVoicePath;
       if (!mounted) return;
-      if (playing != _voicePlaying ||
-          (!playing && st.processingState == ProcessingState.completed)) {
+      if (playing != _voicePlaying || (!playing && completed)) {
         if (!playing) {
           _proximitySub?.cancel();
           _proximitySub = null;
         }
         setState(() {
           _voicePlaying = playing;
-          if (!playing && st.processingState == ProcessingState.completed) {
+          if (!playing && completed) {
             _playingVoiceId = null;
+            completedVoicePath = _voicePlaybackPath;
+            _voicePlaybackPath = null;
           }
         });
+      }
+      if (completedVoicePath != null) {
+        unawaited(deleteEphemeralVoiceFile(completedVoicePath));
       }
     });
     _load();
@@ -1357,17 +2254,27 @@ class _GroupChatPageState extends State<GroupChatPage> {
     _grpWsSub?.cancel();
     _playerStateSub?.cancel();
     _proximitySub?.cancel();
+    _stopGroupTypingSignal();
+    _typingWsSub?.cancel();
+    _typingIndicatorTimer?.cancel();
+    unawaited(_clearVoicePlaybackFile());
+    unawaited(_clearVoiceRecordingFile());
     try {
       _highlightTimer?.cancel();
     } catch (_) {}
     try {
       _voiceTicker?.cancel();
     } catch (_) {}
-    _service.close();
+    _pendingMentionPruneTimer?.cancel();
+    _messagePresentationCache.clear();
+    _inlineMediaBytesCache.clear();
+    if (_ownsService) {
+      _service.close();
+    }
     _msgCtrl.removeListener(_onMessageChanged);
     _msgCtrl.dispose();
     _msgFocus.dispose();
-    _wechatMorePanelCtrl.dispose();
+    _shamellMorePanelCtrl.dispose();
     _scrollCtrl.removeListener(_onScrollChanged);
     _scrollCtrl.dispose();
     try {
@@ -1423,27 +2330,30 @@ class _GroupChatPageState extends State<GroupChatPage> {
   }
 
   void _onScrollChanged() {
+    if (_hasOlderMessages &&
+        !_loadingOlderMessages &&
+        !_loading &&
+        _scrollCtrl.hasClients &&
+        _scrollCtrl.offset <= _groupOlderMessagesLoadThreshold) {
+      unawaited(_loadOlderMessages());
+    }
     if (_pendingNewMessageCount <= 0 &&
         _pendingNewMessageFirstId == null &&
         _pendingMentionMessageIds.isEmpty) {
       return;
     }
     final nearBottom = _isNearBottom;
-    final nextMentions = _pruneVisibleMentions(_pendingMentionMessageIds);
     final clearNew = nearBottom &&
         (_pendingNewMessageCount != 0 || _pendingNewMessageFirstId != null);
-    final mentionChanged =
-        nextMentions.length != _pendingMentionMessageIds.length;
-    if (!clearNew && !mentionChanged) return;
-    setState(() {
-      if (clearNew) {
+    if (clearNew) {
+      setState(() {
         _pendingNewMessageCount = 0;
         _pendingNewMessageFirstId = null;
-      }
-      if (mentionChanged) {
-        _pendingMentionMessageIds = nextMentions;
-      }
-    });
+      });
+    }
+    if (_pendingMentionMessageIds.isNotEmpty) {
+      _scheduleVisibleMentionPrune();
+    }
   }
 
   void _flashMessageHighlight(String messageId) {
@@ -1460,90 +2370,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
         _highlightedMessageId = null;
       });
     });
-  }
-
-  bool _messageMentionsMe(ChatGroupMessage m, String myIdLower) {
-    final kind = (m.kind ?? '').toLowerCase();
-    if (kind == 'system' || kind == 'sealed') return false;
-    final text = m.text.trim();
-    if (text.isEmpty || !text.contains('@')) return false;
-    final reg = RegExp(r'@([A-Za-z0-9_-]{2,})');
-    final wsReg = RegExp(r'\s');
-    const arabicAllToken = '@الكل';
-    if (text.contains(arabicAllToken)) {
-      var idx = text.indexOf(arabicAllToken);
-      while (idx != -1) {
-        if (idx == 0 || wsReg.hasMatch(text[idx - 1])) return true;
-        idx = text.indexOf(arabicAllToken, idx + arabicAllToken.length);
-      }
-    }
-    for (final mm in reg.allMatches(text)) {
-      if (mm.start > 0 && !wsReg.hasMatch(text[mm.start - 1])) {
-        continue;
-      }
-      final raw = (mm.group(1) ?? '').trim().toLowerCase();
-      if (raw.isEmpty) continue;
-      if (raw == myIdLower || raw == 'all') return true;
-    }
-    return false;
-  }
-
-  bool _messageMentionsAll(ChatGroupMessage m) {
-    final kind = (m.kind ?? '').toLowerCase();
-    if (kind == 'system' || kind == 'sealed') return false;
-    final text = m.text.trim();
-    if (text.isEmpty || !text.contains('@')) return false;
-    final reg = RegExp(r'@([A-Za-z0-9_-]{2,})');
-    final wsReg = RegExp(r'\s');
-    const arabicAllToken = '@الكل';
-    if (text.contains(arabicAllToken)) {
-      var idx = text.indexOf(arabicAllToken);
-      while (idx != -1) {
-        if (idx == 0 || wsReg.hasMatch(text[idx - 1])) return true;
-        idx = text.indexOf(arabicAllToken, idx + arabicAllToken.length);
-      }
-    }
-    for (final mm in reg.allMatches(text)) {
-      if (mm.start > 0 && !wsReg.hasMatch(text[mm.start - 1])) {
-        continue;
-      }
-      final raw = (mm.group(1) ?? '').trim().toLowerCase();
-      if (raw == 'all') return true;
-    }
-    return false;
-  }
-
-  String _mentionPreviewText(ChatGroupMessage m, L10n l) {
-    final kind = (m.kind ?? '').toLowerCase();
-    if (kind == 'voice') return l.mirsaalPreviewVoice;
-    final mime = (m.attachmentMime ?? '').toLowerCase();
-    if (kind == 'image' || mime.startsWith('image/')) {
-      final caption = m.text.trim();
-      return caption.isNotEmpty
-          ? '${l.mirsaalPreviewImage} $caption'
-          : l.mirsaalPreviewImage;
-    }
-    final text = m.text.trim();
-    return text.isNotEmpty ? text : l.mirsaalPreviewUnknown;
-  }
-
-  String _formatMentionsForPreview(String text, L10n l) {
-    if (text.isEmpty || !text.contains('@')) return text;
-    final reg = RegExp(r'@([A-Za-z0-9_-]{2,})');
-    final wsReg = RegExp(r'\s');
-    final out = text.replaceAllMapped(reg, (mm) {
-      if (mm.start > 0 && !wsReg.hasMatch(text[mm.start - 1])) {
-        return mm.group(0) ?? '';
-      }
-      final raw = (mm.group(1) ?? '').trim();
-      if (raw.isEmpty) return mm.group(0) ?? '';
-      if (raw.toLowerCase() == 'all') {
-        return l.isArabic ? '@الكل' : '@all';
-      }
-      return '@${_displayNameForDeviceId(raw, l, fallback: raw)}';
-    });
-    if (l.isArabic) return out;
-    return out.replaceAll('@الكل', '@all');
   }
 
   String _formatMentionSheetTs(DateTime? dt) {
@@ -1687,23 +2513,21 @@ class _GroupChatPageState extends State<GroupChatPage> {
       String id,
       ChatGroupMessage m,
       String sender,
-      String preview,
+      GroupMessageTextPresentation preview,
       String ts,
       bool isAll
     })>[];
     for (final id in ids) {
       final m = byId[id];
       if (m == null) continue;
-      final sender =
-          _displayNameForDeviceId(m.senderId, l, fallback: m.senderId);
-      final preview = _mentionPreviewText(m, l);
+      final presentation = _groupMessagePresentation(m, l);
       entries.add((
         id: id,
         m: m,
-        sender: sender,
-        preview: preview,
+        sender: presentation.senderDisplayName,
+        preview: presentation.mentionPreview,
         ts: _formatMentionSheetTs(m.createdAt),
-        isAll: _messageMentionsAll(m),
+        isAll: presentation.rawText.mentionsAll,
       ));
     }
     if (entries.isEmpty) {
@@ -1714,7 +2538,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       return;
     }
 
-    const wechatUnreadRed = Color(0xFFFA5151);
+    const shamellUnreadRed = Color(0xFFFA5151);
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -1807,7 +2631,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: wechatUnreadRed,
+                                  color: shamellUnreadRed,
                                   borderRadius: BorderRadius.circular(999),
                                 ),
                                 child: Text(
@@ -1821,7 +2645,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               ),
                               const SizedBox(width: 8),
                               Expanded(
-                                child: _renderMentions(
+                                child: _renderMessageTextPresentation(
                                   e.preview,
                                   theme,
                                   baseStyle:
@@ -1865,7 +2689,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final count = _pendingNewMessageCount;
     if (count <= 0 || _isNearBottom) return const SizedBox.shrink();
     final isDark = theme.brightness == Brightness.dark;
-    const wechatGreen = Color(0xFF07C160);
+    const shamellGreen = Color(0xFF07C160);
     final labelCount = count > 99 ? '99+' : '$count';
     final label = l.isArabic
         ? (count == 1 ? '$labelCount رسالة جديدة' : '$labelCount رسائل جديدة')
@@ -1902,7 +2726,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                 ),
               ),
               const SizedBox(width: 6),
-              Icon(Icons.keyboard_arrow_down, size: 18, color: wechatGreen),
+              Icon(Icons.keyboard_arrow_down, size: 18, color: shamellGreen),
             ],
           ),
         ),
@@ -1917,7 +2741,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       alpha: theme.brightness == Brightness.dark ? .86 : .94,
     );
     final fg = theme.colorScheme.onSurface.withValues(alpha: .78);
-    const wechatUnreadRed = Color(0xFFFA5151);
+    const shamellUnreadRed = Color(0xFFFA5151);
     final showCount = count > 1;
     final label = count > 99 ? '99+' : '$count';
     return Material(
@@ -1952,7 +2776,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 5, vertical: 1),
                         decoration: BoxDecoration(
-                          color: wechatUnreadRed,
+                          color: shamellUnreadRed,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
@@ -1968,7 +2792,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                         width: 8,
                         height: 8,
                         decoration: const BoxDecoration(
-                          color: wechatUnreadRed,
+                          color: shamellUnreadRed,
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -1982,7 +2806,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   Widget _buildNewMessagesMarker(ThemeData theme, L10n l) {
     final label = _newMessagesCountAtOpen <= 1
-        ? l.mirsaalNewMessageTitle
+        ? l.shamellNewMessageTitle
         : (l.isArabic
             ? '${_newMessagesCountAtOpen} رسائل جديدة'
             : '${_newMessagesCountAtOpen} new messages');
@@ -2107,7 +2931,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       await Share.shareXFiles([file]);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -2148,14 +2972,18 @@ class _GroupChatPageState extends State<GroupChatPage> {
     });
     unawaited(_saveMessageReactions());
     try {
-      await ChatLocalStore().saveGroupMessages(widget.groupId, nextMsgs);
+      await ChatLocalStore().saveGroupMessages(
+        widget.groupId,
+        nextMsgs,
+        baseUrlOverride: widget.baseUrl,
+      );
     } catch (_) {}
   }
 
-  Future<void> _showWeChatGroupMessageLongPressMenu({
+  Future<void> _showShamellGroupMessageLongPressMenu({
     required Rect bubbleRect,
     required bool incoming,
-    required List<_WeChatGroupMessageMenuActionSpec> actions,
+    required List<_ShamellGroupMessageMenuActionSpec> actions,
     required ValueChanged<String> onReaction,
   }) async {
     final overlay = Overlay.of(context);
@@ -2438,20 +3266,21 @@ class _GroupChatPageState extends State<GroupChatPage> {
         attachmentBytes != null && attachmentBytes.isNotEmpty;
     final shareLabel = l.isArabic ? 'مشاركة' : 'Share';
     final isMe = _deviceId != null && m.senderId == _deviceId;
+    final rawTextForCopy =
+        canCopyText ? _groupMessagePresentation(m, l).rawText.plainText : '';
 
-    final actions = <_WeChatGroupMessageMenuActionSpec>[];
+    final actions = <_ShamellGroupMessageMenuActionSpec>[];
     if (canCopyText) {
       actions.add(
-        _WeChatGroupMessageMenuActionSpec(
+        _ShamellGroupMessageMenuActionSpec(
           icon: Icons.copy_outlined,
-          label: l.mirsaalCopyMessage,
+          label: l.shamellCopyMessage,
           onTap: () {
             unawaited(() async {
-              final text = _formatMentionsForPreview(rawText, l);
-              await Clipboard.setData(ClipboardData(text: text));
+              await shamellCopyToClipboard(rawTextForCopy, sensitive: true);
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(l.mirsaalMessageCopiedSnack)),
+                SnackBar(content: Text(l.shamellMessageCopiedSnack)),
               );
             }());
           },
@@ -2460,7 +3289,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
     if (canShareAttachment) {
       actions.add(
-        _WeChatGroupMessageMenuActionSpec(
+        _ShamellGroupMessageMenuActionSpec(
           icon: Icons.ios_share_outlined,
           label: shareLabel,
           onTap: () {
@@ -2483,11 +3312,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
     if (isVoice) {
       actions.add(
-        _WeChatGroupMessageMenuActionSpec(
+        _ShamellGroupMessageMenuActionSpec(
           icon: _voiceUseSpeaker ? Icons.volume_up : Icons.hearing,
           label: _voiceUseSpeaker
-              ? l.mirsaalVoiceSpeakerMode
-              : l.mirsaalVoiceEarpieceMode,
+              ? l.shamellVoiceSpeakerMode
+              : l.shamellVoiceEarpieceMode,
           onTap: () {
             unawaited(() async {
               if (!mounted) return;
@@ -2501,9 +3330,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
       );
     }
     actions.add(
-      _WeChatGroupMessageMenuActionSpec(
+      _ShamellGroupMessageMenuActionSpec(
         icon: Icons.delete_outline,
-        label: l.mirsaalDeleteForMe,
+        label: l.shamellDeleteForMe,
         color: const Color(0xFFFA5151),
         onTap: () => unawaited(_deleteGroupMessageLocal(m)),
       ),
@@ -2527,7 +3356,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
           final tl = bubbleObj.localToGlobal(Offset.zero, ancestor: overlayBox);
           bubbleRect = tl & bubbleObj.size;
         }
-        await _showWeChatGroupMessageLongPressMenu(
+        await _showShamellGroupMessageLongPressMenu(
           bubbleRect: bubbleRect,
           incoming: !isMe,
           actions: actions,
@@ -2553,7 +3382,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  l.mirsaalMessageActionsTitle,
+                  l.shamellMessageActionsTitle,
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -2585,14 +3414,16 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     dense: true,
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.copy, size: 20),
-                    title: Text(l.mirsaalCopyMessage),
+                    title: Text(l.shamellCopyMessage),
                     onTap: () async {
-                      final text = _formatMentionsForPreview(rawText, l);
-                      await Clipboard.setData(ClipboardData(text: text));
+                      await shamellCopyToClipboard(
+                        rawTextForCopy,
+                        sensitive: true,
+                      );
                       if (!mounted) return;
                       Navigator.of(ctx).pop();
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text(l.mirsaalMessageCopiedSnack)),
+                        SnackBar(content: Text(l.shamellMessageCopiedSnack)),
                       );
                     },
                   ),
@@ -2627,8 +3458,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     ),
                     title: Text(
                       _voiceUseSpeaker
-                          ? l.mirsaalVoiceSpeakerMode
-                          : l.mirsaalVoiceEarpieceMode,
+                          ? l.shamellVoiceSpeakerMode
+                          : l.shamellVoiceEarpieceMode,
                     ),
                     onTap: () async {
                       Navigator.of(ctx).pop();
@@ -2648,7 +3479,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     color: theme.colorScheme.error,
                   ),
                   title: Text(
-                    l.mirsaalDeleteForMe,
+                    l.shamellDeleteForMe,
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                   onTap: () async {
@@ -2661,7 +3492,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   alignment: Alignment.centerRight,
                   child: TextButton(
                     onPressed: () => Navigator.of(ctx).pop(),
-                    child: Text(l.mirsaalDialogCancel),
+                    child: Text(l.shamellDialogCancel),
                   ),
                 ),
               ],
@@ -2675,75 +3506,100 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Future<void> _load() async {
     setState(() {
       _loading = true;
+      _loadingOlderMessages = false;
       _error = '';
     });
     try {
       final store = ChatLocalStore();
-      final me = await store.loadIdentity();
+      final me = await store.loadIdentity(baseUrlOverride: widget.baseUrl);
       if (me == null) {
         _deviceId = null;
         _messages = const <ChatGroupMessage>[];
+        _hasOlderMessages = false;
         _playedVoiceMessageIds = <String>{};
-        _contactNameById = <String, String>{};
+        _setContactNameMap(<String, String>{});
         _newMessagesAnchorMessageId = null;
         _newMessagesCountAtOpen = 0;
       } else {
         _deviceId = me.id;
+        final l = L10n.of(context);
         try {
-          final contacts = await store.loadContacts();
-          _contactNameById = <String, String>{
+          final contacts = await store.loadContacts(
+            baseUrlOverride: widget.baseUrl,
+          );
+          _setContactNameMap(<String, String>{
             for (final c in contacts)
               if (c.id.trim().isNotEmpty && (c.name ?? '').trim().isNotEmpty)
                 c.id.trim(): (c.name ?? '').trim(),
-          };
+          });
+          _directContactIds = contacts
+              .map((c) => c.id.trim())
+              .where((id) => id.isNotEmpty)
+              .toSet();
+          _undiscoverableGroupMemberIds.removeWhere(_directContactIds.contains);
+          _groupKeyShareBlockedPeerIds.removeWhere(_directContactIds.contains);
         } catch (_) {
-          _contactNameById = <String, String>{};
+          _setContactNameMap(<String, String>{});
+          _directContactIds = <String>{};
         }
         try {
-          _playedVoiceMessageIds =
-              await store.loadGroupVoicePlayed(widget.groupId);
+          _playedVoiceMessageIds = await store.loadGroupVoicePlayed(
+            widget.groupId,
+            baseUrlOverride: widget.baseUrl,
+          );
         } catch (_) {
           _playedVoiceMessageIds = <String>{};
         }
         try {
-          final groups = await _service.listGroups(deviceId: me.id);
-          unawaited(store.upsertGroupNames(groups));
-          final gdet = groups.firstWhere((g) => g.id == widget.groupId,
-              orElse: () => ChatGroup(
-                  id: widget.groupId,
-                  name: _groupName,
-                  creatorId: '',
-                  memberCount: 0));
+          final gdet = await _service.fetchGroupById(
+                deviceId: me.id,
+                groupId: widget.groupId,
+              ) ??
+              ChatGroup(
+                id: widget.groupId,
+                name: _groupName,
+                creatorId: '',
+                memberCount: 0,
+              );
+          unawaited(
+            store.upsertGroupNames(<ChatGroup>[gdet],
+                baseUrlOverride: widget.baseUrl),
+          );
           _groupName = gdet.name;
           _groupAvatarB64 = gdet.avatarB64;
-        } catch (_) {}
+        } catch (e) {
+          if (await _forceReauthOnCriticalGroupFailure(e)) return;
+        }
         try {
-          final prefs = await _service.fetchGroupPrefs(deviceId: me.id);
-          final p = prefs.firstWhere(
-            (p) => p.groupId == widget.groupId,
-            orElse: () => ChatGroupPrefs(
-              groupId: widget.groupId,
-              muted: false,
-              pinned: false,
-            ),
-          );
+          final p = await _service.fetchGroupPrefForGroup(
+                deviceId: me.id,
+                groupId: widget.groupId,
+              ) ??
+              ChatGroupPrefs(
+                groupId: widget.groupId,
+                muted: false,
+                pinned: false,
+              );
           _groupMuted = p.muted;
           _groupPinned = p.pinned;
-        } catch (_) {}
+        } catch (e) {
+          if (await _forceReauthOnCriticalGroupFailure(e)) return;
+        }
         int openUnreadCount = 0;
         try {
-          final unread = await store.loadUnread();
-          final raw = unread[_groupUnreadKey(widget.groupId)] ?? 0;
-          openUnreadCount = raw > 0 ? raw : 0;
+          openUnreadCount = await _loadGroupUnreadCount();
         } catch (_) {}
         final fetchLimit =
             openUnreadCount > 0 ? min(200, max(50, openUnreadCount * 2)) : 50;
-        final msgs = await _service.fetchGroupInbox(
+        final msgs = await _service.fetchGroupInboxPaged(
           groupId: widget.groupId,
           deviceId: me.id,
-          limit: fetchLimit,
+          batchSize: 200,
+          maxPages: 25,
+          retainLatestCount: fetchLimit,
         );
         _messages = msgs;
+        _hasOlderMessages = msgs.length >= fetchLimit;
         _newMessagesCountAtOpen = openUnreadCount;
         _newMessagesAnchorMessageId = _computeNewMessagesAnchorMessageId(
           messages: msgs,
@@ -2752,7 +3608,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
         );
         _pendingMentionMessageIds = const <String>[];
         if (openUnreadCount > 0 && me.id.trim().isNotEmpty) {
-          final meIdLower = me.id.trim().toLowerCase();
           var remaining = openUnreadCount;
           final ids = <String>[];
           for (var i = msgs.length - 1; i >= 0; i--) {
@@ -2760,7 +3615,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
             final m = msgs[i];
             if (m.senderId.trim() == me.id) continue;
             remaining--;
-            if (meIdLower.isNotEmpty && _messageMentionsMe(m, meIdLower)) {
+            if (_groupMessagePresentation(m, l).rawText.mentionsCurrentUser) {
               final mid = m.id.trim();
               if (mid.isNotEmpty) ids.add(mid);
             }
@@ -2768,18 +3623,25 @@ class _GroupChatPageState extends State<GroupChatPage> {
           _pendingMentionMessageIds = ids.reversed.toList();
         }
         try {
-          await store.saveGroupMessages(widget.groupId, msgs);
+          await store.saveGroupMessages(
+            widget.groupId,
+            msgs,
+            baseUrlOverride: widget.baseUrl,
+          );
         } catch (_) {}
         try {
-          final members = await _service.listGroupMembers(
+          final members = await _service.listGroupMembersPaged(
             groupId: widget.groupId,
             deviceId: me.id,
+            batchSize: 200,
+            maxPages: 25,
           );
           _members = members;
           _isAdmin =
               members.any((m) => m.deviceId == me.id && m.role == 'admin');
           unawaited(_resolveMissingMemberNames(members));
-        } catch (_) {
+        } catch (e) {
+          if (await _forceReauthOnCriticalGroupFailure(e)) return;
           _members = const <ChatGroupMember>[];
           _isAdmin = false;
         }
@@ -2797,10 +3659,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
         } catch (_) {}
         await _markSeenAndClearUnread(me.id);
         _listenGroupWs(me.id);
+        _listenTypingWs(me.id);
       }
     } catch (e) {
-      _error = e.toString();
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      _error = sanitizeExceptionForUi(error: e);
       _messages = const <ChatGroupMessage>[];
+      _hasOlderMessages = false;
       _playedVoiceMessageIds = <String>{};
       _newMessagesAnchorMessageId = null;
       _newMessagesCountAtOpen = 0;
@@ -2855,9 +3720,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   bytes = avatarBytes;
                 } else if (_groupAvatarB64 != null &&
                     _groupAvatarB64!.isNotEmpty) {
-                  try {
-                    bytes = base64Decode(_groupAvatarB64!);
-                  } catch (_) {}
+                  bytes = _decodeInlineImageBytes(_groupAvatarB64);
                 }
                 return CircleAvatar(
                   radius: 32,
@@ -2879,10 +3742,36 @@ class _GroupChatPageState extends State<GroupChatPage> {
                       imageQuality: 80);
                   if (x == null) return;
                   final bytes = await x.readAsBytes();
-                  final ext = (x.name.split('.').last).toLowerCase();
+                  if (!mounted || !ctx2.mounted) return;
+                  if (bytes.isEmpty) return;
+                  if (bytes.length > _maxGroupAvatarBytes) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          l.isArabic
+                              ? 'صورة المجموعة كبيرة جدًا. اختر صورة أصغر.'
+                              : 'Group photo is too large. Choose a smaller image.',
+                        ),
+                      ),
+                    );
+                    return;
+                  }
+                  final detectedMime = _detectGroupAvatarMime(bytes);
+                  if (detectedMime == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          l.isArabic
+                              ? 'صيغة صورة المجموعة غير مدعومة.'
+                              : 'Unsupported group photo format.',
+                        ),
+                      ),
+                    );
+                    return;
+                  }
                   setLocal(() {
                     avatarBytes = bytes;
-                    avatarMime = ext == 'png' ? 'image/png' : 'image/jpeg';
+                    avatarMime = detectedMime;
                     removeAvatar = false;
                   });
                 } catch (_) {}
@@ -2948,21 +3837,15 @@ class _GroupChatPageState extends State<GroupChatPage> {
                             avatarB64Param = base64Encode(avatarBytes!);
                             avatarMimeParam = avatarMime ?? 'image/jpeg';
                           }
-                          final updated = await _service.updateGroup(
-                            groupId: widget.groupId,
-                            actorId: did,
+                          await _updateGroupMetadata(
                             name: nameParam,
                             avatarB64: avatarB64Param,
                             avatarMime: avatarMimeParam,
+                            isArabic: l.isArabic,
                           );
-                          if (!mounted) return;
-                          setState(() {
-                            _groupName = updated.name;
-                            _groupAvatarB64 = updated.avatarB64;
-                          });
-                        } catch (e) {
-                          if (!mounted) return;
-                          setState(() => _error = e.toString());
+                        } catch (_) {
+                          // Modal close should stay best-effort; the update path
+                          // itself already handles UI error state and reauth.
                         }
                       },
                     ),
@@ -2981,6 +3864,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     _grpWsSub?.cancel();
     _grpWsSub = _service.streamGroupInbox(deviceId: did).listen((upd) {
       if (upd.groupId != widget.groupId) return;
+      final l = L10n.of(context);
       final wasNearBottom = _isNearBottom;
       final existing = _messages;
       final byId = <String, ChatGroupMessage>{
@@ -2989,7 +3873,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
       var addedIncoming = 0;
       String? firstIncomingIdInBatch;
       DateTime? firstIncomingAtInBatch;
-      final myIdLower = did.toLowerCase();
       final mentionMsgsInBatch = <ChatGroupMessage>[];
       for (final m in upd.messages) {
         if (m.id.isEmpty) continue;
@@ -3000,7 +3883,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         if (isIncoming) {
           addedIncoming++;
           final ts = m.createdAt;
-          if (myIdLower.isNotEmpty && _messageMentionsMe(m, myIdLower)) {
+          if (_groupMessagePresentation(m, l).rawText.mentionsCurrentUser) {
             mentionMsgsInBatch.add(m);
           }
           if (firstIncomingIdInBatch == null) {
@@ -3014,17 +3897,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
           }
         }
       }
-      final merged = byId.values.toList()
-        ..sort((a, b) {
-          final at = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-          final bt = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-          return at.compareTo(bt);
-        });
-      mentionMsgsInBatch.sort((a, b) {
-        final at = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bt = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return at.compareTo(bt);
-      });
+      final merged = byId.values.toList()..sort(_compareGroupMessageCursor);
+      mentionMsgsInBatch.sort(_compareGroupMessageCursor);
       final mentionIdsInBatch = mentionMsgsInBatch
           .map((m) => m.id.trim())
           .where((id) => id.isNotEmpty)
@@ -3056,7 +3930,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
         _scrollToBottom(force: wasNearBottom);
       });
       try {
-        ChatLocalStore().saveGroupMessages(widget.groupId, merged);
+        ChatLocalStore().saveGroupMessages(
+          widget.groupId,
+          merged,
+          baseUrlOverride: widget.baseUrl,
+        );
       } catch (_) {}
       try {
         _markSeenAndClearUnread(did);
@@ -3064,10 +3942,143 @@ class _GroupChatPageState extends State<GroupChatPage> {
     });
   }
 
+  void _listenTypingWs(String did) {
+    _typingWsSub?.cancel();
+    _typingWsSub = _service.streamTypingSignals(deviceId: did).listen((signal) {
+      _handleTypingSignal(signal);
+    }, onError: (_) {}, onDone: () {});
+  }
+
+  void _handleTypingSignal(ChatTypingSignal signal) {
+    if (signal.scope != ChatTypingScope.group ||
+        signal.groupId != widget.groupId) {
+      return;
+    }
+    final myId = (_deviceId ?? '').trim();
+    final senderId = signal.fromDeviceId.trim();
+    if (senderId.isEmpty || senderId == myId) return;
+    if (signal.isTyping) {
+      _typingExpiresAtByDeviceId[senderId] =
+          DateTime.now().add(_typingIndicatorTtl);
+    } else {
+      _typingExpiresAtByDeviceId.remove(senderId);
+    }
+    _scheduleTypingIndicatorPrune();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _scheduleTypingIndicatorPrune() {
+    _typingIndicatorTimer?.cancel();
+    if (_typingExpiresAtByDeviceId.isEmpty) return;
+    var nextExpiry = _typingExpiresAtByDeviceId.values.first;
+    for (final expiry in _typingExpiresAtByDeviceId.values) {
+      if (expiry.isBefore(nextExpiry)) {
+        nextExpiry = expiry;
+      }
+    }
+    final delay = nextExpiry.difference(DateTime.now());
+    _typingIndicatorTimer = Timer(
+      delay.isNegative ? Duration.zero : delay,
+      _pruneExpiredTypingIndicators,
+    );
+  }
+
+  void _pruneExpiredTypingIndicators() {
+    final now = DateTime.now();
+    _typingExpiresAtByDeviceId.removeWhere((_, expiry) => !expiry.isAfter(now));
+    if (!mounted) return;
+    setState(() {});
+    _scheduleTypingIndicatorPrune();
+  }
+
+  void _syncGroupTypingSignal() {
+    final did = (_deviceId ?? '').trim();
+    final shouldBroadcast = did.isNotEmpty &&
+        !_shamellVoiceMode &&
+        !_recordingVoice &&
+        _msgCtrl.text.trim().isNotEmpty;
+    if (!shouldBroadcast) {
+      _stopGroupTypingSignal();
+      return;
+    }
+    final now = DateTime.now();
+    final shouldAnnounce = !_typingAnnounced ||
+        now.difference(_lastTypingSignalAt ??
+                DateTime.fromMillisecondsSinceEpoch(0)) >=
+            _typingHeartbeatInterval;
+    if (shouldAnnounce) {
+      _typingAnnounced = true;
+      _lastTypingSignalAt = now;
+      unawaited(_service.sendTypingSignal(
+        deviceId: did,
+        groupId: widget.groupId,
+        isTyping: true,
+      ));
+    }
+    _typingIdleTimer?.cancel();
+    _typingIdleTimer = Timer(_typingIdleTimeout, _stopGroupTypingSignal);
+  }
+
+  void _stopGroupTypingSignal() {
+    _typingIdleTimer?.cancel();
+    final did = (_deviceId ?? '').trim();
+    if (did.isNotEmpty && _typingAnnounced) {
+      unawaited(_service.sendTypingSignal(
+        deviceId: did,
+        groupId: widget.groupId,
+        isTyping: false,
+      ));
+    }
+    _typingAnnounced = false;
+  }
+
+  String? _groupTypingLabel(L10n l) {
+    final now = DateTime.now();
+    final activeIds = _typingExpiresAtByDeviceId.entries
+        .where((entry) => entry.value.isAfter(now))
+        .map((entry) => entry.key)
+        .toList();
+    if (activeIds.isEmpty) return null;
+    if (activeIds.length > 1) return l.shamellSeveralPeopleTyping;
+    final senderId = activeIds.first;
+    final name = (_contactNameById[senderId] ?? '').trim();
+    if (name.isNotEmpty) return l.shamellTypingNamed(name);
+    return l.shamellTyping;
+  }
+
+  Widget _buildTypingIndicator(L10n l, ThemeData theme) {
+    final label = _groupTypingLabel(l) ?? '';
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 160),
+      child: label.isEmpty
+          ? const SizedBox.shrink()
+          : Padding(
+              key: ValueKey<String>(label),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.more_horiz_rounded,
+                    size: 16,
+                    color: ShamellPalette.green,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    label,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: ShamellPalette.green,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
   Future<void> _rotateGroupKey() async {
     if (!_isAdmin) return;
-    final did = _deviceId;
-    if (did == null || did.isEmpty) return;
     final l = L10n.of(context);
     final confirmed = await showDialog<bool>(
           context: context,
@@ -3091,27 +4102,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         ) ??
         false;
     if (!confirmed) return;
-    try {
-      final newKeyB64 = base64Encode(_randomGroupKeyBytes());
-      final fp = fingerprintForKey(newKeyB64);
-      final ver = await _service.rotateGroupKey(
-        groupId: widget.groupId,
-        actorId: did,
-        keyFp: fp,
-      );
-      await ChatLocalStore().saveGroupKey(widget.groupId, newKeyB64);
-      await _refreshMembers();
-      final ids = _members.map((m) => m.deviceId).toList();
-      await _shareGroupKey(newKeyB64, ids);
-      if (!mounted) return;
-      setState(() {
-        _error =
-            l.isArabic ? 'تم تدوير المفتاح (v$ver)' : 'Key rotated (v$ver)';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    }
+    await _performRotateGroupKey(isArabic: l.isArabic);
   }
 
   Future<void> _showKeyEventsSheet() async {
@@ -3142,11 +4133,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   const SizedBox(height: 8),
                   Expanded(
                     child: FutureBuilder<List<ChatGroupKeyEvent>>(
-                      future: _service.listGroupKeyEvents(
-                        groupId: widget.groupId,
-                        deviceId: did,
-                        limit: 50,
-                      ),
+                      future: _loadGroupKeyEvents(),
                       builder: (ctx2, snap) {
                         if (snap.connectionState != ConnectionState.done) {
                           return const Center(
@@ -3235,13 +4222,47 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   String _groupUnreadKey(String gid) => 'grp:$gid';
 
+  Future<int> _loadGroupUnreadCount() async {
+    final override = widget.loadUnreadCountForGroupOverride;
+    if (override != null) {
+      return max(0, await override(widget.groupId));
+    }
+    return ChatLocalStore().loadUnreadCountForGroup(
+      widget.groupId,
+      baseUrlOverride: widget.baseUrl,
+    );
+  }
+
+  Future<void> _saveGroupUnreadCount(int unreadCount) async {
+    final override = widget.saveUnreadCountForGroupOverride;
+    if (override != null) {
+      await override(widget.groupId, unreadCount);
+      return;
+    }
+    await ChatLocalStore().saveUnreadCountForGroup(
+      widget.groupId,
+      unreadCount,
+      baseUrlOverride: widget.baseUrl,
+    );
+  }
+
+  Future<void> _saveGroupSeen(DateTime ts) async {
+    final override = widget.saveGroupSeenForGroupOverride;
+    if (override != null) {
+      await override(widget.groupId, ts);
+      return;
+    }
+    await ChatLocalStore().saveGroupSeenForGroup(
+      widget.groupId,
+      ts,
+      baseUrlOverride: widget.baseUrl,
+    );
+  }
+
   Future<void> _markSeenAndClearUnread(String did) async {
-    final store = ChatLocalStore();
     try {
-      await store.setGroupSeen(widget.groupId, DateTime.now());
-      final unread = await store.loadUnread();
-      unread[_groupUnreadKey(widget.groupId)] = 0;
-      await store.saveUnread(unread);
+      await _saveGroupSeen(DateTime.now());
+      await _saveGroupUnreadCount(0);
     } catch (_) {}
   }
 
@@ -3269,12 +4290,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  void _toggleComposerPanel(_WeChatGroupComposerPanel panel) {
+  void _toggleComposerPanel(_ShamellGroupComposerPanel panel) {
     if (_recordingVoice) return;
     if (_composerPanel == panel) {
       setState(() {
-        _composerPanel = _WeChatGroupComposerPanel.none;
-        _wechatVoiceMode = false;
+        _composerPanel = _ShamellGroupComposerPanel.none;
+        _shamellVoiceMode = false;
       });
       try {
         _msgFocus.requestFocus();
@@ -3284,14 +4305,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
     setState(() {
       _composerPanel = panel;
-      _wechatVoiceMode = false;
-      if (panel == _WeChatGroupComposerPanel.more) {
-        _wechatMorePanelPage = 0;
+      _shamellVoiceMode = false;
+      if (panel == _ShamellGroupComposerPanel.more) {
+        _shamellMorePanelPage = 0;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           try {
-            if (_wechatMorePanelCtrl.hasClients) {
-              _wechatMorePanelCtrl.jumpToPage(0);
+            if (_shamellMorePanelCtrl.hasClients) {
+              _shamellMorePanelCtrl.jumpToPage(0);
             }
           } catch (_) {}
         });
@@ -3308,28 +4329,399 @@ class _GroupChatPageState extends State<GroupChatPage> {
     if (did == null || did.isEmpty) return;
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
+    final msg = await _sendGroupMessageWithGuard(
+      senderId: did,
+      text: trimmed,
+    );
+    if (msg == null) return;
+    await _appendSentGroupMessage(msg);
+  }
+
+  Future<Uri?> _createSecureGroupInviteLink() async {
     try {
-      final msg = await _service.sendGroupMessage(
-        groupId: widget.groupId,
-        senderId: did,
-        text: trimmed,
-      );
-      _didSendMessage = true;
-      unawaited(_unarchiveGroupIfNeeded());
-      if (!mounted) return;
-      setState(() {
-        _messages = <ChatGroupMessage>[..._messages, msg];
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom(force: true);
-      });
-      try {
-        await ChatLocalStore().saveGroupMessages(widget.groupId, _messages);
-      } catch (_) {}
+      final token = await _service.createContactInviteTokenEnsured(maxUses: 1);
+      return buildShamellInviteAppLink(token);
     } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
+      if (await _forceReauthOnCriticalGroupFailure(e)) return null;
+      _toast(L10n.of(context).isArabic
+          ? 'تعذّر إنشاء الدعوة.'
+          : 'Could not create invite.');
+      return null;
     }
+  }
+
+  Future<String> _loadWalletIdForGroupActions() async {
+    try {
+      return (await loadStoredWalletId(baseUrlOverride: widget.baseUrl) ?? '')
+          .trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  MiniAppDescriptor? _miniProgramDescriptorById(String id) {
+    final normalized = id.trim().toLowerCase();
+    for (final descriptor in MiniAppRegistry.descriptors) {
+      final runtimeId = (descriptor.runtimeAppId ?? descriptor.id).trim();
+      if (descriptor.id.toLowerCase() == normalized ||
+          runtimeId.toLowerCase() == normalized) {
+        return descriptor;
+      }
+    }
+    return null;
+  }
+
+  Color _miniProgramAccent(String id) {
+    switch (id.trim().toLowerCase()) {
+      case 'payments':
+        return const Color(0xFF07C160);
+      case 'green_paket':
+        return const Color(0xFF16A34A);
+      case 'moments':
+        return const Color(0xFF2563EB);
+      case 'official_accounts':
+        return const Color(0xFF0EA5E9);
+      case 'channels':
+        return const Color(0xFFEF4444);
+      case 'people_nearby':
+        return const Color(0xFF14B8A6);
+      case 'stickers':
+        return const Color(0xFFF97316);
+      case 'bus':
+        return Tokens.colorBus;
+      default:
+        return const Color(0xFF64748B);
+    }
+  }
+
+  Future<void> _openGreenPaketForGroup({String? packetId}) async {
+    final did = (_deviceId ?? '').trim();
+    if (did.isEmpty) return;
+    final walletId = await _loadWalletIdForGroupActions();
+    final initialMessage = _groupName.trim().isNotEmpty
+        ? 'For ${_groupName.trim()}'
+        : 'For the group';
+    if (!mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => GreenPaketPage(
+          baseUrl: widget.baseUrl,
+          walletId: walletId,
+          deviceId: did,
+          groupId: widget.groupId,
+          initialMessage: initialMessage,
+          initialGreenPaketId: packetId,
+          onIssued: (packet) async {
+            final id =
+                (packet['green_paket_id'] ?? packet['id'] ?? '').toString();
+            if (id.trim().isEmpty) return;
+            final msg = (packet['message'] ?? '').toString().trim();
+            final amount = (packet['total_amount_cents'] ?? '').toString();
+            final count = (packet['total_count'] ?? '').toString();
+            final details = [
+              'Green Paket',
+              if (msg.isNotEmpty) msg,
+              if (amount.isNotEmpty && count.isNotEmpty)
+                '$amount cents / $count',
+              shamellGreenPaketDeepLink(id),
+            ].join('\n');
+            await _sendTextQuick(details);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openMiniProgramTarget(MiniProgramDeepLinkTarget target) async {
+    final id = target.id.trim().toLowerCase();
+    if (id.isEmpty) return;
+    if (id == 'green_paket') {
+      await _openGreenPaketForGroup(packetId: target.resourceId);
+      return;
+    }
+    if (id == 'payments') {
+      final walletId = await _loadWalletIdForGroupActions();
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PaymentsPage(
+            widget.baseUrl,
+            walletId,
+            (_deviceId ?? '').trim(),
+          ),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (id == 'moments') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+            builder: (_) => ShamellMomentsPage(baseUrl: widget.baseUrl)),
+      );
+      return;
+    }
+    if (id == 'official_accounts') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => OfficialAccountsPage(
+            baseUrl: widget.baseUrl,
+            onOpenChat: (peerId) {
+              if (peerId.trim().isEmpty) return;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ShamellChatPage(
+                    baseUrl: widget.baseUrl,
+                    initialPeerId: peerId,
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      return;
+    }
+    if (id == 'channels') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ChannelsPage(
+            baseUrl: widget.baseUrl,
+            initialHotOnly: true,
+          ),
+        ),
+      );
+      return;
+    }
+    if (id == 'people_nearby') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+            builder: (_) => NearbyPage(baseUrl: widget.baseUrl)),
+      );
+      return;
+    }
+    if (id == 'stickers') {
+      // Sticker Store retired — no-op (mirrors shamell_chat_page).
+      return;
+    }
+    final app = MiniAppRegistry.byId(id);
+    if (app != null) {
+      final walletId = await _loadWalletIdForGroupActions();
+      if (!mounted) return;
+      final did = (_deviceId ?? '').trim();
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (ctx) => app.entry(
+            ctx,
+            SuperappAPI.light(
+              baseUrl: widget.baseUrl,
+              walletId: walletId,
+              deviceId: did,
+              openMod: (mod) {
+                unawaited(
+                  _openMiniProgramTarget(MiniProgramDeepLinkTarget(id: mod)),
+                );
+              },
+              pushPage: (page) {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => page),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      return;
+    }
+    _toast(L10n.of(context).isArabic
+        ? 'تعذّر فتح البرنامج المصغّر.'
+        : 'Could not open mini program.');
+  }
+
+  Future<void> _showMiniProgramShareSheet() async {
+    final l = L10n.of(context);
+    final descriptors = MiniAppRegistry.descriptors
+        .where((d) => d.enabled)
+        .toList(growable: true)
+      ..sort((a, b) {
+        final usage = b.usageScore.compareTo(a.usageScore);
+        if (usage != 0) return usage;
+        return b.rating.compareTo(a.rating);
+      });
+    if (descriptors.isEmpty) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return SafeArea(
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: descriptors.length + 1,
+            separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
+            itemBuilder: (ctx2, i) {
+              if (i == 0) {
+                return ListTile(
+                  title: Text(
+                    l.isArabic ? 'إرسال برنامج مصغّر' : 'Send mini program',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  subtitle: Text(
+                    l.isArabic
+                        ? 'يظهر كرابط قابل للفتح داخل الدردشة.'
+                        : 'Shared as an openable in-chat card.',
+                  ),
+                );
+              }
+              final descriptor = descriptors[i - 1];
+              final id = (descriptor.runtimeAppId ?? descriptor.id).trim();
+              final accent = _miniProgramAccent(id);
+              return ListTile(
+                leading: Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: .12),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(descriptor.icon, color: accent),
+                ),
+                title: Text(descriptor.title(isArabic: l.isArabic)),
+                subtitle: Text(descriptor.category(isArabic: l.isArabic)),
+                trailing: const Icon(Icons.send_outlined, size: 18),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  final link = shamellMiniProgramDeepLink(id);
+                  unawaited(
+                    _sendTextQuick(
+                      '${descriptor.title(isArabic: l.isArabic)}\n$link',
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMiniProgramMessageCard(
+    MiniProgramDeepLinkTarget target,
+    ThemeData theme,
+    L10n l,
+  ) {
+    final descriptor = _miniProgramDescriptorById(target.id);
+    final isDark = theme.brightness == Brightness.dark;
+    final title = descriptor?.title(isArabic: l.isArabic) ??
+        (target.id == 'green_paket' ? 'Green Paket' : target.id);
+    final category = descriptor?.category(isArabic: l.isArabic) ??
+        (l.isArabic ? 'برنامج مصغّر' : 'Mini Program');
+    final accent = _miniProgramAccent(target.id);
+    final resourceId = (target.resourceId ?? '').trim();
+    final subtitle = target.id == 'green_paket'
+        ? (resourceId.isNotEmpty
+            ? (l.isArabic
+                ? 'افتح أو طالب بالحزمة داخل سرتشات'
+                : 'Open or claim inside SyrChat')
+            : category)
+        : category;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => unawaited(_openMiniProgramTarget(target)),
+      child: Container(
+        width: 232,
+        decoration: BoxDecoration(
+          color: isDark
+              ? theme.colorScheme.surface.withValues(alpha: .92)
+              : Colors.white.withValues(alpha: .96),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: Colors.black.withValues(alpha: isDark ? .20 : .08),
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: isDark ? .20 : .12),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(
+                    descriptor?.icon ?? Icons.widgets_outlined,
+                    color: accent,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 11,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .58),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right,
+                  size: 18,
+                  color: theme.colorScheme.onSurface.withValues(alpha: .45),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Divider(
+              height: 1,
+              color: theme.dividerColor.withValues(alpha: isDark ? .35 : .55),
+            ),
+            const SizedBox(height: 7),
+            Row(
+              children: [
+                Icon(Icons.open_in_new, size: 14, color: accent),
+                const SizedBox(width: 5),
+                Text(
+                  l.isArabic ? 'فتح في سرتشات' : 'Open in SyrChat',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: accent,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _sendLocationQuick(
@@ -3339,31 +4731,15 @@ class _GroupChatPageState extends State<GroupChatPage> {
   }) async {
     final did = _deviceId;
     if (did == null || did.isEmpty) return;
-    try {
-      final msg = await _service.sendGroupMessage(
-        groupId: widget.groupId,
-        senderId: did,
-        kind: 'location',
-        text: (label ?? '').trim(),
-        lat: lat,
-        lon: lon,
-      );
-      _didSendMessage = true;
-      unawaited(_unarchiveGroupIfNeeded());
-      if (!mounted) return;
-      setState(() {
-        _messages = <ChatGroupMessage>[..._messages, msg];
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom(force: true);
-      });
-      try {
-        await ChatLocalStore().saveGroupMessages(widget.groupId, _messages);
-      } catch (_) {}
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    }
+    final msg = await _sendGroupMessageWithGuard(
+      senderId: did,
+      kind: 'location',
+      text: (label ?? '').trim(),
+      lat: lat,
+      lon: lon,
+    );
+    if (msg == null) return;
+    await _appendSentGroupMessage(msg);
   }
 
   Future<void> _sendCurrentLocation() async {
@@ -3402,7 +4778,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
   }
 
   Future<void> _openLocationOnMap(double lat, double lon) async {
-    final uri = Uri.parse('https://www.google.com/maps?q=$lat,$lon');
+    final uri = normalizeExternalMapUri(latitude: lat, longitude: lon);
+    if (uri == null) {
+      _toast(L10n.of(context).isArabic
+          ? 'تعذّر فتح الخريطة.'
+          : 'Could not open the map.');
+      return;
+    }
     try {
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!ok) {
@@ -3428,31 +4810,15 @@ class _GroupChatPageState extends State<GroupChatPage> {
       name = (c.name ?? '').trim();
     } catch (_) {}
     final label = name.isNotEmpty ? name : id;
-    try {
-      final msg = await _service.sendGroupMessage(
-        groupId: widget.groupId,
-        senderId: did,
-        kind: 'contact',
-        text: label,
-        contactId: id,
-        contactName: name,
-      );
-      _didSendMessage = true;
-      unawaited(_unarchiveGroupIfNeeded());
-      if (!mounted) return;
-      setState(() {
-        _messages = <ChatGroupMessage>[..._messages, msg];
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom(force: true);
-      });
-      try {
-        await ChatLocalStore().saveGroupMessages(widget.groupId, _messages);
-      } catch (_) {}
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    }
+    final msg = await _sendGroupMessageWithGuard(
+      senderId: did,
+      kind: 'contact',
+      text: label,
+      contactId: id,
+      contactName: name,
+    );
+    if (msg == null) return;
+    await _appendSentGroupMessage(msg);
   }
 
   Future<void> _openContactCardPicker() async {
@@ -3467,57 +4833,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
     await _sendContactCard(id);
   }
 
-  void _openMiniAppFromGroupChat(String id) {
-    unawaited(
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => MiniProgramPage(
-            id: id,
-            baseUrl: widget.baseUrl,
-            walletId: '',
-            deviceId: _deviceId ?? '',
-            onOpenMod: _openMiniAppFromGroupChat,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openMiniPrograms() async {
-    final did = _deviceId ?? '';
-    String walletId = '';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      walletId = sp.getString('wallet_id') ?? '';
-    } catch (_) {}
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MiniProgramsDiscoverPage(
-          baseUrl: widget.baseUrl,
-          walletId: walletId,
-          deviceId: did,
-          onOpenMod: _openMiniAppFromGroupChat,
-        ),
-      ),
-    );
-  }
-
   Future<void> _openFavoritesPicker() async {
     final l = L10n.of(context);
 
     List<Map<String, dynamic>> items = const <Map<String, dynamic>>[];
     try {
-      final sp = await SharedPreferences.getInstance();
-      final raw = sp.getString('favorites_items') ?? '[]';
-      final decoded = jsonDecode(raw);
-      if (decoded is List) {
-        items = decoded
-            .whereType<Map>()
-            .map((m) => m.cast<String, dynamic>())
-            .toList();
-      }
+      items = await loadFavoriteItems(baseUrlOverride: widget.baseUrl);
     } catch (_) {}
 
     bool isLocation(Map<String, dynamic> p) {
@@ -3644,7 +4965,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           width: double.infinity,
                           child: OutlinedButton(
                             onPressed: () => Navigator.of(ctx).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                       ],
@@ -3670,101 +4991,6 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final txt = (chosen['text'] ?? '').toString().trim();
     if (txt.isEmpty) return;
     await _sendTextQuick(txt);
-  }
-
-  Widget _buildStickersPanel(ThemeData theme, L10n l) {
-    final isDark = theme.brightness == Brightness.dark;
-    const emojis = <String>[
-      '😀',
-      '😁',
-      '😂',
-      '🤣',
-      '😃',
-      '😄',
-      '😅',
-      '😆',
-      '😉',
-      '😊',
-      '😍',
-      '😘',
-      '😗',
-      '😙',
-      '😚',
-      '🙂',
-      '🤗',
-      '🤔',
-      '😐',
-      '😑',
-      '🙄',
-      '😏',
-      '😣',
-      '😥',
-      '😮',
-      '😪',
-      '😫',
-      '😴',
-      '😌',
-      '😛',
-      '😜',
-      '😝',
-      '🤤',
-      '😓',
-      '😔',
-      '😕',
-      '🙃',
-      '😲',
-      '☹️',
-      '🙁',
-      '😖',
-      '😞',
-      '😟',
-      '😤',
-      '😢',
-      '😭',
-      '😩',
-      '😬',
-      '😡',
-      '👍',
-      '🙏',
-      '❤️',
-      '🎉',
-    ];
-
-    return Container(
-      height: _wechatMorePanelHeight,
-      decoration: BoxDecoration(
-        color: isDark ? theme.colorScheme.surface : WeChatPalette.background,
-        border: Border(
-          top: BorderSide(
-            color: theme.dividerColor.withValues(alpha: isDark ? .18 : .38),
-            width: 0.6,
-          ),
-        ),
-      ),
-      child: GridView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-        physics: const BouncingScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 8,
-          mainAxisSpacing: 6,
-          crossAxisSpacing: 6,
-        ),
-        itemCount: emojis.length,
-        itemBuilder: (_, i) {
-          final emoji = emojis[i];
-          return InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => _insertComposerText(emoji),
-            child: Center(
-              child: Text(
-                emoji,
-                style: const TextStyle(fontSize: 22),
-              ),
-            ),
-          );
-        },
-      ),
-    );
   }
 
   Widget _buildMorePanel(ThemeData theme, L10n l) {
@@ -3808,7 +5034,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     void close() {
       if (!mounted) return;
       setState(() {
-        _composerPanel = _WeChatGroupComposerPanel.none;
+        _composerPanel = _ShamellGroupComposerPanel.none;
       });
     }
 
@@ -3841,7 +5067,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final actions = <({IconData icon, String label, VoidCallback onTap})>[
       (
         icon: Icons.photo_outlined,
-        label: l.mirsaalAttachImage,
+        label: l.shamellAttachImage,
         onTap: () {
           close();
           unawaited(_pickAttachment());
@@ -3857,7 +5083,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       ),
       (
         icon: Icons.videocam_outlined,
-        label: l.mirsaalInternetCall,
+        label: l.shamellInternetCall,
         onTap: notSupported,
       ),
       (
@@ -3867,7 +5093,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
       ),
       (
         icon: Icons.location_on_outlined,
-        label: l.mirsaalSendLocation,
+        label: l.shamellSendLocation,
         onTap: () {
           close();
           unawaited(_sendCurrentLocation());
@@ -3882,6 +5108,30 @@ class _GroupChatPageState extends State<GroupChatPage> {
         },
       ),
       (
+        icon: Icons.alternate_email,
+        label: l.isArabic ? 'إشارة' : 'Mention',
+        onTap: () {
+          close();
+          unawaited(_showMembersSheet());
+        },
+      ),
+      (
+        icon: Icons.card_giftcard_outlined,
+        label: l.isArabic ? 'حزمة خضراء' : 'Green Paket',
+        onTap: () {
+          close();
+          unawaited(_openGreenPaketForGroup());
+        },
+      ),
+      (
+        icon: Icons.widgets_outlined,
+        label: l.isArabic ? 'برنامج مصغّر' : 'Mini Program',
+        onTap: () {
+          close();
+          unawaited(_showMiniProgramShareSheet());
+        },
+      ),
+      (
         icon: Icons.contact_page_outlined,
         label: l.isArabic ? 'بطاقة جهة اتصال' : 'Contact card',
         onTap: () {
@@ -3889,19 +5139,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
           unawaited(_openContactCardPicker());
         },
       ),
-      (
-        icon: Icons.apps_outlined,
-        label: l.isArabic ? 'البرامج المصغّرة' : 'Mini‑programs',
-        onTap: () {
-          close();
-          unawaited(_openMiniPrograms());
-        },
-      ),
     ];
 
     final pageCount = max(1, (actions.length / perPage).ceil());
     final clampedPage =
-        _wechatMorePanelPage.clamp(0, max(0, pageCount - 1)).toInt();
+        _shamellMorePanelPage.clamp(0, max(0, pageCount - 1)).toInt();
 
     Widget page(int pageIdx) {
       final start = pageIdx * perPage;
@@ -3923,9 +5165,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
     }
 
     return Container(
-      height: _wechatMorePanelHeight,
+      height: _shamellMorePanelHeight,
       decoration: BoxDecoration(
-        color: isDark ? theme.colorScheme.surface : WeChatPalette.background,
+        color: isDark ? theme.colorScheme.surface : ShamellPalette.background,
         border: Border(
           top: BorderSide(
             color: theme.dividerColor.withValues(alpha: isDark ? .18 : .38),
@@ -3937,12 +5179,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
         children: [
           Expanded(
             child: PageView.builder(
-              controller: _wechatMorePanelCtrl,
+              controller: _shamellMorePanelCtrl,
               itemCount: pageCount,
               physics: const BouncingScrollPhysics(),
               onPageChanged: (idx) {
                 setState(() {
-                  _wechatMorePanelPage = idx;
+                  _shamellMorePanelPage = idx;
                 });
               },
               itemBuilder: (_, pageIdx) => page(pageIdx),
@@ -3968,6 +5210,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
   Future<void> _pickAttachment(
       {ImageSource source = ImageSource.gallery}) async {
     try {
+      if (source == ImageSource.camera && !shamellAllowsCameraCapture()) {
+        shamellShowRestrictedMediaSnack(
+          context,
+          camera: true,
+          microphone: false,
+        );
+        return;
+      }
       final picker = ImagePicker();
       final x = await picker.pickImage(
         source: source,
@@ -3984,18 +5234,29 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
     } catch (e) {
       final l = L10n.of(context);
-      setState(() => _error = '${l.mirsaalAttachFailed}: $e');
+      setState(
+        () => _error =
+            '${l.shamellAttachFailed}: ${sanitizeExceptionForUi(error: e, isArabic: l.isArabic)}',
+      );
     }
   }
 
   Future<void> _startVoiceRecord() async {
     try {
       if (_recordingVoice) return;
+      if (!shamellAllowsMicrophoneCapture()) {
+        shamellShowRestrictedMediaSnack(
+          context,
+          camera: false,
+          microphone: true,
+        );
+        return;
+      }
       final hasPerm = await _recorder.hasPermission();
       if (!hasPerm) return;
-      final tmp = Directory.systemTemp;
-      final file = File(
-          '${tmp.path}/shamell_grp_voice_${DateTime.now().millisecondsSinceEpoch}.aac');
+      await _clearVoiceRecordingFile();
+      final file = await createEphemeralVoiceFile(stem: 'group_voice_record');
+      _voiceRecordingPath = file.path;
       final config = const RecordConfig(
         encoder: AudioEncoder.aacLc,
         bitRate: 128000,
@@ -4020,7 +5281,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         });
       });
     } catch (e) {
-      setState(() => _error = e.toString());
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4028,13 +5289,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
     if (!_recordingVoice) return;
     final start = _voiceStart ?? DateTime.now();
     final elapsedMs = DateTime.now().difference(start).inMilliseconds;
-    // Very short taps should behave like WeChat: cancel instead of sending.
+    // Very short taps should behave like SyrChat: cancel instead of sending.
     if (elapsedMs < 800) {
       final l = L10n.of(context);
       await _cancelVoiceRecord();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l.mirsaalVoiceTooShort)),
+        SnackBar(content: Text(l.shamellVoiceTooShort)),
       );
       return;
     }
@@ -4049,38 +5310,39 @@ class _GroupChatPageState extends State<GroupChatPage> {
     try {
       _voiceTicker?.cancel();
     } catch (_) {}
+    final fallbackPath = _voiceRecordingPath;
+    _voiceRecordingPath = null;
+    String? cleanupPath = fallbackPath;
     try {
       final path = await _recorder.stop();
-      if (path == null || path.isEmpty) return;
-      final file = File(path);
+      final resolvedPath =
+          (path != null && path.isNotEmpty) ? path : fallbackPath;
+      if (resolvedPath == null || resolvedPath.isEmpty) return;
+      cleanupPath = resolvedPath;
+      final file = File(resolvedPath);
       if (!await file.exists()) return;
       final bytes = await file.readAsBytes();
       final elapsed = DateTime.now().difference(start).inSeconds;
       final secs = elapsed.clamp(1, 120);
       final did = _deviceId;
       if (did == null || did.isEmpty) return;
-      final msg = await _service.sendGroupMessage(
-        groupId: widget.groupId,
+      final msg = await _sendGroupMessageWithGuard(
         senderId: did,
         kind: 'voice',
         attachmentB64: base64Encode(bytes),
         attachmentMime: 'audio/aac',
         voiceSecs: secs,
       );
-      _didSendMessage = true;
-      unawaited(_unarchiveGroupIfNeeded());
-      if (!mounted) return;
-      setState(() {
-        _messages = <ChatGroupMessage>[..._messages, msg];
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom(force: true);
-      });
-      try {
-        await ChatLocalStore().saveGroupMessages(widget.groupId, _messages);
-      } catch (_) {}
+      if (msg == null) return;
+      await _appendSentGroupMessage(msg);
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (!mounted) return;
+      setState(() => _error = sanitizeExceptionForUi(error: e));
+    } finally {
+      await deleteEphemeralVoiceFile(cleanupPath);
+      if (fallbackPath != null && fallbackPath != cleanupPath) {
+        await deleteEphemeralVoiceFile(fallbackPath);
+      }
     }
   }
 
@@ -4097,9 +5359,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
     try {
       _voiceTicker?.cancel();
     } catch (_) {}
+    final fallbackPath = _voiceRecordingPath;
+    _voiceRecordingPath = null;
     try {
       await _recorder.stop();
     } catch (_) {}
+    await deleteEphemeralVoiceFile(fallbackPath);
   }
 
   Future<void> _send() async {
@@ -4115,37 +5380,26 @@ class _GroupChatPageState extends State<GroupChatPage> {
       _attachedMime = null;
       _attachedName = null;
     });
+    _stopGroupTypingSignal();
     try {
       final msg = att != null
-          ? await _service.sendGroupMessage(
-              groupId: widget.groupId,
+          ? await _sendGroupMessageWithGuard(
               senderId: did,
               text: text,
               kind: 'image',
               attachmentB64: base64Encode(att),
               attachmentMime: mime ?? 'image/jpeg',
             )
-          : await _service.sendGroupMessage(
-              groupId: widget.groupId,
+          : await _sendGroupMessageWithGuard(
               senderId: did,
               text: text,
             );
-      _didSendMessage = true;
-      unawaited(_unarchiveGroupIfNeeded());
-      if (!mounted) return;
-      setState(() {
-        _messages = <ChatGroupMessage>[..._messages, msg];
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom(force: true);
-      });
-      try {
-        await ChatLocalStore().saveGroupMessages(widget.groupId, _messages);
-      } catch (_) {}
+      if (msg == null) return;
+      await _appendSentGroupMessage(msg);
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -4177,12 +5431,15 @@ class _GroupChatPageState extends State<GroupChatPage> {
     if (b64 == null || b64.isEmpty) return;
     try {
       final bytes = base64Decode(b64);
-      final tmp = Directory.systemTemp;
-      final file = File('${tmp.path}/shamell_grp_voice_${m.id}.aac');
-      await file.writeAsBytes(bytes, flush: true);
+      await _audioPlayer.stop();
+      await _clearVoicePlaybackFile();
+      final file = await writeEphemeralVoiceFile(
+        bytes,
+        stem: 'group_voice_playback_${m.id}',
+      );
+      _voicePlaybackPath = file.path;
       await _configureVoiceSession();
       _startProximityListener();
-      await _audioPlayer.stop();
       await _audioPlayer.setFilePath(file.path);
       if (!mounted) return;
       setState(() {
@@ -4190,7 +5447,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
       await _audioPlayer.play();
     } catch (e) {
-      setState(() => _error = e.toString());
+      await _clearVoicePlaybackFile();
+      setState(() => _error = sanitizeExceptionForUi(error: e));
     }
   }
 
@@ -4202,7 +5460,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
           _playedVoiceMessageIds = <String>{..._playedVoiceMessageIds, m.id};
         });
         unawaited(
-          ChatLocalStore().markGroupVoicePlayed(widget.groupId, m.id),
+          ChatLocalStore().markGroupVoicePlayed(
+            widget.groupId,
+            m.id,
+            baseUrlOverride: widget.baseUrl,
+          ),
         );
       }
     }
@@ -4227,9 +5489,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final did = _deviceId;
     if (did == null || did.isEmpty) return;
     try {
-      final members = await _service.listGroupMembers(
+      final members = await _service.listGroupMembersPaged(
         groupId: widget.groupId,
         deviceId: did,
+        batchSize: 200,
+        maxPages: 25,
       );
       if (!mounted) return;
       setState(() {
@@ -4238,7 +5502,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
       });
       unawaited(_resolveMissingMemberNames(members));
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(
+        () => _error = _sanitizeGroupError(
+          e,
+          isArabic: L10n.of(context).isArabic,
+        ),
+      );
     }
   }
 
@@ -4310,17 +5581,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           onPressed: () async {
                             Navigator.of(ctx).pop();
                             final nextRole = isAdmin ? 'member' : 'admin';
-                            try {
-                              await _service.setGroupRole(
-                                groupId: widget.groupId,
-                                actorId: did,
-                                targetId: m.deviceId,
-                                role: nextRole,
-                              );
-                              await _refreshMembers();
-                            } catch (e) {
-                              setState(() => _error = e.toString());
-                            }
+                            await _setGroupMemberRole(
+                              targetId: m.deviceId,
+                              role: nextRole,
+                              isArabic: l.isArabic,
+                            );
                           },
                           child: Text(
                             isAdmin
@@ -4350,7 +5615,9 @@ class _GroupChatPageState extends State<GroupChatPage> {
     final membersSet = _members.map((m) => m.deviceId.trim()).toSet();
     List<ChatContact> contacts = <ChatContact>[];
     try {
-      contacts = await ChatLocalStore().loadContacts();
+      contacts = await ChatLocalStore().loadContacts(
+        baseUrlOverride: widget.baseUrl,
+      );
     } catch (_) {}
     final candidates = contacts
         .where((c) => c.id.trim().isNotEmpty)
@@ -4537,7 +5804,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                           ),
                           TextButton(
                             onPressed: () => Navigator.of(ctx).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                           const SizedBox(width: 8),
                           PrimaryButton(
@@ -4546,25 +5813,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 ? null
                                 : () async {
                                     Navigator.of(ctx).pop();
-                                    try {
-                                      await _service.inviteGroupMembers(
-                                        groupId: widget.groupId,
-                                        inviterId: did,
-                                        memberIds: inviteIds,
-                                      );
-                                      try {
-                                        final keyB64 =
-                                            await _getOrCreateGroupKeyIfAdmin();
-                                        if (keyB64 != null &&
-                                            keyB64.isNotEmpty) {
-                                          await _shareGroupKey(
-                                              keyB64, inviteIds);
-                                        }
-                                      } catch (_) {}
-                                      await _refreshMembers();
-                                    } catch (e) {
-                                      setState(() => _error = e.toString());
-                                    }
+                                    await _inviteMembers(
+                                      memberIds: inviteIds,
+                                      isArabic: l.isArabic,
+                                    );
                                   },
                           ),
                         ],
@@ -4584,60 +5836,63 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
   Future<void> _updatePinnedChatOrderForGroup(bool pinned) async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final current = sp.getStringList('chat.pinned_chats') ?? const <String>[];
+      final store = ChatLocalStore();
       final key = _groupUnreadKey(widget.groupId);
-      final next = List<String>.from(current)..removeWhere((x) => x == key);
-      if (pinned) {
-        next.insert(0, key);
-      }
-      if (next.isEmpty) {
-        await sp.remove('chat.pinned_chats');
-      } else {
-        await sp.setStringList('chat.pinned_chats', next);
-      }
+      await store.savePinnedChatOrderState(
+        key,
+        pinned,
+        baseUrlOverride: widget.baseUrl,
+      );
     } catch (_) {}
   }
 
   Future<void> _setGroupMuted(bool muted) async {
     final did = _deviceId;
     if (did == null || did.isEmpty) return;
+    final prev = _groupMuted;
     setState(() => _groupMuted = muted);
     try {
-      await _service.setGroupPrefs(
-        deviceId: did,
-        groupId: widget.groupId,
-        muted: muted,
-      );
-    } catch (_) {}
+      await _updateGroupPrefs(muted: muted);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _groupMuted = prev);
+      }
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      rethrow;
+    }
   }
 
   Future<void> _setGroupPinned(bool pinned) async {
     final did = _deviceId;
     if (did == null || did.isEmpty) return;
+    final prev = _groupPinned;
     setState(() => _groupPinned = pinned);
-    unawaited(_updatePinnedChatOrderForGroup(pinned));
+    await _updatePinnedChatOrderForGroup(pinned);
     try {
-      await _service.setGroupPrefs(
-        deviceId: did,
-        groupId: widget.groupId,
-        pinned: pinned,
-      );
-    } catch (_) {}
+      await _updateGroupPrefs(pinned: pinned);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _groupPinned = prev);
+      }
+      unawaited(_updatePinnedChatOrderForGroup(prev));
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      rethrow;
+    }
   }
 
   Future<void> _clearGroupChatHistory() async {
     final store = ChatLocalStore();
     try {
-      await store.setGroupSeen(widget.groupId, DateTime.now());
+      await _saveGroupSeen(DateTime.now());
     } catch (_) {}
     try {
-      await store.deleteGroupMessages(widget.groupId);
+      await store.deleteGroupMessages(
+        widget.groupId,
+        baseUrlOverride: widget.baseUrl,
+      );
     } catch (_) {}
     try {
-      final unread = await store.loadUnread();
-      unread[_groupUnreadKey(widget.groupId)] = 0;
-      await store.saveUnread(unread);
+      await _saveGroupUnreadCount(0);
     } catch (_) {}
     if (!mounted) return;
     setState(() {
@@ -4654,42 +5909,456 @@ class _GroupChatPageState extends State<GroupChatPage> {
     unawaited(_saveMessageReactions());
   }
 
+  Future<void> _openGroupMessageSearch() async {
+    if (_messages.isEmpty) return;
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    final overview = _buildGroupMessageOverview(l);
+    final ctrl = TextEditingController();
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (ctx) {
+          String filter = 'all';
+          return StatefulBuilder(
+            builder: (ctx, setModalState) {
+              final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+              final maxHeight = MediaQuery.of(ctx).size.height * .78;
+              final query = ctrl.text.trim();
+              final list = overview
+                  .filtered(filter: filter, query: query)
+                  .reversed
+                  .toList();
+
+              void openEntry(_GroupMessageOverviewEntry entry) {
+                final messageId = entry.message.id;
+                Navigator.of(ctx).pop();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  unawaited(_scrollToMessage(
+                    messageId,
+                    alignment: .18,
+                    highlight: true,
+                  ));
+                });
+              }
+
+              Widget chip({
+                required String value,
+                required String label,
+                required int count,
+              }) {
+                return ChoiceChip(
+                  label: Text('$label $count'),
+                  selected: filter == value,
+                  onSelected: (sel) {
+                    if (!sel) return;
+                    setModalState(() => filter = value);
+                  },
+                );
+              }
+
+              return Padding(
+                padding: EdgeInsets.fromLTRB(12, 12, 12, bottom + 12),
+                child: GlassPanel(
+                  padding: const EdgeInsets.all(12),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: maxHeight),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          l.isArabic
+                              ? 'بحث في سجل المجموعة'
+                              : 'Search group history',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: ctrl,
+                          autofocus: true,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.search, size: 18),
+                            hintText: l.isArabic
+                                ? 'كلمة أو جملة في المجموعة'
+                                : 'Word or phrase in this group',
+                            isDense: true,
+                          ),
+                          onChanged: (_) => setModalState(() {}),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            chip(
+                              value: 'all',
+                              label: l.shamellSearchFilterAll,
+                              count: overview.entries.length,
+                            ),
+                            chip(
+                              value: 'media',
+                              label: l.shamellSearchFilterMedia,
+                              count: overview.mediaEntries.length,
+                            ),
+                            chip(
+                              value: 'links',
+                              label: l.shamellSearchFilterLinks,
+                              count: overview.linkEntries.length,
+                            ),
+                            chip(
+                              value: 'files',
+                              label: l.shamellSearchFilterFiles,
+                              count: overview.fileEntries.length,
+                            ),
+                            chip(
+                              value: 'voice',
+                              label: l.shamellSearchFilterVoice,
+                              count: overview.voiceEntries.length,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        if (query.isEmpty && filter == 'all')
+                          Text(
+                            l.isArabic
+                                ? 'اكتب للبحث في سجل المجموعة.'
+                                : 'Type to search this group.',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurface
+                                  .withValues(alpha: .70),
+                            ),
+                          )
+                        else if (list.isEmpty)
+                          Text(
+                            l.isArabic
+                                ? 'لا توجد رسائل مطابقة.'
+                                : 'No matching messages found.',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurface
+                                  .withValues(alpha: .70),
+                            ),
+                          )
+                        else
+                          Expanded(
+                            child: ListView.separated(
+                              itemCount: list.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (_, i) {
+                                final entry = list[i];
+                                final tsLabel = _formatGroupOverviewTimestamp(
+                                  entry.message.createdAt,
+                                );
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(
+                                    _groupOverviewTitle(entry, l),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    [
+                                      entry.presentation.senderDisplayName,
+                                      if (tsLabel.isNotEmpty) tsLabel,
+                                    ].join(' · '),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      fontSize: 11,
+                                      color: theme.colorScheme.onSurface
+                                          .withValues(alpha: .65),
+                                    ),
+                                  ),
+                                  onTap: () => openEntry(entry),
+                                );
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      ctrl.dispose();
+    }
+  }
+
+  Future<void> _openGroupMediaOverview() async {
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    final overview = _buildGroupMessageOverview(l);
+    final ctrl = TextEditingController();
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (ctx) {
+          String filter = 'media';
+          return StatefulBuilder(
+            builder: (ctx, setModalState) {
+              final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+              final maxHeight = MediaQuery.of(ctx).size.height * .78;
+              final query = ctrl.text.trim();
+              final list = overview
+                  .filtered(filter: filter, query: query)
+                  .reversed
+                  .toList();
+
+              void openEntry(_GroupMessageOverviewEntry entry) {
+                final messageId = entry.message.id;
+                Navigator.of(ctx).pop();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  unawaited(_scrollToMessage(
+                    messageId,
+                    alignment: .18,
+                    highlight: true,
+                  ));
+                });
+              }
+
+              Widget chip({
+                required String value,
+                required String label,
+                required int count,
+              }) {
+                return ChoiceChip(
+                  label: Text('$label $count'),
+                  selected: filter == value,
+                  onSelected: (sel) {
+                    if (!sel) return;
+                    setModalState(() => filter = value);
+                  },
+                );
+              }
+
+              Widget mediaGrid() {
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: list.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                  ),
+                  itemBuilder: (_, i) {
+                    final entry = list[i];
+                    final bytes = entry.presentation.attachmentBytes;
+                    final mime = entry.presentation.mime.toLowerCase();
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => openEntry(entry),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: .06),
+                          ),
+                          child: bytes != null &&
+                                  bytes.isNotEmpty &&
+                                  mime.startsWith('image/')
+                              ? Image.memory(
+                                  bytes,
+                                  fit: BoxFit.cover,
+                                  gaplessPlayback: true,
+                                )
+                              : Center(
+                                  child: Icon(
+                                    mime.startsWith('video/')
+                                        ? Icons.play_circle_outline
+                                        : Icons.photo_library_outlined,
+                                    size: 28,
+                                    color: theme.colorScheme.onSurface
+                                        .withValues(alpha: .55),
+                                  ),
+                                ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              }
+
+              Widget resultList() {
+                return ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: list.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final entry = list[i];
+                    final tsLabel = _formatGroupOverviewTimestamp(
+                      entry.message.createdAt,
+                    );
+                    final icon = filter == 'links'
+                        ? Icons.link
+                        : Icons.description_outlined;
+                    return ListTile(
+                      dense: true,
+                      leading: CircleAvatar(
+                        radius: 18,
+                        backgroundColor:
+                            theme.colorScheme.primary.withValues(alpha: .12),
+                        child: Icon(icon, size: 18),
+                      ),
+                      title: Text(
+                        _groupOverviewTitle(entry, l),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: tsLabel.isEmpty
+                          ? null
+                          : Text(
+                              tsLabel,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontSize: 11,
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: .65),
+                              ),
+                            ),
+                      onTap: () => openEntry(entry),
+                    );
+                  },
+                );
+              }
+
+              return Padding(
+                padding: EdgeInsets.fromLTRB(12, 12, 12, bottom + 12),
+                child: GlassPanel(
+                  padding: const EdgeInsets.all(12),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: maxHeight),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            l.shamellMediaOverviewTitle,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: ctrl,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.search, size: 18),
+                              hintText: l.isArabic
+                                  ? 'ابحث في الوسائط والروابط'
+                                  : 'Search media, links, files',
+                              isDense: true,
+                            ),
+                            onChanged: (_) => setModalState(() {}),
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              chip(
+                                value: 'media',
+                                label: l.shamellSearchFilterMedia,
+                                count: overview.mediaEntries.length,
+                              ),
+                              chip(
+                                value: 'files',
+                                label: l.shamellSearchFilterFiles,
+                                count: overview.fileEntries.length,
+                              ),
+                              chip(
+                                value: 'links',
+                                label: l.shamellSearchFilterLinks,
+                                count: overview.linkEntries.length,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          if (list.isEmpty)
+                            Text(
+                              l.shamellMediaOverviewEmpty,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: .70),
+                              ),
+                            )
+                          else if (filter == 'media')
+                            mediaGrid()
+                          else
+                            resultList(),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      ctrl.dispose();
+    }
+  }
+
   Future<void> _openGroupInfo() async {
     final l = L10n.of(context);
-    Uint8List? avatarBytes;
-    final b64 = (_groupAvatarB64 ?? '').trim();
-    if (b64.isNotEmpty) {
-      try {
-        avatarBytes = base64Decode(b64);
-      } catch (_) {}
-    }
+    final avatarBytes = _decodeInlineImageBytes(_groupAvatarB64);
 
     final myId = (_deviceId ?? '').trim();
     final members = _members
         .map((m) {
           final id = m.deviceId.trim();
           if (id.isEmpty) return null;
-          return WeChatGroupMemberDisplay(
+          return ShamellGroupMemberDisplay(
             id: id,
             name: _displayNameForDeviceId(id, l),
             isAdmin: m.role == 'admin',
             isMe: myId.isNotEmpty && id == myId,
           );
         })
-        .whereType<WeChatGroupMemberDisplay>()
+        .whereType<ShamellGroupMemberDisplay>()
         .toList();
 
     final name =
         _groupName.trim().isNotEmpty ? _groupName.trim() : widget.groupId;
+    final overview = _buildGroupMessageOverview(l);
+    final mediaPreview = <Uint8List>[];
+    for (final entry in overview.mediaEntries.reversed) {
+      final attachment = entry.presentation.attachmentBytes;
+      if (attachment == null || attachment.isEmpty) continue;
+      mediaPreview.add(attachment);
+      if (mediaPreview.length >= 3) break;
+    }
 
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
-        builder: (_) => WeChatGroupChatInfoPage(
+        builder: (_) => ShamellGroupChatInfoPage(
+          baseUrl: widget.baseUrl,
           groupId: widget.groupId,
           groupName: name,
           avatarBytes: avatarBytes,
           members: members,
+          mediaPreview: mediaPreview,
+          mediaCount: overview.mediaEntries.length,
+          fileCount: overview.fileEntries.length,
+          linkCount: overview.linkEntries.length,
+          voiceCount: overview.voiceEntries.length,
           isAdmin: _isAdmin,
           muted: _groupMuted,
           pinned: _groupPinned,
@@ -4699,6 +6368,21 @@ class _GroupChatPageState extends State<GroupChatPage> {
           onSetTheme: _setChatThemeKey,
           onShowMembers: _showMembersSheet,
           onInviteMembers: _showInviteSheet,
+          onSearchInChat: () async {
+            Navigator.of(context).pop();
+            await Future<void>.delayed(const Duration(milliseconds: 140));
+            if (!mounted) return;
+            await _openGroupMessageSearch();
+          },
+          onOpenMedia: () async {
+            Navigator.of(context).pop();
+            await Future<void>.delayed(const Duration(milliseconds: 140));
+            if (!mounted) return;
+            await _openGroupMediaOverview();
+          },
+          onSendGreenPaket: () => _openGreenPaketForGroup(),
+          onShareMiniProgram: _showMiniProgramShareSheet,
+          onCreateSecureInviteLink: _createSecureGroupInviteLink,
           onEditGroup: _showEditGroupSheet,
           onShowKeyEvents: _showKeyEventsSheet,
           onRotateKey: _rotateGroupKey,
@@ -4715,12 +6399,22 @@ class _GroupChatPageState extends State<GroupChatPage> {
     try {
       await _service.leaveGroup(groupId: widget.groupId, deviceId: did);
       try {
-        await ChatLocalStore().deleteGroupKey(widget.groupId);
+        await ChatLocalStore().deleteGroupKey(
+          widget.groupId,
+          baseUrlOverride: widget.baseUrl,
+        );
       } catch (_) {}
       if (!mounted) return;
       Navigator.of(context).pop();
     } catch (e) {
-      setState(() => _error = e.toString());
+      if (await _forceReauthOnCriticalGroupFailure(e)) return;
+      if (!mounted) return;
+      setState(
+        () => _error = _sanitizeGroupError(
+          e,
+          isArabic: L10n.of(context).isArabic,
+        ),
+      );
     }
   }
 
@@ -4733,7 +6427,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         ? theme.colorScheme.surfaceContainerHighest
             .withValues(alpha: isDark ? .72 : .96)
         : _chatThemeKey == 'green'
-            ? WeChatPalette.green.withValues(alpha: isDark ? .14 : .08)
+            ? ShamellPalette.green.withValues(alpha: isDark ? .14 : .08)
             : (isDark ? theme.colorScheme.surface : const Color(0xFFEDEDED));
     final newMessagesIndex = (_newMessagesAnchorMessageId != null &&
             _newMessagesAnchorMessageId!.isNotEmpty &&
@@ -4744,20 +6438,18 @@ class _GroupChatPageState extends State<GroupChatPage> {
         newMessagesIndex != -1 && _newMessagesCountAtOpen > 0;
     final showJumpToBottom =
         _pendingNewMessageCount <= 0 && !_isNearBottom && _messages.isNotEmpty;
-    final panelExtra = _composerPanel == _WeChatGroupComposerPanel.none
+    final panelExtra = _composerPanel == _ShamellGroupComposerPanel.none
         ? 0.0
-        : _wechatMorePanelHeight;
+        : _shamellMorePanelHeight;
     final mentionBottomBase =
         (_pendingNewMessageCount > 0 || showJumpToBottom) ? 148.0 : 96.0;
     final mentionBottom = mentionBottomBase + panelExtra;
     final overlayBottom = 96.0 + panelExtra;
 
     Widget buildBubble(ChatGroupMessage m) {
-      final dt = m.createdAt;
-      final ts = dt == null
-          ? ''
-          : '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-      final isMe = _deviceId != null && m.senderId == _deviceId;
+      final presentation = _groupMessagePresentation(m, l);
+      final ts = presentation.timestampLabel;
+      final isMe = presentation.isMe;
       final bg = isMe
           ? (isDark
               ? theme.colorScheme.primary.withValues(alpha: .55)
@@ -4766,14 +6458,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
               ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .75)
               : Colors.white);
       final cross = isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-      final kind = (m.kind ?? '').toLowerCase();
-      if (kind == 'system') {
-        final label = _systemLabel(m, l);
+      if (presentation.isSystem) {
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Center(
             child: Text(
-              label,
+              presentation.body.plainText,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: .70),
                 fontStyle: FontStyle.italic,
@@ -4783,18 +6473,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
           ),
         );
       }
-      final hasAttachment =
-          m.attachmentB64 != null && m.attachmentB64!.isNotEmpty;
-      final mime = (m.attachmentMime ?? '').toLowerCase();
-      final isImage =
-          kind == 'image' || (hasAttachment && mime.startsWith('image/'));
-      final isVoice = kind == 'voice';
-      Uint8List? attBytes;
-      if (hasAttachment) {
-        try {
-          attBytes = base64Decode(m.attachmentB64!);
-        } catch (_) {}
-      }
+      final attBytes = presentation.attachmentBytes;
+      final mime = presentation.mime;
+      final isImage = presentation.isImage;
+      final isVoice = presentation.isVoice;
+      final miniProgramTarget = parseMiniProgramDeepLinkFromText(
+        presentation.body.plainText,
+      );
 
       Widget content;
       if (isImage && attBytes != null) {
@@ -4802,7 +6487,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
         content = Column(
           crossAxisAlignment: cross,
           children: [
-            if (m.text.isNotEmpty) _renderMentions(m.text, theme),
+            if (presentation.body.plainText.isNotEmpty)
+              _renderMessageTextPresentation(presentation.body, theme),
             GestureDetector(
               onTap: () => _openImagePreview(bytes),
               child: ClipRRect(
@@ -4817,7 +6503,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
           ],
         );
       } else if (isVoice && attBytes != null) {
-        final secs = m.voiceSecs ?? 0;
+        final secs = presentation.voiceSecs;
         final secsLabel = secs > 0 ? '$secs' : '';
         final playing = _playingVoiceId == m.id && _voicePlaying;
         final unplayed = !isMe && !_playedVoiceMessageIds.contains(m.id);
@@ -4836,7 +6522,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
         );
         content = Semantics(
           button: true,
-          label: l.mirsaalVoiceMessageLabel(secsLabel),
+          label: l.shamellVoiceMessageLabel(secsLabel),
           child: GestureDetector(
             onTap: () => _toggleVoicePlayback(m),
             child: SizedBox(
@@ -4870,9 +6556,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
             ),
           ),
         );
-      } else if (kind == 'location' && m.lat != null && m.lon != null) {
-        final lat = m.lat!;
-        final lon = m.lon!;
+      } else if (presentation.isLocation &&
+          presentation.lat != null &&
+          presentation.lon != null) {
+        final lat = presentation.lat!;
+        final lon = presentation.lon!;
         final label = m.text.trim();
         final title =
             label.isNotEmpty ? label : (l.isArabic ? 'موقع' : 'Location');
@@ -4902,24 +6590,20 @@ class _GroupChatPageState extends State<GroupChatPage> {
               ),
               onPressed: () => _openLocationOnMap(lat, lon),
               icon: const Icon(Icons.map_outlined, size: 16),
-              label: Text(l.mirsaalLocationOpenInMap),
+              label: Text(l.shamellLocationOpenInMap),
             ),
           ],
         );
-      } else if (kind == 'contact' && (m.contactId ?? '').trim().isNotEmpty) {
-        final contactId = (m.contactId ?? '').trim();
-        final name = m.text.trim().isNotEmpty
-            ? m.text.trim()
-            : (m.contactName ?? '').trim();
-        final display = name.isNotEmpty ? name : contactId;
-        final initial =
-            display.isNotEmpty ? display.substring(0, 1).toUpperCase() : '?';
+      } else if (presentation.isContact && presentation.contactId.isNotEmpty) {
+        final contactId = presentation.contactId;
+        final display = presentation.contactDisplayName;
+        final initial = presentation.contactInitial;
         content = InkWell(
           onTap: () {
             if (contactId.isEmpty) return;
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => ThreemaChatPage(
+                builder: (_) => ShamellChatPage(
                   baseUrl: widget.baseUrl,
                   initialPeerId: contactId,
                 ),
@@ -5017,12 +6701,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
             ),
           ),
         );
+      } else if (miniProgramTarget != null) {
+        content = _buildMiniProgramMessageCard(
+          miniProgramTarget,
+          theme,
+          l,
+        );
       } else {
-        final displayText =
-            (kind == 'sealed' && m.text.isEmpty && (!hasAttachment))
-                ? (l.isArabic ? 'رسالة مشفرة' : 'Encrypted message')
-                : m.text;
-        content = _renderMentions(displayText, theme);
+        content = _renderMessageTextPresentation(presentation.body, theme);
       }
 
       final isHighlighted = m.id.isNotEmpty && _highlightedMessageId == m.id;
@@ -5084,7 +6770,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
 
       final incoming = !isMe;
       final maxBubbleWidth = MediaQuery.of(context).size.width * 0.66;
-      final avatar = _wechatGroupMessageAvatar(
+      final avatar = _shamellGroupMessageAvatar(
         senderId: m.senderId,
         incoming: incoming,
         l: l,
@@ -5101,11 +6787,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                     child: Text(
-                      _displayNameForDeviceId(
-                        m.senderId,
-                        l,
-                        fallback: m.senderId,
-                      ),
+                      presentation.senderDisplayName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodySmall?.copyWith(
@@ -5207,8 +6889,36 @@ class _GroupChatPageState extends State<GroupChatPage> {
       );
     }
 
+    Widget buildOlderMessagesEntry() {
+      if (_loadingOlderMessages) {
+        return const Padding(
+          padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: Center(
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+        );
+      }
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Center(
+          child: TextButton.icon(
+            onPressed: _loadOlderMessages,
+            icon: const Icon(Icons.history),
+            label: Text(
+              l.isArabic ? 'تحميل رسائل أقدم' : 'Load older messages',
+            ),
+          ),
+        ),
+      );
+    }
+
+    final showOlderMessagesEntry = _loadingOlderMessages || _hasOlderMessages;
     final body = _loading
-        ? const Center(child: CircularProgressIndicator())
+        ? const ShamellSkeletonList(itemCount: 6)
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -5225,9 +6935,14 @@ class _GroupChatPageState extends State<GroupChatPage> {
                 child: ListView.builder(
                   controller: _scrollCtrl,
                   padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-                  itemCount: _messages.length,
+                  itemCount:
+                      _messages.length + (showOlderMessagesEntry ? 1 : 0),
                   itemBuilder: (_, i) {
-                    final m = _messages[i];
+                    if (showOlderMessagesEntry && i == 0) {
+                      return buildOlderMessagesEntry();
+                    }
+                    final messageIndex = showOlderMessagesEntry ? i - 1 : i;
+                    final m = _messages[messageIndex];
                     final msgKey = m.id.isNotEmpty
                         ? _messageKeys.putIfAbsent(m.id, () => GlobalKey())
                         : null;
@@ -5235,7 +6950,8 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     Widget child = msgKey == null
                         ? bubble
                         : KeyedSubtree(key: msgKey, child: bubble);
-                    if (showNewMessagesMarker && i == newMessagesIndex) {
+                    if (showNewMessagesMarker &&
+                        messageIndex == newMessagesIndex) {
                       child = Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -5285,12 +7001,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                 if (!context.mounted) return;
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: Text(l.mirsaalVoiceCanceledSnack),
+                                    content: Text(l.shamellVoiceCanceledSnack),
                                   ),
                                 );
                               },
                               icon: const Icon(Icons.close, size: 16),
-                              label: Text(l.mirsaalDialogCancel),
+                              label: Text(l.shamellDialogCancel),
                             ),
                             const SizedBox(width: 6),
                             FilledButton.icon(
@@ -5304,10 +7020,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
                       const SizedBox(height: 4),
                       Text(
                         _voiceLocked
-                            ? l.mirsaalVoiceLocked
+                            ? l.shamellVoiceLocked
                             : (_voiceCancelPending
-                                ? l.mirsaalVoiceReleaseToCancel
-                                : l.mirsaalVoiceSlideUpToCancel),
+                                ? l.shamellVoiceReleaseToCancel
+                                : l.shamellVoiceSlideUpToCancel),
                         style: theme.textTheme.bodySmall?.copyWith(
                           fontSize: 11,
                           color: _voiceCancelPending
@@ -5351,11 +7067,12 @@ class _GroupChatPageState extends State<GroupChatPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: _buildMentionSuggestions(l, theme),
               ),
+              _buildTypingIndicator(l, theme),
               Container(
                 decoration: BoxDecoration(
                   color: isDark
                       ? theme.colorScheme.surface
-                      : WeChatPalette.background,
+                      : ShamellPalette.background,
                   border: Border(
                     top: BorderSide(
                       color: theme.dividerColor
@@ -5369,11 +7086,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     IconButton(
-                      tooltip: _wechatVoiceMode
+                      tooltip: _shamellVoiceMode
                           ? (l.isArabic ? 'لوحة المفاتيح' : 'Keyboard')
-                          : l.mirsaalStartVoice,
+                          : l.shamellStartVoice,
                       icon: Icon(
-                        _wechatVoiceMode
+                        _shamellVoiceMode
                             ? Icons.keyboard_alt_outlined
                             : Icons.keyboard_voice_outlined,
                       ),
@@ -5382,10 +7099,11 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               _recordingVoice)
                           ? null
                           : () {
-                              final next = !_wechatVoiceMode;
+                              final next = !_shamellVoiceMode;
                               setState(() {
-                                _wechatVoiceMode = next;
-                                _composerPanel = _WeChatGroupComposerPanel.none;
+                                _shamellVoiceMode = next;
+                                _composerPanel =
+                                    _ShamellGroupComposerPanel.none;
                               });
                               if (next) {
                                 FocusScope.of(context).unfocus();
@@ -5398,7 +7116,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                     Expanded(
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 160),
-                        child: _wechatVoiceMode
+                        child: _shamellVoiceMode
                             ? GestureDetector(
                                 key: const ValueKey('voice'),
                                 behavior: HitTestBehavior.opaque,
@@ -5455,7 +7173,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
                                         content: Text(
-                                          l.mirsaalVoiceCanceledSnack,
+                                          l.shamellVoiceCanceledSnack,
                                         ),
                                       ),
                                     );
@@ -5492,16 +7210,16 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                   builder: (context) {
                                     final label = () {
                                       if (_recordingVoice && _voiceLocked) {
-                                        return l.mirsaalVoiceLocked;
+                                        return l.shamellVoiceLocked;
                                       }
                                       if (_recordingVoice &&
                                           _voiceCancelPending) {
-                                        return l.mirsaalVoiceReleaseToCancel;
+                                        return l.shamellVoiceReleaseToCancel;
                                       }
                                       if (_recordingVoice) {
-                                        return l.mirsaalRecordingVoice;
+                                        return l.shamellRecordingVoice;
                                       }
-                                      return l.mirsaalVoiceHoldToTalk;
+                                      return l.shamellVoiceHoldToTalk;
                                     }();
                                     final Color bg =
                                         (_recordingVoice && _voiceCancelPending)
@@ -5517,6 +7235,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                                 alpha: isDark ? .25 : .55,
                                               );
                                     return Container(
+                                      width: double.infinity,
                                       height: 40,
                                       alignment: Alignment.center,
                                       padding: const EdgeInsets.symmetric(
@@ -5547,6 +7266,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                               )
                             : Container(
                                 key: const ValueKey('text'),
+                                width: double.infinity,
                                 constraints:
                                     const BoxConstraints(minHeight: 40),
                                 padding: const EdgeInsets.symmetric(
@@ -5568,10 +7288,10 @@ class _GroupChatPageState extends State<GroupChatPage> {
                                   maxLines: 4,
                                   onTap: () {
                                     if (_composerPanel !=
-                                        _WeChatGroupComposerPanel.none) {
+                                        _ShamellGroupComposerPanel.none) {
                                       setState(() {
                                         _composerPanel =
-                                            _WeChatGroupComposerPanel.none;
+                                            _ShamellGroupComposerPanel.none;
                                       });
                                     }
                                   },
@@ -5589,30 +7309,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    IconButton(
-                      tooltip: l.mirsaalStickers,
-                      onPressed: (_loading ||
-                              (_deviceId ?? '').trim().isEmpty ||
-                              _recordingVoice)
-                          ? null
-                          : () {
-                              _toggleComposerPanel(
-                                _WeChatGroupComposerPanel.stickers,
-                              );
-                            },
-                      icon: Icon(
-                        _composerPanel == _WeChatGroupComposerPanel.stickers
-                            ? Icons.keyboard_alt_outlined
-                            : Icons.emoji_emotions_outlined,
-                      ),
-                    ),
-                    const SizedBox(width: 2),
                     ValueListenableBuilder<TextEditingValue>(
                       valueListenable: _msgCtrl,
                       builder: (context, value, _) {
                         final showSend = value.text.trim().isNotEmpty ||
                             _attachedBytes != null;
                         final canSend = !_loading &&
+                            !_sendingMessage &&
                             (_deviceId ?? '').trim().isNotEmpty &&
                             !_recordingVoice;
                         if (showSend && !_recordingVoice) {
@@ -5620,7 +7323,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                             height: 36,
                             child: FilledButton(
                               style: FilledButton.styleFrom(
-                                backgroundColor: WeChatPalette.green,
+                                backgroundColor: ShamellPalette.green,
                                 foregroundColor: Colors.white,
                                 padding:
                                     const EdgeInsets.symmetric(horizontal: 14),
@@ -5641,12 +7344,13 @@ class _GroupChatPageState extends State<GroupChatPage> {
                         return IconButton(
                           tooltip: l.isArabic ? 'المزيد' : 'More',
                           onPressed: (_loading ||
+                                  _sendingMessage ||
                                   (_deviceId ?? '').trim().isEmpty ||
                                   _recordingVoice)
                               ? null
                               : () {
                                   _toggleComposerPanel(
-                                    _WeChatGroupComposerPanel.more,
+                                    _ShamellGroupComposerPanel.more,
                                   );
                                 },
                           icon: const Icon(Icons.add_circle_outline, size: 26),
@@ -5656,9 +7360,7 @@ class _GroupChatPageState extends State<GroupChatPage> {
                   ],
                 ),
               ),
-              if (_composerPanel == _WeChatGroupComposerPanel.stickers)
-                _buildStickersPanel(theme, l),
-              if (_composerPanel == _WeChatGroupComposerPanel.more)
+              if (_composerPanel == _ShamellGroupComposerPanel.more)
                 _buildMorePanel(theme, l),
             ],
           );

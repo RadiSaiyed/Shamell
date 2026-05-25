@@ -127,8 +127,8 @@ class WeChatMyQrCodePage extends StatelessWidget {
     final info = <String>[];
     if (profileShamellId.trim().isNotEmpty) {
       info.add(l.isArabic
-          ? 'معرّف Shamell: ${profileShamellId.trim()}'
-          : 'Shamell ID: ${profileShamellId.trim()}');
+          ? 'معرّف SyrChat: ${profileShamellId.trim()}'
+          : 'SyrChat ID: ${profileShamellId.trim()}');
     }
     if (profilePhone.trim().isNotEmpty) {
       info.add(l.isArabic

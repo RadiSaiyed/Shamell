@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'l10n.dart';
+import 'session_cookie_store.dart';
 
 class MobilityHistoryPage extends StatefulWidget {
   final String baseUrl;
@@ -96,8 +97,10 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
       final uri = Uri.parse('${widget.baseUrl}/me/mobility_history')
           .replace(queryParameters: qp);
       final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      final r = await http.get(uri, headers: {'Cookie': cookie});
+      final r = await http.get(
+        uri,
+        headers: await shamellSessionHeadersForBaseUrl(widget.baseUrl),
+      );
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final bs = j['bus'];

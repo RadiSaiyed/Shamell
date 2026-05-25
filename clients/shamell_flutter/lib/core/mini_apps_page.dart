@@ -6,9 +6,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
 import 'l10n.dart';
+import 'mini_app_registry.dart';
 import 'mini_apps_config.dart';
 import 'moments_page.dart';
+import 'moments_preset_store.dart';
+import 'mini_program_shelf_prefs.dart';
 import 'mini_program_runtime.dart';
+import 'session_cookie_store.dart';
 import 'ui_kit.dart';
 
 class MiniAppsPage extends StatefulWidget {
@@ -35,11 +39,17 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
   List<String> _recent = const [];
   List<String> _pinned = const [];
   List<MiniAppDescriptor> _remoteApps = const [];
+  Map<String, Map<String, dynamic>> _shelfMeta =
+      const <String, Map<String, dynamic>>{};
+  bool _shelfSyncing = false;
+
+  static const Duration _networkTimeout = Duration(seconds: 4);
 
   @override
   void initState() {
     super.initState();
     _loadPrefs();
+    _syncShelfFromServer();
     _loadRemoteApps();
   }
 
@@ -52,31 +62,261 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
   Future<void> _loadPrefs() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      final arr = sp.getStringList('recent_modules') ?? const <String>[];
-      final pinned = sp.getStringList('pinned_miniapps') ?? const <String>[];
+      final recent = loadMiniProgramRecentIdsSync(sp);
+      final pinned = loadMiniProgramPinnedIdsSync(sp);
       if (!mounted) return;
       setState(() {
-        _recent = arr;
+        _recent = recent;
         _pinned = pinned;
       });
     } catch (_) {}
+  }
+
+  List<String> _cleanIds(Iterable<String> raw) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final item in raw) {
+      final id = item.trim();
+      if (id.isEmpty) continue;
+      if (seen.add(id)) out.add(id);
+    }
+    return out;
+  }
+
+  String _descriptorLaunchId(MiniAppDescriptor m) {
+    final runtimeId = (m.runtimeAppId ?? '').trim();
+    if (runtimeId.isNotEmpty) return runtimeId;
+    return m.id.trim();
+  }
+
+  String _shelfItemId(Map<String, dynamic> item) {
+    return (item['app_id'] ?? item['id'] ?? '').toString().trim();
+  }
+
+  Map<String, dynamic>? _shelfMetaFor(String appId) {
+    final id = appId.trim();
+    if (id.isEmpty) return null;
+    return _shelfMeta[id] ?? _shelfMeta[id.toLowerCase()];
+  }
+
+  int _shelfOpenCount(String appId) {
+    final raw = _shelfMetaFor(appId)?['open_count'];
+    if (raw is num) return raw.toInt();
+    return int.tryParse((raw ?? '').toString()) ?? 0;
+  }
+
+  String _shelfUsageLabel(String appId, L10n l) {
+    final opens = _shelfOpenCount(appId);
+    if (opens <= 0) return '';
+    return l.isArabic ? 'فتحت $opens مرات' : '$opens opens';
+  }
+
+  Widget _miniAppShelfChipLabel(
+    MiniAppDescriptor app,
+    L10n l,
+    ThemeData theme,
+  ) {
+    final usage = _shelfUsageLabel(_descriptorLaunchId(app), l);
+    if (usage.isEmpty) {
+      return Text(app.title(isArabic: l.isArabic));
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(app.title(isArabic: l.isArabic)),
+        Text(
+          usage,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontSize: 10,
+            color: theme.colorScheme.onSurface.withValues(alpha: .62),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<Map<String, String>> _authHeaders({bool json = false}) {
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: json);
+  }
+
+  Future<void> _syncShelfFromServer() async {
+    if (_shelfSyncing) return;
+    _shelfSyncing = true;
+    try {
+      final uri =
+          Uri.parse('${widget.baseUrl}/me/mini_programs/shelf?limit=100');
+      final resp = await http
+          .get(uri, headers: await _authHeaders())
+          .timeout(_networkTimeout);
+      if (resp.statusCode < 200 || resp.statusCode >= 300) return;
+      final decoded = jsonDecode(resp.body);
+      final raw = decoded is Map
+          ? (decoded['items'] is List
+              ? decoded['items'] as List
+              : decoded['programs'] is List
+                  ? decoded['programs'] as List
+                  : const <dynamic>[])
+          : decoded is List
+              ? decoded
+              : const <dynamic>[];
+      final serverPinned = <String>[];
+      final serverRecent = <String>[];
+      final shelfMeta = <String, Map<String, dynamic>>{};
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final m = item.cast<String, dynamic>();
+        final id = _shelfItemId(m);
+        if (id.isEmpty) continue;
+        shelfMeta[id] = m;
+        if (m['pinned'] == true) serverPinned.add(id);
+        final lastOpened = (m['last_opened_at'] ?? '').toString().trim();
+        final openCount = m['open_count'];
+        if (lastOpened.isNotEmpty || (openCount is num && openCount > 0)) {
+          serverRecent.add(id);
+        }
+      }
+
+      final sp = await SharedPreferences.getInstance();
+      final localPinned = loadMiniProgramPinnedIdsSync(sp);
+      final localRecent = loadMiniProgramRecentIdsSync(sp);
+      final nextPinned = _cleanIds(<String>[...serverPinned, ...localPinned]);
+      final nextRecent = _cleanIds(<String>[...serverRecent, ...localRecent])
+          .take(10)
+          .toList();
+      await saveMiniProgramShelfPrefs(
+        sp,
+        pinnedIds: nextPinned,
+        pinnedOrder: nextPinned,
+        recentIds: nextRecent,
+      );
+
+      final serverPinnedSet = serverPinned.toSet();
+      for (final id in localPinned) {
+        if (!serverPinnedSet.contains(id)) {
+          // ignore: discarded_futures
+          _syncPinnedStateToServer(id, true);
+        }
+      }
+      // ignore: discarded_futures
+      _syncPinnedOrderToServer(nextPinned);
+
+      if (!mounted) return;
+      setState(() {
+        _pinned = nextPinned;
+        _recent = nextRecent;
+        _shelfMeta = shelfMeta;
+      });
+    } catch (_) {
+    } finally {
+      _shelfSyncing = false;
+    }
   }
 
   Future<void> _togglePinned(String id) async {
     try {
       final sp = await SharedPreferences.getInstance();
       final cur = List<String>.from(_pinned);
-      if (cur.contains(id)) {
+      final wasPinned = cur.contains(id);
+      if (wasPinned) {
         cur.remove(id);
       } else {
         cur.insert(0, id);
       }
-      await sp.setStringList('pinned_miniapps', cur);
+      await saveMiniProgramShelfPrefs(sp, pinnedIds: cur, pinnedOrder: cur);
       if (!mounted) return;
       setState(() {
         _pinned = cur;
       });
+      // ignore: discarded_futures
+      _syncPinnedStateToServer(id, !wasPinned);
+      // ignore: discarded_futures
+      _syncPinnedOrderToServer(cur);
     } catch (_) {}
+  }
+
+  Future<void> _syncPinnedStateToServer(String appId, bool pinned) async {
+    final id = appId.trim();
+    if (id.isEmpty) return;
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/me/mini_programs/shelf/${Uri.encodeComponent(id)}',
+      );
+      await http
+          .patch(
+            uri,
+            headers: await shamellSessionHeadersForBaseUrl(
+              widget.baseUrl,
+              json: true,
+            ),
+            body: jsonEncode({'pinned': pinned}),
+          )
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {}
+  }
+
+  Future<void> _syncPinnedOrderToServer(List<String> orderedIds) async {
+    final ids = _cleanIds(orderedIds);
+    if (ids.isEmpty) return;
+    try {
+      final uri = Uri.parse('${widget.baseUrl}/me/mini_programs/shelf/order');
+      await http
+          .post(
+            uri,
+            headers: await _authHeaders(json: true),
+            body: jsonEncode({'app_ids': ids}),
+          )
+          .timeout(_networkTimeout);
+    } catch (_) {}
+  }
+
+  Future<void> _trackOpen(MiniAppDescriptor m) async {
+    final id = _descriptorLaunchId(m);
+    if (id.isEmpty) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final nextRecent = _cleanIds(<String>[
+        id,
+        ..._recent,
+        ...loadMiniProgramRecentIdsSync(sp),
+      ]).take(10).toList();
+      await saveMiniProgramRecentIds(sp, nextRecent);
+      if (mounted) {
+        setState(() {
+          _recent = nextRecent;
+        });
+      }
+    } catch (_) {}
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(id)}/track_open',
+      );
+      await http
+          .post(uri, headers: await _authHeaders())
+          .timeout(_networkTimeout);
+    } catch (_) {}
+  }
+
+  void _openMiniApp(MiniAppDescriptor m) {
+    final id = _descriptorLaunchId(m);
+    if (id.isEmpty) return;
+    // ignore: discarded_futures
+    _trackOpen(m);
+    if (MiniAppRegistry.byId(id) != null) {
+      widget.onOpenMod(id);
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MiniProgramPage(
+          id: id,
+          baseUrl: widget.baseUrl,
+          walletId: widget.walletId,
+          deviceId: widget.deviceId,
+          onOpenMod: widget.onOpenMod,
+        ),
+      ),
+    );
   }
 
   List<MiniAppDescriptor> _allApps() {
@@ -94,13 +334,20 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
 
   Future<void> _loadRemoteApps() async {
     try {
-      final uri = Uri.parse('${widget.baseUrl}/mini_apps');
-      final resp = await http.get(uri);
+      final uri = Uri.parse('${widget.baseUrl}/mini_programs');
+      final resp = await http
+          .get(uri, headers: await _authHeaders())
+          .timeout(_networkTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) return;
       final decoded = jsonDecode(resp.body);
       final list = <MiniAppDescriptor>[];
-      if (decoded is Map && decoded['apps'] is List) {
-        for (final e in decoded['apps'] as List) {
+      if (decoded is Map) {
+        final raw = decoded['apps'] is List
+            ? decoded['apps'] as List
+            : decoded['programs'] is List
+                ? decoded['programs'] as List
+                : const <dynamic>[];
+        for (final e in raw) {
           if (e is Map) {
             final m = MiniAppDescriptor.fromJson(e.cast<String, dynamic>());
             if (m.id.isNotEmpty) {
@@ -109,13 +356,9 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
           }
         }
       }
-      // Bus-only build: ignore remote mini-apps that are not allow-listed.
-      const allowedIds = <String>{'bus'};
-      final filtered =
-          list.where((m) => allowedIds.contains(m.id.trim().toLowerCase())).toList();
-      if (!mounted || filtered.isEmpty) return;
+      if (!mounted || list.isEmpty) return;
       setState(() {
-        _remoteApps = filtered;
+        _remoteApps = list;
       });
     } catch (_) {}
   }
@@ -148,8 +391,8 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                     children: [
                       Text(
                         l.isArabic
-                            ? 'تقييم التطبيق المصغر'
-                            : 'Rate this mini‑app',
+                            ? 'تقييم البرنامج المصغر'
+                            : 'Rate this Mini Program',
                         style: theme.textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
@@ -218,12 +461,10 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                     });
                                     try {
                                       final uri = Uri.parse(
-                                          '${widget.baseUrl}/mini_apps/${Uri.encodeComponent(m.id)}/rate');
+                                          '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(m.id)}/rate');
                                       final resp = await http.post(
                                         uri,
-                                        headers: const {
-                                          'content-type': 'application/json',
-                                        },
+                                        headers: await _authHeaders(json: true),
                                         body: jsonEncode(
                                           <String, dynamic>{
                                             'rating': selected,
@@ -248,7 +489,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                             content: Text(
                                               l.isArabic
                                                   ? 'شكرًا لتقييم التطبيق.'
-                                                  : 'Thanks for rating this mini‑app.',
+                                                  : 'Thanks for rating this Mini Program.',
                                             ),
                                           ),
                                         );
@@ -310,7 +551,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                 a.categoryAr.toLowerCase().contains(term))
             .toList();
 
-    // Mini-apps that are actively shared in Moments.
+    // Mini Programs that are actively shared in Moments.
     final hotInMoments = [...apps]
       ..removeWhere((m) => m.momentsShares <= 0)
       ..sort((a, b) => b.momentsShares.compareTo(a.momentsShares));
@@ -367,7 +608,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
       appBar: AppBar(
         backgroundColor: bgColor,
         elevation: 0.5,
-        title: Text(l.miniAppsTitle),
+        title: Text(l.isArabic ? 'البرامج المصغّرة' : 'Mini Programs'),
       ),
       backgroundColor: bgColor,
       body: SafeArea(
@@ -382,7 +623,8 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                   controller: _searchCtrl,
                   decoration: InputDecoration(
                     prefixIcon: const Icon(Icons.search),
-                    labelText: l.miniAppsSearchHint,
+                    labelText:
+                        l.isArabic ? 'ابحث في البرامج' : 'Search mini programs',
                     isDense: true,
                   ),
                   onChanged: (v) {
@@ -464,7 +706,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                 ),
                               ],
                             ),
-                            onPressed: () => widget.onOpenMod(m.id),
+                            onPressed: () => _openMiniApp(m),
                           ),
                         );
                       }).toList(),
@@ -476,7 +718,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
               FormSection(
                 title: l.isArabic
                     ? 'التطبيقات المصغرة الرائجة في اللحظات'
-                    : 'Hot mini‑apps in Moments',
+                    : 'Hot Mini Programs in Moments',
                 children: [
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
@@ -521,7 +763,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                 ),
                               ],
                             ),
-                            onPressed: () => widget.onOpenMod(m.id),
+                            onPressed: () => _openMiniApp(m),
                           ),
                         );
                       }).toList(),
@@ -548,7 +790,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                           label: Text(
                             l.isArabic
                                 ? 'لحظات تطبيقات المحفظة'
-                                : 'Wallet mini‑apps Moments',
+                                : 'Wallet Mini Programs Moments',
                           ),
                           onPressed: () {
                             Navigator.of(context).push(
@@ -576,8 +818,8 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                         .map(
                           (m) => ActionChip(
                             avatar: Icon(m.icon, size: 18),
-                            label: Text(m.title(isArabic: l.isArabic)),
-                            onPressed: () => widget.onOpenMod(m.id),
+                            label: _miniAppShelfChipLabel(m, l, theme),
+                            onPressed: () => _openMiniApp(m),
                           ),
                         )
                         .toList(),
@@ -586,7 +828,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
               ),
             if (recentMeta.isNotEmpty)
               FormSection(
-                title: l.miniAppsRecentTitle,
+                title: l.isArabic ? 'المستخدمة مؤخراً' : 'Recently used',
                 children: [
                   Wrap(
                     spacing: 8,
@@ -595,8 +837,8 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                         .map(
                           (m) => ActionChip(
                             avatar: Icon(m.icon, size: 18),
-                            label: Text(m.title(isArabic: l.isArabic)),
-                            onPressed: () => widget.onOpenMod(m.id),
+                            label: _miniAppShelfChipLabel(m, l, theme),
+                            onPressed: () => _openMiniApp(m),
                           ),
                         )
                         .toList(),
@@ -604,7 +846,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                 ],
               ),
             FormSection(
-              title: l.miniAppsAllTitle,
+              title: l.isArabic ? 'كل البرامج' : 'All mini programs',
               children: [
                 GridView.builder(
                   shrinkWrap: true,
@@ -625,24 +867,10 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                     final isHotInMoments = m.momentsShares >= 3;
                     final isTrending =
                         m.usageScore >= 50 || m.momentsShares >= 5;
+                    final personalOpens =
+                        _shelfOpenCount(_descriptorLaunchId(m));
                     return GestureDetector(
-                      onTap: () {
-                        if (runtimeId != null && runtimeId.isNotEmpty) {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => MiniProgramPage(
-                                id: runtimeId,
-                                baseUrl: widget.baseUrl,
-                                walletId: widget.walletId,
-                                deviceId: widget.deviceId,
-                                onOpenMod: widget.onOpenMod,
-                              ),
-                            ),
-                          );
-                        } else {
-                          widget.onOpenMod(m.id);
-                        }
-                      },
+                      onTap: () => _openMiniApp(m),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -690,6 +918,20 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                               ),
                               textAlign: TextAlign.center,
                             ),
+                          if (personalOpens > 0)
+                            Text(
+                              l.isArabic
+                                  ? '$personalOpens فتح'
+                                  : '$personalOpens opens',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 9,
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: .58),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
                           const SizedBox(height: 4),
                           Row(
                             mainAxisSize: MainAxisSize.min,
@@ -701,7 +943,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                   constraints: const BoxConstraints(),
                                   tooltip: l.isArabic
                                       ? 'تقييم التطبيق المصغر'
-                                      : 'Rate mini‑app',
+                                      : 'Rate Mini Program',
                                   onPressed: () => _rateMiniApp(m),
                                   icon: Icon(
                                     Icons.star_rate_outlined,
@@ -734,7 +976,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                                 constraints: const BoxConstraints(),
                                 tooltip: l.isArabic
                                     ? 'رمز QR للتطبيق'
-                                    : 'Mini‑app QR',
+                                    : 'Mini Program QR',
                                 onPressed: () => _showMiniAppQr(context, m, l),
                                 icon: Icon(
                                   Icons.qr_code_2,
@@ -758,7 +1000,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
   }
 
   void _showMiniAppQr(BuildContext context, MiniAppDescriptor m, L10n l) {
-    final payload = 'MINIAPP|id=${Uri.encodeComponent(m.id)}';
+    final payload = 'MINIPROGRAM|id=${Uri.encodeComponent(m.id)}';
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -770,7 +1012,7 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  l.isArabic ? 'رمز التطبيق المصغر' : 'Mini‑app QR code',
+                  l.isArabic ? 'رمز البرنامج المصغر' : 'Mini Program QR code',
                   style: Theme.of(ctx)
                       .textTheme
                       .titleMedium
@@ -802,13 +1044,12 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                 TextButton.icon(
                   onPressed: () async {
                     try {
-                      final sp = await SharedPreferences.getInstance();
                       var txt = l.isArabic
-                          ? 'اكتشف ${m.title(isArabic: true)} في تطبيق Shamell.'
-                          : 'Check out ${m.title(isArabic: false)} in the Shamell super app.';
+                          ? 'اكتشف ${m.title(isArabic: true)} في تطبيق SyrChat.'
+                          : 'Check out ${m.title(isArabic: false)} in the SyrChat super app.';
                       if (!txt.contains('#')) {
                         if (l.isArabic) {
-                          txt += ' #شامل_الخدمات #MiniApp';
+                          txt += ' #سرتشات_الخدمات #MiniApp';
                         } else {
                           txt += ' #ShamellMiniApp #Services';
                         }
@@ -819,15 +1060,21 @@ class _MiniAppsPageState extends State<MiniAppsPage> {
                         }
                       }
                       // Append a canonical deep-link so Moments can render
-                      // a Mini‑app card and allow tap-to-open.
-                      txt += '\nshamell://miniapp/${m.id}';
-                      await sp.setString('moments_preset_text', txt);
+                      // a Mini Program card and allow tap-to-open.
+                      txt += '\nshamell://mini_program/${m.id}';
+                      await saveMiniProgramMomentsPreset(
+                        text: txt,
+                        miniProgramId: m.id,
+                      );
                     } catch (_) {}
                     if (context.mounted) {
                       Navigator.of(ctx).pop();
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => MomentsPage(baseUrl: widget.baseUrl),
+                          builder: (_) => MomentsPage(
+                            baseUrl: widget.baseUrl,
+                            miniProgramId: m.id,
+                          ),
                         ),
                       );
                     }

@@ -3,13 +3,16 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'friend_annotations_store.dart';
 import 'l10n.dart';
+import 'mini_app_descriptor.dart';
+import 'mini_app_registry.dart';
+import 'session_cookie_store.dart';
 import 'wechat_ui.dart';
 
 class WeChatMomentDraft {
@@ -18,12 +21,18 @@ class WeChatMomentDraft {
   final List<String> imageMimes;
   final String? locationLabel;
   final String visibilityScope;
+  final String? visibilityTag;
+  final String visibilityTagMode;
+  final String? miniProgramId;
   final List<String> remindIds;
   final List<String> remindNames;
 
   const WeChatMomentDraft({
     required this.text,
     required this.visibilityScope,
+    this.visibilityTag,
+    this.visibilityTagMode = 'only',
+    this.miniProgramId,
     this.imageBytes = const <Uint8List>[],
     this.imageMimes = const <String>[],
     this.locationLabel,
@@ -38,6 +47,10 @@ class WeChatMomentsComposerPage extends StatefulWidget {
   final Uint8List? initialImageBytes;
   final String? initialImageMime;
   final String initialVisibilityScope;
+  final String? initialVisibilityTag;
+  final String initialVisibilityTagMode;
+  final String? initialMiniProgramId;
+  final List<String> availableAudienceTags;
 
   const WeChatMomentsComposerPage({
     super.key,
@@ -46,6 +59,10 @@ class WeChatMomentsComposerPage extends StatefulWidget {
     this.initialImageBytes,
     this.initialImageMime,
     this.initialVisibilityScope = 'public',
+    this.initialVisibilityTag,
+    this.initialVisibilityTagMode = 'only',
+    this.initialMiniProgramId,
+    this.availableAudienceTags = const <String>[],
   });
 
   @override
@@ -64,7 +81,10 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
   late final TextEditingController _ctrl =
       TextEditingController(text: widget.initialText);
   final List<_WeChatComposerImage> _images = <_WeChatComposerImage>[];
-  late String _visibilityScope = widget.initialVisibilityScope;
+  late String _visibilityScope = _initialVisibilityScope();
+  late String? _visibilityTag = _initialVisibilityTag();
+  late String _visibilityTagMode = _initialVisibilityTagMode();
+  late String? _miniProgramId = _initialMiniProgramId();
   String? _locationLabel;
   List<String> _remindIds = <String>[];
   List<String> _remindNames = <String>[];
@@ -73,6 +93,74 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
   bool _suppressAtTrigger = false;
   String _profileName = '';
   String _profilePhone = '';
+
+  String _normalizeAudienceTag(String? raw) {
+    final tag = (raw ?? '').trim();
+    if (tag.isEmpty) return '';
+    return tag.replaceAll(RegExp(r'\s+'), '_');
+  }
+
+  String _initialVisibilityScope() {
+    final raw = widget.initialVisibilityScope.trim().toLowerCase();
+    if (raw.startsWith('tag:') || raw.startsWith('friends_except:')) {
+      return 'friends';
+    }
+    if (raw == 'close_friends' ||
+        raw == 'friends' ||
+        raw == 'only_me' ||
+        raw == 'public') {
+      return raw;
+    }
+    return 'public';
+  }
+
+  String? _initialVisibilityTag() {
+    final explicit = _normalizeAudienceTag(widget.initialVisibilityTag);
+    if (explicit.isNotEmpty) return explicit;
+    final raw = widget.initialVisibilityScope.trim();
+    if (raw.toLowerCase().startsWith('tag:')) {
+      final tag = _normalizeAudienceTag(raw.substring(4));
+      return tag.isEmpty ? null : tag;
+    }
+    if (raw.toLowerCase().startsWith('friends_except:')) {
+      final tag = _normalizeAudienceTag(raw.substring(15));
+      return tag.isEmpty ? null : tag;
+    }
+    return null;
+  }
+
+  String _initialVisibilityTagMode() {
+    final mode = widget.initialVisibilityTagMode.trim().toLowerCase();
+    if (mode == 'except') return 'except';
+    final raw = widget.initialVisibilityScope.trim().toLowerCase();
+    if (raw.startsWith('friends_except:')) return 'except';
+    return 'only';
+  }
+
+  String? _initialMiniProgramId() {
+    final raw = (widget.initialMiniProgramId ?? '').trim().toLowerCase();
+    if (raw.isEmpty) return null;
+    for (final descriptor in MiniAppRegistry.descriptors) {
+      final id = descriptor.id.trim().toLowerCase();
+      final runtimeId = (descriptor.runtimeAppId ?? '').trim().toLowerCase();
+      if (raw == id || (runtimeId.isNotEmpty && raw == runtimeId)) {
+        return descriptor.id;
+      }
+    }
+    return raw;
+  }
+
+  List<String> get _audienceTags {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final raw in widget.availableAudienceTags) {
+      final tag = _normalizeAudienceTag(raw);
+      if (tag.isEmpty || !seen.add(tag.toLowerCase())) continue;
+      out.add(tag);
+    }
+    out.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return out;
+  }
 
   void _onComposerChanged() {
     if (!mounted) return;
@@ -143,7 +231,8 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
   bool get _canPost {
     final hasText = _ctrl.text.trim().isNotEmpty;
     final hasImage = _images.isNotEmpty;
-    return hasText || hasImage;
+    final hasMiniProgram = (_miniProgramId ?? '').trim().isNotEmpty;
+    return hasText || hasImage || hasMiniProgram;
   }
 
   Future<void> _loadProfileSummary() async {
@@ -478,15 +567,223 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
   }
 
   String _visibilityLabel(L10n l) {
+    final tag = (_visibilityTag ?? '').trim();
+    if (tag.isNotEmpty) {
+      if (_visibilityTagMode == 'except') {
+        return l.isArabic ? 'الأصدقاء باستثناء $tag' : 'Friends except $tag';
+      }
+      return l.isArabic ? 'فقط $tag' : 'Only $tag';
+    }
     switch (_visibilityScope) {
       case 'only_me':
         return l.isArabic ? 'أنا فقط' : 'Only me';
+      case 'close_friends':
+        return l.isArabic ? 'الأصدقاء المقرّبون' : 'Close friends';
       case 'friends':
         return l.isArabic ? 'الأصدقاء فقط' : 'Friends';
       case 'public':
       default:
         return l.isArabic ? 'عام' : 'Public';
     }
+  }
+
+  MiniAppDescriptor? _miniProgramDescriptor(String? raw) {
+    final id = (raw ?? '').trim().toLowerCase();
+    if (id.isEmpty) return null;
+    for (final descriptor in MiniAppRegistry.descriptors) {
+      final descriptorId = descriptor.id.trim().toLowerCase();
+      final runtimeId = (descriptor.runtimeAppId ?? '').trim().toLowerCase();
+      if (id == descriptorId || (runtimeId.isNotEmpty && id == runtimeId)) {
+        return descriptor;
+      }
+    }
+    return null;
+  }
+
+  String _miniProgramLabel(L10n l) {
+    final id = (_miniProgramId ?? '').trim();
+    if (id.isEmpty) return l.isArabic ? 'غير مرفق' : 'Not attached';
+    final descriptor = _miniProgramDescriptor(id);
+    if (descriptor != null) {
+      return descriptor.title(isArabic: l.isArabic);
+    }
+    return id;
+  }
+
+  Future<void> _pickMiniProgram() async {
+    final theme = Theme.of(context);
+    final l = L10n.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final sheetBg = isDark ? theme.colorScheme.surface : Colors.white;
+    final descriptors = MiniAppRegistry.descriptors
+        .where((descriptor) => descriptor.enabled)
+        .toList()
+      ..sort((a, b) {
+        final usage = b.usageScore.compareTo(a.usageScore);
+        if (usage != 0) return usage;
+        return a.title(isArabic: l.isArabic).compareTo(
+              b.title(isArabic: l.isArabic),
+            );
+      });
+
+    final picked = await showModalBottomSheet<String?>(
+      context: context,
+      backgroundColor: sheetBg,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+      ),
+      builder: (ctx) {
+        final l2 = L10n.of(ctx);
+        final selected = (_miniProgramId ?? '').trim().toLowerCase();
+        final borderColor = theme.dividerColor.withValues(
+          alpha: isDark ? .54 : .86,
+        );
+        Widget row({
+          required IconData icon,
+          required String title,
+          required String subtitle,
+          required String? value,
+        }) {
+          final isSelected = (value ?? '').trim().toLowerCase() == selected ||
+              ((value ?? '').trim().isEmpty && selected.isEmpty);
+          return InkWell(
+            onTap: () => Navigator.of(ctx).pop(value),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 58),
+              child: Padding(
+                padding: const EdgeInsetsDirectional.fromSTEB(16, 8, 16, 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      icon,
+                      size: 22,
+                      color: theme.colorScheme.onSurface.withValues(
+                        alpha: isSelected ? .82 : .58,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (subtitle.trim().isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              subtitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontSize: 12,
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: .56),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Icon(
+                      Icons.check,
+                      size: 21,
+                      color:
+                          isSelected ? WeChatPalette.green : Colors.transparent,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+
+        return SafeArea(
+          top: false,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 560),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 4),
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withValues(alpha: .20),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsetsDirectional.fromSTEB(16, 10, 12, 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        l2.isArabic
+                            ? 'إرفاق برنامج مصغّر'
+                            : 'Attach Mini Program',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(_miniProgramId),
+                        child: Text(l2.isArabic ? 'تم' : 'Done'),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: descriptors.length + 1,
+                    separatorBuilder: (_, __) => Divider(
+                      height: 1,
+                      thickness: .5,
+                      indent: 50,
+                      color: borderColor,
+                    ),
+                    itemBuilder: (_, index) {
+                      if (index == 0) {
+                        return row(
+                          icon: Icons.link_off_outlined,
+                          title: l2.isArabic ? 'بدون مرفق' : 'No attachment',
+                          subtitle: l2.isArabic
+                              ? 'انشر لحظة عادية.'
+                              : 'Post a normal Moment.',
+                          value: null,
+                        );
+                      }
+                      final descriptor = descriptors[index - 1];
+                      return row(
+                        icon: descriptor.icon,
+                        title: descriptor.title(isArabic: l2.isArabic),
+                        subtitle: descriptor.category(isArabic: l2.isArabic),
+                        value: descriptor.id,
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted) return;
+    setState(() {
+      final next = (picked ?? '').trim();
+      _miniProgramId = next.isEmpty ? null : next;
+    });
   }
 
   Future<void> _pickLocation() async {
@@ -595,7 +892,10 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
     final isDark = theme.brightness == Brightness.dark;
     final sheetBg = isDark ? theme.colorScheme.surface : Colors.white;
 
-    String selected = _visibilityScope;
+    String selectedScope = _visibilityScope;
+    String? selectedTag = _visibilityTag;
+    String selectedTagMode = _visibilityTagMode;
+    final audienceTags = _audienceTags;
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: sheetBg,
@@ -608,58 +908,235 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
           top: false,
           child: StatefulBuilder(
             builder: (ctx, setModalState) {
-              Widget radioRow(String value, String label) {
-                return RadioListTile<String>(
-                  value: value,
-                  dense: true,
-                  title: Text(label),
-                );
-              }
+              final borderColor = theme.dividerColor.withValues(
+                alpha: isDark ? .54 : .86,
+              );
 
-              return RadioGroup<String>(
-                groupValue: selected,
-                onChanged: (v) {
-                  if (v == null) return;
-                  setModalState(() => selected = v);
-                },
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(height: 4),
-                    Container(
-                      width: 36,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .20),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+              Widget visibilityRow(
+                String value,
+                String label,
+                String subtitle,
+                IconData icon, {
+                String? tag,
+                String tagMode = 'only',
+              }) {
+                final normalizedTag = _normalizeAudienceTag(tag);
+                final normalizedMode = tagMode == 'except' ? 'except' : 'only';
+                final isSelected = selectedScope == value &&
+                    (normalizedTag.isEmpty
+                        ? (selectedTag ?? '').trim().isEmpty
+                        : selectedTag == normalizedTag &&
+                            selectedTagMode == normalizedMode);
+                return InkWell(
+                  onTap: () {
+                    setModalState(() {
+                      selectedScope = value;
+                      selectedTag =
+                          normalizedTag.isEmpty ? null : normalizedTag;
+                      selectedTagMode = normalizedMode;
+                    });
+                  },
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 62),
+                    child: Padding(
+                      padding:
+                          const EdgeInsetsDirectional.fromSTEB(16, 9, 16, 9),
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          Text(
-                            l2.isArabic ? 'من يمكنه رؤيتها' : 'Who can see',
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
+                          Icon(
+                            icon,
+                            size: 22,
+                            color: theme.colorScheme.onSurface.withValues(
+                              alpha: isSelected ? .78 : .56,
                             ),
                           ),
-                          const Spacer(),
-                          TextButton(
-                            onPressed: () => Navigator.of(ctx).pop(),
-                            child: Text(l2.isArabic ? 'تم' : 'Done'),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodyLarge?.copyWith(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  subtitle,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    fontSize: 12,
+                                    color: theme.colorScheme.onSurface
+                                        .withValues(alpha: .58),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Icon(
+                            Icons.check,
+                            size: 22,
+                            color: isSelected
+                                ? WeChatPalette.green
+                                : Colors.transparent,
                           ),
                         ],
                       ),
                     ),
-                    radioRow('public', l2.isArabic ? 'عام' : 'Public'),
-                    radioRow('friends', l2.isArabic ? 'الأصدقاء' : 'Friends'),
-                    radioRow('only_me', l2.isArabic ? 'أنا فقط' : 'Only me'),
-                    const SizedBox(height: 8),
-                  ],
+                  ),
+                );
+              }
+
+              final rows = <Widget>[
+                visibilityRow(
+                  'public',
+                  l2.isArabic ? 'عام' : 'Public',
+                  l2.isArabic
+                      ? 'يمكن للأصدقاء وجهات الاتصال المناسبة رؤية اللحظة.'
+                      : 'Visible to friends and eligible contacts.',
+                  Icons.public,
                 ),
+                visibilityRow(
+                  'friends',
+                  l2.isArabic ? 'الأصدقاء' : 'Friends',
+                  l2.isArabic
+                      ? 'تظهر للأصدقاء فقط، بدون نشر عام.'
+                      : 'Only friends can see this Moment.',
+                  Icons.group_outlined,
+                ),
+                visibilityRow(
+                  'close_friends',
+                  l2.isArabic ? 'الأصدقاء المقرّبون' : 'Close friends',
+                  l2.isArabic
+                      ? 'مشاركة أضيق مع دائرة موثوقة.'
+                      : 'Share with a smaller trusted circle.',
+                  Icons.star_outline,
+                ),
+                visibilityRow(
+                  'only_me',
+                  l2.isArabic ? 'أنا فقط' : 'Only me',
+                  l2.isArabic
+                      ? 'احفظها في لحظاتك بدون إظهارها للآخرين.'
+                      : 'Keep it in Moments without showing others.',
+                  Icons.lock_outline,
+                ),
+              ];
+              if (audienceTags.isNotEmpty) {
+                rows.add(
+                  Padding(
+                    padding: const EdgeInsetsDirectional.fromSTEB(
+                      16,
+                      14,
+                      16,
+                      7,
+                    ),
+                    child: Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: Text(
+                        l2.isArabic ? 'وسوم الأصدقاء' : 'Friend labels',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .58),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+                for (final tag in audienceTags) {
+                  rows.add(
+                    visibilityRow(
+                      'friends',
+                      l2.isArabic ? 'فقط $tag' : 'Only $tag',
+                      l2.isArabic
+                          ? 'تظهر للأصدقاء الذين يحملون هذا الوسم.'
+                          : 'Visible only to friends with this label.',
+                      Icons.label_outline,
+                      tag: tag,
+                    ),
+                  );
+                  rows.add(
+                    visibilityRow(
+                      'friends',
+                      l2.isArabic
+                          ? 'الأصدقاء باستثناء $tag'
+                          : 'Friends except $tag',
+                      l2.isArabic
+                          ? 'تظهر للأصدقاء مع إخفائها عن هذا الوسم.'
+                          : 'Visible to friends except this label.',
+                      Icons.label_off_outlined,
+                      tag: tag,
+                      tagMode: 'except',
+                    ),
+                  );
+                }
+              }
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 4),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurface.withValues(alpha: .20),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        Text(
+                          l2.isArabic ? 'من يمكنه رؤيتها' : 'Who can see',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          child: Text(l2.isArabic ? 'تم' : 'Done'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: sheetBg,
+                      border: Border(
+                        top: BorderSide(color: borderColor, width: .6),
+                        bottom: BorderSide(color: borderColor, width: .6),
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (var i = 0; i < rows.length; i++) ...[
+                          if (i > 0)
+                            Divider(
+                              height: 1,
+                              thickness: .5,
+                              indent: 50,
+                              color: borderColor,
+                            ),
+                          rows[i],
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
               );
             },
           ),
@@ -668,7 +1145,11 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
     );
 
     if (!mounted) return;
-    setState(() => _visibilityScope = selected);
+    setState(() {
+      _visibilityScope = selectedScope;
+      _visibilityTag = selectedTag;
+      _visibilityTagMode = selectedTagMode;
+    });
   }
 
   void _submit() {
@@ -678,6 +1159,11 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
       imageMimes: _images.map((e) => e.mime).toList(),
       locationLabel: _locationLabel,
       visibilityScope: _visibilityScope,
+      visibilityTag:
+          (_visibilityTag ?? '').trim().isEmpty ? null : _visibilityTag!.trim(),
+      visibilityTagMode: _visibilityTagMode == 'except' ? 'except' : 'only',
+      miniProgramId:
+          (_miniProgramId ?? '').trim().isEmpty ? null : _miniProgramId!.trim(),
       remindIds: List<String>.from(_remindIds),
       remindNames: List<String>.from(_remindNames),
     );
@@ -719,6 +1205,211 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
               color: theme.colorScheme.onSurface.withValues(alpha: .85),
             ),
           ),
+        ),
+      );
+    }
+
+    Widget optionRow({
+      required IconData icon,
+      required String title,
+      required String value,
+      required VoidCallback onTap,
+    }) {
+      final trailingMaxWidth = (MediaQuery.sizeOf(context).width * .42)
+          .clamp(128.0, 220.0) as double;
+      final textColor = theme.colorScheme.onSurface;
+      return InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 52),
+          child: Padding(
+            padding: const EdgeInsetsDirectional.fromSTEB(16, 8, 12, 8),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 21,
+                  color: textColor.withValues(alpha: isDark ? .74 : .62),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      color: textColor.withValues(alpha: .92),
+                    ),
+                  ),
+                ),
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: trailingMaxWidth),
+                  child: Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.end,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontSize: 13,
+                      color: textColor.withValues(alpha: .58),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  l.isArabic ? Icons.chevron_left : Icons.chevron_right,
+                  size: 18,
+                  color: textColor.withValues(alpha: .38),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget selectedMiniProgramPreview() {
+      final id = (_miniProgramId ?? '').trim();
+      if (id.isEmpty) return const SizedBox.shrink();
+      final descriptor = _miniProgramDescriptor(id);
+      final title = descriptor?.title(isArabic: l.isArabic) ?? id;
+      final subtitle = descriptor?.category(isArabic: l.isArabic) ??
+          (l.isArabic ? 'برنامج مصغّر' : 'Mini Program');
+      return Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(7),
+          onTap: _pickMiniProgram,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: .34)
+                  : WeChatPalette.searchFill,
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(
+                color: dividerColor.withValues(alpha: isDark ? .54 : .82),
+                width: .6,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: WeChatPalette.green.withValues(alpha: .12),
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                  child: Icon(
+                    descriptor?.icon ?? Icons.widgets_outlined,
+                    size: 20,
+                    color: WeChatPalette.green,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 11,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .58),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  l.isArabic ? Icons.chevron_left : Icons.chevron_right,
+                  size: 18,
+                  color: theme.colorScheme.onSurface.withValues(alpha: .46),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget optionSection() {
+      final borderColor = dividerColor.withValues(alpha: isDark ? .54 : .88);
+      return Container(
+        margin: const EdgeInsets.only(top: 8),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          border: Border(
+            top: BorderSide(color: borderColor, width: .6),
+            bottom: BorderSide(color: borderColor, width: .6),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            optionRow(
+              icon: Icons.location_on_outlined,
+              title: l.isArabic ? 'الموقع' : 'Location',
+              value: (_locationLabel ?? '').trim().isNotEmpty
+                  ? _locationLabel!
+                  : (l.isArabic ? 'عدم العرض' : 'Not shown'),
+              onTap: _pickLocation,
+            ),
+            Divider(
+              height: 1,
+              thickness: .5,
+              indent: 49,
+              color: borderColor,
+            ),
+            optionRow(
+              icon: Icons.widgets_outlined,
+              title: l.isArabic ? 'برنامج مصغّر' : 'Mini Program',
+              value: _miniProgramLabel(l),
+              onTap: _pickMiniProgram,
+            ),
+            Divider(
+              height: 1,
+              thickness: .5,
+              indent: 49,
+              color: borderColor,
+            ),
+            optionRow(
+              icon: Icons.alternate_email,
+              title: l.isArabic ? 'تذكير' : 'Remind',
+              value: _remindSummary(l),
+              onTap: _pickRemind,
+            ),
+            Divider(
+              height: 1,
+              thickness: .5,
+              indent: 49,
+              color: borderColor,
+            ),
+            optionRow(
+              icon: Icons.visibility_outlined,
+              title: l.isArabic ? 'من يمكنه رؤيتها' : 'Who can see',
+              value: _visibilityLabel(l),
+              onTap: _pickVisibility,
+            ),
+          ],
         ),
       );
     }
@@ -776,6 +1467,14 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
                             hintText:
                                 l.isArabic ? 'مشاركة شيء…' : 'Say something…',
                             border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
+                            errorBorder: InputBorder.none,
+                            focusedErrorBorder: InputBorder.none,
+                            filled: true,
+                            fillColor: theme.colorScheme.surface,
+                            contentPadding: EdgeInsets.zero,
                           ),
                         ),
                         const SizedBox(height: 10),
@@ -885,94 +1584,14 @@ class _WeChatMomentsComposerPageState extends State<WeChatMomentsComposerPage> {
                             );
                           },
                         ),
+                        selectedMiniProgramPreview(),
                       ],
                     ),
                   ),
                 ],
               ),
             ),
-            WeChatSection(
-              dividerIndent: 16,
-              children: [
-                ListTile(
-                  dense: true,
-                  title: Text(l.isArabic ? 'الموقع' : 'Location'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        (_locationLabel ?? '').trim().isNotEmpty
-                            ? _locationLabel!
-                            : (l.isArabic ? 'عدم العرض' : 'Not shown'),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: 13,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .60),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Icon(
-                        l.isArabic ? Icons.chevron_left : Icons.chevron_right,
-                        size: 18,
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .40),
-                      ),
-                    ],
-                  ),
-                  onTap: _pickLocation,
-                ),
-                ListTile(
-                  dense: true,
-                  title: Text(l.isArabic ? 'تذكير' : 'Remind'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _remindSummary(l),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: 13,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .60),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Icon(
-                        l.isArabic ? Icons.chevron_left : Icons.chevron_right,
-                        size: 18,
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .40),
-                      ),
-                    ],
-                  ),
-                  onTap: _pickRemind,
-                ),
-                ListTile(
-                  dense: true,
-                  title: Text(l.isArabic ? 'من يمكنه رؤيتها' : 'Who can see'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _visibilityLabel(l),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: 13,
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: .60),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Icon(
-                        l.isArabic ? Icons.chevron_left : Icons.chevron_right,
-                        size: 18,
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: .40),
-                      ),
-                    ],
-                  ),
-                  onTap: _pickVisibility,
-                ),
-              ],
-            ),
+            optionSection(),
           ],
         ),
       ),
@@ -1246,6 +1865,37 @@ class _WeChatLocationPickerPageState extends State<_WeChatLocationPickerPage> {
 
     final bodyChildren = <Widget>[];
 
+    Widget flatLocationSection(List<Widget> rows) {
+      if (rows.isEmpty) return const SizedBox.shrink();
+      final borderColor = theme.dividerColor.withValues(
+        alpha: isDark ? .54 : .88,
+      );
+      return Container(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          border: Border(
+            top: BorderSide(color: borderColor, width: .6),
+            bottom: BorderSide(color: borderColor, width: .6),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < rows.length; i++) ...[
+              if (i > 0)
+                Divider(
+                  height: 1,
+                  thickness: .5,
+                  indent: 16,
+                  color: borderColor,
+                ),
+              rows[i],
+            ],
+          ],
+        ),
+      );
+    }
+
     bodyChildren.add(const SizedBox(height: 8));
     bodyChildren.add(
       WeChatSearchBar(
@@ -1259,11 +1909,8 @@ class _WeChatLocationPickerPageState extends State<_WeChatLocationPickerPage> {
 
     if (!isSearching) {
       bodyChildren.add(
-        WeChatSection(
-          margin: const EdgeInsets.only(top: 0),
-          dividerIndent: 16,
-          dividerEndIndent: 16,
-          children: [
+        flatLocationSection(
+          [
             ListTile(
               dense: true,
               title: Text(
@@ -1390,11 +2037,8 @@ class _WeChatLocationPickerPageState extends State<_WeChatLocationPickerPage> {
         );
       } else {
         bodyChildren.add(
-          WeChatSection(
-            margin: const EdgeInsets.only(top: 0),
-            dividerIndent: 16,
-            dividerEndIndent: 16,
-            children: [
+          flatLocationSection(
+            [
               for (final e in _results)
                 ListTile(
                   dense: true,
@@ -1536,31 +2180,30 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
   }
 
   Future<Map<String, String>> _authHeaders() async {
-    final headers = <String, String>{};
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return headers;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl);
   }
 
-  Map<String, String> _decodeStringMap(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        final out = <String, String>{};
-        decoded.forEach((k, v) {
-          final key = (k ?? '').toString().trim();
-          final val = (v ?? '').toString().trim();
-          if (key.isNotEmpty && val.isNotEmpty) out[key] = val;
-        });
-        return out;
-      }
-    } catch (_) {}
-    return const <String, String>{};
+  String _friendsLoadErrorMessage({
+    required int? statusCode,
+    required bool isArabic,
+  }) {
+    final code = statusCode ?? 0;
+    if (code == 401 || code == 403) {
+      return isArabic
+          ? 'سجّل الدخول مرة أخرى لتحميل الأصدقاء.'
+          : 'Sign in again to load friends.';
+    }
+    if (code == 404) {
+      return isArabic
+          ? 'قائمة الأصدقاء غير متاحة حالياً.'
+          : 'Friends are not available right now.';
+    }
+    if (code >= 500) {
+      return isArabic
+          ? 'الأصدقاء غير متاحين مؤقتاً.'
+          : 'Friends are temporarily unavailable.';
+    }
+    return isArabic ? 'تعذّر تحميل الأصدقاء.' : 'Unable to load friends.';
   }
 
   String _letterFor(String name) {
@@ -1590,20 +2233,21 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
       _friendsError = null;
     });
     try {
-      Map<String, String> aliases = const <String, String>{};
-      try {
-        final sp = await SharedPreferences.getInstance();
-        aliases = _decodeStringMap(sp.getString('friends.aliases') ?? '{}');
-      } catch (_) {}
+      final aliases = await loadFriendAliases(
+        baseUrlOverride: widget.baseUrl,
+      );
 
       final uri = Uri.parse('${widget.baseUrl}/me/friends');
       final resp = await http.get(uri, headers: await _authHeaders());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted) return;
+        final isArabic = L10n.of(context).isArabic;
         setState(() {
           _loadingFriends = false;
-          _friendsError =
-              resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _friendsError = _friendsLoadErrorMessage(
+            statusCode: resp.statusCode,
+            isArabic: isArabic,
+          );
         });
         return;
       }
@@ -1629,6 +2273,7 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
           _WeChatRemindEntry(
             id: id,
             displayName: display,
+            subtitle: (f['phone'] ?? f['handle'] ?? '').toString().trim(),
             letter: letter,
           ),
         );
@@ -1651,8 +2296,12 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
       });
     } catch (e) {
       if (!mounted) return;
+      final isArabic = L10n.of(context).isArabic;
       setState(() {
-        _friendsError = e.toString();
+        _friendsError = _friendsLoadErrorMessage(
+          statusCode: null,
+          isArabic: isArabic,
+        );
         _loadingFriends = false;
       });
     }
@@ -1665,61 +2314,15 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
       _contactsError = null;
       _contactsPermissionDenied = false;
     });
-    try {
-      final ok = await FlutterContacts.requestPermission();
-      if (!ok) {
-        if (!mounted) return;
-        setState(() {
-          _loadingContacts = false;
-          _contactsPermissionDenied = true;
-        });
-        return;
-      }
-      final contacts = await FlutterContacts.getContacts(
-        withProperties: true,
-        withPhoto: false,
-      );
-      final entries = <_WeChatRemindEntry>[];
-      for (final c in contacts) {
-        if (c.phones.isEmpty) continue;
-        final name = c.displayName.trim();
-        final phone = c.phones.first.number.trim();
-        if (name.isEmpty && phone.isEmpty) continue;
-        final id = 'contact:$phone';
-        final display = name.isNotEmpty ? name : phone;
-        final letter = _letterFor(display);
-        entries.add(
-          _WeChatRemindEntry(
-            id: id,
-            displayName: display,
-            subtitle: phone.isNotEmpty ? phone : null,
-            letter: letter,
-          ),
-        );
-        _nameById[id] = display;
-      }
-      entries.sort((a, b) {
-        if (a.letter != b.letter) {
-          if (a.letter == '#') return 1;
-          if (b.letter == '#') return -1;
-          return a.letter.compareTo(b.letter);
-        }
-        return a.displayName
-            .toLowerCase()
-            .compareTo(b.displayName.toLowerCase());
-      });
-      if (!mounted) return;
-      setState(() {
-        _contacts = entries;
-        _loadingContacts = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _contactsError = e.toString();
-        _loadingContacts = false;
-      });
-    }
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    if (!mounted) return;
+    setState(() {
+      _contacts = const <_WeChatRemindEntry>[];
+      _contactsError =
+          'Device contacts are not enabled in this build. Use Friends instead.';
+      _loadingContacts = false;
+      _contactsPermissionDenied = true;
+    });
   }
 
   void _toggleSelected(String id) {
@@ -1808,22 +2411,26 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
     }) {
       return Expanded(
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
           onTap: onTap,
           child: Container(
-            height: 32,
+            height: 40,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: selected ? surface : Colors.transparent,
-              borderRadius: BorderRadius.circular(8),
+              border: Border(
+                bottom: BorderSide(
+                  color: selected ? WeChatPalette.green : Colors.transparent,
+                  width: 2,
+                ),
+              ),
             ),
             child: Text(
               label,
               style: theme.textTheme.bodySmall?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: theme.colorScheme.onSurface.withValues(
-                  alpha: selected ? .88 : .55,
-                ),
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected
+                    ? WeChatPalette.green
+                    : theme.colorScheme.onSurface.withValues(alpha: .58),
               ),
             ),
           ),
@@ -2090,42 +2697,35 @@ class _WeChatRemindPickerPageState extends State<_WeChatRemindPickerPage> {
               onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 10),
-            Padding(
+            Container(
+              decoration: BoxDecoration(
+                color: surface,
+                border: Border(
+                  top: BorderSide(
+                    color: theme.dividerColor
+                        .withValues(alpha: isDark ? .50 : .72),
+                    width: .6,
+                  ),
+                  bottom: BorderSide(
+                    color: theme.dividerColor
+                        .withValues(alpha: isDark ? .50 : .72),
+                    width: .6,
+                  ),
+                ),
+              ),
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? theme.colorScheme.surfaceContainerHighest.withValues(
-                          alpha: .55,
-                        )
-                      : WeChatPalette.searchFill,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    segment(
-                      label: isArabic ? 'الأصدقاء' : 'Friends',
-                      selected: _source == _WeChatRemindSource.friends,
-                      onTap: () {
-                        setState(() {
-                          _source = _WeChatRemindSource.friends;
-                        });
-                      },
-                    ),
-                    const SizedBox(width: 2),
-                    segment(
-                      label: isArabic ? 'جهات الاتصال' : 'Contacts',
-                      selected: _source == _WeChatRemindSource.contacts,
-                      onTap: () {
-                        setState(() {
-                          _source = _WeChatRemindSource.contacts;
-                        });
-                        _loadContacts();
-                      },
-                    ),
-                  ],
-                ),
+              child: Row(
+                children: [
+                  segment(
+                    label: isArabic ? 'الأصدقاء' : 'Friends',
+                    selected: _source == _WeChatRemindSource.friends,
+                    onTap: () {
+                      setState(() {
+                        _source = _WeChatRemindSource.friends;
+                      });
+                    },
+                  ),
+                ],
               ),
             ),
             if (!widget.singlePick && selectedCount > 0) ...[

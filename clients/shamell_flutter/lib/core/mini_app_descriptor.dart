@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Descriptor for a Shamell mini-app (WeChat-style mini-program).
+/// Descriptor for a SyrChat mini-app (SyrChat Super-App mini-program).
 ///
 /// Used by:
 ///   - Discover strip on the home/services tab
@@ -14,9 +14,16 @@ class MiniAppDescriptor {
   final String categoryEn;
   final String categoryAr;
   final String? runtimeAppId;
-  final bool official; // true = first-party Shamell mini-app
+  final bool official; // true = first-party SyrChat mini-app
   final bool enabled; // allow hiding apps per build/region
   final bool beta; // gated features, usually off in prod
+  /// Operator-side surface that should NOT appear in the consumer
+  /// Discover directory or recent-modules chips. The runtime still
+  /// resolves `byId` lookups (so deep-link routing into the surface
+  /// continues to work for operator clients) — only the user-facing
+  /// discovery surfaces filter on this flag. Example: hotel-staff
+  /// admin console.
+  final bool operatorOnly;
   final double rating; // 0.0–5.0, simple client-side heuristic
   final int usageScore; // synthetic "trending" signal, higher = more prominent
   final int ratingCount; // number of user ratings (server-backed)
@@ -33,6 +40,7 @@ class MiniAppDescriptor {
     this.official = true,
     this.enabled = true,
     this.beta = false,
+    this.operatorOnly = false,
     this.rating = 0.0,
     this.usageScore = 0,
     this.ratingCount = 0,
@@ -40,7 +48,7 @@ class MiniAppDescriptor {
   });
 
   factory MiniAppDescriptor.fromJson(Map<String, dynamic> j) {
-    final id = (j['id'] ?? '').toString().trim();
+    final id = (j['id'] ?? j['app_id'] ?? '').toString().trim();
     final titleEn = (j['title_en'] ?? '').toString();
     final titleAr = (j['title_ar'] ?? '').toString();
     final categoryEn = (j['category_en'] ?? '').toString();
@@ -50,8 +58,9 @@ class MiniAppDescriptor {
         j['usage_score'] is num ? (j['usage_score'] as num).toInt() : 0;
     final ratingCount =
         j['rating_count'] is num ? (j['rating_count'] as num).toInt() : 0;
+    final momentsSharesRaw = j['moments_shares_30d'] ?? j['moments_shares'];
     final momentsShares =
-        j['moments_shares'] is num ? (j['moments_shares'] as num).toInt() : 0;
+        momentsSharesRaw is num ? momentsSharesRaw.toInt() : 0;
     final runtimeAppId = (j['runtime_app_id'] ?? '').toString().trim();
     final official = j['official'] == true;
     final beta = j['beta'] == true;

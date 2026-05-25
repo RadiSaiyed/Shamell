@@ -11,19 +11,18 @@ void main() {
     SharedPreferences.setMockInitialValues(const <String, Object>{});
   });
 
-  testWidgets('BusPage shows EN and AR actions', (tester) async {
+  testWidgets('Service label shows EN and AR', (tester) async {
     final lEn = L10n(const Locale('en'));
     final lAr = L10n(const Locale('ar'));
-    expect(lEn.homeBus, 'Bus');
-    expect(lAr.homeBus, 'الحافلات');
+    expect(lEn.homeBus, 'Service');
+    expect(lAr.homeBus, 'الخدمة');
   });
 
   testWidgets('ServiceAccounts subtitle shows EN and AR', (tester) async {
     final lEn = L10n(const Locale('en'));
     final lAr = L10n(const Locale('ar'));
-    expect(lEn.mirsaalContactsServiceAccountsSubtitle,
-        'Shamell Bus, Pay and more');
-    expect(lAr.mirsaalContactsServiceAccountsSubtitle,
-        'Shamell Bus, Pay والمزيد');
+    expect(lEn.shamellContactsServiceAccountsSubtitle,
+        'SyrChat services and more');
+    expect(lAr.shamellContactsServiceAccountsSubtitle, 'خدمات SyrChat والمزيد');
   });
 }

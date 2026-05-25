@@ -1,0 +1,36 @@
+{
+  "name": "Hotels",
+  "appId": "miniapp.hotels",
+  "version": "1.0.0",
+  "type": "miniapp",
+  "description": "Generic hotel mini-program for Shamell. First partner: VENEZIA Hotel. Browse hotels, view rooms, book stays, order room service, and chat with the concierge.",
+  "author": "Shamell Hotels",
+  "language": "de-DE",
+  "entry": "index.html",
+  "orientation": "portrait",
+  "viewport": {
+    "width": 420,
+    "height": 900,
+    "fit": "contain"
+  },
+  "theme": {
+    "primaryColor": "#0e3a53",
+    "accentColor": "#c9a96e",
+    "backgroundColor": "#f7f3ec",
+    "statusBarStyle": "default"
+  },
+  "permissions": [
+    "storage.local",
+    "share.system",
+    "host.openChat",
+    "host.openPayments"
+  ],
+  "navigation": {
+    "showBackButton": true,
+    "showMoreMenu": true,
+    "title": "Hotels"
+  },
+  "minHostVersion": "1.0.0",
+  "category": "travel-hospitality",
+  "tags": ["hotel", "booking", "room-service", "concierge", "venezia"]
+}

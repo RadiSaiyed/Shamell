@@ -1,11 +1,40 @@
 import com.android.build.gradle.BaseExtension
+import org.gradle.api.JavaVersion
 import org.gradle.api.tasks.compile.JavaCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
+val shamellForcedAgpVersion = "8.9.1"
+val shamellForcedKgpVersion = "2.2.21"
+
+// Third-party Flutter Android plugins often pin their own AGP/KGP versions in
+// buildscript classpaths. Force a single toolchain early to avoid pulling
+// multiple incompatible Android build stacks during one app build.
+gradle.beforeProject {
+    buildscript.configurations.configureEach {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "com.android.tools.build" &&
+                requested.name == "gradle"
+            ) {
+                useVersion(shamellForcedAgpVersion)
+                because("Align Flutter plugin AGP versions with Shamell")
+            }
+            if (requested.group == "org.jetbrains.kotlin" &&
+                requested.name == "kotlin-gradle-plugin"
+            ) {
+                useVersion(shamellForcedKgpVersion)
+                because("Align Flutter plugin Kotlin Gradle plugin versions with Shamell")
+            }
+        }
+    }
+}
 
 allprojects {
     repositories {
         google()
         mavenCentral()
+        maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
+        maven(url = uri("https://jitpack.io"))
     }
 }
 
@@ -21,6 +50,14 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(":app")
+
+    // Keep all Android plugin Java compilation on the JDK available in this
+    // workspace. Some plugins request Java 21 by default, but the app and CI
+    // are configured around Java 17.
+    tasks.withType<JavaCompile>().configureEach {
+        sourceCompatibility = JavaVersion.VERSION_17.toString()
+        targetCompatibility = JavaVersion.VERSION_17.toString()
+    }
 
     // Ensure all Android modules (including plugin modules like :app_links)
     // have BuildConfig generation enabled, which is required when they
@@ -68,7 +105,8 @@ subprojects {
                     ?: fallbackJavaTask?.targetCompatibility
                 )?.trim()
             if (!javaTarget.isNullOrEmpty()) {
-                kotlinOptions.jvmTarget = javaTarget
+                runCatching { JvmTarget.fromTarget(javaTarget) }
+                    .onSuccess { compilerOptions.jvmTarget.set(it) }
             }
         }
     }

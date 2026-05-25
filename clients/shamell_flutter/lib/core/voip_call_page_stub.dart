@@ -49,8 +49,8 @@ class VoipCallPage extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Text(
             l.isArabic
-                ? 'المكالمات الصوتية عبر المتصفح غير مدعومة حالياً. استخدم تطبيق Shamell على الهاتف للمكالمات.'
-                : 'Browser voice calls are not supported yet. Please use the Shamell mobile app for calls.',
+                ? 'المكالمات الصوتية عبر المتصفح غير مدعومة حالياً. استخدم تطبيق SyrChat على الهاتف للمكالمات.'
+                : 'Browser voice calls are not supported yet. Please use the SyrChat mobile app for calls.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context)

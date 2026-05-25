@@ -4,11 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'l10n.dart';
+import 'session_cookie_store.dart';
 import 'wechat_ui.dart';
 
 class WeChatWebViewPage extends StatefulWidget {
@@ -122,27 +122,6 @@ class _WeChatWebViewPageState extends State<WeChatWebViewPage> {
     } catch (_) {}
   }
 
-  Future<String?> _getSaCookie() async {
-    try {
-      final sp = await SharedPreferences.getInstance();
-      return sp.getString('sa_cookie');
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String? _extractSaSession(String cookie) {
-    final c = cookie.trim();
-    if (c.isEmpty) return null;
-    try {
-      final m = RegExp(r'sa_session=([^;]+)').firstMatch(c);
-      if (m != null && m.group(1) != null && m.group(1)!.isNotEmpty) {
-        return m.group(1)!.trim();
-      }
-    } catch (_) {}
-    return c;
-  }
-
   bool _isSameOrigin(Uri a, Uri b) {
     if (a.scheme.toLowerCase() != b.scheme.toLowerCase()) return false;
     if (a.host.toLowerCase() != b.host.toLowerCase()) return false;
@@ -182,8 +161,7 @@ class _WeChatWebViewPageState extends State<WeChatWebViewPage> {
     if (scheme != 'http' && scheme != 'https') return uri;
     if (!_isSameOrigin(uri, baseUri)) return uri;
     try {
-      final cookie = await _getSaCookie();
-      final token = cookie == null ? null : _extractSaSession(cookie);
+      final token = await getSessionTokenForBaseUrl(baseUri.toString());
       if (token == null || token.isEmpty) return uri;
       await _setWebViewSessionCookie(baseUri: baseUri, sessionToken: token);
       if (uri.queryParameters.containsKey('sa_session')) return uri;

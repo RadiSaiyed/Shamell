@@ -8,32 +8,157 @@ import 'package:url_launcher/url_launcher.dart';
 import 'design_tokens.dart';
 import 'l10n.dart';
 import 'mini_app_registry.dart';
+import 'moments_preset_store.dart';
 import 'mini_program_models.dart';
-import 'moments_page.dart';
+import 'mini_program_shelf_prefs.dart';
+import 'shamell_loading_shimmer.dart';
+import 'shamell_moments_page.dart';
+import 'session_cookie_store.dart';
 import 'wechat_ui.dart';
 import 'wechat_webview_page.dart';
-import '../mini_apps/payments/payments_shell.dart';
+import 'payments/payments_shell.dart';
 
-Future<Map<String, String>> _hdrMiniProgram({bool json = false}) async {
-  final headers = <String, String>{};
-  if (json) {
-    headers['content-type'] = 'application/json';
+Future<Map<String, String>> _hdrMiniProgram(
+  String baseUrl, {
+  bool json = false,
+}) {
+  return shamellSessionHeadersForBaseUrl(baseUrl, json: json);
+}
+
+bool _miniProgramStatusAllowsLaunch(String? raw) {
+  final status = (raw ?? '').trim().toLowerCase();
+  return status.isEmpty || status == 'active' || status == 'published';
+}
+
+String _miniProgramStatusLabel(
+  String raw, {
+  required bool isArabic,
+}) {
+  final clean = raw.trim().toLowerCase();
+  if (clean == 'active' || clean == 'published') {
+    return isArabic ? 'منشور' : 'Published';
   }
-  try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
-    if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
+  if (clean == 'pending_review') {
+    return isArabic ? 'قيد المراجعة' : 'In review';
+  }
+  if (clean == 'draft') return isArabic ? 'مسودة' : 'Draft';
+  if (clean == 'suspended') return isArabic ? 'موقوف' : 'Suspended';
+  if (clean == 'archived') return isArabic ? 'مؤرشف' : 'Archived';
+  return raw;
+}
+
+bool _miniProgramReviewApproved(String? raw) {
+  return (raw ?? '').trim().toLowerCase() == 'approved';
+}
+
+String _miniProgramManifestAuthorityFromRemote({
+  required String status,
+  required String reviewStatus,
+  required bool enabled,
+  required String releasedBundleUrl,
+}) {
+  final normalizedStatus = status.trim().toLowerCase();
+  final normalizedReview = reviewStatus.trim().toLowerCase();
+  if (normalizedStatus.isEmpty && normalizedReview.isEmpty) return '';
+  if (!enabled ||
+      normalizedStatus == 'suspended' ||
+      normalizedStatus == 'archived') {
+    return 'server_restricted';
+  }
+  if ((normalizedStatus == 'published' || normalizedStatus == 'active') &&
+      normalizedReview == 'approved') {
+    return releasedBundleUrl.trim().isNotEmpty
+        ? 'server_released_bundle'
+        : 'server_native_manifest';
+  }
+  if (normalizedReview == 'pending' || normalizedReview == 'submitted') {
+    return 'server_review_pending';
+  }
+  if (normalizedReview == 'changes_requested')
+    return 'server_changes_requested';
+  if (normalizedReview == 'rejected') return 'server_rejected';
+  return 'server_draft';
+}
+
+bool _miniProgramManifestAuthorityAllowsLaunch(String? raw) {
+  final authority = (raw ?? '').trim().toLowerCase();
+  return authority.isEmpty ||
+      authority == 'local_fallback' ||
+      authority == 'server_native_manifest' ||
+      authority == 'server_released_bundle';
+}
+
+String miniProgramMomentsTopicTag(String miniProgramId) {
+  var id = miniProgramId.toLowerCase().trim();
+  if (id.isEmpty) return '';
+  id = id.replaceAll(RegExp(r'[^a-z0-9_]'), '_');
+  if (id.isEmpty) return '';
+  return '#mp_$id';
+}
+
+String miniProgramMomentsServiceHashtag(
+  String miniProgramId, {
+  required bool isArabic,
+}) {
+  final id = miniProgramId.toLowerCase();
+  if (id.contains('bus') ||
+      id.contains('ride') ||
+      id.contains('transport') ||
+      id.contains('mobility')) {
+    return isArabic ? '#النقل' : '#Transport';
+  }
+  if (id.contains('wallet') ||
+      id.contains('pay') ||
+      id.contains('payment') ||
+      id.contains('payments')) {
+    return isArabic ? '#المحفظة' : '#Wallet';
+  }
+  return '';
+}
+
+String buildMiniProgramMomentsShareText({
+  required String miniProgramId,
+  required String title,
+  required String description,
+  required bool isArabic,
+}) {
+  final id = miniProgramId.trim();
+  final buf = StringBuffer();
+  if (title.trim().isNotEmpty) {
+    buf.writeln(title.trim());
+  }
+  if (description.trim().isNotEmpty) {
+    buf.writeln();
+    buf.writeln(description.trim());
+  }
+  if (id.isNotEmpty) {
+    buf.writeln();
+    buf.writeln('shamell://mini_program/$id');
+  }
+  var text = buf.toString().trim();
+  if (text.isEmpty) return '';
+  if (!text.contains('#')) {
+    text += ' #ShamellMiniApp';
+    final mpTag = miniProgramMomentsTopicTag(id);
+    if (mpTag.isNotEmpty) {
+      text += ' $mpTag';
     }
-  } catch (_) {}
-  return headers;
+    final serviceTag = miniProgramMomentsServiceHashtag(
+      id,
+      isArabic: isArabic,
+    );
+    if (serviceTag.isNotEmpty) {
+      text += ' $serviceTag';
+    }
+  }
+  return text;
 }
 
 /// Simple shell widget that renders a Mini‑Program manifest.
 ///
 /// Lädt Titel/Beschreibung/Aktionen primär per API aus
 /// `/mini_programs/<id>` und nutzt die lokale Library nur noch als
-/// Fallback für eingebaute Demo‑Programme.
+/// Fallback für eingebaute Programme.
 class MiniProgramPage extends StatefulWidget {
   final String id;
   final String baseUrl;
@@ -75,6 +200,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   int _momentsUniqueSharersTotal = 0;
   int _momentsUniqueSharers30d = 0;
   String? _ownerContact;
+  String? _releasedVersion;
+  String? _releasedBundleUrl;
+  String? _manifestAuthority;
   bool _pinned = false;
   bool _wechatMiniProgramUi = true;
 
@@ -86,17 +214,55 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   }
 
   bool get _canExecuteActions {
+    final authority = _effectiveManifestAuthority;
+    if (!_miniProgramManifestAuthorityAllowsLaunch(authority)) {
+      if (!_isMine || authority == 'server_restricted') return false;
+    }
     if (_isMine) return true;
-    final status = (_status ?? '').trim().toLowerCase();
-    final review = (_reviewStatus ?? '').trim().toLowerCase();
-    if (status.isNotEmpty && status != 'active') return false;
-    if (review.isNotEmpty && review != 'approved') return false;
+    if (!_miniProgramStatusAllowsLaunch(_status)) return false;
+    if ((_reviewStatus ?? '').trim().isNotEmpty &&
+        !_miniProgramReviewApproved(_reviewStatus)) {
+      return false;
+    }
     return true;
+  }
+
+  String get _effectiveManifestAuthority {
+    final raw = (_manifestAuthority ?? '').trim().toLowerCase();
+    if (raw.isNotEmpty) return raw;
+    return _localManifest == null ? '' : 'local_fallback';
+  }
+
+  bool get _canUseLocalManifestActions {
+    final authority = _effectiveManifestAuthority;
+    if (authority.isEmpty ||
+        authority == 'local_fallback' ||
+        authority == 'server_native_manifest') {
+      return true;
+    }
+    if (authority == 'server_released_bundle' ||
+        authority == 'server_restricted') {
+      return false;
+    }
+    return _isMine;
   }
 
   bool _requiresPaymentsScopeForMod(String modId) {
     final id = modId.trim().toLowerCase();
     return id == 'payments' || id == 'merchant' || id == 'alias';
+  }
+
+  bool _isCoachMiniProgramId(String id) {
+    final clean = id.trim().toLowerCase();
+    return clean == 'bus' || clean == 'coach';
+  }
+
+  bool _isCoachLaunchUri(Uri uri) {
+    final path = uri.path.trim().toLowerCase();
+    return path == '/bus' ||
+        path == '/coach' ||
+        path == '/app/bus' ||
+        path == '/app/coach';
   }
 
   @override
@@ -110,15 +276,62 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   }
 
   Future<void> _loadPinnedFlag() async {
+    final id = widget.id.trim();
+    if (id.isEmpty) return;
     try {
       final sp = await SharedPreferences.getInstance();
-      final ids = sp.getStringList('pinned_miniapps') ?? const <String>[];
+      final ids = loadMiniProgramPinnedIdsSync(sp);
       if (!mounted) return;
       setState(() {
-        _pinned = ids
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .contains(widget.id);
+        _pinned = ids.contains(id);
+      });
+    } catch (_) {}
+
+    try {
+      final uri =
+          Uri.parse('${widget.baseUrl}/me/mini_programs/shelf?limit=100');
+      final resp = await http
+          .get(uri, headers: await _hdrMiniProgram(widget.baseUrl))
+          .timeout(const Duration(seconds: 4));
+      if (resp.statusCode < 200 || resp.statusCode >= 300) return;
+      final decoded = jsonDecode(resp.body);
+      final raw = decoded is Map
+          ? (decoded['items'] is List
+              ? decoded['items'] as List
+              : decoded['programs'] is List
+                  ? decoded['programs'] as List
+                  : const <dynamic>[])
+          : decoded is List
+              ? decoded
+              : const <dynamic>[];
+
+      var serverPinned = false;
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final appId = (item['app_id'] ?? item['id'] ?? '').toString().trim();
+        if (appId != id) continue;
+        serverPinned = item['pinned'] == true;
+        break;
+      }
+
+      final sp = await SharedPreferences.getInstance();
+      final pinnedList = loadMiniProgramPinnedIdsSync(sp)
+        ..removeWhere((entry) => entry == id);
+      if (serverPinned) pinnedList.insert(0, id);
+      await saveMiniProgramPinnedIds(sp, pinnedList);
+
+      final orderList = loadMiniProgramPinnedOrderSync(sp)
+        ..removeWhere((entry) => entry == id);
+      if (serverPinned) orderList.insert(0, id);
+      await saveMiniProgramPinnedOrder(
+        sp,
+        orderList,
+        pinnedIds: pinnedList,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _pinned = serverPinned;
       });
     } catch (_) {}
   }
@@ -126,41 +339,73 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   Future<void> _togglePinned() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      const pinnedKey = 'pinned_miniapps';
-      const orderKey = 'mini_programs.pinned_order';
-      final curPinnedRaw = sp.getStringList(pinnedKey) ?? const <String>[];
-      final pinnedList = <String>[];
-      final pinnedSet = <String>{};
-      for (final raw in curPinnedRaw) {
-        final id = raw.trim();
-        if (id.isEmpty) continue;
-        if (pinnedSet.add(id)) pinnedList.add(id);
-      }
+      final pinnedList = loadMiniProgramPinnedIdsSync(sp);
+      final pinnedSet = pinnedList.toSet();
       final isPinned = pinnedSet.contains(widget.id);
       pinnedList.removeWhere((e) => e == widget.id);
       if (!isPinned) {
         pinnedList.insert(0, widget.id);
       }
-      await sp.setStringList(pinnedKey, pinnedList);
+      await saveMiniProgramPinnedIds(sp, pinnedList);
 
-      final curOrderRaw = sp.getStringList(orderKey) ?? const <String>[];
-      final orderList = <String>[];
-      final orderSet = <String>{};
-      for (final raw in curOrderRaw) {
-        final id = raw.trim();
-        if (id.isEmpty) continue;
-        if (orderSet.add(id)) orderList.add(id);
-      }
+      final orderList = loadMiniProgramPinnedOrderSync(sp);
       orderList.removeWhere((e) => e == widget.id);
       if (!isPinned) {
         orderList.insert(0, widget.id);
       }
-      final nextOrder = orderList.where(pinnedList.contains).toList();
-      await sp.setStringList(orderKey, nextOrder);
+      final nextOrder = miniProgramPinnedOrderFromLists(
+        pinnedIds: pinnedList,
+        orderedIds: orderList,
+      );
+      await saveMiniProgramPinnedOrder(
+        sp,
+        nextOrder,
+        pinnedIds: pinnedList,
+      );
       if (!mounted) return;
       setState(() {
         _pinned = !isPinned;
       });
+      // ignore: discarded_futures
+      _syncPinnedStateToServer(!isPinned);
+      // ignore: discarded_futures
+      _syncPinnedOrderToServer(nextOrder);
+    } catch (_) {}
+  }
+
+  Future<void> _syncPinnedStateToServer(bool pinned) async {
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/me/mini_programs/shelf/${Uri.encodeComponent(widget.id)}',
+      );
+      await http
+          .patch(
+            uri,
+            headers: await _hdrMiniProgram(widget.baseUrl, json: true),
+            body: jsonEncode({'pinned': pinned}),
+          )
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {}
+  }
+
+  Future<void> _syncPinnedOrderToServer(List<String> orderedIds) async {
+    final ids = <String>[];
+    final seen = <String>{};
+    for (final raw in orderedIds) {
+      final id = raw.trim();
+      if (id.isEmpty) continue;
+      if (seen.add(id)) ids.add(id);
+    }
+    if (ids.isEmpty) return;
+    try {
+      final uri = Uri.parse('${widget.baseUrl}/me/mini_programs/shelf/order');
+      await http
+          .post(
+            uri,
+            headers: await _hdrMiniProgram(widget.baseUrl, json: true),
+            body: jsonEncode({'app_ids': ids}),
+          )
+          .timeout(const Duration(seconds: 4));
     } catch (_) {}
   }
 
@@ -171,7 +416,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/track_open');
-      await http.post(uri);
+      await http.post(uri, headers: await _hdrMiniProgram(widget.baseUrl));
     } catch (_) {
       // best-effort only
     }
@@ -180,15 +425,13 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
   Future<void> _trackRecentLocally() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      final key = 'recent_mini_programs';
-      final cur = sp.getStringList(key) ?? const <String>[];
-      final list = List<String>.from(cur);
+      final list = loadMiniProgramRecentIdsSync(sp);
       list.removeWhere((e) => e == widget.id);
       list.insert(0, widget.id);
       if (list.length > 10) {
         list.removeRange(10, list.length);
       }
-      await sp.setStringList(key, list);
+      await saveMiniProgramRecentIds(sp, list);
     } catch (_) {}
   }
 
@@ -200,7 +443,10 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}');
-      final resp = await http.get(uri);
+      final resp = await http.get(
+        uri,
+        headers: await _hdrMiniProgram(widget.baseUrl),
+      );
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         final decoded = jsonDecode(resp.body);
         if (decoded is Map<String, dynamic>) {
@@ -215,6 +461,28 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           final statusRaw = (decoded['status'] ?? '').toString().toLowerCase();
           final reviewStatusRaw =
               (decoded['review_status'] ?? '').toString().toLowerCase();
+          final enabledRaw = decoded['enabled'];
+          final enabled = enabledRaw is bool
+              ? enabledRaw
+              : enabledRaw?.toString().trim().toLowerCase() != 'false';
+          final releasedVersionRaw =
+              (decoded['released_version'] ?? decoded['last_version'] ?? '')
+                  .toString()
+                  .trim();
+          final releasedBundleUrlRaw =
+              (decoded['released_bundle_url'] ?? decoded['bundle_url'] ?? '')
+                  .toString()
+                  .trim();
+          final manifestAuthorityRaw =
+              (decoded['manifest_authority'] ?? '').toString().trim();
+          final manifestAuthority = manifestAuthorityRaw.isNotEmpty
+              ? manifestAuthorityRaw.toLowerCase()
+              : _miniProgramManifestAuthorityFromRemote(
+                  status: statusRaw,
+                  reviewStatus: reviewStatusRaw,
+                  enabled: enabled,
+                  releasedBundleUrl: releasedBundleUrlRaw,
+                );
           final scopesRaw = decoded['scopes'];
           double? rating;
           int ratingCount = 0;
@@ -305,6 +573,12 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             _scopes = scopes;
             _ownerContact =
                 ownerContactClean.isNotEmpty ? ownerContactClean : null;
+            _releasedVersion =
+                releasedVersionRaw.isNotEmpty ? releasedVersionRaw : null;
+            _releasedBundleUrl =
+                releasedBundleUrlRaw.isNotEmpty ? releasedBundleUrlRaw : null;
+            _manifestAuthority =
+                manifestAuthority.isNotEmpty ? manifestAuthority : null;
             _remoteLoaded = true;
           });
         } else {
@@ -339,7 +613,10 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     try {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/moments_stats');
-      final resp = await http.get(uri, headers: await _hdrMiniProgram());
+      final resp = await http.get(
+        uri,
+        headers: await _hdrMiniProgram(widget.baseUrl),
+      );
       if (resp.statusCode < 200 || resp.statusCode >= 300) return;
       final decoded = jsonDecode(resp.body);
       if (decoded is! Map) return;
@@ -365,8 +642,11 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       final uri = Uri.parse(
           '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(widget.id)}/rate');
       final body = jsonEncode({'rating': val});
-      final resp = await http.post(uri,
-          headers: await _hdrMiniProgram(json: true), body: body);
+      final resp = await http.post(
+        uri,
+        headers: await _hdrMiniProgram(widget.baseUrl, json: true),
+        body: body,
+      );
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -402,9 +682,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           appBar: AppBar(
             title: Text(l.isArabic ? 'برنامج مصغر' : 'Mini‑program'),
           ),
-          body: const Center(
-            child: CircularProgressIndicator(),
-          ),
+          body: const ShamellSkeletonList(itemCount: 5),
         );
       }
       return Scaffold(
@@ -443,13 +721,41 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       return '';
     }();
     final actions = () {
+      final bundleUrl = _releasedBundleUrl?.trim();
+      final bundleVersion = _releasedVersion?.trim();
+      MiniProgramAction? releasedBundleAction;
+      if (bundleUrl != null && bundleUrl.isNotEmpty) {
+        releasedBundleAction = MiniProgramAction(
+          id: 'open_released_bundle',
+          labelEn: bundleVersion != null && bundleVersion.isNotEmpty
+              ? 'Open version $bundleVersion'
+              : 'Open mini-program',
+          labelAr: bundleVersion != null && bundleVersion.isNotEmpty
+              ? 'فتح الإصدار $bundleVersion'
+              : 'فتح البرنامج المصغر',
+          kind: MiniProgramActionKind.openUrl,
+          url: bundleUrl,
+        );
+      }
+
+      List<MiniProgramAction> baseActions;
       if (_remoteActions != null && _remoteActions!.isNotEmpty) {
-        return _remoteActions!;
+        baseActions = List<MiniProgramAction>.from(_remoteActions!);
+      } else if (manifest != null && _canUseLocalManifestActions) {
+        baseActions = List<MiniProgramAction>.from(manifest.actions);
+      } else {
+        baseActions = <MiniProgramAction>[];
       }
-      if (manifest != null) {
-        return manifest.actions;
+
+      if (releasedBundleAction != null &&
+          !baseActions.any(
+            (a) =>
+                (a.url ?? '').trim().isNotEmpty &&
+                (a.url ?? '').trim() == releasedBundleAction!.url,
+          )) {
+        baseActions.insert(0, releasedBundleAction);
       }
-      return const <MiniProgramAction>[];
+      return baseActions;
     }();
     String avatarInitial = '';
     final trimmedTitle = title.trim();
@@ -529,8 +835,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         final showLetter =
             appIcon == Icons.widgets_outlined && avatarInitial.isNotEmpty;
         return Container(
-          width: 44,
-          height: 44,
+          width: 40,
+          height: 40,
           decoration: BoxDecoration(
             color: appBg,
             borderRadius: BorderRadius.circular(10),
@@ -549,22 +855,142 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         );
       }
 
-      String statusLabel(String s) {
-        final clean = s.trim().toLowerCase();
-        if (clean == 'active') return isArabic ? 'نشط' : 'Active';
-        if (clean == 'draft') return isArabic ? 'مسودة' : 'Draft';
-        return s;
-      }
-
       String reviewLabel(String r) {
         final clean = r.trim().toLowerCase();
         if (clean == 'approved') return isArabic ? 'موافق عليه' : 'Approved';
-        if (clean == 'submitted')
+        if (clean == 'submitted' || clean == 'pending')
           return isArabic ? 'قيد المراجعة' : 'In review';
         if (clean == 'draft') return isArabic ? 'مسودة' : 'Draft';
         if (clean == 'rejected') return isArabic ? 'مرفوض' : 'Rejected';
+        if (clean == 'changes_requested') {
+          return isArabic ? 'تغييرات مطلوبة' : 'Changes requested';
+        }
         if (clean == 'suspended') return isArabic ? 'موقوف' : 'Suspended';
         return r;
+      }
+
+      Widget compactAppHeader() {
+        final ownerLabel = () {
+          if (_isMine) return isArabic ? 'أنت (المالك)' : 'You (owner)';
+          if (_ownerName != null && _ownerName!.trim().isNotEmpty) {
+            return isArabic
+                ? 'المالك: ${_ownerName!}'
+                : 'Owner: ${_ownerName!}';
+          }
+          return '';
+        }();
+
+        final badges = <Widget>[
+          pill(
+            isArabic ? 'برنامج مصغر' : 'Mini Program',
+            background: WeChatPalette.searchFill,
+            foreground: WeChatPalette.textSecondary,
+          ),
+          if (hasPaymentsScope)
+            pill(
+              isArabic ? 'يدعم الدفع' : 'Pay-enabled',
+              background: Tokens.colorPayments.withValues(alpha: .12),
+              foreground: Tokens.colorPayments,
+              icon: Icons.account_balance_wallet_outlined,
+            ),
+          if (_status != null && _status!.trim().isNotEmpty)
+            pill(
+              _miniProgramStatusLabel(_status!, isArabic: isArabic),
+              background: theme.colorScheme.primary.withValues(alpha: .10),
+              foreground: theme.colorScheme.primary.withValues(alpha: .90),
+            ),
+          if (_reviewStatus != null && _reviewStatus!.trim().isNotEmpty)
+            pill(
+              reviewLabel(_reviewStatus!),
+              background: _miniProgramReviewApproved(_reviewStatus)
+                  ? Colors.green.withValues(alpha: .10)
+                  : theme.colorScheme.error.withValues(alpha: .08),
+              foreground: _miniProgramReviewApproved(_reviewStatus)
+                  ? Colors.green.withValues(alpha: .90)
+                  : theme.colorScheme.error.withValues(alpha: .90),
+            ),
+        ];
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              appAvatar(),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    if (description.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        description,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .76),
+                        ),
+                      ),
+                    ],
+                    if (ownerLabel.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            _isMine
+                                ? Icons.person_outline
+                                : Icons.storefront_outlined,
+                            size: 13,
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: .66),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              ownerLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontSize: 11,
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: .70),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (badges.isNotEmpty) ...[
+                      const SizedBox(height: 7),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < badges.length; i++) ...[
+                              if (i > 0) const SizedBox(width: 6),
+                              badges[i],
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
       }
 
       final List<Widget> actionTiles = <Widget>[];
@@ -603,11 +1029,11 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
         switch (a.kind) {
           case MiniProgramActionKind.openUrl:
             icon = Icons.link_outlined;
-            bg = const Color(0xFF3B82F6);
+            bg = Tokens.accent;
             break;
           case MiniProgramActionKind.close:
             icon = Icons.close;
-            bg = const Color(0xFF94A3B8);
+            bg = Tokens.lightOnSurfaceSecondary;
             break;
           case MiniProgramActionKind.openMod:
           default:
@@ -633,7 +1059,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           dense: true,
           leading: const WeChatLeadingIcon(
             icon: Icons.star_outline,
-            background: Color(0xFFF59E0B),
+            background: Tokens.warning,
           ),
           title: Text(isArabic ? 'التقييم' : 'Rating'),
           subtitle: Text(
@@ -658,7 +1084,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.verified_user_outlined,
-              background: Color(0xFF64748B),
+              background: Tokens.border,
             ),
             title: Text(isArabic ? 'الأذونات' : 'Permissions'),
             subtitle: Text(
@@ -706,7 +1132,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             dense: true,
             leading: const WeChatLeadingIcon(
               icon: Icons.insights_outlined,
-              background: Color(0xFF3B82F6),
+              background: Tokens.accent,
             ),
             title: Text(isArabic ? 'أثر اللحظات' : 'Moments impact'),
             subtitle: Text(
@@ -723,7 +1149,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           dense: true,
           leading: const WeChatLeadingIcon(
             icon: Icons.tag_outlined,
-            background: Color(0xFFF97316),
+            background: Tokens.colorBus,
           ),
           title: Text(isArabic ? 'لحظات هذا البرنامج' : 'Moments topic'),
           trailing: chevron(),
@@ -733,7 +1159,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           dense: true,
           leading: const WeChatLeadingIcon(
             icon: Icons.share_outlined,
-            background: WeChatPalette.green,
+            background: Tokens.primary,
           ),
           title: Text(isArabic ? 'مشاركة في اللحظات' : 'Share to Moments'),
           trailing: chevron(),
@@ -829,119 +1255,9 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
             padding: const EdgeInsets.only(top: 8, bottom: 24),
             children: [
               WeChatSection(
-                margin: const EdgeInsets.only(top: 0),
+                margin: const EdgeInsets.fromLTRB(12, 0, 12, 0),
                 dividerIndent: 16,
-                children: [
-                  ListTile(
-                    dense: true,
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    leading: appAvatar(),
-                    title: Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (description.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            description,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurface
-                                  .withValues(alpha: .80),
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: [
-                            pill(
-                              isArabic ? 'برنامج مصغر' : 'Mini Program',
-                              background: WeChatPalette.searchFill,
-                              foreground: WeChatPalette.textSecondary,
-                            ),
-                            if (hasPaymentsScope)
-                              pill(
-                                isArabic ? 'يدعم الدفع' : 'Pay‑enabled',
-                                background:
-                                    Tokens.colorPayments.withValues(alpha: .12),
-                                foreground: Tokens.colorPayments,
-                                icon: Icons.account_balance_wallet_outlined,
-                              ),
-                            if (_status != null && _status!.trim().isNotEmpty)
-                              pill(
-                                statusLabel(_status!),
-                                background: theme.colorScheme.primary
-                                    .withValues(alpha: .10),
-                                foreground: theme.colorScheme.primary
-                                    .withValues(alpha: .90),
-                              ),
-                            if (_reviewStatus != null &&
-                                _reviewStatus!.trim().isNotEmpty)
-                              pill(
-                                reviewLabel(_reviewStatus!),
-                                background: (_reviewStatus == 'approved')
-                                    ? Colors.green.withValues(alpha: .10)
-                                    : theme.colorScheme.error
-                                        .withValues(alpha: .08),
-                                foreground: (_reviewStatus == 'approved')
-                                    ? Colors.green.withValues(alpha: .90)
-                                    : theme.colorScheme.error
-                                        .withValues(alpha: .90),
-                              ),
-                          ],
-                        ),
-                        if (_isMine ||
-                            (_ownerName != null &&
-                                _ownerName!.trim().isNotEmpty)) ...[
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Icon(
-                                _isMine
-                                    ? Icons.person_outline
-                                    : Icons.storefront_outlined,
-                                size: 14,
-                                color: theme.colorScheme.onSurface
-                                    .withValues(alpha: .70),
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  _isMine
-                                      ? (isArabic
-                                          ? 'أنت (المالك)'
-                                          : 'You (owner)')
-                                      : (isArabic
-                                          ? 'المالك: ${_ownerName!}'
-                                          : 'Owner: ${_ownerName!}'),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    fontSize: 11,
-                                    color: theme.colorScheme.onSurface
-                                        .withValues(alpha: .75),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+                children: [compactAppHeader()],
               ),
               if (_loading)
                 const Padding(
@@ -955,7 +1271,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
                       color: theme.colorScheme.error.withValues(alpha: .06),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: theme.colorScheme.error.withValues(alpha: .18),
                       ),
@@ -1031,24 +1347,18 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: ListView(
+            padding: EdgeInsets.zero,
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: theme.cardColor,
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(10),
                   border: Border.all(
-                    color: theme.dividerColor.withValues(alpha: .25),
+                    color: theme.dividerColor.withValues(alpha: .90),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: theme.colorScheme.shadow.withValues(alpha: .03),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+                  boxShadow: const [],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1057,12 +1367,12 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Container(
-                          width: 48,
-                          height: 48,
+                          width: 40,
+                          height: 40,
                           decoration: BoxDecoration(
                             color: theme.colorScheme.primary
-                                .withValues(alpha: .06),
-                            borderRadius: BorderRadius.circular(12),
+                                .withValues(alpha: .10),
+                            borderRadius: BorderRadius.circular(8),
                           ),
                           child: Center(
                             child: avatarInitial.isNotEmpty
@@ -1100,7 +1410,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                 const SizedBox(height: 4),
                                 Text(
                                   description,
-                                  maxLines: 2,
+                                  maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     color: theme.colorScheme.onSurface
@@ -1177,7 +1487,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                       Icons.star,
                                       size: 14,
                                       color:
-                                          Colors.amber.withValues(alpha: .95),
+                                          Tokens.warning.withValues(alpha: .95),
                                     ),
                                     const SizedBox(width: 2),
                                     Text(
@@ -1251,16 +1561,10 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                 borderRadius: BorderRadius.circular(999),
                               ),
                               child: Text(
-                                () {
-                                  final s = _status!;
-                                  if (s == 'active') {
-                                    return isArabic ? 'نشط' : 'Active';
-                                  }
-                                  if (s == 'draft') {
-                                    return isArabic ? 'مسودة' : 'Draft';
-                                  }
-                                  return s;
-                                }(),
+                                _miniProgramStatusLabel(
+                                  _status!,
+                                  isArabic: isArabic,
+                                ),
                                 style: TextStyle(
                                   fontSize: 10,
                                   color: theme.colorScheme.primary
@@ -1275,7 +1579,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: (_reviewStatus == 'approved')
+                                color: _miniProgramReviewApproved(_reviewStatus)
                                     ? Colors.green.withValues(alpha: .10)
                                     : theme.colorScheme.error
                                         .withValues(alpha: .08),
@@ -1287,10 +1591,15 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                   if (r == 'approved') {
                                     return isArabic ? 'موافق عليه' : 'Approved';
                                   }
-                                  if (r == 'submitted') {
+                                  if (r == 'submitted' || r == 'pending') {
                                     return isArabic
                                         ? 'قيد المراجعة'
                                         : 'In review';
+                                  }
+                                  if (r == 'changes_requested') {
+                                    return isArabic
+                                        ? 'تغييرات مطلوبة'
+                                        : 'Changes requested';
                                   }
                                   if (r == 'draft') {
                                     return isArabic ? 'مسودة' : 'Draft';
@@ -1305,10 +1614,11 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                 }(),
                                 style: TextStyle(
                                   fontSize: 10,
-                                  color: (_reviewStatus == 'approved')
-                                      ? Colors.green.withValues(alpha: .90)
-                                      : theme.colorScheme.error
-                                          .withValues(alpha: .90),
+                                  color:
+                                      _miniProgramReviewApproved(_reviewStatus)
+                                          ? Colors.green.withValues(alpha: .90)
+                                          : theme.colorScheme.error
+                                              .withValues(alpha: .90),
                                 ),
                               ),
                             ),
@@ -1572,7 +1882,7 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                   );
                 }).toList(),
               ),
-              const Spacer(),
+              const SizedBox(height: 16),
               TextButton.icon(
                 icon: const Icon(Icons.tag_outlined, size: 18),
                 label: Text(
@@ -1593,8 +1903,8 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
               const SizedBox(height: 4),
               Text(
                 isArabic
-                    ? 'معاينة لبرامج مصغّرة على نمط WeChat داخل Shamell.'
-                    : 'Preview of WeChat‑style mini‑programs inside Shamell.',
+                    ? 'معاينة لبرامج مصغّرة بأسلوب SyrChat داخل SyrChat.'
+                    : 'Preview of SyrChat Super-App mini‑programs inside SyrChat.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .6),
                 ),
@@ -1612,40 +1922,25 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     String description,
   ) async {
     final l = L10n.of(context);
-    final buf = StringBuffer();
-    if (title.trim().isNotEmpty) {
-      buf.writeln(title.trim());
-    }
-    if (description.trim().isNotEmpty) {
-      buf.writeln();
-      buf.writeln(description.trim());
-    }
-    buf.writeln();
-    buf.writeln('shamell://mini_program/${widget.id}');
-    var text = buf.toString().trim();
+    final text = buildMiniProgramMomentsShareText(
+      miniProgramId: widget.id,
+      title: title,
+      description: description,
+      isArabic: l.isArabic,
+    );
     if (text.isEmpty) return;
-    if (!text.contains('#')) {
-      final isArabic = l.isArabic;
-      final serviceTag = _serviceHashtag(isArabic: isArabic);
-      final baseTag = '#ShamellMiniApp';
-      final mpTag = _miniProgramTopicTag();
-      text += ' $baseTag';
-      if (mpTag.isNotEmpty) {
-        text += ' $mpTag';
-      }
-      if (serviceTag.isNotEmpty) {
-        text += ' $serviceTag';
-      }
-    }
     try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('moments_preset_text', text);
+      await saveMiniProgramMomentsPreset(
+        text: text,
+        miniProgramId: widget.id,
+      );
     } catch (_) {}
     if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => MomentsPage(
+        builder: (_) => ShamellMomentsPage(
           baseUrl: widget.baseUrl,
+          miniProgramId: widget.id,
         ),
       ),
     );
@@ -1656,21 +1951,16 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
     if (tag.isEmpty) return;
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => MomentsPage(
+        builder: (_) => ShamellMomentsPage(
           baseUrl: widget.baseUrl,
-          topicTag: tag,
+          miniProgramId: widget.id,
         ),
       ),
     );
   }
 
   String _miniProgramTopicTag() {
-    var id = widget.id.toLowerCase().trim();
-    if (id.isEmpty) return '';
-    // Normalize to a simple hashtag-friendly slug.
-    id = id.replaceAll(RegExp(r'[^a-z0-9_]'), '_');
-    if (id.isEmpty) return '';
-    return '#mp_$id';
+    return miniProgramMomentsTopicTag(widget.id);
   }
 
   String _scopeLabel(String key, bool isArabic) {
@@ -1708,24 +1998,6 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           return key;
       }
     }
-  }
-
-  String _serviceHashtag({required bool isArabic}) {
-    final id = widget.id.toLowerCase();
-    // Heuristics based on Mini‑Program id and common service ids.
-    if (id.contains('bus') ||
-        id.contains('ride') ||
-        id.contains('transport') ||
-        id.contains('mobility')) {
-      return isArabic ? '#النقل' : '#Transport';
-    }
-    if (id.contains('wallet') ||
-        id.contains('pay') ||
-        id.contains('payment') ||
-        id.contains('payments')) {
-      return isArabic ? '#المحفظة' : '#Wallet';
-    }
-    return '';
   }
 
   Future<void> _handleAction(
@@ -1781,6 +2053,13 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
           final uri = (baseUri != null && parsed.scheme.isEmpty)
               ? baseUri.resolveUri(parsed)
               : parsed;
+          if (_isCoachMiniProgramId(widget.id) &&
+              _isCoachLaunchUri(uri) &&
+              widget.onOpenMod != null) {
+            Navigator.of(context).maybePop();
+            widget.onOpenMod!('bus');
+            return;
+          }
           final scheme = uri.scheme.toLowerCase();
           if (scheme == 'http' || scheme == 'https') {
             final l = L10n.of(context);
@@ -1966,8 +2245,10 @@ class _MiniProgramPageState extends State<MiniProgramPage> {
                                         );
                                         final resp = await http.post(
                                           uri,
-                                          headers:
-                                              await _hdrMiniProgram(json: true),
+                                          headers: await _hdrMiniProgram(
+                                            widget.baseUrl,
+                                            json: true,
+                                          ),
                                           body: jsonEncode(
                                             <String, dynamic>{
                                               'rating': selected,

@@ -9,39 +9,35 @@ void main() {
     SharedPreferences.setMockInitialValues(const <String, Object>{});
   });
 
-  testWidgets('JourneyPage shows EN headings', (tester) async {
+  testWidgets('Core headings show in EN', (tester) async {
     final lEn = L10n(const Locale('en'));
-    expect(lEn.journeyTitle, 'My journey');
+    expect(lEn.journeyTitle, 'My activity');
     expect(lEn.profileTitle, 'Profile');
-    expect(lEn.rolesOverviewTitle, 'Roles overview');
   });
 
-  testWidgets('JourneyPage shows AR headings', (tester) async {
+  testWidgets('Core headings show in AR', (tester) async {
     final lAr = L10n(const Locale('ar'));
-    expect(lAr.journeyTitle, 'رحلتي');
+    expect(lAr.journeyTitle, 'نشاطي');
     expect(lAr.profileTitle, 'الملف الشخصي');
-    expect(lAr.rolesOverviewTitle, 'نظرة عامة على الأدوار');
   });
 
-  testWidgets('MobilityHistoryPage shows filter and empty state in EN',
-      (tester) async {
+  testWidgets('Activity filter labels show in EN', (tester) async {
     final lEn = L10n(const Locale('en'));
-    expect(lEn.mobilityHistoryTitle, 'Mobility history');
+    expect(lEn.mobilityHistoryTitle, 'Activity history');
     expect(lEn.filterLabel, 'Filter');
     expect(lEn.statusAll, 'all');
     expect(lEn.statusCompleted, 'completed');
     expect(lEn.statusCanceled, 'canceled');
-    expect(lEn.noMobilityHistory, 'No mobility history yet');
+    expect(lEn.noMobilityHistory, 'No activity yet');
   });
 
-  testWidgets('MobilityHistoryPage shows filter and empty state in AR',
-      (tester) async {
+  testWidgets('Activity filter labels show in AR', (tester) async {
     final lAr = L10n(const Locale('ar'));
-    expect(lAr.mobilityHistoryTitle, 'سجل الحركة');
+    expect(lAr.mobilityHistoryTitle, 'سجل النشاط');
     expect(lAr.filterLabel, 'تصفية');
     expect(lAr.statusAll, 'الكل');
     expect(lAr.statusCompleted, 'مكتملة');
     expect(lAr.statusCanceled, 'ملغاة');
-    expect(lAr.noMobilityHistory, 'لا توجد رحلات بعد');
+    expect(lAr.noMobilityHistory, 'لا يوجد نشاط بعد');
   });
 }

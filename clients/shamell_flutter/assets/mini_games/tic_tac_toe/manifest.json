@@ -1,0 +1,38 @@
+{
+  "name": "Drei-Männer-Mühle",
+  "appId": "minigame.tictactoe",
+  "version": "1.0.0",
+  "type": "minigame",
+  "description": "Drei-Männer-Mühle: jeder Spieler setzt drei Steine, dann werden sie auf dem 3×3-Brett gezogen. Wer zuerst 3 in einer Reihe schafft, gewinnt. Lokal zu zweit oder gegen die Minimax-KI mit drei Schwierigkeitsstufen.",
+  "author": "Shamell Mini Games",
+  "language": "de-DE",
+  "entry": "index.html",
+  "orientation": "portrait",
+  "viewport": {
+    "width": 420,
+    "height": 900,
+    "fit": "contain"
+  },
+  "theme": {
+    "primaryColor": "#1f2a44",
+    "accentColor": "#4f8ef7",
+    "backgroundColor": "#f7f4ee",
+    "statusBarStyle": "default"
+  },
+  "permissions": [
+    "storage.local"
+  ],
+  "navigation": {
+    "showBackButton": true,
+    "showMoreMenu": true,
+    "title": "Drei-Männer-Mühle"
+  },
+  "lifecycle": {
+    "onShow": null,
+    "onHide": null,
+    "onError": null
+  },
+  "minHostVersion": "1.0.0",
+  "category": "casual-game",
+  "tags": ["board", "casual", "single-player", "two-player", "logic"]
+}

@@ -37,15 +37,15 @@ const List<StickerPack> kStickerPacks = [
   ),
   StickerPack(
     id: 'shamell_payments',
-    nameEn: 'Shamell Pay',
+    nameEn: 'SyrChat Pay',
     nameAr: 'مرسال باي',
     stickers: ['💸', '💳', '📲', '🏧', '🧾', '✅'],
     tags: ['shamell', 'pay', 'wallet'],
   ),
   StickerPack(
     id: 'shamell_services',
-    nameEn: 'Shamell essentials',
-    nameAr: 'أساسيات شامل',
+    nameEn: 'SyrChat essentials',
+    nameAr: 'أساسيات سرتشات',
     stickers: ['🚌', '💳', '📲', '✅', '🔔', '🧾'],
     tags: ['shamell', 'essentials'],
   ),

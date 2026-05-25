@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
+import 'session_cookie_store.dart';
 
 class MiniProgramRegisterPage extends StatefulWidget {
   final String baseUrl;
@@ -61,15 +62,7 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
   }
 
   Future<Map<String, String>> _hdr() async {
-    final headers = <String, String>{'content-type': 'application/json'};
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return headers;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: true);
   }
 
   void _toggleScope(String key) {
@@ -179,8 +172,8 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
             children: [
               Text(
                 isArabic
-                    ? 'سجّل برنامجك المصغر على نمط WeChat. يبدأ الإدخال كـ "مسودة" ويمكن لفريق Shamell مراجعته وتفعيله لاحقاً.'
-                    : 'Register your WeChat‑style mini‑program. It starts as a draft and can be reviewed and activated by the Shamell team.',
+                    ? 'سجّل برنامجك المصغر بأسلوب SyrChat. يبدأ الإدخال كـ "مسودة" ويمكن لفريق SyrChat مراجعته وتفعيله لاحقاً.'
+                    : 'Register your SyrChat Super-App mini‑program. It starts as a draft and can be reviewed and activated by the SyrChat team.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .80),
                 ),
@@ -191,8 +184,8 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
                 decoration: InputDecoration(
                   labelText: isArabic ? 'App-ID' : 'App‑ID',
                   helperText: isArabic
-                      ? 'أحرف صغيرة، أرقام، "_" و "-". مثال: bus_demo'
-                      : 'Lowercase letters, digits, "_" and "-". Example: bus_demo',
+                      ? 'أحرف صغيرة، أرقام، "_" و "-". مثال: coach_routes'
+                      : 'Lowercase letters, digits, "_" and "-". Example: coach_routes',
                 ),
               ),
               const SizedBox(height: 8),
@@ -288,8 +281,8 @@ class _MiniProgramRegisterPageState extends State<MiniProgramRegisterPage> {
               const SizedBox(height: 4),
               Text(
                 isArabic
-                    ? 'يمكن لفريق Shamell استخدام هذه المعلومات في المراجعة ومنح الصلاحيات.'
-                    : 'Shamell can use these scopes during review and for permissions.',
+                    ? 'يمكن لفريق SyrChat استخدام هذه المعلومات في المراجعة ومنح الصلاحيات.'
+                    : 'SyrChat can use these scopes during review and for permissions.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   fontSize: 11,
                   color: theme.colorScheme.onSurface.withValues(alpha: .65),

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0e3a53" />
+  <title>Shamell · Hotels</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Top status / nav bar (mini-program style) -->
+  <header class="topbar" id="topbar">
+    <button class="topbar__back" id="navBack" aria-label="Zurück" hidden>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path fill="currentColor" d="M15.5 4.5 7 13l8.5 8.5 1.4-1.4L9.8 13l7.1-7.1z"/>
+      </svg>
+    </button>
+    <div class="topbar__title" id="navTitle">Hotels</div>
+    <button class="topbar__more" id="navMore" aria-label="Mehr">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <circle fill="currentColor" cx="5" cy="12" r="2"/>
+        <circle fill="currentColor" cx="12" cy="12" r="2"/>
+        <circle fill="currentColor" cx="19" cy="12" r="2"/>
+      </svg>
+    </button>
+  </header>
+
+  <main id="app" class="app">
+    <!-- Screens injected by app.js -->
+    <div class="screen screen--loading" id="loadingScreen">
+      <div class="spinner" aria-label="Lädt"></div>
+    </div>
+  </main>
+
+  <!-- Bottom tab bar (visible on hotel detail) -->
+  <nav class="tabbar" id="tabbar" hidden>
+    <button class="tab tab--active" data-tab="info">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4z"/></svg>
+      <span>Info</span>
+    </button>
+    <button class="tab" data-tab="rooms">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3 11h18v8h-2v-3H5v3H3v-8zm3-4h5v3H6V7zm7 0h5v3h-5V7z"/></svg>
+      <span>Zimmer</span>
+    </button>
+    <button class="tab" data-tab="menu">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M7 2v10a3 3 0 0 0 3 3v7h-2v-7a3 3 0 0 1-2-2.8V2h1zm10 0h-2v8h-2v8a2 2 0 0 0 2 2v2h2V2z"/></svg>
+      <span>Speisen</span>
+    </button>
+    <button class="tab" data-tab="concierge">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
+      <span>Concierge</span>
+    </button>
+  </nav>
+
+  <!-- Toast container -->
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

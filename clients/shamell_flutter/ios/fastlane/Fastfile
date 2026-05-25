@@ -1,10 +1,19 @@
+require "shellwords"
+
 default_platform(:ios)
 
 platform :ios do
   desc "Build iOS IPA via Flutter"
   lane :build do
+    tls_bundle = ENV.fetch("TRUSTED_TLS_CERTIFICATES_DER_BASE64", "").strip
+    UI.user_error!("Missing TRUSTED_TLS_CERTIFICATES_DER_BASE64 for release TLS pinning") if tls_bundle.empty?
+    release_guard = File.expand_path("../../../../scripts/check_mobile_release_security_env.sh", __dir__)
+    tls_define = Shellwords.escape("TRUSTED_TLS_CERTIFICATES_DER_BASE64=#{tls_bundle}")
+    build_args = "flutter build ipa --release --obfuscate --split-debug-info=build/ios/symbols"
     sh("flutter pub get")
-    sh("flutter build ipa --release")
+    sh("REQUIRE_PRODUCTION_SIGNING=true FLUTTER_BUILD_DART_DEFINES=#{tls_define} FASTLANE_FLUTTER_BUILD_ARGS=#{Shellwords.escape(build_args)} #{Shellwords.escape(release_guard)}")
+    sh("mkdir -p build/ios/symbols")
+    sh("flutter build ipa --release --obfuscate --split-debug-info=build/ios/symbols --dart-define=#{tls_define}")
   end
 
   desc "Upload to TestFlight (requires API key or Apple ID)"
@@ -14,4 +23,3 @@ platform :ios do
     pilot(skip_waiting_for_build_processing: true)
   end
 end
-

@@ -2,12 +2,12 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'app_shell_widgets.dart' show AppBG;
+import 'session_cookie_store.dart';
 
 class OrderCenterPage extends StatefulWidget {
   final String baseUrl;
@@ -29,14 +29,7 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
   }
 
   Future<Map<String, String>> _hdr({bool json = false}) async {
-    final h = <String, String>{};
-    if (json) h['content-type'] = 'application/json';
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
-    if (cookie.isNotEmpty) {
-      h['Cookie'] = cookie;
-    }
-    return h;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: json);
   }
 
   Future<void> _load() async {
@@ -121,9 +114,8 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
                 ),
               FormSection(
                 title: l.isArabic ? 'التنقل' : 'Mobility',
-                subtitle: l.isArabic
-                    ? 'أحدث رحلات الحافلات'
-                    : 'Recent bus trips',
+                subtitle:
+                    l.isArabic ? 'أحدث رحلات الحافلات' : 'Recent bus trips',
                 children: [
                   if (_bus.isEmpty)
                     Text(

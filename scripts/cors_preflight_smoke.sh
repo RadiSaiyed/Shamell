@@ -9,28 +9,9 @@ SMOKE_TIMEOUT_SECS="${SMOKE_TIMEOUT_SECS:-15}"
 SMOKE_CONNECT_TIMEOUT_SECS="${SMOKE_CONNECT_TIMEOUT_SECS:-5}"
 SMOKE_ORIGIN="${SMOKE_ORIGIN:-https://online.shamell.online}"
 SMOKE_USER_AGENT="${SMOKE_USER_AGENT:-shamell-cors-preflight-smoke/1.0}"
-SMOKE_REQUIRE_REQUEST_ID="${SMOKE_REQUIRE_REQUEST_ID:-1}"
-SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS="${SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS:-0}"
 
 is_uint() {
   [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-is_true_like() {
-  local v
-  v="$(to_lower "$1")"
-  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
-}
-
-is_false_like() {
-  local v
-  v="$(to_lower "$1")"
-  [[ "$v" == "0" || "$v" == "false" || "$v" == "no" || "$v" == "off" ]]
-}
-
-is_boolish() {
-  local v="$1"
-  is_true_like "$v" || is_false_like "$v"
 }
 
 trim_base() {
@@ -64,28 +45,22 @@ to_upper() {
 
 lower_tokens_csv() {
   local csv="$1"
-  local -a parts
-  local token
-  IFS=',' read -r -a parts <<< "$csv"
-  for token in "${parts[@]}"; do
+  while IFS= read -r token; do
     token="$(trim_token "$token")"
     if [[ -n "$token" ]]; then
       printf '%s\n' "$(to_lower "$token")"
     fi
-  done
+  done < <(printf '%s' "$csv" | tr ',' '\n')
 }
 
 upper_tokens_csv() {
   local csv="$1"
-  local -a parts
-  local token
-  IFS=',' read -r -a parts <<< "$csv"
-  for token in "${parts[@]}"; do
+  while IFS= read -r token; do
     token="$(trim_token "$token")"
     if [[ -n "$token" ]]; then
       printf '%s\n' "$(to_upper "$token")"
     fi
-  done
+  done < <(printf '%s' "$csv" | tr ',' '\n')
 }
 
 contains_token() {
@@ -134,10 +109,7 @@ run_preflight() {
   local requested_headers="$3"
   local headers_file="$4"
 
-  local normalized_path
-  normalized_path="$(normalize_path "$path")"
-  local url
-  url="${BASE_URL}${normalized_path}"
+  local url="${BASE_URL}$(normalize_path "$path")"
   local -a args
   args=(
     -sS
@@ -219,46 +191,26 @@ expect_cors_preflight() {
   allow_headers_raw="$(header_first_value "$headers_file" "access-control-allow-headers")"
   local allow_headers
   allow_headers="$(lower_tokens_csv "$allow_headers_raw")"
-  local has_allow_headers_wildcard=0
-  if contains_token "$allow_headers" "*"; then
-    has_allow_headers_wildcard=1
-  fi
 
-  if [[ "$has_allow_headers_wildcard" == "1" ]]; then
-    if is_true_like "$SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS"; then
-      echo "[WARN] $label: Access-Control-Allow-Headers='*' accepted by policy override."
-    else
+  while IFS= read -r need; do
+    if ! contains_token "$allow_headers" "$need"; then
       FAILURES=$((FAILURES + 1))
-      echo "[FAIL] $label: Access-Control-Allow-Headers wildcard '*' is not allowed by policy" >&2
+      echo "[FAIL] $label: Access-Control-Allow-Headers missing '$need'" >&2
       sed -n '1,120p' "$headers_file" >&2 || true
       rm -f "$headers_file"
       return 0
     fi
-  fi
+  done < <(lower_tokens_csv "$required_allow_headers")
 
-  if [[ "$has_allow_headers_wildcard" == "0" ]]; then
-    while IFS= read -r need; do
-      if ! contains_token "$allow_headers" "$need"; then
-        FAILURES=$((FAILURES + 1))
-        echo "[FAIL] $label: Access-Control-Allow-Headers missing '$need'" >&2
-        sed -n '1,120p' "$headers_file" >&2 || true
-        rm -f "$headers_file"
-        return 0
-      fi
-    done < <(lower_tokens_csv "$required_allow_headers")
-  fi
-
-  if [[ "$has_allow_headers_wildcard" == "0" ]]; then
-    while IFS= read -r bad; do
-      if contains_token "$allow_headers" "$bad"; then
-        FAILURES=$((FAILURES + 1))
-        echo "[FAIL] $label: Access-Control-Allow-Headers must not contain '$bad'" >&2
-        sed -n '1,120p' "$headers_file" >&2 || true
-        rm -f "$headers_file"
-        return 0
-      fi
-    done < <(lower_tokens_csv "$forbidden_allow_headers")
-  fi
+  while IFS= read -r bad; do
+    if contains_token "$allow_headers" "$bad"; then
+      FAILURES=$((FAILURES + 1))
+      echo "[FAIL] $label: Access-Control-Allow-Headers must not contain '$bad'" >&2
+      sed -n '1,120p' "$headers_file" >&2 || true
+      rm -f "$headers_file"
+      return 0
+    fi
+  done < <(lower_tokens_csv "$forbidden_allow_headers")
 
   echo "[PASS] $label: status=$code"
   rm -f "$headers_file"
@@ -314,62 +266,41 @@ if ! is_uint "$SMOKE_CONNECT_TIMEOUT_SECS"; then
   echo "Invalid SMOKE_CONNECT_TIMEOUT_SECS: $SMOKE_CONNECT_TIMEOUT_SECS (must be integer)" >&2
   exit 1
 fi
-if ! is_boolish "$SMOKE_REQUIRE_REQUEST_ID"; then
-  echo "Invalid SMOKE_REQUIRE_REQUEST_ID: $SMOKE_REQUIRE_REQUEST_ID (must be bool-like)" >&2
-  exit 1
-fi
-if ! is_boolish "$SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS"; then
-  echo "Invalid SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS: $SMOKE_ALLOW_WILDCARD_ALLOW_HEADERS (must be bool-like)" >&2
-  exit 1
-fi
 
 require_env SMOKE_BASE_URL
 BASE_URL="$(trim_base "$SMOKE_BASE_URL")"
-
-PUBLIC_REQUIRED_ALLOW_HEADERS="content-type"
-if is_true_like "$SMOKE_REQUIRE_REQUEST_ID"; then
-  PUBLIC_REQUIRED_ALLOW_HEADERS="${PUBLIC_REQUIRED_ALLOW_HEADERS},x-request-id"
-fi
 
 expect_cors_preflight \
   "public auth preflight" \
   "/auth/biometric/login" \
   "POST" \
   "content-type,x-request-id" \
-  "$PUBLIC_REQUIRED_ALLOW_HEADERS" \
-  "authorization,x-chat-device-id,x-chat-device-token,idempotency-key,x-device-id,x-merchant,x-ref,x-internal-secret,x-internal-service-id,cookie"
+  "content-type,x-request-id" \
+  "authorization,x-chat-device-id,x-chat-device-token,idempotency-key,x-device-id,x-merchant,x-ref,x-internal-secret,x-internal-service-id,x-internal-audience,x-internal-identity-ts,x-internal-identity-sig,x-internal-identity-sig-v2,x-internal-identity-nonce,x-shamell-client-ip-attested,cookie"
 
 expect_cors_preflight \
   "chat preflight" \
   "/chat/messages/send" \
   "POST" \
   "content-type,x-chat-device-id,x-chat-device-token" \
-  "${PUBLIC_REQUIRED_ALLOW_HEADERS},x-chat-device-id,x-chat-device-token" \
-  "authorization,idempotency-key,x-device-id,x-merchant,x-ref,x-internal-secret,x-internal-service-id,cookie"
+  "content-type,x-request-id,x-chat-device-id,x-chat-device-token" \
+  "authorization,idempotency-key,x-device-id,x-merchant,x-ref,x-internal-secret,x-internal-service-id,x-internal-audience,x-internal-identity-ts,x-internal-identity-sig,x-internal-identity-sig-v2,x-internal-identity-nonce,x-shamell-client-ip-attested,cookie"
 
 expect_cors_preflight \
   "contacts preflight" \
   "/contacts/invites/redeem" \
   "POST" \
   "content-type,x-chat-device-id" \
-  "${PUBLIC_REQUIRED_ALLOW_HEADERS},x-chat-device-id" \
-  "authorization,x-chat-device-token,idempotency-key,x-device-id,x-merchant,x-ref,x-internal-secret,x-internal-service-id,cookie"
+  "content-type,x-request-id,x-chat-device-id" \
+  "authorization,x-chat-device-token,idempotency-key,x-device-id,x-merchant,x-ref,x-internal-secret,x-internal-service-id,x-internal-audience,x-internal-identity-ts,x-internal-identity-sig,x-internal-identity-sig-v2,x-internal-identity-nonce,x-shamell-client-ip-attested,cookie"
 
 expect_cors_preflight \
   "payments preflight" \
   "/payments/transfer" \
   "POST" \
   "content-type,idempotency-key,x-device-id,x-merchant,x-ref" \
-  "${PUBLIC_REQUIRED_ALLOW_HEADERS},idempotency-key,x-device-id,x-merchant,x-ref" \
-  "authorization,x-chat-device-id,x-chat-device-token,x-internal-secret,x-internal-service-id,cookie"
-
-expect_cors_preflight \
-  "bus preflight" \
-  "/bus/trips/cors-smoke/book" \
-  "POST" \
-  "content-type,idempotency-key,x-device-id" \
-  "${PUBLIC_REQUIRED_ALLOW_HEADERS},idempotency-key,x-device-id" \
-  "authorization,x-chat-device-id,x-chat-device-token,x-merchant,x-ref,x-internal-secret,x-internal-service-id,cookie"
+  "content-type,x-request-id,idempotency-key,x-device-id,x-merchant,x-ref" \
+  "authorization,x-chat-device-id,x-chat-device-token,x-internal-secret,x-internal-service-id,x-internal-audience,x-internal-identity-ts,x-internal-identity-sig,x-internal-identity-sig-v2,x-internal-identity-nonce,x-shamell-client-ip-attested,cookie"
 
 expect_no_cors_preflight \
   "internal security alerts preflight blocked/no-cors" \

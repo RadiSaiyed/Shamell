@@ -1,0 +1,332 @@
+/* Tic-Tac-Toe mini-game — visual layer.
+ *
+ * Layout rules:
+ *   * The whole page is a single viewport-tall flex column. Both
+ *     screens (menu, game) live in the DOM at once; switching is a
+ *     class flip on <section data-screen>. This avoids any router/
+ *     flicker inside the WebView.
+ *   * Board cells are a 3x3 CSS grid with `aspect-ratio: 1` so the
+ *     board stays square across phone widths without JS resize hacks.
+ *
+ * Colour palette is kept in sync with the manifest's theme block and
+ * the Dart MiniGameWebViewPage host (appBarColor / backgroundColor /
+ * spinnerColor). Adjust both sides together.
+ */
+
+:root {
+  --bg: #f7f4ee;
+  --surface: #ffffff;
+  --ink: #1f2a44;
+  --ink-soft: #5b6478;
+  --accent: #4f8ef7;
+  --accent-soft: #e6efff;
+  --x-color: #1f2a44;
+  --o-color: #d65a5a;
+  --win-line: #ffd166;
+  --shadow: 0 4px 14px rgba(31, 42, 68, 0.08);
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  padding: 20px;
+  gap: 18px;
+  animation: fade 0.18s ease-out;
+}
+
+.screen.is-active {
+  display: flex;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- Menu screen ---------- */
+
+.menu-header {
+  text-align: center;
+  margin-top: 8px;
+}
+
+.menu-header h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  letter-spacing: 0.5px;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+
+.stats--two-col {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.stat {
+  text-align: center;
+}
+
+.stat-label {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-soft);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.stat-value {
+  display: block;
+  margin-top: 4px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: transform 0.08s ease-out, border-color 0.12s ease-out;
+  font: inherit;
+  color: inherit;
+}
+
+.mode-btn:active:not(.is-disabled) {
+  transform: scale(0.985);
+  border-color: var(--accent);
+}
+
+.mode-btn.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.mode-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.mode-desc {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+/* ---------- Game screen ---------- */
+
+.game-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+.turn-indicator {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  box-shadow: var(--shadow);
+}
+
+.turn-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--x-color);
+}
+
+.turn-dot[data-player="O"] {
+  background: var(--o-color);
+}
+
+.turn-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.phase-tag {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 8px;
+  aspect-ratio: 1;
+  max-width: 380px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 8px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 56px;
+  font-weight: 700;
+  background: var(--accent-soft);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease-out, transform 0.08s ease-out;
+}
+
+.cell[data-mark="X"] {
+  color: var(--x-color);
+}
+
+.cell[data-mark="O"] {
+  color: var(--o-color);
+}
+
+.cell.is-disabled {
+  cursor: default;
+}
+
+.cell.is-winning {
+  background: var(--win-line);
+  animation: win-pulse 0.6s ease-out;
+}
+
+.cell.is-selected {
+  background: var(--accent);
+  color: var(--surface) !important;
+  box-shadow: 0 0 0 3px var(--accent) inset, var(--shadow);
+  transform: scale(1.02);
+}
+
+@keyframes win-pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.cell:active:not(.is-disabled) {
+  transform: scale(0.97);
+}
+
+.result-banner {
+  min-height: 24px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--accent);
+}
+
+.game-footer {
+  display: flex;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.ghost-btn {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid var(--ink);
+  background: transparent;
+  border-radius: var(--radius);
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ghost-btn:active {
+  background: var(--ink);
+  color: var(--surface);
+}

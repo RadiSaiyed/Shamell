@@ -1,22 +1,50 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import '../main.dart' show LoginPage;
 
+import 'access_platform_contracts.dart';
+import 'account_privilege_store.dart';
+import 'base_url.dart';
+import 'device_binding_reauth.dart';
 import 'l10n.dart';
-import 'chat/threema_chat_page.dart';
+import 'shamell_empty_state.dart';
+import 'shamell_loading_shimmer.dart';
+import 'chat/shamell_chat_page.dart';
+import 'http_error.dart';
+import 'payments/payments_idempotency.dart';
+import 'safe_set_state.dart';
+
+const Duration _officialServiceInboxRequestTimeout = Duration(seconds: 15);
+const int _officialServiceInboxPageSize = 100;
+
+String _officialInboxQueueLabel(String queue, bool isArabic) {
+  switch (queue) {
+    case 'unread':
+      return isArabic ? 'غير مقروءة' : 'Unread';
+    case 'open':
+      return isArabic ? 'مفتوحة' : 'Open';
+    case 'closed':
+      return isArabic ? 'مغلقة' : 'Closed';
+    default:
+      return isArabic ? 'الكل' : 'All';
+  }
+}
 
 class OfficialServiceInboxPage extends StatefulWidget {
   final String baseUrl;
   final String accountId;
-  final String accountName;
+  final http.Client? httpClient;
+  final AccountPrivilegeSnapshot? privilegeSnapshotOverride;
 
   const OfficialServiceInboxPage({
     super.key,
     required this.baseUrl,
     required this.accountId,
-    required this.accountName,
+    this.httpClient,
+    this.privilegeSnapshotOverride,
   });
 
   @override
@@ -24,50 +52,155 @@ class OfficialServiceInboxPage extends StatefulWidget {
       _OfficialServiceInboxPageState();
 }
 
-class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
+class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage>
+    with SafeSetStateMixin<OfficialServiceInboxPage> {
+  late final http.Client _http;
+  late final bool _ownsHttpClient;
   bool _loading = true;
+  bool _loadingPrivileges = true;
+  bool _readAccessAllowed = false;
+  bool _writeAccessAllowed = false;
+  bool _loadingMore = false;
+  bool _hasMore = false;
   String? _error;
   List<_ServiceSession> _items = const <_ServiceSession>[];
+  final TextEditingController _searchController = TextEditingController();
+  String _selectedQueue = 'all';
+  final Map<int, String> _pendingMarkReadIdempotencyKeys = <int, String>{};
+  final Map<int, String> _pendingCloseSessionIdempotencyKeys = <int, String>{};
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _ownsHttpClient = widget.httpClient == null;
+    _http = widget.httpClient ?? shamellHttpClient();
+    _loadPrivilegesAndInbox();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    if (_ownsHttpClient) {
+      _http.close();
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadPrivilegesAndInbox() async {
+    final snapshot = widget.privilegeSnapshotOverride ??
+        await loadAccountPrivilegeSnapshotForBaseUrl(widget.baseUrl);
+    if (!mounted) return;
+    final readAccess = shamellHasOfficialDashboardReadSnapshotAccess(
+      snapshot,
+      widget.accountId,
+    );
+    final writeAccess = shamellHasOfficialDashboardWriteSnapshotAccess(
+      snapshot,
+      widget.accountId,
+    );
+    setState(() {
+      _loadingPrivileges = false;
+      _readAccessAllowed = readAccess;
+      _writeAccessAllowed = writeAccess;
+      _loading = readAccess;
+    });
+    if (!readAccess) {
+      return;
+    }
+    await _load();
   }
 
   Future<Map<String, String>> _hdr({bool jsonBody = false}) async {
-    final headers = <String, String>{};
-    if (jsonBody) {
-      headers['content-type'] = 'application/json';
-    }
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return headers;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: jsonBody);
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-      _items = const <_ServiceSession>[];
-    });
-    try {
-      final uri = Uri.parse(
-        '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox',
-      ).replace(queryParameters: const <String, String>{
-        'limit': '100',
+  Uri? _serviceInboxUri({
+    required List<String> pathSegments,
+    Map<String, String>? queryParameters,
+  }) {
+    return secureApiChildUri(
+      baseUrl: widget.baseUrl,
+      pathSegments: <String>[
+        'admin',
+        'official_accounts',
+        widget.accountId,
+        ...pathSegments,
+      ],
+      queryParameters: queryParameters,
+    );
+  }
+
+  String _invalidServerUrlMessage({bool? isArabic}) {
+    final arabic = isArabic ?? L10n.of(context).isArabic;
+    return arabic ? 'عنوان الخادم غير صالح.' : 'Invalid server URL.';
+  }
+
+  Future<void> _load() => _loadPage(reset: true);
+
+  Future<void> _loadMore() => _loadPage(reset: false);
+
+  Future<void> _loadPage({required bool reset}) async {
+    if (!reset) {
+      if (_loading || _loadingMore || !_hasMore || _items.isEmpty) {
+        return;
+      }
+      setState(() {
+        _loadingMore = true;
       });
-      final r = await http.get(uri, headers: await _hdr());
+    } else {
+      setState(() {
+        _loading = true;
+        _loadingMore = false;
+        _hasMore = false;
+        _error = null;
+        _items = const <_ServiceSession>[];
+      });
+    }
+    try {
+      final queryParameters = <String, String>{
+        'limit': '$_officialServiceInboxPageSize',
+      };
+      if (!reset && _items.isNotEmpty) {
+        final last = _items.last;
+        final beforeTs = last.cursorTs?.toUtc().toIso8601String();
+        if (beforeTs != null && beforeTs.isNotEmpty && last.id > 0) {
+          queryParameters['before_ts'] = beforeTs;
+          queryParameters['before_id'] = '${last.id}';
+        }
+      }
+      final uri = _serviceInboxUri(
+        pathSegments: const <String>['service_inbox'],
+        queryParameters: queryParameters,
+      );
+      if (uri == null) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _loadingMore = false;
+          _error = _invalidServerUrlMessage();
+        });
+        return;
+      }
+      final r = await _http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialServiceInboxRequestTimeout);
+      if (await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+        context,
+        statusCode: r.statusCode,
+        rawBody: r.body,
+        loginPageBuilder: (_) => const LoginPage(),
+      )) {
+        return;
+      }
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = r.body.isNotEmpty ? r.body : 'HTTP ${r.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -84,38 +217,152 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
         items.add(_ServiceSession.fromJson(e.cast<String, dynamic>()));
       }
       if (!mounted) return;
+      final merged = reset ? items : _mergeServiceSessions(_items, items);
       setState(() {
-        _items = items;
+        _items = merged;
         _loading = false;
+        _loadingMore = false;
+        _hasMore = items.length >= _officialServiceInboxPageSize;
       });
     } catch (e) {
+      if (await shamellForceReauthIfCriticalDeviceBindingDrift(
+        context,
+        error: e,
+        loginPageBuilder: (_) => const LoginPage(),
+      )) {
+        return;
+      }
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = e.toString();
-      });
+      final detail = sanitizeExceptionForUi(error: e);
+      if (reset) {
+        setState(() {
+          _loading = false;
+          _loadingMore = false;
+          _error = detail;
+        });
+      } else {
+        setState(() {
+          _loadingMore = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(detail)),
+        );
+      }
     }
   }
 
+  List<_ServiceSession> _mergeServiceSessions(
+    List<_ServiceSession> current,
+    List<_ServiceSession> incoming,
+  ) {
+    if (incoming.isEmpty) return current;
+    final merged = <_ServiceSession>[...current];
+    final seen = current.map((session) => session.id).toSet();
+    for (final session in incoming) {
+      if (seen.add(session.id)) {
+        merged.add(session);
+      }
+    }
+    return merged;
+  }
+
+  bool _matchesQueue(_ServiceSession session, String queue) {
+    final isClosed = session.status.trim().toLowerCase() == 'closed';
+    switch (queue) {
+      case 'unread':
+        return session.unreadByOperator;
+      case 'open':
+        return !isClosed;
+      case 'closed':
+        return isClosed;
+      default:
+        return true;
+    }
+  }
+
+  bool _matchesSearch(_ServiceSession session, String query) {
+    final normalized = query.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return true;
+    }
+    return session.customerPhone.toLowerCase().contains(normalized) ||
+        session.status.toLowerCase().contains(normalized) ||
+        (session.chatPeerId ?? '').toLowerCase().contains(normalized);
+  }
+
+  int _queueCount(String queue) {
+    return _items.where((session) => _matchesQueue(session, queue)).length;
+  }
+
   Future<void> _markRead(_ServiceSession s) async {
+    if (!_writeAccessAllowed) return;
     if (!s.unreadByOperator) return;
     try {
-      final uri = Uri.parse(
-        '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox/${s.id}/mark_read',
+      final uri = _serviceInboxUri(
+        pathSegments: <String>['service_inbox', '${s.id}', 'mark_read'],
       );
-      await http.post(uri, headers: await _hdr(jsonBody: true));
-    } catch (_) {
+      if (uri == null) {
+        return;
+      }
+      final reqHeaders = await _hdr(jsonBody: true);
+      final idempotencyKey = _pendingMarkReadIdempotencyKeys.putIfAbsent(
+        s.id,
+        () => newPaymentsIdempotencyKey('official-service-mark-read'),
+      );
+      reqHeaders['Idempotency-Key'] = idempotencyKey;
+      final r = await _http
+          .post(uri, headers: reqHeaders)
+          .timeout(_officialServiceInboxRequestTimeout);
+      if (r.statusCode >= 200 && r.statusCode < 300) {
+        _pendingMarkReadIdempotencyKeys.remove(s.id);
+      }
+      await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+        context,
+        statusCode: r.statusCode,
+        rawBody: r.body,
+        loginPageBuilder: (_) => const LoginPage(),
+      );
+    } catch (e) {
+      await shamellForceReauthIfCriticalDeviceBindingDrift(
+        context,
+        error: e,
+        loginPageBuilder: (_) => const LoginPage(),
+      );
       // Best-effort; UI is optimistic.
     }
   }
 
   Future<void> _closeSession(_ServiceSession s) async {
+    if (!_writeAccessAllowed) return;
     final l = L10n.of(context);
     try {
-      final uri = Uri.parse(
-        '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox/${s.id}/close',
+      final uri = _serviceInboxUri(
+        pathSegments: <String>['service_inbox', '${s.id}', 'close'],
       );
-      final r = await http.post(uri, headers: await _hdr(jsonBody: true));
+      if (uri == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(_invalidServerUrlMessage(isArabic: l.isArabic))),
+        );
+        return;
+      }
+      final reqHeaders = await _hdr(jsonBody: true);
+      final idempotencyKey = _pendingCloseSessionIdempotencyKeys.putIfAbsent(
+        s.id,
+        () => newPaymentsIdempotencyKey('official-service-close'),
+      );
+      reqHeaders['Idempotency-Key'] = idempotencyKey;
+      final r = await _http
+          .post(uri, headers: reqHeaders)
+          .timeout(_officialServiceInboxRequestTimeout);
+      if (await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+        context,
+        statusCode: r.statusCode,
+        rawBody: r.body,
+        loginPageBuilder: (_) => const LoginPage(),
+      )) {
+        return;
+      }
       if (r.statusCode < 200 || r.statusCode >= 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -128,6 +375,7 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
         );
         return;
       }
+      _pendingCloseSessionIdempotencyKeys.remove(s.id);
       if (!mounted) return;
       setState(() {
         _items = _items
@@ -137,12 +385,20 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
             .toList();
       });
     } catch (e) {
+      if (await shamellForceReauthIfCriticalDeviceBindingDrift(
+        context,
+        error: e,
+        loginPageBuilder: (_) => const LoginPage(),
+      )) {
+        return;
+      }
+      final detail = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             l.isArabic
-                ? 'تعذّر إغلاق الجلسة: $e'
-                : 'Failed to close session: $e',
+                ? 'تعذّر إغلاق الجلسة: $detail'
+                : 'Failed to close session: $detail',
           ),
         ),
       );
@@ -150,13 +406,16 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
   }
 
   Future<void> _sendTemplateMessage(_ServiceSession s) async {
+    if (!_writeAccessAllowed) return;
     final l = L10n.of(context);
     final theme = Theme.of(context);
     final titleCtrl = TextEditingController();
     final bodyCtrl = TextEditingController();
+    String? pendingIdempotencyKey;
     bool submitting = false;
     String? error;
-    await showModalBottomSheet<void>(
+    try {
+      await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -230,24 +489,59 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                     error = null;
                                   });
                                   try {
-                                    final uri = Uri.parse(
-                                      '${widget.baseUrl}/admin/official_accounts/${Uri.encodeComponent(widget.accountId)}/service_inbox/${s.id}/template_messages',
+                                    final idempotencyKey =
+                                        pendingIdempotencyKey ??=
+                                            newPaymentsIdempotencyKey(
+                                                'official-service');
+                                    final uri = _serviceInboxUri(
+                                      pathSegments: <String>[
+                                        'service_inbox',
+                                        '${s.id}',
+                                        'template_messages',
+                                      ],
                                     );
-                                    final r = await http.post(
-                                      uri,
-                                      headers: await _hdr(jsonBody: true),
-                                      body: jsonEncode(<String, dynamic>{
-                                        'title': title,
-                                        'body': body,
-                                      }),
-                                    );
-                                    if (r.statusCode < 200 ||
-                                        r.statusCode >= 300) {
+                                    if (uri == null) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = r.body.isNotEmpty
-                                            ? r.body
-                                            : 'HTTP ${r.statusCode}';
+                                        error = _invalidServerUrlMessage(
+                                          isArabic: l.isArabic,
+                                        );
+                                      });
+                                      return;
+                                    }
+                                    final reqHeaders =
+                                        await _hdr(jsonBody: true);
+                                    reqHeaders['Idempotency-Key'] =
+                                        idempotencyKey;
+                                    final r = await _http
+                                        .post(
+                                          uri,
+                                          headers: reqHeaders,
+                                          body: jsonEncode(<String, dynamic>{
+                                            'title': title,
+                                            'body': body,
+                                          }),
+                                        )
+                                        .timeout(
+                                            _officialServiceInboxRequestTimeout);
+                                    if (r.statusCode < 200 ||
+                                        r.statusCode >= 300) {
+                                      if (await shamellForceReauthIfCriticalAccountSessionHttpFailure(
+                                        context,
+                                        statusCode: r.statusCode,
+                                        rawBody: r.body,
+                                        loginPageBuilder: (_) =>
+                                            const LoginPage(),
+                                      )) {
+                                        return;
+                                      }
+                                      setStateSB(() {
+                                        submitting = false;
+                                        error = sanitizeHttpError(
+                                          statusCode: r.statusCode,
+                                          rawBody: r.body,
+                                          isArabic: l.isArabic,
+                                        );
                                       });
                                       return;
                                     }
@@ -263,9 +557,17 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                       ),
                                     );
                                   } catch (e) {
+                                    if (await shamellForceReauthIfCriticalDeviceBindingDrift(
+                                      context,
+                                      error: e,
+                                      loginPageBuilder: (_) =>
+                                          const LoginPage(),
+                                    )) {
+                                      return;
+                                    }
                                     setStateSB(() {
                                       submitting = false;
-                                      error = e.toString();
+                                      error = sanitizeExceptionForUi(error: e);
                                     });
                                   }
                                 },
@@ -287,7 +589,11 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
           ),
         );
       },
-    );
+      );
+    } finally {
+      titleCtrl.dispose();
+      bodyCtrl.dispose();
+    }
   }
 
   void _openChat(_ServiceSession s) {
@@ -295,7 +601,7 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
     if (peerId.isEmpty) return;
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(
+        builder: (_) => ShamellChatPage(
           baseUrl: widget.baseUrl,
           initialPeerId: peerId,
         ),
@@ -307,6 +613,43 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
+    final visibleItems = _items
+        .where((session) => _matchesQueue(session, _selectedQueue))
+        .where((session) => _matchesSearch(session, _searchController.text))
+        .toList(growable: false);
+    if (_loadingPrivileges) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text(
+            l.isArabic ? 'صندوق خدمة العملاء' : 'Customer service inbox',
+          ),
+        ),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (!_readAccessAllowed) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text(
+            l.isArabic ? 'صندوق خدمة العملاء' : 'Customer service inbox',
+          ),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              l.isArabic
+                  ? 'هذا الحساب غير مخوّل للوصول إلى صندوق خدمة هذا الحساب الرسمي.'
+                  : 'Your account is not allowed to access this official service inbox.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -314,46 +657,144 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const ShamellSkeletonList(itemCount: 6)
           : _error != null
-              ? Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    _error!,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
+              ? ShamellEmptyState.error(
+                  title: _error!,
+                  actionLabel: l.isArabic ? 'إعادة المحاولة' : 'Retry',
+                  onAction: () => _load(),
                 )
               : RefreshIndicator(
                   onRefresh: _load,
-                  child: _items.isEmpty
-                      ? ListView(
-                          padding: const EdgeInsets.all(16),
-                          children: [
-                            Center(
-                              child: Text(
-                                l.isArabic
-                                    ? 'لا توجد جلسات خدمة عملاء حتى الآن.'
-                                    : 'No customer-service sessions yet.',
-                                textAlign: TextAlign.center,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withValues(alpha: .70),
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      TextField(
+                        controller: _searchController,
+                        onChanged: (_) => setState(() {}),
+                        decoration: InputDecoration(
+                          labelText: l.isArabic
+                              ? 'ابحث في الجلسات'
+                              : 'Search sessions',
+                          hintText: l.isArabic
+                              ? 'الهاتف أو الحالة أو المعرّف'
+                              : 'Phone, status, or peer id',
+                          prefixIcon: const Icon(Icons.search),
+                          border: const OutlineInputBorder(),
+                          suffixIcon: _searchController.text.trim().isEmpty
+                              ? null
+                              : IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    setState(() {});
+                                  },
                                 ),
-                              ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          Chip(
+                            label: Text(
+                              '${l.isArabic ? 'المحمّل' : 'Loaded'} ${_items.length}',
                             ),
-                          ],
+                          ),
+                          Chip(
+                            label: Text(
+                              '${l.isArabic ? 'المفتوحة' : 'Open'} ${_queueCount('open')}',
+                            ),
+                          ),
+                          Chip(
+                            label: Text(
+                              '${l.isArabic ? 'غير المقروءة' : 'Unread'} ${_queueCount('unread')}',
+                            ),
+                          ),
+                          Chip(
+                            label: Text(
+                              '${l.isArabic ? 'المغلقة' : 'Closed'} ${_queueCount('closed')}',
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        l.isArabic ? 'الطابور' : 'Queue',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final queue in const <String>[
+                            'all',
+                            'unread',
+                            'open',
+                            'closed',
+                          ])
+                            ChoiceChip(
+                              label: Text(
+                                '${_officialInboxQueueLabel(queue, l.isArabic)} (${queue == 'all' ? _items.length : _queueCount(queue)})',
+                              ),
+                              selected: _selectedQueue == queue,
+                              onSelected: (selected) {
+                                if (!selected) return;
+                                setState(() {
+                                  _selectedQueue = queue;
+                                });
+                              },
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        l.isArabic
+                            ? 'عرض ${visibleItems.length} من ${_items.length} جلسة'
+                            : 'Showing ${visibleItems.length} of ${_items.length} sessions',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .70),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (_items.isEmpty)
+                        Center(
+                          child: Text(
+                            l.isArabic
+                                ? 'لا توجد جلسات خدمة عملاء حتى الآن.'
+                                : 'No customer-service sessions yet.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurface
+                                  .withValues(alpha: .70),
+                            ),
+                          ),
                         )
-                      : ListView.separated(
-                          padding: const EdgeInsets.all(16),
-                          itemBuilder: (_, i) {
-                            final s = _items[i];
+                      else if (visibleItems.isEmpty)
+                        Center(
+                          child: Text(
+                            l.isArabic
+                                ? 'لا توجد جلسات تطابق البحث أو الطابور الحالي.'
+                                : 'No sessions match the current search or queue.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurface
+                                  .withValues(alpha: .70),
+                            ),
+                          ),
+                        )
+                      else
+                        for (var i = 0; i < visibleItems.length; i++) ...[
+                          Builder(builder: (_) {
+                            final s = visibleItems[i];
                             final isOpen =
                                 (s.status.trim().toLowerCase() != 'closed');
                             return ListTile(
                               onTap: () {
-                                if (s.unreadByOperator) {
+                                if (_writeAccessAllowed && s.unreadByOperator) {
                                   setState(() {
                                     _items = _items
                                         .map(
@@ -430,10 +871,12 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                           tooltip: l.isArabic
                                               ? 'إرسال رسالة خدمة'
                                               : 'Send service message',
-                                          onPressed: () {
-                                            // ignore: discarded_futures
-                                            _sendTemplateMessage(s);
-                                          },
+                                          onPressed: _writeAccessAllowed
+                                              ? () {
+                                                  // ignore: discarded_futures
+                                                  _sendTemplateMessage(s);
+                                                }
+                                              : null,
                                         ),
                                         IconButton(
                                           icon: const Icon(
@@ -442,19 +885,43 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
                                           tooltip: l.isArabic
                                               ? 'إغلاق الجلسة'
                                               : 'Close session',
-                                          onPressed: () {
-                                            // ignore: discarded_futures
-                                            _closeSession(s);
-                                          },
+                                          onPressed: _writeAccessAllowed
+                                              ? () {
+                                                  // ignore: discarded_futures
+                                                  _closeSession(s);
+                                                }
+                                              : null,
                                         ),
                                       ],
                                     )
                                   : null,
                             );
-                          },
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemCount: _items.length,
+                          }),
+                          if (i + 1 < visibleItems.length)
+                            const Divider(height: 1),
+                        ],
+                      if (_loadingMore || _hasMore)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Center(
+                            child: _loadingMore
+                                ? const SizedBox(
+                                    height: 20,
+                                    width: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : TextButton(
+                                    onPressed: _loadMore,
+                                    child: Text(
+                                      l.isArabic ? 'تحميل المزيد' : 'Load more',
+                                    ),
+                                  ),
+                          ),
                         ),
+                    ],
+                  ),
                 ),
     );
   }
@@ -462,20 +929,20 @@ class _OfficialServiceInboxPageState extends State<OfficialServiceInboxPage> {
 
 class _ServiceSession {
   final int id;
-  final String accountId;
   final String customerPhone;
   final String? chatPeerId;
   final String status;
   final DateTime? lastMessageTs;
+  final DateTime? cursorTs;
   final bool unreadByOperator;
 
   const _ServiceSession({
     required this.id,
-    required this.accountId,
     required this.customerPhone,
     required this.chatPeerId,
     required this.status,
     required this.lastMessageTs,
+    required this.cursorTs,
     required this.unreadByOperator,
   });
 
@@ -491,13 +958,13 @@ class _ServiceSession {
 
     return _ServiceSession(
       id: (j['id'] as num?)?.toInt() ?? 0,
-      accountId: (j['account_id'] ?? '').toString(),
       customerPhone: (j['customer_phone'] ?? '').toString(),
       chatPeerId: (j['chat_peer_id'] ?? '').toString().isEmpty
           ? null
           : (j['chat_peer_id'] ?? '').toString(),
       status: (j['status'] ?? '').toString(),
       lastMessageTs: _parseTs((j['last_message_ts'] ?? '').toString()),
+      cursorTs: _parseTs((j['cursor_ts'] ?? '').toString()),
       unreadByOperator: (j['unread_by_operator'] as bool?) ?? false,
     );
   }
@@ -516,11 +983,11 @@ class _ServiceSession {
   }) {
     return _ServiceSession(
       id: id,
-      accountId: accountId,
       customerPhone: customerPhone,
       chatPeerId: chatPeerId,
       status: status ?? this.status,
       lastMessageTs: lastMessageTs,
+      cursorTs: cursorTs,
       unreadByOperator: unreadByOperator ?? this.unreadByOperator,
     );
   }

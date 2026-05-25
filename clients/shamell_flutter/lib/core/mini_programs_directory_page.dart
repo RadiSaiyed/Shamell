@@ -6,20 +6,36 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'design_tokens.dart';
 import 'l10n.dart';
+import 'mini_apps_config.dart';
+import 'mini_program_shelf_prefs.dart';
 import 'mini_program_runtime.dart';
+import 'session_cookie_store.dart';
+import 'shamell_empty_state.dart';
 
 class MiniProgramsDirectoryPage extends StatefulWidget {
   final String baseUrl;
+  // `walletId` and `onOpenMod` are now nullable so the page can be
+  // opened from the Discover "Gaming" tile (which has no walletId
+  // context and doesn't need the parent's openMod router because the
+  // bundled mini-games it lists open directly via their own runtime).
+  // Legacy callers that supply both continue to work unchanged.
   final String walletId;
   final String deviceId;
-  final void Function(String modId) onOpenMod;
+  final void Function(String modId)? onOpenMod;
+
+  /// Optional category to pre-filter on (e.g. `'Gaming'`). Matched
+  /// against `MiniAppDescriptor.categoryEn` server-side and the
+  /// localised display name in the chips. Pass `null` (or omit) for
+  /// the unfiltered all-categories view.
+  final String? initialCategoryFilter;
 
   const MiniProgramsDirectoryPage({
     super.key,
     required this.baseUrl,
-    required this.walletId,
+    this.walletId = '',
     required this.deviceId,
-    required this.onOpenMod,
+    this.onOpenMod,
+    this.initialCategoryFilter,
   });
 
   @override
@@ -39,12 +55,25 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
   bool _myOnly = false;
   String? _categoryFilter;
   bool _trendingOnly = false;
+  Map<String, Map<String, dynamic>> _shelfMeta =
+      const <String, Map<String, dynamic>>{};
+  bool _shelfSyncing = false;
+
+  static const Duration _networkTimeout = Duration(seconds: 4);
 
   @override
   void initState() {
     super.initState();
+    // Seed the category filter when launched from a category-specific
+    // entry point (e.g. the Discover "Gaming" tile pre-filters to the
+    // Gaming category so the user lands directly in the games list).
+    final preset = widget.initialCategoryFilter?.trim();
+    if (preset != null && preset.isNotEmpty) {
+      _categoryFilter = preset;
+    }
     _load();
     _loadPinned();
+    _syncShelfFromServer();
     _loadMyOwnerContact();
   }
 
@@ -57,12 +86,119 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
   Future<void> _loadPinned() async {
     try {
       final sp = await SharedPreferences.getInstance();
-      final ids = sp.getStringList('pinned_miniapps') ?? const <String>[];
+      final ids = loadMiniProgramPinnedIdsSync(sp);
       if (!mounted) return;
       setState(() {
         _pinned = ids.toSet();
       });
     } catch (_) {}
+  }
+
+  List<String> _cleanIds(Iterable<String> raw) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final item in raw) {
+      final id = item.trim();
+      if (id.isEmpty) continue;
+      if (seen.add(id)) out.add(id);
+    }
+    return out;
+  }
+
+  String _shelfItemId(Map<String, dynamic> item) {
+    return (item['app_id'] ?? item['id'] ?? '').toString().trim();
+  }
+
+  Map<String, dynamic>? _shelfMetaFor(String appId) {
+    final id = appId.trim();
+    if (id.isEmpty) return null;
+    return _shelfMeta[id] ?? _shelfMeta[id.toLowerCase()];
+  }
+
+  int _shelfOpenCount(String appId) {
+    final raw = _shelfMetaFor(appId)?['open_count'];
+    if (raw is num) return raw.toInt();
+    return int.tryParse((raw ?? '').toString()) ?? 0;
+  }
+
+  String _shelfSeenVersion(String appId) {
+    return (_shelfMetaFor(appId)?['seen_version'] ?? '').toString().trim();
+  }
+
+  Future<Map<String, String>> _authHeaders({bool json = false}) {
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: json);
+  }
+
+  Future<void> _syncShelfFromServer() async {
+    if (_shelfSyncing) return;
+    _shelfSyncing = true;
+    try {
+      final uri =
+          Uri.parse('${widget.baseUrl}/me/mini_programs/shelf?limit=100');
+      final resp = await http
+          .get(uri, headers: await _authHeaders())
+          .timeout(_networkTimeout);
+      if (resp.statusCode < 200 || resp.statusCode >= 300) return;
+      final decoded = jsonDecode(resp.body);
+      final raw = decoded is Map
+          ? (decoded['items'] is List
+              ? decoded['items'] as List
+              : decoded['programs'] is List
+                  ? decoded['programs'] as List
+                  : const <dynamic>[])
+          : decoded is List
+              ? decoded
+              : const <dynamic>[];
+      final serverPinned = <String>[];
+      final serverRecent = <String>[];
+      final shelfMeta = <String, Map<String, dynamic>>{};
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final m = item.cast<String, dynamic>();
+        final id = _shelfItemId(m);
+        if (id.isEmpty) continue;
+        shelfMeta[id] = m;
+        if (m['pinned'] == true) serverPinned.add(id);
+        final lastOpened = (m['last_opened_at'] ?? '').toString().trim();
+        final openCount = m['open_count'];
+        if (lastOpened.isNotEmpty || (openCount is num && openCount > 0)) {
+          serverRecent.add(id);
+        }
+      }
+
+      final sp = await SharedPreferences.getInstance();
+      final localPinned = loadMiniProgramPinnedIdsSync(sp);
+      final localRecent = loadMiniProgramRecentIdsSync(sp);
+      final nextPinned = _cleanIds(<String>[...serverPinned, ...localPinned]);
+      final nextRecent = _cleanIds(<String>[...serverRecent, ...localRecent])
+          .take(10)
+          .toList();
+      await saveMiniProgramShelfPrefs(
+        sp,
+        pinnedIds: nextPinned,
+        pinnedOrder: nextPinned,
+        recentIds: nextRecent,
+      );
+
+      final serverPinnedSet = serverPinned.toSet();
+      for (final id in localPinned) {
+        if (!serverPinnedSet.contains(id)) {
+          // ignore: discarded_futures
+          _syncPinnedStateToServer(id, true);
+        }
+      }
+      // ignore: discarded_futures
+      _syncPinnedOrderToServer(nextPinned);
+
+      if (!mounted) return;
+      setState(() {
+        _pinned = nextPinned.toSet();
+        _shelfMeta = shelfMeta;
+      });
+    } catch (_) {
+    } finally {
+      _shelfSyncing = false;
+    }
   }
 
   Future<void> _loadMyOwnerContact() async {
@@ -80,57 +216,163 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
     if (appId.isEmpty) return;
     try {
       final sp = await SharedPreferences.getInstance();
-      const pinnedKey = 'pinned_miniapps';
-      const orderKey = 'mini_programs.pinned_order';
-      final curPinnedRaw = sp.getStringList(pinnedKey) ?? const <String>[];
-      final pinnedList = <String>[];
-      final pinnedSet = <String>{};
-      for (final raw in curPinnedRaw) {
-        final id = raw.trim();
-        if (id.isEmpty) continue;
-        if (pinnedSet.add(id)) pinnedList.add(id);
-      }
+      final pinnedList = loadMiniProgramPinnedIdsSync(sp);
+      final pinnedSet = pinnedList.toSet();
       final isPinned = pinnedSet.contains(appId);
       pinnedList.removeWhere((e) => e == appId);
       if (!isPinned) {
         pinnedList.insert(0, appId);
       }
-      await sp.setStringList(pinnedKey, pinnedList);
+      await saveMiniProgramPinnedIds(sp, pinnedList);
 
-      final curOrderRaw = sp.getStringList(orderKey) ?? const <String>[];
-      final orderList = <String>[];
-      final orderSet = <String>{};
-      for (final raw in curOrderRaw) {
-        final id = raw.trim();
-        if (id.isEmpty) continue;
-        if (orderSet.add(id)) orderList.add(id);
-      }
+      final orderList = loadMiniProgramPinnedOrderSync(sp);
       orderList.removeWhere((e) => e == appId);
       if (!isPinned) {
         orderList.insert(0, appId);
       }
-      final nextOrder = orderList.where(pinnedList.contains).toList();
-      await sp.setStringList(orderKey, nextOrder);
+      final nextOrder = miniProgramPinnedOrderFromLists(
+        pinnedIds: pinnedList,
+        orderedIds: orderList,
+      );
+      await saveMiniProgramPinnedOrder(
+        sp,
+        nextOrder,
+        pinnedIds: pinnedList,
+      );
       if (!mounted) return;
       setState(() {
         _pinned = pinnedList.toSet();
       });
+      // ignore: discarded_futures
+      _syncPinnedStateToServer(appId, !isPinned);
+      // ignore: discarded_futures
+      _syncPinnedOrderToServer(pinnedList);
     } catch (_) {}
+  }
+
+  Future<void> _syncPinnedStateToServer(String appId, bool pinned) async {
+    final id = appId.trim();
+    if (id.isEmpty) return;
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/me/mini_programs/shelf/${Uri.encodeComponent(id)}',
+      );
+      await http
+          .patch(
+            uri,
+            headers: await _authHeaders(json: true),
+            body: jsonEncode({'pinned': pinned}),
+          )
+          .timeout(_networkTimeout);
+    } catch (_) {}
+  }
+
+  Future<void> _syncPinnedOrderToServer(List<String> orderedIds) async {
+    final ids = _cleanIds(orderedIds);
+    if (ids.isEmpty) return;
+    try {
+      final uri = Uri.parse('${widget.baseUrl}/me/mini_programs/shelf/order');
+      await http
+          .post(
+            uri,
+            headers: await _authHeaders(json: true),
+            body: jsonEncode({'app_ids': ids}),
+          )
+          .timeout(_networkTimeout);
+    } catch (_) {}
+  }
+
+  Future<void> _trackOpen(String appId) async {
+    final id = appId.trim();
+    if (id.isEmpty) return;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final current = loadMiniProgramRecentIdsSync(sp);
+      final next = _cleanIds(<String>[id, ...current]).take(10).toList();
+      await saveMiniProgramRecentIds(sp, next);
+    } catch (_) {}
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/mini_programs/${Uri.encodeComponent(id)}/track_open',
+      );
+      await http
+          .post(uri, headers: await _authHeaders())
+          .timeout(_networkTimeout);
+    } catch (_) {}
+  }
+
+  List<Map<String, dynamic>> _localMiniPrograms() {
+    final out = <Map<String, dynamic>>[];
+    for (final m in visibleMiniApps()) {
+      final id = m.id.trim();
+      if (id.isEmpty) continue;
+      final scopes = <String>[];
+      final idLower = id.toLowerCase();
+      if (idLower.contains('pay') ||
+          idLower.contains('wallet') ||
+          idLower.contains('payment')) {
+        scopes.add('payments');
+      }
+      out.add(<String, dynamic>{
+        'app_id': id,
+        'title_en': m.titleEn,
+        'title_ar': m.titleAr,
+        'description_en': m.categoryEn,
+        'description_ar': m.categoryAr,
+        'status': 'active',
+        'review_status': 'approved',
+        'enabled': m.enabled,
+        'manifest_authority': 'local_fallback',
+        '__registry_source': 'local',
+        'usage_score': m.usageScore,
+        'rating': m.rating,
+        'rating_count': m.ratingCount,
+        'moments_shares_30d': m.momentsShares,
+        'moments_shares_total': m.momentsShares,
+        'owner_name': '',
+        'owner_contact': '',
+        'released_version': '',
+        'scopes': scopes,
+      });
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _mergeWithLocal(
+    List<Map<String, dynamic>> remote,
+  ) {
+    final merged = <Map<String, dynamic>>[
+      for (final p in remote) Map<String, dynamic>.from(p),
+    ];
+    final existing = <String>{};
+    for (final p in merged) {
+      final id = (p['app_id'] ?? '').toString().trim().toLowerCase();
+      if (id.isNotEmpty) existing.add(id);
+    }
+    for (final p in _localMiniPrograms()) {
+      final id = (p['app_id'] ?? '').toString().trim().toLowerCase();
+      if (id.isEmpty || existing.contains(id)) continue;
+      merged.add(p);
+    }
+    return merged;
   }
 
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _error = null;
-      _programs = const <Map<String, dynamic>>[];
+      _programs = _localMiniPrograms();
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/mini_programs');
-      final resp = await http.get(uri);
+      final resp = await http
+          .get(uri, headers: await _authHeaders())
+          .timeout(_networkTimeout);
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         setState(() {
           _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
           _loading = false;
+          _programs = _mergeWithLocal(_programs);
         });
         return;
       }
@@ -149,20 +391,15 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
           }
         }
       }
-      // Bus-only build: only show allow-listed mini-programs.
-      const allowedIds = <String>{'bus'};
-      final filtered = list
-          .where((p) => allowedIds.contains(
-              (p['app_id'] ?? '').toString().trim().toLowerCase()))
-          .toList();
       setState(() {
-        _programs = filtered;
+        _programs = _mergeWithLocal(list);
         _loading = false;
       });
     } catch (e) {
       setState(() {
         _error = e.toString();
         _loading = false;
+        _programs = _mergeWithLocal(_programs);
       });
     }
   }
@@ -330,6 +567,31 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
           haystack.contains('payment') ||
           haystack.contains('payments')) {
         cats.add('wallet');
+      } else if (haystack.contains('moments') ||
+          haystack.contains('social') ||
+          haystack.contains('people_nearby') ||
+          haystack.contains('nearby') ||
+          haystack.contains('sticker')) {
+        cats.add('social');
+      } else if (haystack.contains('channels') ||
+          haystack.contains('media') ||
+          haystack.contains('video')) {
+        cats.add('media');
+      } else if (haystack.contains('official') ||
+          haystack.contains('service') ||
+          haystack.contains('account') ||
+          haystack.contains('verified')) {
+        cats.add('services');
+      } else if (haystack.contains('favorite') ||
+          haystack.contains('bookmark') ||
+          haystack.contains('personal') ||
+          haystack.contains('saved')) {
+        cats.add('tools');
+      } else if (haystack.contains('gaming') ||
+          haystack.contains('game') ||
+          haystack.contains('arcade') ||
+          haystack.contains('puzzle')) {
+        cats.add('gaming');
       }
     }
     if (cats.isEmpty) {
@@ -341,6 +603,16 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
           return isArabic ? 'التنقل والنقل' : 'Transport';
         case 'wallet':
           return isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
+        case 'social':
+          return isArabic ? 'اجتماعي' : 'Social';
+        case 'media':
+          return isArabic ? 'الإعلام' : 'Media';
+        case 'services':
+          return isArabic ? 'الخدمات' : 'Services';
+        case 'tools':
+          return isArabic ? 'أدوات شخصية' : 'Personal tools';
+        case 'gaming':
+          return isArabic ? 'الألعاب' : 'Gaming';
         default:
           return key;
       }
@@ -372,7 +644,6 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
       final status = (p['status'] ?? '').toString().toLowerCase();
       if (_statusFilter == 'active' && status != 'active') return false;
       if (_statusFilter == 'draft' && status != 'draft') return false;
-      if (term.isEmpty) return true;
       final id = (p['app_id'] ?? '').toString().toLowerCase();
       final titleEn = (p['title_en'] ?? '').toString().toLowerCase();
       final titleAr = (p['title_ar'] ?? '').toString().toLowerCase();
@@ -420,17 +691,54 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
                 hay.contains('payment') ||
                 hay.contains('payments');
             break;
+          case 'social':
+            matches = hay.contains('moments') ||
+                hay.contains('social') ||
+                hay.contains('people_nearby') ||
+                hay.contains('nearby') ||
+                hay.contains('sticker') ||
+                hay.contains('ملصق');
+            break;
+          case 'media':
+            matches = hay.contains('channels') ||
+                hay.contains('media') ||
+                hay.contains('video') ||
+                hay.contains('قناة');
+            break;
+          case 'services':
+            matches = hay.contains('official') ||
+                hay.contains('service') ||
+                hay.contains('account') ||
+                hay.contains('verified') ||
+                hay.contains('رسمي');
+            break;
+          case 'tools':
+            matches = hay.contains('favorite') ||
+                hay.contains('bookmark') ||
+                hay.contains('personal') ||
+                hay.contains('saved') ||
+                hay.contains('مفض');
+            break;
           default:
             matches = false;
         }
         if (!matches) return false;
       }
+      if (term.isEmpty) return true;
       return id.contains(term) ||
           titleEn.contains(term) ||
           titleAr.contains(term) ||
           ownerName.contains(term);
     }).toList()
       ..sort((a, b) {
+        final appA = (a['app_id'] ?? '').toString().trim();
+        final appB = (b['app_id'] ?? '').toString().trim();
+        final pinnedA = _pinned.contains(appA);
+        final pinnedB = _pinned.contains(appB);
+        if (pinnedA != pinnedB) return pinnedB ? 1 : -1;
+        final opensA = _shelfOpenCount(appA);
+        final opensB = _shelfOpenCount(appB);
+        if (opensA != opensB) return opensB.compareTo(opensA);
         final ua =
             (a['usage_score'] is num) ? (a['usage_score'] as num).toInt() : 0;
         final ub =
@@ -444,13 +752,11 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
 
     if (filtered.isEmpty && !_loading) {
       return Center(
-        child: Text(
-          l.isArabic
+        child: ShamellEmptyState.empty(
+          icon: Icons.widgets_outlined,
+          title: l.isArabic
               ? 'لا توجد برامج مصغّرة مسجّلة بعد.'
               : 'No mini‑programs registered yet.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: .6),
-          ),
         ),
       );
     }
@@ -465,7 +771,10 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
         final status = (p['status'] ?? '').toString().toLowerCase();
         final ownerName = (p['owner_name'] ?? '').toString();
         final ownerContact = (p['owner_contact'] ?? '').toString().trim();
-        final releasedVersion = (p['released_version'] ?? '').toString();
+        final releasedVersion =
+            (p['released_version'] ?? p['last_version'] ?? '').toString();
+        final personalOpenCount = _shelfOpenCount(appId);
+        final seenVersion = _shelfSeenVersion(appId);
         final usageScore =
             (p['usage_score'] is num) ? (p['usage_score'] as num).toInt() : 0;
         final rating =
@@ -506,6 +815,18 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
                 : 'Released version: $releasedVersion',
           );
         }
+        if (personalOpenCount > 0) {
+          subtitleLines.add(
+            isArabic
+                ? 'استخدامك: $personalOpenCount فتح'
+                : 'Your use: $personalOpenCount opens',
+          );
+        }
+        if (seenVersion.isNotEmpty && seenVersion == releasedVersion) {
+          subtitleLines.add(
+            isArabic ? 'شوهد الإصدار الحالي' : 'Current release seen',
+          );
+        }
         if (rating > 0) {
           final label = isArabic ? 'التقييم' : 'Rating';
           final ratingText = rating.toStringAsFixed(1);
@@ -536,6 +857,31 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
             haystack.contains('payment') ||
             haystack.contains('payments')) {
           categoryLabel = isArabic ? 'المحفظة والمدفوعات' : 'Wallet & payments';
+        } else if (haystack.contains('moments') ||
+            haystack.contains('social') ||
+            haystack.contains('people_nearby') ||
+            haystack.contains('nearby') ||
+            haystack.contains('sticker')) {
+          categoryLabel = isArabic ? 'اجتماعي' : 'Social';
+        } else if (haystack.contains('channels') ||
+            haystack.contains('media') ||
+            haystack.contains('video')) {
+          categoryLabel = isArabic ? 'الإعلام' : 'Media';
+        } else if (haystack.contains('official') ||
+            haystack.contains('service') ||
+            haystack.contains('account') ||
+            haystack.contains('verified')) {
+          categoryLabel = isArabic ? 'الخدمات' : 'Services';
+        } else if (haystack.contains('favorite') ||
+            haystack.contains('bookmark') ||
+            haystack.contains('personal') ||
+            haystack.contains('saved')) {
+          categoryLabel = isArabic ? 'أدوات شخصية' : 'Personal tools';
+        } else if (haystack.contains('gaming') ||
+            haystack.contains('game') ||
+            haystack.contains('arcade') ||
+            haystack.contains('puzzle')) {
+          categoryLabel = isArabic ? 'الألعاب' : 'Gaming';
         }
         if (categoryLabel != null && categoryLabel.isNotEmpty) {
           subtitleLines.add(
@@ -668,6 +1014,8 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
           ),
           onTap: () {
             if (appId.isEmpty) return;
+            // ignore: discarded_futures
+            _trackOpen(appId);
             Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => MiniProgramPage(

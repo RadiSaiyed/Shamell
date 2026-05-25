@@ -6,11 +6,13 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'chat/chat_service.dart';
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'friend_annotations_store.dart';
 import 'l10n.dart';
+import 'network_image_helpers.dart';
+import 'session_cookie_store.dart';
 
 class WeChatPhotoViewerPage extends StatefulWidget {
   final String? baseUrl;
@@ -363,7 +365,7 @@ class _WeChatPhotoViewerPageState extends State<WeChatPhotoViewerPage> {
 
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(
+        builder: (_) => ShamellChatPage(
           baseUrl: baseUrl,
           initialPeerId: target.id,
           showBottomNav: false,
@@ -469,8 +471,9 @@ class _WeChatPhotoViewerPageState extends State<WeChatPhotoViewerPage> {
     Widget content;
 
     if (_isUrl(src)) {
-      content = Image.network(
+      content = shamellCachedNetworkImage(
         src,
+        context: context,
         fit: BoxFit.contain,
         loadingBuilder: (ctx, child, progress) {
           if (progress == null) return child;
@@ -676,22 +679,6 @@ class _WeChatSendToChatSheetState extends State<_WeChatSendToChatSheet> {
     super.dispose();
   }
 
-  Map<String, String> _decodeStringMap(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        final out = <String, String>{};
-        decoded.forEach((k, v) {
-          final key = (k ?? '').toString().trim();
-          final val = (v ?? '').toString().trim();
-          if (key.isNotEmpty && val.isNotEmpty) out[key] = val;
-        });
-        return out;
-      }
-    } catch (_) {}
-    return const <String, String>{};
-  }
-
   String _friendChatId(Map<String, dynamic> f) {
     final deviceId = (f['device_id'] ?? '').toString().trim();
     if (deviceId.isNotEmpty) return deviceId;
@@ -705,13 +692,7 @@ class _WeChatSendToChatSheetState extends State<_WeChatSendToChatSheet> {
   }
 
   Future<Map<String, String>> _authHeaders() async {
-    final h = <String, String>{};
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) h['sa_cookie'] = cookie;
-    } catch (_) {}
-    return h;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl);
   }
 
   Future<List<_WeChatSendToChatTarget>> _loadTargetsFromLocalChats() async {
@@ -741,8 +722,9 @@ class _WeChatSendToChatSheetState extends State<_WeChatSendToChatSheet> {
   }
 
   Future<List<_WeChatSendToChatTarget>> _loadTargetsFromFriends() async {
-    final sp = await SharedPreferences.getInstance();
-    final aliases = _decodeStringMap(sp.getString('friends.aliases') ?? '{}');
+    final aliases = await loadFriendAliases(
+      baseUrlOverride: widget.baseUrl,
+    );
     final uri = Uri.parse('${widget.baseUrl}/me/friends');
     final resp = await http.get(uri, headers: await _authHeaders());
     if (resp.statusCode < 200 || resp.statusCode >= 300) {

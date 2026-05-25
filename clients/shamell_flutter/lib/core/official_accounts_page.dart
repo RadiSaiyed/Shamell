@@ -13,16 +13,32 @@ import 'design_tokens.dart';
 import 'l10n.dart';
 import 'favorites_page.dart' show addFavoriteItemQuick;
 import 'mini_apps_config.dart';
-import '../mini_apps/payments/payments_shell.dart';
+import 'payments/payments_shell.dart';
 import 'ui_kit.dart';
 import 'call_signaling.dart';
-import 'moments_page.dart' show MomentsPage;
+import 'shamell_moments_page.dart';
 import 'channels_page.dart' show ChannelsPage;
+import 'cards_offers_page.dart';
+import 'official_account_models.dart'
+    show
+        normalizeOfficialQrPayload,
+        normalizeOfficialRemoteImageUrl,
+        normalizeOfficialRemoteWebsiteUrl;
+import 'official_account_register_page.dart';
 import 'redpacket_campaigns_page.dart';
 import 'app_shell_widgets.dart' show AppBG;
 import 'mini_program_runtime.dart';
+import 'session_cookie_store.dart';
+import 'shamell_loading_shimmer.dart';
 import 'wechat_ui.dart';
 import 'perf.dart';
+
+class _OfficialAccountsLoadError implements Exception {
+  final String message;
+  const _OfficialAccountsLoadError(this.message);
+  @override
+  String toString() => message;
+}
 
 class OfficialAccountsPage extends StatefulWidget {
   final String baseUrl;
@@ -56,6 +72,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
   String _selectedCategory = '';
   String _selectedCity = '';
   String _selectedKind = ''; // '', 'service', 'subscription'
+  bool _unreadOnly = false;
   final Map<String, OfficialNotificationMode?> _notifModes = {};
   final Map<String, String> _seenFeedTs = {};
   bool _featuredOnly = false;
@@ -80,16 +97,46 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
   }
 
   Future<Map<String, String>> _hdr({bool jsonBody = false}) async {
-    final h = <String, String>{};
-    if (jsonBody) h['content-type'] = 'application/json';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: jsonBody);
+  }
+
+  Future<List<_OfficialAccount>> _fetchAccounts(
+      {required bool followedOnly}) async {
+    final uri = Uri.parse('${widget.baseUrl}/official_accounts').replace(
+      queryParameters: <String, String>{
+        'followed_only': followedOnly ? 'true' : 'false',
+      },
+    );
+    final r = await http.get(uri, headers: await _hdr());
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw _OfficialAccountsLoadError('${r.statusCode}: ${r.body}');
+    }
+    final decoded = jsonDecode(r.body);
+    final raw = (decoded is Map && decoded['accounts'] is List)
+        ? decoded['accounts'] as List
+        : decoded is List
+            ? decoded
+            : const <dynamic>[];
+    final list = <_OfficialAccount>[];
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final m = e.cast<String, dynamic>();
+      list.add(_OfficialAccount.fromJson(m));
+      final id = (m['id'] ?? '').toString();
+      final campRaw = m['campaigns_active'];
+      if (id.isNotEmpty && campRaw is num) {
+        _campaignsActiveByAccountId[id] = campRaw.toInt();
       }
-    } catch (_) {}
-    return h;
+    }
+    try {
+      final store = ChatLocalStore();
+      final unreadMap = await store.loadUnread();
+      return list
+          .map((a) => a.withUnreadFrom(unreadMap[a.chatPeerId] ?? 0))
+          .toList();
+    } catch (_) {
+      return list;
+    }
   }
 
   Future<void> _load() async {
@@ -98,55 +145,14 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
       _error = '';
     });
     try {
-      final uri = Uri.parse('${widget.baseUrl}/official_accounts')
-          .replace(queryParameters: const {'followed_only': 'true'});
-      final r = await http.get(uri, headers: await _hdr());
-      if (r.statusCode >= 200 && r.statusCode < 300) {
-        final decoded = jsonDecode(r.body);
-        final list = <_OfficialAccount>[];
-        if (decoded is Map && decoded['accounts'] is List) {
-          for (final e in decoded['accounts'] as List) {
-            if (e is Map) {
-              final m = e.cast<String, dynamic>();
-              list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
-            }
-          }
-        } else if (decoded is List) {
-          for (final e in decoded) {
-            if (e is Map) {
-              final m = e.cast<String, dynamic>();
-              list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
-            }
-          }
-        }
-        var result = list;
-        try {
-          final store = ChatLocalStore();
-          final unreadMap = await store.loadUnread();
-          result = list
-              .map((a) => a.withUnreadFrom(unreadMap[a.chatPeerId] ?? 0))
-              .toList();
-        } catch (_) {}
-        setState(() {
-          _accounts = result;
-        });
-        await _preloadNotificationModes(result);
-      } else {
-        setState(() {
-          _error = '${r.statusCode}: ${r.body}';
-        });
-      }
+      final result = await _fetchAccounts(followedOnly: true);
+      if (!mounted) return;
+      setState(() {
+        _accounts = result;
+      });
+      await _preloadNotificationModes(result);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
       });
@@ -165,60 +171,17 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
       _discoverError = '';
     });
     try {
-      final uri = Uri.parse('${widget.baseUrl}/official_accounts')
-          .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdr());
-      if (r.statusCode >= 200 && r.statusCode < 300) {
-        final decoded = jsonDecode(r.body);
-        final list = <_OfficialAccount>[];
-        if (decoded is Map && decoded['accounts'] is List) {
-          for (final e in decoded['accounts'] as List) {
-            if (e is Map) {
-              final m = e.cast<String, dynamic>();
-              list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
-            }
-          }
-        } else if (decoded is List) {
-          for (final e in decoded) {
-            if (e is Map) {
-              final m = e.cast<String, dynamic>();
-              list.add(_OfficialAccount.fromJson(m));
-              final id = (m['id'] ?? '').toString();
-              final campRaw = m['campaigns_active'];
-              if (id.isNotEmpty && campRaw is num) {
-                _campaignsActiveByAccountId[id] = campRaw.toInt();
-              }
-            }
-          }
-        }
-        var result = list;
-        try {
-          final store = ChatLocalStore();
-          final unreadMap = await store.loadUnread();
-          result = list
-              .map((a) => a.withUnreadFrom(unreadMap[a.chatPeerId] ?? 0))
-              .toList();
-        } catch (_) {}
-        setState(() {
-          _allAccounts = result;
-          // Reset search results when reloading full directory.
-          _searchResults = const [];
-        });
-        // Best-effort preload of Moments social-impact stats for directory tiles.
-        // ignore: discarded_futures
-        _preloadMomentsStats(result);
-        await _preloadNotificationModes(result);
-      } else {
-        setState(() {
-          _discoverError = '${r.statusCode}: ${r.body}';
-        });
-      }
+      final result = await _fetchAccounts(followedOnly: false);
+      if (!mounted) return;
+      setState(() {
+        _allAccounts = result;
+        _searchResults = const [];
+      });
+      // ignore: discarded_futures
+      _preloadMomentsStats(result);
+      await _preloadNotificationModes(result);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _discoverError = e.toString();
       });
@@ -363,47 +326,59 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
   }
 
   Future<void> _preloadMomentsStats(List<_OfficialAccount> accounts) async {
-    try {
-      // Only preload a small subset to avoid too many requests.
-      final subset = accounts.take(10).toList();
-      for (final a in subset) {
-        final id = a.id.trim();
-        if (id.isEmpty) continue;
-        if (_momentsStatsByAccountId.containsKey(id)) continue;
-        try {
-          final uri = Uri.parse(
-                  '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(id)}/moments_stats')
-              .replace(queryParameters: const {});
-          final r = await http.get(uri, headers: await _hdr());
-          if (r.statusCode < 200 || r.statusCode >= 300) continue;
-          final decoded = jsonDecode(r.body);
-          if (decoded is! Map) continue;
-          final total = decoded['total_shares'];
-          final rp = decoded['redpacket_shares_30d'];
-          final shares30 = decoded['shares_30d'];
-          final followers = decoded['followers'];
-          final per1k = decoded['shares_per_1k_followers'];
-          final totalInt = total is num ? total.toInt() : 0;
-          final rpInt = rp is num ? rp.toInt() : 0;
-          final shares30Int = shares30 is num ? shares30.toInt() : 0;
-          final followersInt = followers is num ? followers.toInt() : 0;
-          final per1kVal = per1k is num ? per1k.toDouble() : 0.0;
-          if (!mounted) continue;
-          _momentsStatsByAccountId[id] = <String, dynamic>{
-            'total_shares': totalInt,
-            'redpacket_shares_30d': rpInt,
-            'shares_30d': shares30Int,
-            'followers': followersInt,
-            'shares_per_1k_followers': per1kVal,
-          };
-        } catch (_) {
-          continue;
-        }
+    // Only preload a small subset to avoid too many requests, and fan them
+    // out in parallel so the directory grid lights up quickly.
+    final targets = <_OfficialAccount>[];
+    for (final a in accounts) {
+      final id = a.id.trim();
+      if (id.isEmpty) continue;
+      if (_momentsStatsByAccountId.containsKey(id)) continue;
+      targets.add(a);
+      if (targets.length >= 10) break;
+    }
+    if (targets.isEmpty) return;
+    final headers = await _hdr();
+    final results = await Future.wait(targets.map((a) async {
+      final id = a.id.trim();
+      try {
+        final uri = Uri.parse(
+            '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(id)}/moments_stats');
+        final r = await http.get(uri, headers: headers);
+        if (r.statusCode < 200 || r.statusCode >= 300) return null;
+        final decoded = jsonDecode(r.body);
+        if (decoded is! Map) return null;
+        return MapEntry<String, Map<String, dynamic>>(id, <String, dynamic>{
+          'total_shares': (decoded['total_shares'] is num)
+              ? (decoded['total_shares'] as num).toInt()
+              : 0,
+          'redpacket_shares_30d': (decoded['redpacket_shares_30d'] is num)
+              ? (decoded['redpacket_shares_30d'] as num).toInt()
+              : 0,
+          'shares_30d': (decoded['shares_30d'] is num)
+              ? (decoded['shares_30d'] as num).toInt()
+              : 0,
+          'followers': (decoded['followers'] is num)
+              ? (decoded['followers'] as num).toInt()
+              : 0,
+          'shares_per_1k_followers':
+              (decoded['shares_per_1k_followers'] is num)
+                  ? (decoded['shares_per_1k_followers'] as num).toDouble()
+                  : 0.0,
+        });
+      } catch (_) {
+        return null;
       }
-      if (mounted) {
-        setState(() {});
-      }
-    } catch (_) {}
+    }));
+    if (!mounted) return;
+    var changed = false;
+    for (final entry in results) {
+      if (entry == null) continue;
+      _momentsStatsByAccountId[entry.key] = entry.value;
+      changed = true;
+    }
+    if (changed) {
+      setState(() {});
+    }
   }
 
   List<_OfficialAccount> _filtered(List<_OfficialAccount> src) {
@@ -446,6 +421,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         // Hot if either strong all-time, strong last 30d or high per-1k.
         return total >= 10 || rp >= 3 || s30 >= 3 || per1k >= 5.0;
       }).toList();
+    }
+    if (_unreadOnly) {
+      list = list.where((a) => a.unreadCount > 0 || _hasUnreadFeed(a)).toList();
     }
     return list;
   }
@@ -506,6 +484,297 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     } catch (_) {}
   }
 
+  List<_OfficialAccount> _applyFollowState(
+    List<_OfficialAccount> source,
+    _OfficialAccount account,
+    bool followed, {
+    required bool followingOnly,
+  }) {
+    final next = <_OfficialAccount>[];
+    var found = false;
+    for (final item in source) {
+      if (item.id == account.id) {
+        found = true;
+        if (!followingOnly || followed) {
+          next.add(item.withFollowed(followed));
+        }
+      } else {
+        next.add(item);
+      }
+    }
+    if (followingOnly && followed && !found) {
+      next.insert(0, account.withFollowed(true));
+    }
+    return next;
+  }
+
+  Future<void> _setAccountFollowFromList(
+      _OfficialAccount account, bool nextFollowed) async {
+    final id = account.id.trim();
+    if (id.isEmpty) return;
+    final l = L10n.of(context);
+    final endpoint = nextFollowed ? 'follow' : 'unfollow';
+    try {
+      final uri = Uri.parse(
+        '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(id)}/$endpoint',
+      );
+      final r = await http.post(uri, headers: await _hdr(jsonBody: true));
+      if (r.statusCode < 200 || r.statusCode >= 300) {
+        throw Exception('${r.statusCode}: ${r.body}');
+      }
+      if (!mounted) return;
+      setState(() {
+        _accounts = _applyFollowState(
+          _accounts,
+          account,
+          nextFollowed,
+          followingOnly: true,
+        );
+        _allAccounts = _applyFollowState(
+          _allAccounts,
+          account,
+          nextFollowed,
+          followingOnly: false,
+        );
+        _searchResults = _applyFollowState(
+          _searchResults,
+          account,
+          nextFollowed,
+          followingOnly: false,
+        );
+      });
+      Perf.action(nextFollowed
+          ? 'official_follow_from_directory'
+          : 'official_unfollow_from_directory');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            nextFollowed
+                ? (l.isArabic ? 'تمت متابعة الحساب.' : 'Account followed.')
+                : (l.isArabic
+                    ? 'تم إلغاء متابعة الحساب.'
+                    : 'Account unfollowed.'),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            l.isArabic
+                ? 'تعذر تحديث المتابعة الآن.'
+                : 'Could not update follow state right now.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Widget _buildFollowingInboxSummary(
+    BuildContext context,
+    ThemeData theme,
+    L10n l,
+    List<_OfficialAccount> accounts,
+  ) {
+    final isDark = theme.brightness == Brightness.dark;
+    final serviceCount =
+        accounts.where((a) => a.kind.toLowerCase() == 'service').length;
+    final subscriptionCount = accounts.length - serviceCount;
+    final unreadFeedCount = accounts.where(_hasUnreadFeed).length;
+    final unreadChatCount =
+        accounts.fold<int>(0, (sum, a) => sum + a.unreadCount);
+    final unreadTotal = unreadFeedCount + unreadChatCount;
+
+    Widget metric(String label, String value, IconData icon, Color color) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: isDark ? .18 : .10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: .22)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 6),
+            Text(
+              value,
+              style: theme.textTheme.labelLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: .70),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    ActionChip actionChip({
+      required String label,
+      required IconData icon,
+      required VoidCallback onPressed,
+    }) {
+      return ActionChip(
+        avatar: Icon(icon, size: 16),
+        label: Text(label),
+        onPressed: onPressed,
+        visualDensity: VisualDensity.compact,
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: .90)),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: theme.dividerColor.withValues(alpha: .90)),
+        ),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: WeChatPalette.green.withValues(alpha: .12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.campaign_outlined,
+                    color: WeChatPalette.green,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        l.isArabic
+                            ? 'صندوق الحسابات الرسمية'
+                            : 'Official account inbox',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        unreadTotal > 0
+                            ? (l.isArabic
+                                ? '$unreadTotal تحديث يحتاج انتباهك'
+                                : '$unreadTotal updates need attention')
+                            : (l.isArabic
+                                ? 'كل تحديثات الحسابات الرسمية مقروءة'
+                                : 'All official account updates are read'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: .68),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                metric(
+                  l.isArabic ? 'غير مقروء' : 'unread',
+                  '$unreadTotal',
+                  Icons.markunread_outlined,
+                  theme.colorScheme.primary,
+                ),
+                metric(
+                  l.isArabic ? 'خدمات' : 'services',
+                  '$serviceCount',
+                  Icons.grid_view_rounded,
+                  WeChatPalette.green,
+                ),
+                metric(
+                  l.isArabic ? 'اشتراكات' : 'subscriptions',
+                  '$subscriptionCount',
+                  Icons.article_outlined,
+                  Tokens.colorPayments,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                actionChip(
+                  label: l.isArabic ? 'غير المقروء' : 'Unread',
+                  icon: Icons.markunread_outlined,
+                  onPressed: () {
+                    setState(() {
+                      _unreadOnly = true;
+                    });
+                  },
+                ),
+                actionChip(
+                  label: l.isArabic ? 'الخدمات' : 'Services',
+                  icon: Icons.grid_view_rounded,
+                  onPressed: () {
+                    setState(() {
+                      _selectedKind = 'service';
+                    });
+                  },
+                ),
+                actionChip(
+                  label: l.isArabic ? 'الاشتراكات' : 'Subscriptions',
+                  icon: Icons.article_outlined,
+                  onPressed: () {
+                    setState(() {
+                      _selectedKind = 'subscription';
+                    });
+                  },
+                ),
+                if (unreadFeedCount > 0)
+                  actionChip(
+                    label: l.isArabic ? 'اعتبار المقروء' : 'Mark read',
+                    icon: Icons.done_all_outlined,
+                    onPressed: _markAllFeedsSeen,
+                  ),
+                actionChip(
+                  label: l.isArabic ? 'اكتشاف المزيد' : 'Discover more',
+                  icon: Icons.explore_outlined,
+                  onPressed: () {
+                    setState(() {
+                      _tabIndex = 1;
+                    });
+                    if (_allAccounts.isEmpty && !_loadingDiscover) {
+                      _loadDiscover();
+                    }
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
@@ -521,6 +790,12 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         ? (_loadingDiscover && baseList.isEmpty)
         : (_loading && baseList.isEmpty);
     final err = isDiscover ? _discoverError : _error;
+    final hasActiveFilters = _selectedCategory.trim().isNotEmpty ||
+        _selectedKind.trim().isNotEmpty ||
+        _selectedCity.trim().isNotEmpty ||
+        _featuredOnly ||
+        _hotOnly ||
+        _unreadOnly;
 
     // Collect categories for filter chips.
     final categorySet = <String>{};
@@ -572,7 +847,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     }
 
     // When a search query is active and we have results from /search,
-    // use them as the primary Discover list to get WeChat-like ranking.
+    // use them as the primary Discover list to get SyrChat-style ranking.
     final bool useSearch =
         _search.trim().isNotEmpty && _searchResults.isNotEmpty;
     final listForUi = useSearch ? _searchResults : filtered;
@@ -583,7 +858,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         listForUi.where((a) => a.kind.toLowerCase() != 'service').toList();
 
     final body = isLoading
-        ? const Center(child: CircularProgressIndicator())
+        ? const ShamellSkeletonList(itemCount: 6)
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -687,7 +962,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                             _selectedKind.isEmpty &&
                             _selectedCity.isEmpty &&
                             !_featuredOnly &&
-                            !_hotOnly,
+                            !_hotOnly &&
+                            !_unreadOnly,
                         onSelected: (sel) {
                           if (!sel) return;
                           setState(() {
@@ -696,6 +972,24 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                             _selectedCity = '';
                             _featuredOnly = false;
                             _hotOnly = false;
+                            _unreadOnly = false;
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.markunread_outlined, size: 14),
+                            const SizedBox(width: 4),
+                            Text(l.isArabic ? 'غير مقروء' : 'Unread'),
+                          ],
+                        ),
+                        selected: _unreadOnly,
+                        onSelected: (sel) {
+                          setState(() {
+                            _unreadOnly = sel;
                           });
                         },
                       ),
@@ -864,9 +1158,13 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                         ? (l.isArabic
                             ? 'لا توجد حسابات رسمية لعرضها.'
                             : 'No official accounts to show yet.')
-                        : (l.isArabic
-                            ? 'لا توجد حسابات رسمية متابَعة بعد.'
-                            : 'You are not following any official accounts yet.'),
+                        : hasActiveFilters
+                            ? (l.isArabic
+                                ? 'لا توجد حسابات تطابق هذه الفلاتر.'
+                                : 'No official accounts match these filters.')
+                            : (l.isArabic
+                                ? 'لا توجد حسابات رسمية متابَعة بعد.'
+                                : 'You are not following any official accounts yet.'),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurface.withValues(alpha: .70),
                     ),
@@ -876,6 +1174,13 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                 Expanded(
                   child: ListView(
                     children: [
+                      if (!isDiscover && _accounts.isNotEmpty && err.isEmpty)
+                        _buildFollowingInboxSummary(
+                          context,
+                          theme,
+                          l,
+                          _accounts,
+                        ),
                       if (isDiscover &&
                           _momentsStatsByAccountId.isNotEmpty &&
                           err.isEmpty) ...[
@@ -1047,10 +1352,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                                     if (!sel) return;
                                     Navigator.of(context).push(
                                       MaterialPageRoute(
-                                        builder: (_) => MomentsPage(
+                                        builder: (_) => ShamellMomentsPage(
                                           baseUrl: widget.baseUrl,
-                                          officialCity: recommendedCityLabel,
-                                          officialCategory: null,
                                         ),
                                       ),
                                     );
@@ -1066,10 +1369,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                                     if (!sel) return;
                                     Navigator.of(context).push(
                                       MaterialPageRoute(
-                                        builder: (_) => MomentsPage(
+                                        builder: (_) => ShamellMomentsPage(
                                           baseUrl: widget.baseUrl,
-                                          officialCategory: 'transport',
-                                          officialCity: recommendedCityLabel,
                                         ),
                                       ),
                                     );
@@ -1137,6 +1438,11 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
         backgroundColor: bgColor,
         elevation: 0.5,
         actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تسجيل حساب رسمي' : 'Register account',
+            icon: const Icon(Icons.add_business_outlined),
+            onPressed: _openOfficialAccountRegister,
+          ),
           if (hasAnyUnreadFeed)
             IconButton(
               tooltip:
@@ -1181,6 +1487,9 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     final chatId = (a.chatPeerId ?? '').trim();
     final hasChat = chatId.isNotEmpty;
     final mode = hasChat ? _notifModes[chatId] : null;
+    final hasMiniApp = (a.miniAppId ?? '').trim().isNotEmpty;
+    final showDirectoryActions = _tabIndex == 1;
+    final showMiniAppIcon = hasMiniApp && !showDirectoryActions;
 
     IconData? notifIcon;
     Color? notifColor;
@@ -1350,8 +1659,8 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
             a.lastItemTitle ??
                 (a.description ??
                     (l.isArabic
-                        ? 'حساب رسمي في Shamell'
-                        : 'Official account in Shamell')),
+                        ? 'حساب رسمي في SyrChat'
+                        : 'Official account in SyrChat')),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
@@ -1414,7 +1723,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                           '${per1k.toStringAsFixed(1)} مشاركة لكل ١٬٠٠٠ متابع');
                     }
                     if (rp30 > 0) {
-                      parts.add('$rp30 حزم حمراء في آخر ٣٠ يوماً');
+                      parts.add('$rp30 حزم خضراء في آخر ٣٠ يوماً');
                     }
                     return 'الأثر في اللحظات: ${parts.join(' · ')}';
                   } else {
@@ -1428,7 +1737,7 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                           '${per1k.toStringAsFixed(1)} shares per 1k followers');
                     }
                     if (rp30 > 0) {
-                      parts.add('$rp30 red‑packet moments in last 30 days');
+                      parts.add('$rp30 Green-Paket moments in last 30 days');
                     }
                     return 'Moments impact: ${parts.join(' · ')}';
                   }
@@ -1472,9 +1781,76 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                 ),
               ),
             ),
+          if (showDirectoryActions)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  if (a.followed)
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        await _setAccountFollowFromList(a, false);
+                      },
+                      icon: const Icon(Icons.check_circle_outline, size: 16),
+                      label: Text(l.isArabic ? 'متابَع' : 'Following'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    )
+                  else
+                    FilledButton.icon(
+                      onPressed: () async {
+                        await _setAccountFollowFromList(a, true);
+                      },
+                      icon: const Icon(Icons.add_circle_outline, size: 16),
+                      label: Text(l.isArabic ? 'متابعة' : 'Follow'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  if (hasMiniApp)
+                    OutlinedButton.icon(
+                      onPressed: () => _openMiniAppForAccount(context, a),
+                      icon: const Icon(Icons.open_in_new, size: 16),
+                      label: Text(l.isArabic ? 'الخدمة' : 'Service'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  if (hasChat && widget.onOpenChat != null)
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        final peerId = (a.chatPeerId ?? a.id).trim();
+                        if (peerId.isNotEmpty) {
+                          widget.onOpenChat?.call(peerId);
+                        }
+                      },
+                      icon: const Icon(Icons.chat_bubble_outline, size: 16),
+                      label: Text(l.isArabic ? 'محادثة' : 'Chat'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                ],
+              ),
+            ),
         ],
       ),
-      trailing: (!hasChat && a.unreadCount <= 0 && (a.miniAppId == null))
+      trailing: (!hasChat && a.unreadCount <= 0 && !showMiniAppIcon)
           ? null
           : Row(
               mainAxisSize: MainAxisSize.min,
@@ -1492,12 +1868,13 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
                       style: const TextStyle(color: Colors.white, fontSize: 10),
                     ),
                   ),
-                if ((a.miniAppId ?? '').isNotEmpty) ...[
+                if (showMiniAppIcon) ...[
                   if (a.unreadCount > 0) const SizedBox(width: 8),
                   IconButton(
                     tooltip: () {
                       final id = (a.miniAppId ?? '').trim();
-                      if (id == 'bus') return l.isArabic ? 'فتح الباص' : 'Open bus';
+                      if (id == 'bus')
+                        return l.isArabic ? 'فتح الباص' : 'Open bus';
                       if (id == 'payments') {
                         return l.isArabic ? 'فتح المحفظة' : 'Open wallet';
                       }
@@ -1564,6 +1941,19 @@ class _OfficialAccountsPageState extends State<OfficialAccountsPage> {
     }
 
     openMod(raw);
+  }
+
+  Future<void> _openOfficialAccountRegister() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => OfficialAccountRegisterPage(baseUrl: widget.baseUrl),
+      ),
+    );
+    if (!mounted) return;
+    await _load();
+    if (_tabIndex == 1) {
+      await _loadDiscover();
+    }
   }
 
   Future<void> _showAccountNotificationSheet(_OfficialAccount a) async {
@@ -1750,16 +2140,7 @@ class _OfficialAccountDeepLinkPageState
   }
 
   Future<Map<String, String>> _hdr({bool jsonBody = false}) async {
-    final h = <String, String>{};
-    if (jsonBody) h['content-type'] = 'application/json';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return h;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: jsonBody);
   }
 
   Future<void> _load() async {
@@ -1768,31 +2149,29 @@ class _OfficialAccountDeepLinkPageState
       _error = '';
     });
     try {
-      final uri = Uri.parse('${widget.baseUrl}/official_accounts')
-          .replace(queryParameters: const {'followed_only': 'false'});
+      final uri = Uri.parse('${widget.baseUrl}/official_accounts').replace(
+        queryParameters: <String, String>{
+          'followed_only': 'false',
+          'account_id': widget.accountId,
+        },
+      );
       final r = await http.get(uri, headers: await _hdr());
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
-        final list = <OfficialAccountHandle>[];
-        if (decoded is Map && decoded['accounts'] is List) {
-          for (final e in decoded['accounts'] as List) {
-            if (e is Map) {
-              list.add(
-                  OfficialAccountHandle.fromJson(e.cast<String, dynamic>()));
-            }
-          }
-        } else if (decoded is List) {
-          for (final e in decoded) {
-            if (e is Map) {
-              list.add(
-                  OfficialAccountHandle.fromJson(e.cast<String, dynamic>()));
-            }
+        final raw = (decoded is Map && decoded['accounts'] is List)
+            ? decoded['accounts'] as List
+            : decoded is List
+                ? decoded
+                : const <dynamic>[];
+        OfficialAccountHandle? acc;
+        for (final e in raw) {
+          if (e is! Map) continue;
+          final h = OfficialAccountHandle.fromJson(e.cast<String, dynamic>());
+          if (h.id == widget.accountId) {
+            acc = h;
+            break;
           }
         }
-        final acc = list
-            .where((a) => a.id == widget.accountId)
-            .cast<OfficialAccountHandle?>()
-            .firstWhere((a) => a != null, orElse: () => null);
         if (!mounted) return;
         if (acc == null) {
           setState(() {
@@ -1828,7 +2207,7 @@ class _OfficialAccountDeepLinkPageState
       return DomainPageScaffold(
         background: const AppBG(),
         title: l.isArabic ? 'الحسابات الرسمية' : 'Official accounts',
-        child: const Center(child: CircularProgressIndicator()),
+        child: const ShamellSkeletonList(itemCount: 5),
         scrollable: false,
       );
     }
@@ -1885,16 +2264,7 @@ class _OfficialFeedItemDeepLinkPageState
   }
 
   Future<Map<String, String>> _hdr({bool jsonBody = false}) async {
-    final h = <String, String>{};
-    if (jsonBody) h['content-type'] = 'application/json';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return h;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: jsonBody);
   }
 
   Future<void> _load() async {
@@ -1903,33 +2273,29 @@ class _OfficialFeedItemDeepLinkPageState
       _error = '';
     });
     try {
-      final uri = Uri.parse('${widget.baseUrl}/official_accounts');
-      final r = await http.get(
-        uri.replace(queryParameters: const {'followed_only': 'false'}),
-        headers: await _hdr(),
+      final uri = Uri.parse('${widget.baseUrl}/official_accounts').replace(
+        queryParameters: <String, String>{
+          'followed_only': 'false',
+          'account_id': widget.accountId,
+        },
       );
+      final r = await http.get(uri, headers: await _hdr());
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
-        final list = <OfficialAccountHandle>[];
-        if (decoded is Map && decoded['accounts'] is List) {
-          for (final e in decoded['accounts'] as List) {
-            if (e is Map) {
-              list.add(
-                  OfficialAccountHandle.fromJson(e.cast<String, dynamic>()));
-            }
-          }
-        } else if (decoded is List) {
-          for (final e in decoded) {
-            if (e is Map) {
-              list.add(
-                  OfficialAccountHandle.fromJson(e.cast<String, dynamic>()));
-            }
+        final raw = (decoded is Map && decoded['accounts'] is List)
+            ? decoded['accounts'] as List
+            : decoded is List
+                ? decoded
+                : const <dynamic>[];
+        OfficialAccountHandle? acc;
+        for (final e in raw) {
+          if (e is! Map) continue;
+          final h = OfficialAccountHandle.fromJson(e.cast<String, dynamic>());
+          if (h.id == widget.accountId) {
+            acc = h;
+            break;
           }
         }
-        final acc = list
-            .where((a) => a.id == widget.accountId)
-            .cast<OfficialAccountHandle?>()
-            .firstWhere((a) => a != null, orElse: () => null);
         if (acc == null) {
           if (!mounted) return;
           setState(() {
@@ -1938,9 +2304,9 @@ class _OfficialFeedItemDeepLinkPageState
           });
           return;
         }
-        final feedUri =
-            Uri.parse('${widget.baseUrl}/official_accounts/${acc.id}/feed')
-                .replace(queryParameters: const {'limit': '50'});
+        final feedUri = Uri.parse(
+                '${widget.baseUrl}/official_accounts/${Uri.encodeComponent(acc.id)}/feed')
+            .replace(queryParameters: const {'limit': '50'});
         final fr = await http.get(feedUri, headers: await _hdr());
         if (fr.statusCode >= 200 && fr.statusCode < 300) {
           final fd = jsonDecode(fr.body);
@@ -1996,7 +2362,7 @@ class _OfficialFeedItemDeepLinkPageState
       return DomainPageScaffold(
         background: const AppBG(),
         title: l.isArabic ? 'الحسابات الرسمية' : 'Official accounts',
-        child: const Center(child: CircularProgressIndicator()),
+        child: const ShamellSkeletonList(itemCount: 5),
         scrollable: false,
       );
     }
@@ -2155,7 +2521,7 @@ class _OfficialFeedItemDeepLinkPageState
                       if (text.isEmpty) return;
                       if (!text.contains('#')) {
                         text += l.isArabic
-                            ? ' #شامل_حساب_رسمي'
+                            ? ' #سرتشات_حساب_رسمي'
                             : ' #ShamellOfficial';
                       }
                       try {
@@ -2181,7 +2547,8 @@ class _OfficialFeedItemDeepLinkPageState
                       if (!mounted) return;
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => MomentsPage(baseUrl: widget.baseUrl),
+                          builder: (_) =>
+                              ShamellMomentsPage(baseUrl: widget.baseUrl),
                         ),
                       );
                     },
@@ -2211,7 +2578,7 @@ class _OfficialFeedItemDeepLinkPageState
                       if (text.isEmpty) return;
                       if (!text.contains('#')) {
                         text += l.isArabic
-                            ? ' #شامل_حساب_رسمي'
+                            ? ' #سرتشات_حساب_رسمي'
                             : ' #ShamellOfficial';
                       }
                       try {
@@ -2237,7 +2604,8 @@ class _OfficialFeedItemDeepLinkPageState
                       if (!mounted) return;
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => MomentsPage(baseUrl: widget.baseUrl),
+                          builder: (_) =>
+                              ShamellMomentsPage(baseUrl: widget.baseUrl),
                         ),
                       );
                     },
@@ -2389,16 +2757,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
   }
 
   Future<Map<String, String>> _hdr({bool jsonBody = false}) async {
-    final h = <String, String>{};
-    if (jsonBody) h['content-type'] = 'application/json';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return h;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: jsonBody);
   }
 
   Future<void> _load() async {
@@ -2514,7 +2873,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
           _campaignDefaultAmountCents = defAmt;
           _campaignDefaultCount = defCount;
         });
-        // Load Channels clips for this Official (WeChat‑style cross‑view).
+        // Load Channels clips for this Official (SyrChat Super-App cross‑view).
         // ignore: discarded_futures
         _loadChannelClips();
         // Load latest Moments posts for this Official so we can show a
@@ -2911,9 +3270,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) => MomentsPage(
+                              builder: (_) => ShamellMomentsPage(
                                 baseUrl: widget.baseUrl,
-                                originOfficialAccountId: widget.account.id,
                               ),
                             ),
                           );
@@ -3007,8 +3365,134 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     );
   }
 
+  String _feedItemShareText(_OfficialFeedItem item, L10n l) {
+    final acc = widget.account;
+    final buf = StringBuffer();
+    final title = (item.title ?? '').trim();
+    final snippet = (item.snippet ?? '').trim();
+    if (title.isNotEmpty) {
+      buf.writeln(title);
+    } else {
+      buf.writeln(acc.name);
+    }
+    if (snippet.isNotEmpty) {
+      buf.writeln(snippet);
+    }
+    buf.writeln();
+    buf.writeln(l.isArabic ? 'من ${acc.name}' : 'From ${acc.name}');
+    if (item.id.trim().isNotEmpty) {
+      buf.writeln('shamell://official/${acc.id}/${item.id}');
+    } else {
+      buf.writeln('shamell://official/${acc.id}');
+    }
+    return buf.toString().trim();
+  }
+
+  Future<void> _saveFeedItem(_OfficialFeedItem item) async {
+    final l = L10n.of(context);
+    final text = _feedItemShareText(item, l);
+    if (text.isEmpty) return;
+    await addFavoriteItemQuick(text);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          l.isArabic ? 'تم حفظ هذا العنصر في المفضلة.' : 'Saved to favorites.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _shareFeedItem(_OfficialFeedItem item) async {
+    final l = L10n.of(context);
+    final text = _feedItemShareText(item, l);
+    if (text.isEmpty) return;
+    await Share.share(text);
+  }
+
+  Widget _buildFeedItemActions(
+    BuildContext context,
+    ThemeData theme,
+    L10n l,
+    _OfficialFeedItem item, {
+    required bool hasMiniApp,
+  }) {
+    ButtonStyle style() {
+      return OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        foregroundColor: theme.colorScheme.onSurface.withValues(alpha: .78),
+      );
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      children: [
+        OutlinedButton.icon(
+          onPressed: () async {
+            await _saveFeedItem(item);
+          },
+          icon: const Icon(Icons.bookmark_add_outlined, size: 16),
+          label: Text(l.isArabic ? 'حفظ' : 'Save'),
+          style: style(),
+        ),
+        OutlinedButton.icon(
+          onPressed: () async {
+            await _shareFeedItem(item);
+          },
+          icon: const Icon(Icons.share_outlined, size: 16),
+          label: Text(l.isArabic ? 'مشاركة' : 'Share'),
+          style: style(),
+        ),
+        FilledButton.icon(
+          onPressed: () => _openDeeplink(item),
+          icon: Icon(
+            hasMiniApp ? Icons.open_in_new : Icons.article_outlined,
+            size: 16,
+          ),
+          label: Text(
+            hasMiniApp
+                ? (l.isArabic ? 'فتح الخدمة' : 'Open service')
+                : (l.isArabic ? 'قراءة' : 'Read'),
+          ),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(0, 32),
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+      ],
+    );
+  }
+
   Future<void> _openMiniAppById(String dl,
       {Map<String, dynamic>? payload}) async {
+    if (dl == 'cards' ||
+        dl == 'offers' ||
+        dl == 'coupons' ||
+        dl == 'member_cards') {
+      final rawKind = (payload?['kind'] ?? '').toString().trim();
+      final kind = rawKind.isEmpty ? null : rawKind;
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CardsOffersPage(
+            baseUrl: widget.baseUrl,
+            officialAccountId: widget.account.id,
+            kind: kind,
+            title: L10n.of(context).isArabic
+                ? 'عروض ${widget.account.name}'
+                : '${widget.account.name} offers',
+          ),
+        ),
+      );
+      return;
+    }
     if (dl == 'payments' || dl == 'alias' || dl == 'merchant') {
       try {
         final sp = await SharedPreferences.getInstance();
@@ -3052,7 +3536,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Open mini‑app: ${app.title(isArabic: L10n.of(context).isArabic)}',
+          'Open Mini Program: ${app.title(isArabic: L10n.of(context).isArabic)}',
         ),
       ),
     );
@@ -3078,7 +3562,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
     bool randomMode = true;
     bool submitting = false;
     String? error;
-    await showModalBottomSheet<void>(
+    try {
+      await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -3100,8 +3585,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                     children: [
                       Text(
                         l.isArabic
-                            ? 'إصدار حزم حمراء لهذه الحملة'
-                            : 'Issue red packets for this campaign',
+                            ? 'إصدار حزم خضراء لهذه الحملة'
+                            : 'Issue Green Pakets for this campaign',
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),
@@ -3228,8 +3713,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                     if (cnt > 100) {
                                       setStateSB(() {
                                         error = l.isArabic
-                                            ? 'بحد أقصى ١٠٠ مستلم لكل حزمة حمراء.'
-                                            : 'Maximum 100 recipients per red packet.';
+                                            ? 'بحد أقصى ١٠٠ مستلم لكل حزمة خضراء.'
+                                            : 'Maximum 100 recipients per Green Paket.';
                                       });
                                       return;
                                     }
@@ -3260,8 +3745,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                           SnackBar(
                                             content: Text(
                                               l.isArabic
-                                                  ? 'تم إصدار الحزم الحمراء لهذه الحملة.'
-                                                  : 'Red packets issued for this campaign.',
+                                                  ? 'تم إصدار الحزم الخضراء لهذه الحملة.'
+                                                  : 'Green Pakets issued for this campaign.',
                                             ),
                                           ),
                                         );
@@ -3299,6 +3784,11 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         );
       },
     );
+    } finally {
+      amountCtrl.dispose();
+      countCtrl.dispose();
+      noteCtrl.dispose();
+    }
   }
 
   Future<void> _issueCampaignRedPacket({
@@ -3425,263 +3915,287 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
         items.where((e) => e.type.toLowerCase() != 'article').toList();
     final hasFooter = (acc.miniAppId != null && acc.miniAppId!.isNotEmpty) ||
         _relatedAccounts.isNotEmpty;
+    final accountKindLabel = (acc.kind.toLowerCase() == 'service')
+        ? (l.isArabic ? 'حساب خدمة' : 'Service account')
+        : (l.isArabic ? 'حساب اشتراك' : 'Subscription account');
+    final hasWebsite = (acc.websiteUrl ?? '').trim().isNotEmpty;
+    final hasQr = (acc.qrPayload ?? '').trim().isNotEmpty;
+    final description = (acc.description ?? '').trim();
+    final category = (acc.category ?? '').trim();
+    final city = (acc.city ?? '').trim();
+    final openingHours = (acc.openingHours ?? '').trim();
+
+    void openAccountChat() {
+      final id = widget.account.chatPeerId?.trim().isNotEmpty == true
+          ? widget.account.chatPeerId!.trim()
+          : widget.account.id.trim();
+      if (id.isEmpty) return;
+      widget.onOpenChat?.call(id);
+    }
+
+    Future<void> shareAccount() async {
+      final buf = StringBuffer();
+      buf.writeln(acc.name);
+      if (description.isNotEmpty) {
+        buf.writeln(description);
+      }
+      final link = hasWebsite
+          ? acc.websiteUrl!.trim()
+          : (hasQr ? acc.qrPayload!.trim() : 'shamell://official/${acc.id}');
+      buf.writeln(link);
+      final text = buf.toString().trim();
+      if (text.isEmpty) return;
+      await Share.share(text);
+    }
+
+    Future<void> openWebsite() async {
+      if (!hasWebsite) return;
+      final url = Uri.tryParse(acc.websiteUrl!.trim());
+      if (url == null) return;
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    }
+
+    void showAccountQr() {
+      showDialog(
+        context: context,
+        builder: (_) {
+          return AlertDialog(
+            title: Text(l.isArabic ? 'رمز QR للحساب' : 'Account QR code'),
+            content: SizedBox(
+              width: 220,
+              height: 220,
+              child: Center(
+                child: QrImageView(
+                  data: hasQr
+                      ? acc.qrPayload!.trim()
+                      : 'shamell://official/${acc.id}',
+                  size: 200,
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    Widget metaChip({
+      required IconData icon,
+      required String label,
+      Color? color,
+    }) {
+      final accent = color ?? theme.colorScheme.primary;
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: isDark ? .18 : .08),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: accent.withValues(alpha: .12), width: .7),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: accent.withValues(alpha: .92)),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: .86),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     final body = _loading
-        ? const Center(child: CircularProgressIndicator())
+        ? const ShamellSkeletonList(itemCount: 6)
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Padding(
                 padding: const EdgeInsets.only(left: 12, right: 12, top: 8),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 22,
-                      backgroundImage: acc.avatarUrl != null
-                          ? NetworkImage(acc.avatarUrl!)
-                          : null,
-                      child: acc.avatarUrl == null
-                          ? Text(
-                              acc.name.isNotEmpty
-                                  ? acc.name.characters.first.toUpperCase()
-                                  : '?',
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w600),
-                            )
-                          : null,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+                  decoration: BoxDecoration(
+                    color: isDark ? theme.colorScheme.surface : Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: theme.dividerColor.withValues(alpha: .55),
+                      width: .7,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            acc.name,
-                            style: theme.textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w700),
-                          ),
-                          if (acc.category != null && acc.category!.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2.0),
-                              child: Text(
-                                acc.category!,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.primary,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          const SizedBox(height: 2),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primary
-                                  .withValues(alpha: .08),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.campaign_outlined,
-                                    size: 12, color: theme.colorScheme.primary),
-                                const SizedBox(width: 4),
-                                Text(
-                                  (acc.kind.toLowerCase() == 'service')
-                                      ? (l.isArabic
-                                          ? 'حساب خدمة'
-                                          : 'Service account')
-                                      : (l.isArabic
-                                          ? 'حساب اشتراك'
-                                          : 'Subscription account'),
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                if (acc.featured) ...[
-                                  const SizedBox(width: 4),
-                                  Icon(
-                                    Icons.star_rounded,
-                                    size: 12,
-                                    color: theme.colorScheme.secondary,
-                                  ),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    l.isArabic ? 'مميز' : 'Featured',
+                          CircleAvatar(
+                            radius: 30,
+                            backgroundImage: acc.avatarUrl != null
+                                ? NetworkImage(acc.avatarUrl!)
+                                : null,
+                            child: acc.avatarUrl == null
+                                ? Text(
+                                    acc.name.isNotEmpty
+                                        ? acc.name.characters.first
+                                            .toUpperCase()
+                                        : '?',
                                     style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w500,
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800,
                                     ),
-                                  ),
-                                ],
+                                  )
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        acc.name,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.titleMedium
+                                            ?.copyWith(
+                                          fontWeight: FontWeight.w800,
+                                          letterSpacing: 0,
+                                        ),
+                                      ),
+                                    ),
+                                    if (acc.verified)
+                                      Icon(
+                                        Icons.verified,
+                                        size: 18,
+                                        color: Tokens.colorPayments,
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: [
+                                    metaChip(
+                                      icon: Icons.campaign_outlined,
+                                      label: accountKindLabel,
+                                    ),
+                                    if (acc.featured)
+                                      metaChip(
+                                        icon: Icons.star_rounded,
+                                        label: l.isArabic ? 'مميز' : 'Featured',
+                                        color: theme.colorScheme.secondary,
+                                      ),
+                                    if (category.isNotEmpty)
+                                      metaChip(
+                                        icon: Icons.category_outlined,
+                                        label: category,
+                                      ),
+                                    if (city.isNotEmpty)
+                                      metaChip(
+                                        icon: Icons.location_on_outlined,
+                                        label: city,
+                                      ),
+                                    if (openingHours.isNotEmpty)
+                                      metaChip(
+                                        icon: Icons.access_time,
+                                        label: openingHours,
+                                      ),
+                                  ],
+                                ),
                               ],
                             ),
                           ),
-                          if (acc.city != null && acc.city!.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2.0),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.location_on_outlined,
-                                      size: 14),
-                                  const SizedBox(width: 4),
-                                  Flexible(
-                                    child: Text(
-                                      acc.city!,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: theme.textTheme.bodySmall,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          if (acc.openingHours != null &&
-                              acc.openingHours!.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2.0),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.access_time, size: 14),
-                                  const SizedBox(width: 4),
-                                  Flexible(
-                                    child: Text(
-                                      acc.openingHours!,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: theme.textTheme.bodySmall,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          if (acc.description != null &&
-                              acc.description!.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4.0),
-                              child: Text(
-                                acc.description!,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withValues(alpha: .70),
-                                ),
-                              ),
-                            ),
                         ],
                       ),
-                    ),
-                    TextButton(
-                      onPressed: _toggleFollow,
-                      child: Text(_followed
-                          ? (l.isArabic ? 'إلغاء المتابعة' : 'Unfollow')
-                          : (l.isArabic ? 'متابعة' : 'Follow')),
-                    ),
-                    if (widget.onOpenChat != null)
-                      TextButton(
-                        onPressed: () {
-                          final id =
-                              widget.account.chatPeerId?.trim().isNotEmpty ==
-                                      true
-                                  ? widget.account.chatPeerId!.trim()
-                                  : widget.account.id.trim();
-                          if (id.isEmpty) return;
-                          widget.onOpenChat?.call(id);
-                        },
-                        child: Text(
-                          l.isArabic ? 'دردشة' : 'Chat',
+                      if (description.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          description,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: .74),
+                            height: 1.28,
+                          ),
                         ),
-                      ),
-                    if (_hasChatPeer)
-                      IconButton(
-                        tooltip: l.isArabic
-                            ? 'إعدادات الإشعارات'
-                            : 'Notification settings',
-                        icon: Icon(
-                          _notifMode == OfficialNotificationMode.muted || _muted
-                              ? Icons.notifications_off_outlined
-                              : (_notifMode == OfficialNotificationMode.summary
-                                  ? Icons.notifications_none_outlined
-                                  : Icons.notifications_active_outlined),
-                        ),
-                        onPressed: _showNotificationSheet,
-                      ),
-                    IconButton(
-                      tooltip: l.isArabic ? 'مشاركة الحساب' : 'Share account',
-                      icon: const Icon(Icons.share),
-                      onPressed: () async {
-                        final buf = StringBuffer();
-                        buf.writeln(acc.name);
-                        if (acc.description != null &&
-                            acc.description!.isNotEmpty) {
-                          buf.writeln(acc.description);
-                        }
-                        String? link;
-                        if (acc.websiteUrl != null &&
-                            acc.websiteUrl!.isNotEmpty) {
-                          link = acc.websiteUrl;
-                        } else if (acc.qrPayload != null &&
-                            acc.qrPayload!.isNotEmpty) {
-                          link = acc.qrPayload;
-                        } else {
-                          link = 'shamell://official/${acc.id}';
-                        }
-                        buf.writeln(link);
-                        final text = buf.toString().trim();
-                        if (text.isEmpty) return;
-                        await Share.share(text);
-                      },
-                    ),
-                    if (acc.websiteUrl != null && acc.websiteUrl!.isNotEmpty)
-                      IconButton(
-                        tooltip: l.isArabic ? 'موقع الويب' : 'Website',
-                        icon: const Icon(Icons.link),
-                        onPressed: () async {
-                          final url = Uri.tryParse(acc.websiteUrl!);
-                          if (url == null) return;
-                          if (await canLaunchUrl(url)) {
-                            await launchUrl(url,
-                                mode: LaunchMode.externalApplication);
-                          }
-                        },
-                      ),
-                    if (acc.qrPayload != null && acc.qrPayload!.isNotEmpty)
-                      IconButton(
-                        tooltip: l.isArabic ? 'رمز QR' : 'QR code',
-                        icon: const Icon(Icons.qr_code_2),
-                        onPressed: () {
-                          showDialog(
-                            context: context,
-                            builder: (_) {
-                              return AlertDialog(
-                                title: Text(
-                                  l.isArabic
-                                      ? 'رمز QR للحساب'
-                                      : 'Account QR code',
-                                ),
-                                content: SizedBox(
-                                  width: 220,
-                                  height: 220,
-                                  child: Center(
-                                    child: QrImageView(
-                                      data: (acc.qrPayload != null &&
-                                              acc.qrPayload!.isNotEmpty)
-                                          ? acc.qrPayload!
-                                          : 'shamell://official/${acc.id}',
-                                      size: 200,
-                                    ),
-                                  ),
-                                ),
-                              );
+                      ],
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          if (_followed)
+                            OutlinedButton.icon(
+                              onPressed: _toggleFollow,
+                              icon: const Icon(Icons.check_circle_outline),
+                              label: Text(
+                                l.isArabic ? 'متابَع' : 'Following',
+                              ),
+                            )
+                          else
+                            FilledButton.icon(
+                              onPressed: _toggleFollow,
+                              icon: const Icon(Icons.add),
+                              label: Text(l.isArabic ? 'متابعة' : 'Follow'),
+                            ),
+                          if (widget.onOpenChat != null)
+                            OutlinedButton.icon(
+                              onPressed: openAccountChat,
+                              icon: const Icon(Icons.chat_bubble_outline),
+                              label: Text(l.isArabic ? 'دردشة' : 'Chat'),
+                            ),
+                          if (_hasChatPeer)
+                            IconButton(
+                              tooltip: l.isArabic
+                                  ? 'إعدادات الإشعارات'
+                                  : 'Notification settings',
+                              icon: Icon(
+                                _notifMode == OfficialNotificationMode.muted ||
+                                        _muted
+                                    ? Icons.notifications_off_outlined
+                                    : (_notifMode ==
+                                            OfficialNotificationMode.summary
+                                        ? Icons.notifications_none_outlined
+                                        : Icons.notifications_active_outlined),
+                              ),
+                              onPressed: _showNotificationSheet,
+                            ),
+                          IconButton(
+                            tooltip:
+                                l.isArabic ? 'مشاركة الحساب' : 'Share account',
+                            icon: const Icon(Icons.share_outlined),
+                            onPressed: () async {
+                              await shareAccount();
                             },
-                          );
-                        },
+                          ),
+                          if (hasWebsite)
+                            IconButton(
+                              tooltip: l.isArabic ? 'موقع الويب' : 'Website',
+                              icon: const Icon(Icons.link),
+                              onPressed: () async {
+                                await openWebsite();
+                              },
+                            ),
+                          IconButton(
+                            tooltip: l.isArabic ? 'رمز QR' : 'QR code',
+                            icon: const Icon(Icons.qr_code_2),
+                            onPressed: showAccountQr,
+                          ),
+                        ],
                       ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -3705,8 +4219,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                           Expanded(
                             child: Text(
                               l.isArabic
-                                  ? 'حملة حزم حمراء نشطة لهذا التاجر.'
-                                  : 'Active red‑packet campaign for this merchant.',
+                                  ? 'حملة حزم خضراء نشطة لهذا التاجر.'
+                                  : 'Active Green-Paket campaign for this merchant.',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.colorScheme.onSurface
                                     .withValues(alpha: .80),
@@ -3757,8 +4271,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                             icon: const Icon(Icons.add_card, size: 18),
                             label: Text(
                               l.isArabic
-                                  ? 'إصدار حزم حمراء لهذه الحملة'
-                                  : 'Issue red packets for this campaign',
+                                  ? 'إصدار حزم خضراء لهذه الحملة'
+                                  : 'Issue Green Pakets for this campaign',
                             ),
                           ),
                           TextButton.icon(
@@ -3792,8 +4306,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) =>
-                                        MomentsPage(baseUrl: widget.baseUrl),
+                                    builder: (_) => ShamellMomentsPage(
+                                      baseUrl: widget.baseUrl,
+                                    ),
                                   ),
                                 );
                               } catch (_) {}
@@ -3823,9 +4338,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => MomentsPage(
+                          builder: (_) => ShamellMomentsPage(
                             baseUrl: widget.baseUrl,
-                            originOfficialAccountId: widget.account.id,
                           ),
                         ),
                       );
@@ -3865,7 +4379,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                   'الأثر الاجتماعي في اللحظات: تمت مشاركة هذا الحساب $total مرة';
                               final parts = <String>[];
                               if (rp > 0) {
-                                parts.add('$rp حزم حمراء في آخر ٣٠ يوماً');
+                                parts.add('$rp حزم خضراء في آخر ٣٠ يوماً');
                               }
                               if (c30 > 0) {
                                 parts.add(
@@ -3893,7 +4407,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                               final parts = <String>[];
                               if (rp > 0) {
                                 parts.add(
-                                    '$rp red‑packet moments in last 30 days');
+                                    '$rp Green-Paket moments in last 30 days');
                               }
                               if (c30 > 0) {
                                 parts.add(
@@ -3961,8 +4475,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                         const SizedBox(height: 8),
                                         Text(
                                           isAr
-                                              ? 'يعتمد هذا المؤشر على عدد مرات مشاركة الحساب في اللحظات، وعدد المستخدمين المختلفين الذين قاموا بالمشاركة، مع التركيز على المشاركات التي تحتوي على حزم حمراء.'
-                                              : 'This indicator is based on how often this account is shared in Moments, how many different users share it, and how many of those shares relate to red‑packet campaigns.',
+                                              ? 'يعتمد هذا المؤشر على عدد مرات مشاركة الحساب في اللحظات، وعدد المستخدمين المختلفين الذين قاموا بالمشاركة، مع التركيز على المشاركات التي تحتوي على حزم خضراء.'
+                                              : 'This indicator is based on how often this account is shared in Moments, how many different users share it, and how many of those shares relate to Green-Paket campaigns.',
                                           style:
                                               t.textTheme.bodySmall?.copyWith(
                                             color: t.colorScheme.onSurface
@@ -4004,29 +4518,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                         },
                         child: Text(
                           l.isArabic
-                              ? 'عرض حملات الحزم الحمراء في التطبيق'
-                              : 'View red‑packet campaigns in app',
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          final baseUrl = widget.baseUrl;
-                          final accId = widget.account.id;
-                          final url =
-                              '$baseUrl/admin/redpacket_campaigns?account_id=$accId';
-                          try {
-                            final uri = Uri.parse(url);
-                            if (!await canLaunchUrl(uri)) return;
-                            await launchUrl(
-                              uri,
-                              mode: LaunchMode.externalApplication,
-                            );
-                          } catch (_) {}
-                        },
-                        child: Text(
-                          l.isArabic
-                              ? 'فتح لوحة حملات الحزم الحمراء (الويب)'
-                              : 'Open red‑packet campaigns dashboard (web)',
+                              ? 'عرض حملات الحزم الخضراء في التطبيق'
+                              : 'View Green-Paket campaigns in app',
                         ),
                       ),
                     ],
@@ -4106,10 +4599,8 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                             if (pid.isEmpty) return;
                             Navigator.of(context).push(
                               MaterialPageRoute(
-                                builder: (_) => MomentsPage(
+                                builder: (_) => ShamellMomentsPage(
                                   baseUrl: widget.baseUrl,
-                                  initialPostId: pid,
-                                  focusComments: false,
                                 ),
                               ),
                             );
@@ -4703,68 +5194,26 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                                       ),
                                                     ),
                                                   const SizedBox(height: 8),
-                                                  Row(
-                                                    children: [
-                                                      Text(
-                                                        it.tsLabel,
-                                                        style: theme
-                                                            .textTheme.bodySmall
-                                                            ?.copyWith(
-                                                          fontSize: 11,
-                                                          color: theme
-                                                              .colorScheme
-                                                              .onSurface
-                                                              .withValues(
-                                                                  alpha: .60),
-                                                        ),
+                                                  if (it.tsLabel.isNotEmpty)
+                                                    Text(
+                                                      it.tsLabel,
+                                                      style: theme
+                                                          .textTheme.bodySmall
+                                                          ?.copyWith(
+                                                        fontSize: 11,
+                                                        color: theme.colorScheme
+                                                            .onSurface
+                                                            .withValues(
+                                                                alpha: .60),
                                                       ),
-                                                      const Spacer(),
-                                                      if (hasMiniApp)
-                                                        OutlinedButton.icon(
-                                                          onPressed: () =>
-                                                              _openDeeplink(it),
-                                                          icon: const Icon(
-                                                            Icons.open_in_new,
-                                                            size: 16,
-                                                          ),
-                                                          label: Text(
-                                                            l.isArabic
-                                                                ? 'افتح الميني‑تطبيق'
-                                                                : 'Open mini‑app',
-                                                            style:
-                                                                const TextStyle(
-                                                              fontSize: 12,
-                                                            ),
-                                                          ),
-                                                          style: OutlinedButton
-                                                              .styleFrom(
-                                                            padding:
-                                                                const EdgeInsets
-                                                                    .symmetric(
-                                                              horizontal: 10,
-                                                              vertical: 6,
-                                                            ),
-                                                            foregroundColor:
-                                                                theme
-                                                                    .colorScheme
-                                                                    .primary,
-                                                          ),
-                                                        )
-                                                      else
-                                                        TextButton(
-                                                          onPressed: () =>
-                                                              _openDeeplink(it),
-                                                          child: Text(
-                                                            l.isArabic
-                                                                ? 'عرض التفاصيل'
-                                                                : 'View details',
-                                                            style:
-                                                                const TextStyle(
-                                                              fontSize: 12,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                    ],
+                                                    ),
+                                                  const SizedBox(height: 8),
+                                                  _buildFeedItemActions(
+                                                    context,
+                                                    theme,
+                                                    l,
+                                                    it,
+                                                    hasMiniApp: hasMiniApp,
                                                   ),
                                                 ],
                                               ),
@@ -4785,6 +5234,9 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                     final it = articleItems[i];
                                     final hasThumb = it.thumbUrl != null &&
                                         it.thumbUrl!.isNotEmpty;
+                                    final hasMiniApp =
+                                        it.deeplinkMiniAppId != null &&
+                                            it.deeplinkMiniAppId!.isNotEmpty;
                                     return Padding(
                                       padding: const EdgeInsets.fromLTRB(
                                           12, 4, 12, 8),
@@ -4874,6 +5326,14 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                                                             .withValues(
                                                                 alpha: .60),
                                                       ),
+                                                    ),
+                                                    const SizedBox(height: 8),
+                                                    _buildFeedItemActions(
+                                                      context,
+                                                      theme,
+                                                      l,
+                                                      it,
+                                                      hasMiniApp: hasMiniApp,
                                                     ),
                                                   ],
                                                 ),
@@ -4969,7 +5429,7 @@ class _OfficialAccountFeedPageState extends State<OfficialAccountFeedPage> {
                 },
                 icon: const Icon(Icons.open_in_new, size: 16),
                 label: Text(
-                  l.isArabic ? 'افتح الميني‑تطبيق' : 'Open mini‑app',
+                  l.isArabic ? 'افتح البرنامج المصغّر' : 'Open Mini Program',
                   style: const TextStyle(fontSize: 13),
                 ),
               ),
@@ -5144,6 +5604,29 @@ Widget _buildServiceMenu(
   void openMod(String next) {
     final mid = next.trim().toLowerCase();
     if (mid.isEmpty) return;
+    if (mid == 'cards' ||
+        mid == 'offers' ||
+        mid == 'coupons' ||
+        mid == 'member_cards') {
+      final kind = switch (mid) {
+        'coupons' => 'coupon',
+        'member_cards' => 'member_card',
+        _ => null,
+      };
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CardsOffersPage(
+            baseUrl: baseUrl,
+            officialAccountId: acc.id,
+            miniProgramId: 'cards',
+            kind: kind,
+            title: l.isArabic ? 'عروض ${acc.name}' : '${acc.name} offers',
+          ),
+        ),
+      );
+      return;
+    }
     if (mid == 'payments' || mid == 'alias' || mid == 'merchant') {
       Navigator.push(
         context,
@@ -5208,13 +5691,22 @@ Widget _buildServiceMenu(
   // Prefer server-driven menu_items when present.
   if (acc.menuItems.isNotEmpty) {
     for (final item in acc.menuItems) {
-      if (item.kind == 'mini_app') {
+      if (item.kind == 'mini_program') {
         final mid = (item.miniAppId ?? '').trim();
         if (mid.isEmpty) continue;
         IconData icon;
         String fallbackLabel;
         VoidCallback onTap;
-		        switch (mid) {
+        switch (mid) {
+          case 'cards':
+          case 'offers':
+          case 'coupons':
+          case 'member_cards':
+            icon = Icons.local_offer_outlined;
+            fallbackLabel =
+                l.isArabic ? 'فتح البطاقات والعروض' : 'Open cards & offers';
+            onTap = () => openMod(mid);
+            break;
           case 'payments':
           case 'alias':
           case 'merchant':
@@ -5240,15 +5732,15 @@ Widget _buildServiceMenu(
               } catch (_) {}
             };
             break;
-		          case 'bus':
-		            icon = Icons.directions_bus_filled_outlined;
-		            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
-		            onTap = () => openMod(mid);
-		            break;
-	          default:
-	            icon = Icons.open_in_new;
-	            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
-	            onTap = () => openMod(mid);
+          case 'bus':
+            icon = Icons.directions_bus_filled_outlined;
+            fallbackLabel = l.isArabic ? 'فتح الباص' : 'Open bus';
+            onTap = () => openMod(mid);
+            break;
+          default:
+            icon = Icons.open_in_new;
+            fallbackLabel = l.isArabic ? 'فتح الخدمة' : 'Open service';
+            onTap = () => openMod(mid);
             break;
         }
         final label = item.label(l, fallbackLabel);
@@ -5283,63 +5775,152 @@ Widget _buildServiceMenu(
   }
 
   // Fallback for older BFFs without menu_items.
-		  if (actions.isEmpty) {
-		    switch (id) {
+  if (actions.isEmpty) {
+    switch (id) {
       case 'payments':
       case 'alias':
       case 'merchant':
         addPayments();
         break;
-		      case 'bus':
-		        addBus();
-		        break;
-	      default:
-	        break;
-	    }
-	  }
+      case 'bus':
+        addBus();
+        break;
+      case 'cards':
+      case 'offers':
+      case 'coupons':
+      case 'member_cards':
+        actions.add(_ServiceAction(
+          icon: Icons.local_offer_outlined,
+          label: l.isArabic ? 'فتح البطاقات والعروض' : 'Open cards & offers',
+          onTap: () => openMod(id),
+        ));
+        break;
+      default:
+        break;
+    }
+  }
 
   if (actions.isEmpty) {
     return const SizedBox.shrink();
   }
 
-  return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          l.isArabic ? 'التطبيقات المصغرة للخدمة' : 'Service mini‑programs',
-          style: theme.textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.w700,
-            color: theme.colorScheme.onSurface.withValues(alpha: .80),
+  Widget menuTile(_ServiceAction action, int index) {
+    final colors = <Color>[
+      WeChatPalette.green,
+      theme.colorScheme.primary,
+      Tokens.colorPayments,
+      theme.colorScheme.secondary,
+    ];
+    final color = colors[index % colors.length];
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: action.onTap,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 74),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: .07),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color.withValues(alpha: .14)),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                child: Icon(action.icon, size: 18, color: Colors.white),
+              ),
+              const SizedBox(height: 7),
+              Text(
+                action.label,
+                maxLines: 2,
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  height: 1.12,
+                ),
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 4),
-        SizedBox(
-          height: 44,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: actions.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (_, i) {
-              final a = actions[i];
-              return OutlinedButton.icon(
-                onPressed: a.onTap,
-                icon: Icon(a.icon, size: 18),
-                label: Text(
-                  a.label,
-                  style: const TextStyle(fontSize: 13),
+      ),
+    );
+  }
+
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: .85)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: WeChatPalette.green.withValues(alpha: .12),
+                  borderRadius: BorderRadius.circular(7),
                 ),
-                style: OutlinedButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  foregroundColor: theme.colorScheme.primary,
+                child: const Icon(
+                  Icons.grid_view_rounded,
+                  size: 17,
+                  color: WeChatPalette.green,
                 ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  l.isArabic ? 'قائمة الحساب' : 'Account menu',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          LayoutBuilder(
+            builder: (ctx, constraints) {
+              final columns = constraints.maxWidth >= 520
+                  ? 4
+                  : constraints.maxWidth >= 320
+                      ? 3
+                      : 2;
+              const spacing = 8.0;
+              final itemWidth =
+                  (constraints.maxWidth - spacing * (columns - 1)) / columns;
+              return Wrap(
+                spacing: spacing,
+                runSpacing: spacing,
+                children: [
+                  for (var i = 0; i < actions.length; i++)
+                    SizedBox(
+                      width: itemWidth,
+                      child: menuTile(actions[i], i),
+                    ),
+                ],
               );
             },
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -5446,9 +6027,7 @@ class _OfficialAccount {
       description: (j['description'] ?? '').toString().isEmpty
           ? null
           : (j['description'] ?? '').toString(),
-      avatarUrl: (j['avatar_url'] ?? '').toString().isEmpty
-          ? null
-          : (j['avatar_url'] ?? '').toString(),
+      avatarUrl: normalizeOfficialRemoteImageUrl(j['avatar_url']),
       verified: (j['verified'] as bool?) ?? false,
       featured: (j['featured'] as bool?) ?? false,
       badges: badges,
@@ -5458,9 +6037,7 @@ class _OfficialAccount {
           : null,
       lastItemTs: lastTs,
       chatPeerId: rawChatId.isEmpty ? null : rawChatId,
-      miniAppId: (j['mini_app_id'] ?? '').toString().isEmpty
-          ? null
-          : (j['mini_app_id'] ?? '').toString(),
+      miniAppId: _officialMiniProgramId(j),
       category: (j['category'] ?? '').toString().isEmpty
           ? null
           : (j['category'] ?? '').toString(),
@@ -5473,12 +6050,8 @@ class _OfficialAccount {
       openingHours: (j['opening_hours'] ?? '').toString().isEmpty
           ? null
           : (j['opening_hours'] ?? '').toString(),
-      websiteUrl: (j['website_url'] ?? '').toString().isEmpty
-          ? null
-          : (j['website_url'] ?? '').toString(),
-      qrPayload: (j['qr_payload'] ?? '').toString().isEmpty
-          ? null
-          : (j['qr_payload'] ?? '').toString(),
+      websiteUrl: normalizeOfficialRemoteWebsiteUrl(j['website_url']),
+      qrPayload: normalizeOfficialQrPayload(j['qr_payload']),
       followed: (j['followed'] as bool?) ?? false,
       menuItems: menuItems,
       notifMode: notifMode,
@@ -5510,6 +6083,36 @@ class _OfficialAccount {
       websiteUrl: websiteUrl,
       qrPayload: qrPayload,
       followed: followed,
+      menuItems: menuItems,
+      notifMode: notifMode,
+    );
+  }
+
+  _OfficialAccount withFollowed(bool value) {
+    if (value == followed) {
+      return this;
+    }
+    return _OfficialAccount(
+      id: id,
+      kind: kind,
+      name: name,
+      description: description,
+      avatarUrl: avatarUrl,
+      verified: verified,
+      featured: featured,
+      badges: badges,
+      unreadCount: unreadCount,
+      lastItemTitle: lastItemTitle,
+      lastItemTs: lastItemTs,
+      chatPeerId: chatPeerId,
+      miniAppId: miniAppId,
+      category: category,
+      city: city,
+      address: address,
+      openingHours: openingHours,
+      websiteUrl: websiteUrl,
+      qrPayload: qrPayload,
+      followed: value,
       menuItems: menuItems,
       notifMode: notifMode,
     );
@@ -5577,15 +6180,11 @@ class OfficialAccountHandle {
       description: (j['description'] ?? '').toString().isEmpty
           ? null
           : (j['description'] ?? '').toString(),
-      avatarUrl: (j['avatar_url'] ?? '').toString().isEmpty
-          ? null
-          : (j['avatar_url'] ?? '').toString(),
+      avatarUrl: normalizeOfficialRemoteImageUrl(j['avatar_url']),
       verified: (j['verified'] as bool?) ?? false,
       featured: (j['featured'] as bool?) ?? false,
       chatPeerId: rawChatId.isEmpty ? null : rawChatId,
-      miniAppId: (j['mini_app_id'] ?? '').toString().isEmpty
-          ? null
-          : (j['mini_app_id'] ?? '').toString(),
+      miniAppId: _officialMiniProgramId(j),
       category: (j['category'] ?? '').toString().isEmpty
           ? null
           : (j['category'] ?? '').toString(),
@@ -5598,12 +6197,8 @@ class OfficialAccountHandle {
       openingHours: (j['opening_hours'] ?? '').toString().isEmpty
           ? null
           : (j['opening_hours'] ?? '').toString(),
-      websiteUrl: (j['website_url'] ?? '').toString().isEmpty
-          ? null
-          : (j['website_url'] ?? '').toString(),
-      qrPayload: (j['qr_payload'] ?? '').toString().isEmpty
-          ? null
-          : (j['qr_payload'] ?? '').toString(),
+      websiteUrl: normalizeOfficialRemoteWebsiteUrl(j['website_url']),
+      qrPayload: normalizeOfficialQrPayload(j['qr_payload']),
       followed: (j['followed'] as bool?) ?? false,
       menuItems: menuItems,
     );
@@ -5684,9 +6279,7 @@ class _OfficialFeedItem {
     String? liveUrl;
     final dl = j['deeplink'];
     if (dl is Map) {
-      if (dl['mini_app_id'] != null) {
-        miniAppId = dl['mini_app_id'].toString();
-      }
+      miniAppId = _officialMiniProgramId(dl);
       final rawPayload = dl['payload'];
       if (rawPayload is Map) {
         payload = rawPayload.cast<String, dynamic>();
@@ -5746,10 +6339,9 @@ class _OfficialMenuItem {
   factory _OfficialMenuItem.fromJson(Map<String, dynamic> j) {
     return _OfficialMenuItem(
       id: (j['id'] ?? '').toString(),
-      kind: (j['kind'] ?? 'mini_app').toString(),
-      miniAppId: (j['mini_app_id'] ?? '').toString().isEmpty
-          ? null
-          : (j['mini_app_id'] ?? '').toString(),
+      kind: _normalizeOfficialMenuItemKind(
+          (j['kind'] ?? 'mini_program').toString()),
+      miniAppId: _officialMiniProgramId(j),
       url: (j['url'] ?? '').toString().isEmpty
           ? null
           : (j['url'] ?? '').toString(),
@@ -5820,4 +6412,32 @@ class _OfficialLocation {
           : (j['opening_hours'] ?? '').toString(),
     );
   }
+}
+
+String? _officialMiniProgramId(Map raw) {
+  for (final key in const <String>[
+    'mini_program_id',
+    'module_app_id',
+    'mini_app_id',
+    'app_id',
+  ]) {
+    final value = (raw[key] ?? '').toString().trim();
+    if (value.isNotEmpty) return value;
+  }
+  return null;
+}
+
+String _normalizeOfficialMenuItemKind(String raw) {
+  switch (raw.trim().toLowerCase()) {
+    case 'mini':
+    case 'mini_app':
+    case 'mini-program':
+    case 'mini_program':
+      return 'mini_program';
+    case 'web':
+    case 'link':
+    case 'url':
+      return 'url';
+  }
+  return raw.trim().toLowerCase();
 }

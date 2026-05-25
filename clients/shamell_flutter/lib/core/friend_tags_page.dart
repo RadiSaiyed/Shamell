@@ -1,11 +1,11 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 
-import 'chat/threema_chat_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'friend_annotations_store.dart';
 import 'l10n.dart';
-import 'wechat_ui.dart';
+import 'shamell_empty_state.dart';
+import 'shamell_ui.dart';
 
 class FriendTagsPage extends StatefulWidget {
   final String baseUrl;
@@ -20,6 +20,7 @@ class FriendTagsPage extends StatefulWidget {
 
 class _FriendTagsPageState extends State<FriendTagsPage> {
   bool _loading = true;
+  Map<String, String> _tagsByChat = const <String, String>{};
   Map<String, List<String>> _tagToChatIds = const <String, List<String>>{};
   Map<String, String> _aliases = const <String, String>{};
   final TextEditingController _searchCtrl = TextEditingController();
@@ -39,67 +40,19 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
 
   Future<void> _load() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-
-      Map<String, String> decodeMap(String raw) {
-        try {
-          final decoded = jsonDecode(raw);
-          if (decoded is Map) {
-            final map = <String, String>{};
-            decoded.forEach((k, v) {
-              final key = (k ?? '').toString().trim();
-              final val = (v ?? '').toString().trim();
-              if (key.isNotEmpty && val.isNotEmpty) {
-                map[key] = val;
-              }
-            });
-            return map;
-          }
-        } catch (_) {}
-        return const <String, String>{};
-      }
-
-      final aliases = decodeMap(sp.getString('friends.aliases') ?? '{}');
-      final tagsByChat = decodeMap(sp.getString('friends.tags') ?? '{}');
-
-      final tagToChat = <String, List<String>>{};
-      for (final entry in tagsByChat.entries) {
-        final chatId = entry.key.trim();
-        final raw = entry.value.trim();
-        if (chatId.isEmpty || raw.isEmpty) continue;
-        final tags = raw
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
-        for (final t in tags) {
-          final list = tagToChat.putIfAbsent(t, () => <String>[]);
-          if (!list.contains(chatId)) {
-            list.add(chatId);
-          }
-        }
-      }
-
-      for (final list in tagToChat.values) {
-        list.sort((a, b) {
-          final da = (aliases[a] ?? a).toLowerCase();
-          final db = (aliases[b] ?? b).toLowerCase();
-          return da.compareTo(db);
-        });
-      }
-
-      final sorted = tagToChat.entries.toList()
-        ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
-      final ordered = <String, List<String>>{
-        for (final e in sorted) e.key: e.value,
-      };
+      final tagsByChat = await loadFriendTags(baseUrlOverride: widget.baseUrl);
+      final ordered = _buildTagToChatIds(
+        tagsByChat: tagsByChat,
+        aliases: const <String, String>{},
+      );
 
       if (!mounted) return;
       setState(() {
-        _aliases = aliases;
+        _tagsByChat = tagsByChat;
         _tagToChatIds = ordered;
         _loading = false;
       });
+      unawaited(_loadAliases());
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -108,13 +61,62 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
     }
   }
 
+  Future<void> _loadAliases() async {
+    try {
+      final aliases = await loadFriendAliases(baseUrlOverride: widget.baseUrl);
+      if (!mounted) return;
+      setState(() {
+        _aliases = aliases;
+        _tagToChatIds =
+            _buildTagToChatIds(tagsByChat: _tagsByChat, aliases: aliases);
+      });
+    } catch (_) {}
+  }
+
+  Map<String, List<String>> _buildTagToChatIds({
+    required Map<String, String> tagsByChat,
+    required Map<String, String> aliases,
+  }) {
+    final tagToChat = <String, List<String>>{};
+    for (final entry in tagsByChat.entries) {
+      final chatId = entry.key.trim();
+      final raw = entry.value.trim();
+      if (chatId.isEmpty || raw.isEmpty) continue;
+      final tags = raw
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      for (final t in tags) {
+        final list = tagToChat.putIfAbsent(t, () => <String>[]);
+        if (!list.contains(chatId)) {
+          list.add(chatId);
+        }
+      }
+    }
+
+    for (final list in tagToChat.values) {
+      list.sort((a, b) {
+        final da = (aliases[a] ?? a).toLowerCase();
+        final db = (aliases[b] ?? b).toLowerCase();
+        return da.compareTo(db);
+      });
+    }
+
+    final sorted = tagToChat.entries.toList()
+      ..sort((a, b) => a.key.toLowerCase().compareTo(b.key.toLowerCase()));
+    return <String, List<String>>{
+      for (final e in sorted) e.key: e.value,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final tags = _tagToChatIds;
 
     Icon chevron() => Icon(
@@ -159,29 +161,23 @@ class _FriendTagsPageState extends State<FriendTagsPage> {
               : ListView(
                   children: [
                     const SizedBox(height: 8),
-                    WeChatSearchBar(
+                    ShamellSearchBar(
                       hintText: l.isArabic ? 'بحث' : 'Search',
                       controller: _searchCtrl,
                       onChanged: (v) => setState(() => _search = v),
                     ),
                     if (filtered.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Text(
-                          l.isArabic ? 'لا توجد نتائج.' : 'No matches found.',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurface
-                                .withValues(alpha: .70),
-                          ),
-                        ),
+                      ShamellEmptyState.noResults(
+                        title:
+                            l.isArabic ? 'لا توجد نتائج.' : 'No matches found.',
                       )
                     else
-                      WeChatSection(
+                      ShamellSection(
                         children: [
                           for (final entry in filtered)
                             ListTile(
                               dense: true,
-                              leading: const WeChatLeadingIcon(
+                              leading: const ShamellLeadingIcon(
                                 icon: Icons.sell_outlined,
                                 background: Color(0xFF3B82F6),
                               ),
@@ -246,7 +242,7 @@ class _TagMembersPageState extends State<_TagMembersPage> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
 
     Icon chevron() => Icon(
           l.isArabic ? Icons.chevron_left : Icons.chevron_right,
@@ -273,23 +269,17 @@ class _TagMembersPageState extends State<_TagMembersPage> {
       body: ListView(
         children: [
           const SizedBox(height: 8),
-          WeChatSearchBar(
+          ShamellSearchBar(
             hintText: l.isArabic ? 'بحث' : 'Search',
             controller: _searchCtrl,
             onChanged: (v) => setState(() => _search = v),
           ),
           if (filtered.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                l.isArabic ? 'لا توجد نتائج.' : 'No matches found.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
+            ShamellEmptyState.noResults(
+              title: l.isArabic ? 'لا توجد نتائج.' : 'No matches found.',
             )
           else
-            WeChatSection(
+            ShamellSection(
               children: [
                 for (final id in filtered)
                   ListTile(
@@ -316,7 +306,7 @@ class _TagMembersPageState extends State<_TagMembersPage> {
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => ThreemaChatPage(
+                          builder: (_) => ShamellChatPage(
                             baseUrl: widget.baseUrl,
                             initialPeerId: id,
                           ),

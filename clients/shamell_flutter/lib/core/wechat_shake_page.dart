@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'l10n.dart';
-import 'people_nearby_page.dart';
+import 'nearby_page.dart';
 import 'wechat_ui.dart';
 
 class WeChatShakePage extends StatefulWidget {
@@ -50,7 +50,7 @@ class _WeChatShakePageState extends State<WeChatShakePage>
     try {
       await Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => PeopleNearbyPage(baseUrl: widget.baseUrl),
+          builder: (_) => NearbyPage(baseUrl: widget.baseUrl),
         ),
       );
     } finally {

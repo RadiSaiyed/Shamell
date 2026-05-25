@@ -6,12 +6,14 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
+import 'mini_apps_config.dart';
 import 'mini_program_runtime.dart';
 import 'official_accounts_page.dart'
     show OfficialAccountDeepLinkPage, OfficialFeedItemDeepLinkPage;
-import 'moments_page.dart';
 import 'channels_page.dart' show ChannelsPage;
-import 'global_media_page.dart';
+import 'session_cookie_store.dart';
+import 'shamell_empty_state.dart';
+import 'shamell_moments_page.dart';
 import 'wechat_ui.dart';
 
 class GlobalSearchPage extends StatefulWidget {
@@ -54,7 +56,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 6, vsync: this);
+    _tabCtrl = TabController(length: 5, vsync: this);
     _loadHistory();
     _loadTrendingTopics();
   }
@@ -110,16 +112,10 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   }
 
   Future<Map<String, String>> _hdr({bool jsonBody = false}) async {
-    final h = <String, String>{};
-    if (jsonBody) h['content-type'] = 'application/json';
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return h;
+    return shamellSessionHeadersForBaseUrl(
+      widget.baseUrl,
+      json: jsonBody,
+    );
   }
 
   Future<void> _loadTrendingTopics() async {
@@ -128,10 +124,10 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
           .replace(queryParameters: const {'limit': '8'});
       final resp = await http.get(uri, headers: await _hdr());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        // Fallback: still show the Red‑packet Moments topic even if trending API fails.
+        // Fallback: still show the Green Paket Moments topic even if trending API fails.
         if (!mounted) return;
         setState(() {
-          _trendingTopics = const ['ShamellRedPacket'];
+          _trendingTopics = const ['ShamellGreenPaket'];
         });
         return;
       }
@@ -150,10 +146,10 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
         if (tag.isEmpty) continue;
         tags.add(tag);
       }
-      // Ensure the Red‑packet Moments topic is always visible in search.
-      const redTag = 'ShamellRedPacket';
-      if (!tags.any((t) => t.toLowerCase() == redTag.toLowerCase())) {
-        tags.add(redTag);
+      // Ensure the Green Paket Moments topic is always visible in search.
+      const greenTag = 'ShamellGreenPaket';
+      if (!tags.any((t) => t.toLowerCase() == greenTag.toLowerCase())) {
+        tags.add(greenTag);
       }
       if (!mounted || tags.isEmpty) return;
       setState(() {
@@ -166,6 +162,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final q = _qCtrl.text.trim();
     if (q.isEmpty) return;
     final seq = ++_searchSeq;
+    final localResults = _localMiniProgramSearchResults(q);
     setState(() {
       _loading = true;
       _error = null;
@@ -186,8 +183,11 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted || seq != _searchSeq) return;
         setState(() {
-          _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _error = localResults.isEmpty
+              ? (resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}')
+              : null;
           _loading = false;
+          _results = localResults;
         });
         return;
       }
@@ -202,16 +202,142 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
       }
       if (!mounted || seq != _searchSeq) return;
       setState(() {
-        _results = list;
+        _results = _mergeLocalMiniProgramResults(list, localResults);
         _loading = false;
       });
     } catch (e) {
       if (!mounted || seq != _searchSeq) return;
       setState(() {
-        _error = e.toString();
+        _error = localResults.isEmpty ? e.toString() : null;
         _loading = false;
+        _results = localResults;
       });
     }
+  }
+
+  String _resultKind(Map<String, dynamic> item) {
+    final kind = (item['kind'] ?? '').toString().trim();
+    return kind == 'mini_app' ? 'mini_program' : kind;
+  }
+
+  List<Map<String, dynamic>> _mergeLocalMiniProgramResults(
+    List<Map<String, dynamic>> remote,
+    List<Map<String, dynamic>> local,
+  ) {
+    final seen = <String>{};
+    final out = <Map<String, dynamic>>[];
+    void add(Map<String, dynamic> item) {
+      final kind = _resultKind(item);
+      final id = (item['id'] ?? '').toString().trim().toLowerCase();
+      if (kind.isEmpty || id.isEmpty) return;
+      if (!seen.add('$kind:$id')) return;
+      out.add(<String, dynamic>{...item, 'kind': kind});
+    }
+
+    for (final item in local) {
+      add(item);
+    }
+    for (final item in remote) {
+      add(item);
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _localMiniProgramSearchResults(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const <Map<String, dynamic>>[];
+    final results = <Map<String, dynamic>>[];
+    for (final app in visibleMiniApps()) {
+      if (!app.enabled) continue;
+      final runtimeId = (app.runtimeAppId ?? app.id).trim();
+      if (runtimeId.isEmpty) continue;
+      final haystack = <String>[
+        app.id,
+        runtimeId,
+        app.titleEn,
+        app.titleAr,
+        app.categoryEn,
+        app.categoryAr,
+      ].join(' ').toLowerCase();
+      if (!haystack.contains(q)) continue;
+      final badges = <String>[
+        if (app.official) 'official',
+        if (app.beta) 'beta',
+        if (app.usageScore >= 50 || app.rating >= 4.5) 'trending',
+        if (app.momentsShares >= 5) 'hot_in_moments',
+      ];
+      results.add(<String, dynamic>{
+        'kind': 'mini_program',
+        'id': runtimeId,
+        'title': app.titleEn,
+        'title_ar': app.titleAr,
+        'snippet': app.categoryEn,
+        'extra': <String, dynamic>{
+          'runtime_app_id': runtimeId,
+          'category': _miniProgramCategoryKey(app),
+          'rating': app.rating,
+          'rating_count': app.ratingCount,
+          'usage_score': app.usageScore,
+          'moments_shares_30d': app.momentsShares,
+          'badges': badges,
+          'local_registry': true,
+        },
+      });
+    }
+    results.sort((a, b) {
+      final ea = (a['extra'] is Map)
+          ? (a['extra'] as Map).cast<String, dynamic>()
+          : const <String, dynamic>{};
+      final eb = (b['extra'] is Map)
+          ? (b['extra'] as Map).cast<String, dynamic>()
+          : const <String, dynamic>{};
+      final scoreA = ((ea['usage_score'] as num?) ?? 0).toDouble() +
+          (((ea['rating'] as num?) ?? 0).toDouble() * 8) +
+          (((ea['moments_shares_30d'] as num?) ?? 0).toDouble() * 5);
+      final scoreB = ((eb['usage_score'] as num?) ?? 0).toDouble() +
+          (((eb['rating'] as num?) ?? 0).toDouble() * 8) +
+          (((eb['moments_shares_30d'] as num?) ?? 0).toDouble() * 5);
+      return scoreB.compareTo(scoreA);
+    });
+    return results;
+  }
+
+  String _miniProgramCategoryKey(MiniAppDescriptor app) {
+    final haystack =
+        '${app.id} ${app.titleEn} ${app.categoryEn}'.trim().toLowerCase();
+    if (haystack.contains('bus') ||
+        haystack.contains('ride') ||
+        haystack.contains('transport') ||
+        haystack.contains('mobility')) {
+      return 'transport';
+    }
+    if (haystack.contains('wallet') ||
+        haystack.contains('pay') ||
+        haystack.contains('payment')) {
+      return 'wallet';
+    }
+    if (haystack.contains('moment') ||
+        haystack.contains('social') ||
+        haystack.contains('nearby') ||
+        haystack.contains('sticker')) {
+      return 'social';
+    }
+    if (haystack.contains('channel') ||
+        haystack.contains('media') ||
+        haystack.contains('video')) {
+      return 'media';
+    }
+    if (haystack.contains('official') ||
+        haystack.contains('service') ||
+        haystack.contains('account')) {
+      return 'services';
+    }
+    if (haystack.contains('favorite') ||
+        haystack.contains('bookmark') ||
+        haystack.contains('personal')) {
+      return 'tools';
+    }
+    return app.categoryEn.trim().isNotEmpty ? app.categoryEn.trim() : 'other';
   }
 
   @override
@@ -226,7 +352,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
 
     final tabs = <Tab>[
       Tab(text: isArabic ? 'الكل' : 'All'),
-      Tab(text: isArabic ? 'الخدمات' : 'Mini‑apps'),
       Tab(text: isArabic ? 'البرامج المصغّرة' : 'Mini‑programs'),
       Tab(text: isArabic ? 'الرسمي' : 'Official'),
       Tab(text: isArabic ? 'اللحظات' : 'Moments'),
@@ -271,6 +396,12 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                       }
                       setState(() {});
                       if (q.length < 2) return;
+                      // Cancel any in-flight debounce before scheduling a
+                      // new one. Without this, fast typing piles up
+                      // overlapping Timers — only the latest reference is
+                      // tracked, so earlier ones still fire and run
+                      // _runSearch repeatedly for the same query.
+                      _searchDebounce?.cancel();
                       _searchDebounce =
                           Timer(const Duration(milliseconds: 380), () {
                         if (!mounted) return;
@@ -331,7 +462,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               const SizedBox(width: 8),
               TextButton(
                 onPressed: () => Navigator.of(context).maybePop(),
-                child: Text(l.mirsaalDialogCancel),
+                child: Text(l.isArabic ? 'إلغاء' : 'Cancel'),
               ),
             ],
           ),
@@ -515,7 +646,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                               onPressed: () {
                                 Navigator.of(context).push(
                                   MaterialPageRoute(
-                                    builder: (_) => MomentsPage(
+                                    builder: (_) => ShamellMomentsPage(
                                       baseUrl: widget.baseUrl,
                                       topicTag: '#$tag',
                                     ),
@@ -559,12 +690,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                     color: theme.colorScheme.onSurface.withValues(alpha: .45),
                   ),
                   onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            GlobalMediaPage(baseUrl: widget.baseUrl),
-                      ),
-                    );
+                    widget.onOpenMod('chat');
                   },
                 ),
               ],
@@ -574,7 +700,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               controller: _tabCtrl,
               children: [
                 _buildList(context, filter: null),
-                _buildList(context, filter: 'mini_app'),
                 _buildList(context, filter: 'mini_program'),
                 _buildList(context, filter: 'official'),
                 _buildList(context, filter: 'moment'),
@@ -622,60 +747,34 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
 
     final items = filter == null
         ? _results
-        : _results.where((e) => (e['kind'] ?? '') == filter).toList();
+        : _results.where((e) => _resultKind(e) == filter).toList();
     if (items.isEmpty) {
       if (filter == 'channel') {
         return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.live_tv_outlined,
-                  size: 40,
-                  color: theme.colorScheme.onSurface.withValues(alpha: .45),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  l.isArabic
-                      ? 'لا توجد نتائج قنوات بعد.\nاستخدم اكتشاف القنوات لرؤية المقاطع الرائجة.'
-                      : 'No channel results yet.\nUse Channels discover to browse hot clips.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: .70),
+          child: ShamellEmptyState.noResults(
+            icon: Icons.live_tv_outlined,
+            description: l.isArabic
+                ? 'لا توجد نتائج قنوات بعد.\nاستخدم اكتشاف القنوات لرؤية المقاطع الرائجة.'
+                : 'No channel results yet.\nUse Channels discover to browse hot clips.',
+            actionLabel: l.isArabic
+                ? 'فتح اكتشاف القنوات'
+                : 'Open Channels discover',
+            onAction: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ChannelsPage(
+                    baseUrl: widget.baseUrl,
+                    initialHotOnly: true,
                   ),
                 ),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => ChannelsPage(
-                          baseUrl: widget.baseUrl,
-                          initialHotOnly: true,
-                        ),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.local_fire_department_outlined),
-                  label: Text(
-                    l.isArabic
-                        ? 'فتح اكتشاف القنوات'
-                        : 'Open Channels discover',
-                  ),
-                ),
-              ],
-            ),
+              );
+            },
           ),
         );
       }
       return Center(
-        child: Text(
-          l.isArabic ? 'لا نتائج بعد.' : 'No results yet.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: .6)),
+        child: ShamellEmptyState.noResults(
+          title: l.isArabic ? 'لا نتائج بعد.' : 'No results yet.',
         ),
       );
     }
@@ -885,7 +984,9 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
         final List<String> badges = badgesRaw is List
             ? badgesRaw.whereType<String>().toList()
             : const <String>[];
-        if (_momentRedpacketOnly && !badges.contains('redpacket')) {
+        if (_momentRedpacketOnly &&
+            !badges.contains('redpacket') &&
+            !badges.contains('green_paket')) {
           continue;
         }
         filtered.add(e);
@@ -917,7 +1018,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                         const Icon(Icons.card_giftcard_outlined, size: 14),
                         const SizedBox(width: 4),
                         Text(
-                          l.isArabic ? 'حزم حمراء' : 'Red‑packet moments',
+                          l.isArabic ? 'حزم خضراء' : 'Green-Paket moments',
                         ),
                       ],
                     ),
@@ -1062,15 +1163,12 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     ThemeData theme,
     L10n l,
   ) {
-    final kind = (e['kind'] ?? '').toString();
+    final kind = _resultKind(e);
     final title = (e['title'] ?? '').toString();
     final titleAr = (e['title_ar'] ?? '').toString();
     final snippet = (e['snippet'] ?? '').toString();
     IconData icon;
     switch (kind) {
-      case 'mini_app':
-        icon = Icons.apps_outlined;
-        break;
       case 'mini_program':
         icon = Icons.widgets_outlined;
         break;
@@ -1090,39 +1188,22 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     // Build optional metadata row (rating/badges) for different kinds.
     Widget? subtitle;
     final List<Widget> metaChips = <Widget>[];
-    if (kind == 'mini_app') {
-      final ratingRaw = extra['rating'];
-      final rating = ratingRaw is num ? ratingRaw.toDouble() : 0.0;
-      final badgesRaw = extra['badges'];
-      final List<String> badges = badgesRaw is List
-          ? badgesRaw.whereType<String>().toList()
-          : const <String>[];
-      if (rating > 0) {
-        metaChips.addAll([
-          Icon(
-            Icons.star,
-            size: 14,
-            color: Colors.amber.withValues(alpha: .95),
-          ),
-          const SizedBox(width: 2),
-          Text(
-            rating.toStringAsFixed(1),
-            style: const TextStyle(fontSize: 11),
-          ),
-        ]);
-      }
-      _appendBadges(metaChips, badges, l, theme);
-    } else if (kind == 'mini_program') {
+    if (kind == 'mini_program') {
       final ratingRaw = extra['rating'];
       final rating = ratingRaw is num ? ratingRaw.toDouble() : 0.0;
       final usageRaw = extra['usage_score'];
       final usage = usageRaw is num ? usageRaw.toInt() : 0;
+      final personalOpenRaw = extra['personal_open_count'];
+      final personalOpenCount =
+          personalOpenRaw is num ? personalOpenRaw.toInt() : 0;
       final m30Raw = extra['moments_shares_30d'];
       final m30 = m30Raw is num ? m30Raw.toInt() : 0;
       final badgesRaw = extra['badges'];
       final List<String> badges = badgesRaw is List
           ? badgesRaw.whereType<String>().toList()
           : const <String>[];
+      final ownerName = (extra['owner_name'] ?? '').toString();
+      final categoryKey = (extra['category'] ?? '').toString();
       final mine = badges.contains('mine') || badges.contains('owned_by_you');
       if (rating > 0) {
         metaChips.addAll([
@@ -1138,11 +1219,21 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
           ),
         ]);
       }
-      if (usage > 0) {
+      if (personalOpenCount > 0) {
         metaChips.add(Padding(
           padding: const EdgeInsets.only(left: 6),
           child: Text(
-            l.isArabic ? 'الفتحات: $usage' : 'Opens: $usage',
+            l.isArabic
+                ? 'استخدامك: $personalOpenCount'
+                : 'Your opens: $personalOpenCount',
+            style: const TextStyle(fontSize: 10),
+          ),
+        ));
+      } else if (usage > 0) {
+        metaChips.add(Padding(
+          padding: const EdgeInsets.only(left: 6),
+          child: Text(
+            l.isArabic ? 'الاستخدام: $usage' : 'Usage: $usage',
             style: const TextStyle(fontSize: 10),
           ),
         ));
@@ -1177,6 +1268,30 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
         ));
       }
       _appendBadges(metaChips, badges, l, theme);
+      if (ownerName.isNotEmpty) {
+        metaChips.add(Padding(
+          padding: const EdgeInsets.only(left: 6),
+          child: Text(
+            mine ? (l.isArabic ? 'أنت (المالك)' : 'You (owner)') : ownerName,
+            style: TextStyle(
+              fontSize: 10,
+              color: theme.colorScheme.onSurface.withValues(alpha: .75),
+            ),
+          ),
+        ));
+      }
+      if (categoryKey.isNotEmpty) {
+        metaChips.add(Padding(
+          padding: const EdgeInsets.only(left: 6),
+          child: Text(
+            _labelForOfficialCategory(categoryKey, l),
+            style: TextStyle(
+              fontSize: 10,
+              color: theme.colorScheme.onSurface.withValues(alpha: .65),
+            ),
+          ),
+        ));
+      }
     } else if (kind == 'official') {
       final badgesRaw = extra['badges'];
       final List<String> badges = badgesRaw is List
@@ -1198,8 +1313,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                 const SizedBox(width: 2),
                 Text(
                   l.isArabic
-                      ? 'حملات حزم حمراء: $campaignsActive'
-                      : 'Red‑packet campaigns: $campaignsActive',
+                      ? 'حملات حزم خضراء: $campaignsActive'
+                      : 'Green-Paket campaigns: $campaignsActive',
                   style: TextStyle(
                     fontSize: 10,
                     color: theme.colorScheme.onSurface.withValues(alpha: .65),
@@ -1228,76 +1343,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
           padding: const EdgeInsets.only(left: 6),
           child: Text(
             _labelForOfficialCategory(category, l),
-            style: TextStyle(
-              fontSize: 10,
-              color: theme.colorScheme.onSurface.withValues(alpha: .65),
-            ),
-          ),
-        ));
-      }
-    } else if (kind == 'mini_program') {
-      final ratingRaw = extra['rating'];
-      final rating = ratingRaw is num ? ratingRaw.toDouble() : 0.0;
-      final usageRaw = extra['usage_score'];
-      final usageScore = usageRaw is num ? usageRaw.toInt() : 0;
-      final badgesRaw = extra['badges'];
-      final List<String> badges = badgesRaw is List
-          ? badgesRaw.whereType<String>().toList()
-          : const <String>[];
-      final ownerName = (extra['owner_name'] ?? '').toString();
-      final categoryKey = (extra['category'] ?? '').toString();
-      final isMine = badges.contains('mine');
-      if (rating > 0) {
-        metaChips.addAll([
-          Icon(
-            Icons.star,
-            size: 14,
-            color: Colors.amber.withValues(alpha: .95),
-          ),
-          const SizedBox(width: 2),
-          Text(
-            rating.toStringAsFixed(1),
-            style: const TextStyle(fontSize: 11),
-          ),
-        ]);
-      }
-      if (usageScore > 0) {
-        metaChips.add(Padding(
-          padding: const EdgeInsets.only(left: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.local_fire_department_outlined, size: 12),
-              const SizedBox(width: 2),
-              Text(
-                l.isArabic ? 'استخدام $usageScore' : 'Usage $usageScore',
-                style: TextStyle(
-                  fontSize: 10,
-                  color: theme.colorScheme.onSurface.withValues(alpha: .65),
-                ),
-              ),
-            ],
-          ),
-        ));
-      }
-      _appendBadges(metaChips, badges, l, theme);
-      if (ownerName.isNotEmpty) {
-        metaChips.add(Padding(
-          padding: const EdgeInsets.only(left: 6),
-          child: Text(
-            isMine ? (l.isArabic ? 'أنت (المالك)' : 'You (owner)') : ownerName,
-            style: TextStyle(
-              fontSize: 10,
-              color: theme.colorScheme.onSurface.withValues(alpha: .75),
-            ),
-          ),
-        ));
-      }
-      if (categoryKey.isNotEmpty) {
-        metaChips.add(Padding(
-          padding: const EdgeInsets.only(left: 6),
-          child: Text(
-            _labelForOfficialCategory(categoryKey, l),
             style: TextStyle(
               fontSize: 10,
               color: theme.colorScheme.onSurface.withValues(alpha: .65),
@@ -1445,29 +1490,18 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final id = (e['id'] ?? '').toString();
     if (id.isEmpty) return;
     switch (kind) {
-      case 'mini_app':
-        final runtimeId = (extra['runtime_app_id'] ?? '').toString();
-        if (runtimeId.isNotEmpty) {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => MiniProgramPage(
-                id: runtimeId,
-                baseUrl: widget.baseUrl,
-                walletId: widget.walletId,
-                deviceId: widget.deviceId,
-                onOpenMod: widget.onOpenMod,
-              ),
-            ),
-          );
-        } else {
-          widget.onOpenMod(id);
-        }
-        break;
       case 'mini_program':
+        final runtimeId = (extra['runtime_app_id'] ?? id).toString().trim();
+        final openId = runtimeId.isNotEmpty ? runtimeId : id;
+        if ((extra['local_registry'] == true) ||
+            _isLocalMiniProgramId(openId)) {
+          widget.onOpenMod(openId);
+          break;
+        }
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => MiniProgramPage(
-              id: id,
+              id: openId,
               baseUrl: widget.baseUrl,
               walletId: widget.walletId,
               deviceId: widget.deviceId,
@@ -1489,9 +1523,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
       case 'moment':
         Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => MomentsPage(
+            builder: (_) => ShamellMomentsPage(
               baseUrl: widget.baseUrl,
-              initialPostId: id,
             ),
           ),
         );
@@ -1511,6 +1544,19 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
       default:
         break;
     }
+  }
+
+  bool _isLocalMiniProgramId(String id) {
+    final normalized = id.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    for (final app in visibleMiniApps()) {
+      final runtimeId = (app.runtimeAppId ?? app.id).trim().toLowerCase();
+      if (app.id.trim().toLowerCase() == normalized ||
+          runtimeId == normalized) {
+        return true;
+      }
+    }
+    return false;
   }
 }
 
@@ -1533,6 +1579,10 @@ void _appendBadges(
           return l.isArabic ? 'المالك' : 'Owner';
         case 'mine':
           return l.isArabic ? 'برنامجي' : 'My mini‑program';
+        case 'pinned':
+          return l.isArabic ? 'مثبّت' : 'Pinned';
+        case 'release_seen':
+          return l.isArabic ? 'الإصدار شوهد' : 'Release seen';
         case 'beta':
           return 'Beta';
         case 'trending':
@@ -1556,7 +1606,8 @@ void _appendBadges(
         case 'discussed':
           return l.isArabic ? 'نقاشات' : 'Discussed';
         case 'redpacket':
-          return l.isArabic ? 'حزم حمراء' : 'Red‑packet';
+        case 'green_paket':
+          return l.isArabic ? 'حزم خضراء' : 'Green Paket';
         case 'live':
           return l.isArabic ? 'بث مباشر' : 'Live now';
         default:
@@ -1593,6 +1644,16 @@ String _labelForOfficialCategory(String raw, L10n l) {
       case 'wallet':
       case 'payments':
         return 'المحفظة والمدفوعات';
+      case 'social':
+        return 'اجتماعي';
+      case 'media':
+        return 'الإعلام';
+      case 'services':
+        return 'الخدمات';
+      case 'tools':
+        return 'أدوات شخصية';
+      case 'other':
+        return 'أخرى';
       default:
         return raw;
     }
@@ -1603,6 +1664,16 @@ String _labelForOfficialCategory(String raw, L10n l) {
       case 'wallet':
       case 'payments':
         return 'Wallet & payments';
+      case 'social':
+        return 'Social';
+      case 'media':
+        return 'Media';
+      case 'services':
+        return 'Services';
+      case 'tools':
+        return 'Personal tools';
+      case 'other':
+        return 'Other';
       default:
         return raw;
     }

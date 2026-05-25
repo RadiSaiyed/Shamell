@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shamell_flutter/mini_apps/payments/payments_requests.dart';
-import 'package:shamell_flutter/mini_apps/payments/payments_receive.dart';
-import 'package:shamell_flutter/mini_apps/payments/payments_send.dart';
+import 'package:shamell_flutter/core/payments/payments_requests.dart';
+import 'package:shamell_flutter/core/payments/payments_receive.dart';
+import 'package:shamell_flutter/core/payments/payments_send.dart';
 
 void main() {
   testWidgets('IncomingRequestBanner accept callback fires', (tester) async {

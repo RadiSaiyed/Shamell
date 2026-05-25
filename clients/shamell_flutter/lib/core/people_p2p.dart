@@ -1,12 +1,14 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import 'friend_annotations_store.dart';
+import 'legacy_sensitive_pref_store.dart';
 import 'l10n.dart';
 import 'ui_kit.dart';
-import '../mini_apps/payments/payments_shell.dart';
-import 'chat/threema_chat_page.dart';
+import 'payments/payments_shell.dart';
+import 'chat/shamell_chat_page.dart';
 import 'skeleton.dart';
 
 class PeopleP2PPage extends StatefulWidget {
@@ -27,6 +29,7 @@ class PeopleP2PPage extends StatefulWidget {
 class _PeopleP2PPageState extends State<PeopleP2PPage> {
   bool _loading = true;
   List<Map<String, String>> _shortlist = [];
+  List<String> _rawShortlistEntries = const <String>[];
 
   @override
   void initState() {
@@ -36,52 +39,62 @@ class _PeopleP2PPageState extends State<PeopleP2PPage> {
 
   Future<void> _load() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cached = sp.getStringList('contact_shortlist') ?? const [];
-      final list = <Map<String, String>>[];
-      // Load friend aliases (remark names) for WeChat-style display.
-      Map<String, String> aliases = <String, String>{};
-      try {
-        final rawAliases = sp.getString('friends.aliases') ?? '{}';
-        final decoded = jsonDecode(rawAliases);
-        if (decoded is Map) {
-          decoded.forEach((k, v) {
-            final key = (k ?? '').toString();
-            final val = (v ?? '').toString();
-            if (key.isNotEmpty && val.isNotEmpty) {
-              aliases[key] = val;
-            }
-          });
-        }
-      } catch (_) {}
-      for (final s in cached) {
-        try {
-          final m = jsonDecode(s) as Map<String, dynamic>;
-          final phone = (m['phone'] ?? '').toString();
-          var name = (m['name'] ?? '').toString();
-          final alias = aliases[phone];
-          if (alias != null && alias.isNotEmpty) {
-            name = alias;
-          }
-          list.add({'name': name, 'phone': phone});
-        } catch (_) {
-          if (s.trim().isNotEmpty) {
-            list.add({'name': '', 'phone': s.trim()});
-          }
-        }
-      }
+      final cached = await loadLegacyContactShortlistEntries(
+        baseUrlOverride: widget.baseUrl,
+      );
+      final list = _buildShortlist(
+        cached,
+        aliases: const <String, String>{},
+      );
       if (!mounted) return;
       setState(() {
+        _rawShortlistEntries = cached;
         _shortlist = list;
         _loading = false;
       });
+      unawaited(_loadAliases());
     } catch (_) {
       if (!mounted) return;
       setState(() {
+        _rawShortlistEntries = const <String>[];
         _shortlist = const [];
         _loading = false;
       });
     }
+  }
+
+  Future<void> _loadAliases() async {
+    try {
+      final aliases = await loadFriendAliases(baseUrlOverride: widget.baseUrl);
+      if (!mounted) return;
+      setState(() {
+        _shortlist = _buildShortlist(_rawShortlistEntries, aliases: aliases);
+      });
+    } catch (_) {}
+  }
+
+  List<Map<String, String>> _buildShortlist(
+    List<String> cached, {
+    required Map<String, String> aliases,
+  }) {
+    final list = <Map<String, String>>[];
+    for (final s in cached) {
+      try {
+        final m = jsonDecode(s) as Map<String, dynamic>;
+        final phone = (m['phone'] ?? '').toString();
+        var name = (m['name'] ?? '').toString();
+        final alias = aliases[phone];
+        if (alias != null && alias.isNotEmpty) {
+          name = alias;
+        }
+        list.add({'name': name, 'phone': phone});
+      } catch (_) {
+        if (s.trim().isNotEmpty) {
+          list.add({'name': '', 'phone': s.trim()});
+        }
+      }
+    }
+    return list;
   }
 
   void _openP2P(String phone) {
@@ -102,7 +115,7 @@ class _PeopleP2PPageState extends State<PeopleP2PPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ThreemaChatPage(baseUrl: widget.baseUrl),
+        builder: (_) => ShamellChatPage(baseUrl: widget.baseUrl),
       ),
     );
   }
@@ -169,8 +182,8 @@ class _PeopleP2PPageState extends State<PeopleP2PPage> {
               FormSection(
                 title: l.isArabic ? 'المحادثات والجهات' : 'Chats & contacts',
                 subtitle: l.isArabic
-                    ? 'افتح Mirsaal للدردشة والاتصال الآمن'
-                    : 'Open Mirsaal for secure chat and contacts',
+                    ? 'افتح SyrChat للدردشة والاتصال الآمن'
+                    : 'Open SyrChat for secure chat and contacts',
                 children: [
                   ListTile(
                     leading: const Icon(Icons.chat_bubble_outline),

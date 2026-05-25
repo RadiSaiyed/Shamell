@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'legacy_sensitive_pref_store.dart';
 import 'l10n.dart';
+import 'session_cookie_store.dart';
 
 class OfficialAccountRegisterPage extends StatefulWidget {
   final String baseUrl;
@@ -29,7 +31,7 @@ class _OfficialAccountRegisterPageState
   final _addressCtrl = TextEditingController();
   final _openingHoursCtrl = TextEditingController();
   final _websiteCtrl = TextEditingController();
-  final _miniAppIdCtrl = TextEditingController();
+  final _miniProgramIdCtrl = TextEditingController();
   final _ownerNameCtrl = TextEditingController();
   final _contactPhoneCtrl = TextEditingController();
   final _contactEmailCtrl = TextEditingController();
@@ -55,7 +57,7 @@ class _OfficialAccountRegisterPageState
     _addressCtrl.dispose();
     _openingHoursCtrl.dispose();
     _websiteCtrl.dispose();
-    _miniAppIdCtrl.dispose();
+    _miniProgramIdCtrl.dispose();
     _ownerNameCtrl.dispose();
     _contactPhoneCtrl.dispose();
     _contactEmailCtrl.dispose();
@@ -74,15 +76,7 @@ class _OfficialAccountRegisterPageState
   }
 
   Future<Map<String, String>> _hdr() async {
-    final headers = <String, String>{'content-type': 'application/json'};
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
-      }
-    } catch (_) {}
-    return headers;
+    return shamellSessionHeadersForBaseUrl(widget.baseUrl, json: true);
   }
 
   Future<void> _loadRequests() async {
@@ -144,9 +138,9 @@ class _OfficialAccountRegisterPageState
             : _openingHoursCtrl.text.trim(),
         'website_url':
             _websiteCtrl.text.trim().isEmpty ? null : _websiteCtrl.text.trim(),
-        'mini_app_id': _miniAppIdCtrl.text.trim().isEmpty
+        'mini_program_id': _miniProgramIdCtrl.text.trim().isEmpty
             ? null
-            : _miniAppIdCtrl.text.trim(),
+            : _miniProgramIdCtrl.text.trim(),
         'owner_name': _ownerNameCtrl.text.trim().isEmpty
             ? null
             : _ownerNameCtrl.text.trim(),
@@ -178,6 +172,22 @@ class _OfficialAccountRegisterPageState
         });
         return;
       }
+      var resolvedAccountId = accountId;
+      var resolvedAccountName = nameEn;
+      try {
+        final decoded = jsonDecode(resp.body);
+        if (decoded is Map) {
+          resolvedAccountId =
+              (decoded['account_id'] ?? decoded['id'] ?? accountId)
+                  .toString()
+                  .trim();
+          resolvedAccountName = (decoded['name'] ?? nameEn).toString().trim();
+        }
+      } catch (_) {}
+      await _saveDefaultOfficial(
+        resolvedAccountId.isEmpty ? accountId : resolvedAccountId,
+        resolvedAccountName.isEmpty ? nameEn : resolvedAccountName,
+      );
       await _loadRequests();
       if (!mounted) return;
       setState(() {
@@ -187,8 +197,8 @@ class _OfficialAccountRegisterPageState
         SnackBar(
           content: Text(
             l.isArabic
-                ? 'تم إرسال طلب الحساب الرسمي للمراجعة.'
-                : 'Official account request submitted for review.',
+                ? 'تم تسجيل الحساب الرسمي وربطه بحسابك.'
+                : 'Official account registered and linked to your account.',
           ),
         ),
       );
@@ -201,11 +211,17 @@ class _OfficialAccountRegisterPageState
     }
   }
 
+  Future<void> _saveDefaultOfficial(String id, String name) async {
+    await saveLegacyDefaultOfficialAccountContext(
+      accountId: id,
+      accountName: name,
+      baseUrlOverride: widget.baseUrl,
+    );
+  }
+
   Future<void> _setDefaultOfficial(String id, String name) async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('official.default_account_id', id);
-      await sp.setString('official.default_account_name', name);
+      await _saveDefaultOfficial(id, name);
       if (!mounted) return;
       final l = L10n.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -239,8 +255,8 @@ class _OfficialAccountRegisterPageState
             children: [
               Text(
                 isArabic
-                    ? 'أنشئ حساباً رسمياً لخدمتك أو متجرك على نمط WeChat. يبدأ الطلب كمعلومة قيد المراجعة من فريق Shamell.'
-                    : 'Create a WeChat‑style Official account for your service or shop. The request starts under review by the Shamell team.',
+                    ? 'أنشئ حساباً رسمياً لخدمتك أو متجرك في SyrChat، واربطه ببرنامج مصغّر عند الحاجة.'
+                    : 'Create a SyrChat Official account for your service or shop, with an optional linked Mini Program.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .80),
                 ),
@@ -348,11 +364,11 @@ class _OfficialAccountRegisterPageState
               ),
               const SizedBox(height: 8),
               TextField(
-                controller: _miniAppIdCtrl,
+                controller: _miniProgramIdCtrl,
                 decoration: InputDecoration(
                   labelText: isArabic
                       ? 'معرّف التطبيق المصغر المرتبط (اختياري)'
-                      : 'Linked mini‑app ID (optional)',
+                      : 'Linked Mini Program ID (optional)',
                   helperText: isArabic
                       ? 'مثال: bus، payments'
                       : 'Example: bus, payments',
@@ -414,17 +430,15 @@ class _OfficialAccountRegisterPageState
                       : const Icon(Icons.check),
                   label: Text(
                     isArabic
-                        ? 'إرسال طلب الحساب الرسمي'
-                        : 'Submit Official account request',
+                        ? 'تسجيل الحساب الرسمي'
+                        : 'Register Official account',
                   ),
                 ),
               ),
               const SizedBox(height: 24),
               if (_requests.isNotEmpty) ...[
                 Text(
-                  isArabic
-                      ? 'طلباتي الحالية للحسابات الرسمية'
-                      : 'My Official account requests',
+                  isArabic ? 'حساباتي الرسمية' : 'My Official accounts',
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),

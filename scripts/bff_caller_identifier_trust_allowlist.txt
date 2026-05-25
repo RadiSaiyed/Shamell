@@ -1,0 +1,181 @@
+# Allowlist for the BFF caller-identifier trust guard.
+#
+# Every request-body or query struct in services_rs/bff_gateway/src/ that
+# exposes a caller-identifier field (wallet_id, from_wallet_id,
+# owner_wallet_id, to_wallet_id, creator_wallet_id, sender_id, account_id,
+# operator_account_id, device_id, client_device_id, moderator_device_id,
+# inviter_id, actor_id) MUST appear here. The guard verifies each such
+# struct is on this list — when a new one is added, the PR author has to
+# audit the gating path and add the struct name below with a one-line note.
+#
+# Format: one struct name per line. Lines starting with '#' and blank
+# lines are ignored. Group entries by gating mechanism.
+
+# ===========================================================================
+# Payments — canonical_payments_*_body in handlers.rs
+# ===========================================================================
+# Each mutating endpoint resolves a session-bound user.wallet_id via
+# require_payment_mutation_user_context, then canonical_payments_*_body
+# returns 403 on any body wallet_id / from_wallet_id / owner_wallet_id /
+# to_wallet_id / account_id mismatch. Money paths additionally enforce
+# hardware attestation via enforce_payment_mutation_attestation.
+PaymentsCreateUserIn
+PaymentsAdminCreditIn
+PaymentsTransferIn
+PaymentsFavoriteCreateIn
+PaymentsRequestCreateIn
+PaymentsRequestAcceptIn
+
+# Query/list variants — read-side gates with explicit 403 on
+# owner_wallet_id / wallet_id mismatch + admin role for admin lists.
+FavoritesListQuery
+RequestsListQuery
+PaymentsAdminCreditListQuery
+
+# ===========================================================================
+# Green Paket — inline gating in handlers.rs
+# ===========================================================================
+# require_user_context + 403 if creator_wallet_id mismatches the session
+# wallet, plus rate-limit on issue/claim.
+GreenPaketIssueIn
+
+# ===========================================================================
+# Channels / Stickers — handlers.rs
+# ===========================================================================
+# channels_gift: require_user_context + rate limit; body.account_id is the
+# TARGET of the gift, the caller is user.principal.account_id.
+# stickers_purchase: require_user_context + 403 on from_wallet_id mismatch.
+ChannelGiftIn
+StickerPurchaseIn
+
+# ===========================================================================
+# Official Accounts — auth.rs
+# ===========================================================================
+# Self-register: require_session_principal + rate limit (account_id in body
+# is the official-account-id being registered, not the caller).
+# Owner add / feed mutations: require_official_scope_principal (role gate).
+# Query variants list official accounts; account_id refers to the official
+# being queried, gated by the same role check on the route.
+OfficialAccountSelfRegisterIn
+OfficialOwnerUpsertIn
+OfficialAdminFeedCreateIn
+OfficialAccountsQuery
+OfficialAdminFeedsQuery
+
+# ===========================================================================
+# Chat — require_chat_guardrails_if_configured in proxy_chat (handlers.rs)
+# ===========================================================================
+# Centralized gate: every chat upstream call goes through
+# require_chat_device_owned_by_principal, which verifies the device_id
+# (header / path / body / sender_id / actor_id / inviter_id /
+# moderator_device_id) against the session before forwarding. /messages/send
+# additionally requires sealed_sender + contacts allowlist.
+ChatRegisterIn
+ChatKeyRegisterIn
+ChatKeyBootstrapIn
+ChatPrekeysUploadIn
+ChatMailboxIssueIn
+ChatMailboxPollReq
+ChatMailboxRotateIn
+ChatSendIn
+ChatGroupSendIn
+ChatGroupCreateIn
+ChatGroupUpdateIn
+ChatGroupInviteIn
+ChatGroupLeaveIn
+ChatGroupSetRoleIn
+ChatGroupRotateKeyIn
+ChatMarkReadIn
+ChatMessageEditIn
+ChatMessageDeleteIn
+ChatMessageBookmarkIn
+ChatMessagePinIn
+ChatMessageReactionIn
+ChatMessageReportIn
+ChatConversationSnoozeIn
+ChatGroupConversationSnoozeIn
+ChatSavedReplyIn
+ChatTypingSignalIn
+ChatGroupTypingSignalIn
+ChatCallLogIn
+ChatVoiceTranscriptIn
+ChatVoiceTranscriptJobIn
+ChatVoiceTranscriptJobCompleteIn
+ChatModerationActionIn
+# Chat query types — same proxy guardrail, same device-ownership check.
+ChatInboxQuery
+ChatThreadQuery
+ChatStreamQuery
+ChatEventsQuery
+ChatGroupInboxQuery
+ChatGroupListQuery
+ChatGroupMembersQuery
+ChatGroupKeyEventsQuery
+ChatGroupConversationStatsQuery
+ChatGroupMessagePinsQuery
+ChatConversationStatsQuery
+ChatConversationSnoozesQuery
+ChatMessageBookmarksQuery
+ChatMessageEditHistoryQuery
+ChatMessagePinsQuery
+ChatMessageReactionQuery
+ChatCallLogsQuery
+ChatVoiceTranscriptQuery
+ChatVoiceTranscriptJobsQuery
+ChatSavedRepliesQuery
+# WebSocket-attached device query (chat ws inbox / groups). Same
+# require_chat_device_owned_by_principal contract before the socket opens.
+WsDeviceQuery
+
+# ===========================================================================
+# Admin role / access / activity mutations — authz::require_admin
+# ===========================================================================
+# Routes are mounted behind require_admin in main.rs. Body account_id /
+# operator_account_id refer to the TARGET of the admin action, not the
+# caller — admin-by-role is the correct authorization model here.
+AdminRoleMutationIn
+AccessAssignmentMutationIn
+AdminRolesListQuery
+AdminRolesCheckQuery
+AdminUserActivityQuery
+AccessAssignmentsListQuery
+
+# ===========================================================================
+# Auth bootstrap — pre-session flows (auth.rs)
+# ===========================================================================
+# These endpoints are HOW the caller establishes a session in the first
+# place, so they cannot be gated by an existing session. Each has its own
+# adversarial-resistant flow: account-create challenges (OTP / Play
+# Integrity), biometric attestation, device-pre-bind, password-rate-limit.
+# Adding a new bootstrap endpoint MUST replicate the equivalent
+# challenge / attestation / rate-limit posture before listing here.
+AccountCreateIn
+AccountCreateChallengeIn
+UsernamePasswordSignUpIn
+UsernamePasswordLoginIn
+BiometricEnrollIn
+BiometricEnrollAttestationChallengeIn
+BiometricLoginIn
+BiometricLoginAttestationChallengeIn
+DeviceLoginStartIn
+DeviceLoginTokenIn
+DeviceRegisterIn
+PaymentMutationAttestationChallengeIn
+
+# ===========================================================================
+# Workforce session exchange (auth.rs)
+# ===========================================================================
+# JWT-assertion based for the prod path; HMAC handshake for the dev path
+# (only mounted in dev/test envs with the secret set). Caller identity
+# comes from the assertion, not from any caller-identifier field.
+WorkforceSessionExchangeIn
+WorkforceDevSessionExchangeIn
+
+# ===========================================================================
+# Coach — require_ride_driver_principal (role gate)
+# ===========================================================================
+# Crew-side boarding scan. device_id in body identifies the conductor's
+# scanner — validated separately by validate_coach_device_id. Caller
+# identity is the driver/conductor's account from the role-gated
+# principal, not the body.
+CoachCrewBoardingIn

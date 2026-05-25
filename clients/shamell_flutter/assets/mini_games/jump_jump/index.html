@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#f3eee5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Jump Jump · Mini-Programm</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app" class="phone-frame">
+    <!-- SuperApp Chrome (kann beim echten Embed entfernt werden) -->
+    <header class="super-app-bar">
+      <button class="bar-btn" aria-label="Zurück">‹</button>
+      <div class="bar-title">
+        <span class="bar-icon">⬡</span>
+        <span>Jump Jump</span>
+      </div>
+      <button class="bar-btn mute-btn muted" id="muteBtn" aria-label="Ton an/aus">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 9 H8 L13 5 V19 L8 15 H4 Z" fill="currentColor"/>
+          <path class="wave w1" d="M16 9 Q18.5 12 16 15"/>
+          <path class="wave w2" d="M19 6 Q22.5 12 19 18"/>
+          <path class="cross" d="M17 9 L22 14 M22 9 L17 14"/>
+        </svg>
+      </button>
+    </header>
+
+    <main class="game-stage">
+      <canvas id="game"></canvas>
+
+      <div class="hud" id="hud">
+        <div class="score" id="score">0</div>
+        <div class="combo" id="combo"></div>
+      </div>
+
+      <div class="charge-bar" id="chargeBar">
+        <div class="charge-fill" id="chargeFill"></div>
+      </div>
+
+      <div class="overlay" id="startOverlay">
+        <div class="card">
+          <div class="logo-wrap"><div class="logo-piece"></div></div>
+          <h2>Jump Jump</h2>
+          <p class="lead">Halte gedrückt zum Aufladen.<br>Loslassen springt — mittig landen gibt Combo-Bonus.</p>
+          <div class="best-row">
+            <small>Persönlicher Rekord</small>
+            <strong id="startBest">0</strong>
+          </div>
+          <button class="primary" id="playBtn">Start</button>
+        </div>
+      </div>
+
+      <div class="overlay hidden" id="endOverlay">
+        <div class="card">
+          <div class="end-emoji">⬡</div>
+          <h2>Game Over</h2>
+          <div class="stats">
+            <div><strong id="endScore">0</strong><small>Punkte</small></div>
+            <div><strong id="endBest">0</strong><small>Rekord</small></div>
+          </div>
+          <button class="primary" id="restartBtn">Nochmal spielen</button>
+          <button class="ghost" id="shareBtn">Score teilen</button>
+        </div>
+      </div>
+    </main>
+
+    <nav class="tab-bar">
+      <button class="tab active"><span>⬡</span><small>Spiel</small></button>
+      <button class="tab"><span>⌖</span><small>Bestenliste</small></button>
+      <button class="tab"><span>◐</span><small>Profil</small></button>
+    </nav>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

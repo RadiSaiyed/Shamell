@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'design_tokens.dart';
-import '../mini_apps/payments/payments_send.dart' show PayActionButton;
 import 'l10n.dart';
 
 class HomeActions {
@@ -8,28 +7,26 @@ class HomeActions {
   final VoidCallback onTopup;
   final VoidCallback onSonic;
   final VoidCallback onP2P;
-  final VoidCallback onMobility;
-  final VoidCallback onBus;
   final VoidCallback onChat;
   final VoidCallback onVouchers;
   final VoidCallback onRequests;
   final VoidCallback onBills;
   final VoidCallback onWallet;
   final VoidCallback onHistory;
+  final VoidCallback onRide;
   final VoidCallback onOps; // Consolidated Ops hub
   const HomeActions({
     required this.onScanPay,
     required this.onTopup,
     required this.onSonic,
     required this.onP2P,
-    required this.onMobility,
-    required this.onBus,
     required this.onChat,
     required this.onVouchers,
     required this.onRequests,
     required this.onBills,
     required this.onWallet,
     required this.onHistory,
+    required this.onRide,
     required this.onOps,
   });
 }
@@ -39,11 +36,17 @@ class HomeRouteGrid extends StatelessWidget {
   final HomeActions actions;
   final bool showOps;
   final bool showSuperadmin;
+  final bool showSonic;
+  final bool showVouchers;
+  final bool showBills;
   const HomeRouteGrid({
     super.key,
     required this.actions,
     this.showOps = true,
     this.showSuperadmin = false,
+    this.showSonic = false,
+    this.showVouchers = false,
+    this.showBills = false,
   });
   @override
   Widget build(BuildContext context) {
@@ -66,11 +69,12 @@ class HomeRouteGrid extends StatelessWidget {
                           label: l.homeWallet,
                           onTap: actions.onWallet,
                           tint: Tokens.colorPayments),
-                      _SatSpec(
-                          icon: Icons.receipt_long_outlined,
-                          label: l.homeBills,
-                          onTap: actions.onBills,
-                          tint: Tokens.colorPayments),
+                      if (showBills)
+                        _SatSpec(
+                            icon: Icons.receipt_long_outlined,
+                            label: l.homeBills,
+                            onTap: actions.onBills,
+                            tint: Tokens.colorPayments),
                       _SatSpec(
                           icon: Icons.history,
                           label: l.historyTitle,
@@ -81,41 +85,17 @@ class HomeRouteGrid extends StatelessWidget {
                           label: l.homeRequests,
                           onTap: actions.onRequests,
                           tint: Tokens.colorPayments),
-                      _SatSpec(
-                          icon: Icons.card_giftcard,
-                          label: l.homeVouchers,
-                          onTap: actions.onVouchers,
-                          tint: Tokens.colorPayments),
+                      if (showVouchers)
+                        _SatSpec(
+                            icon: Icons.card_giftcard,
+                            label: l.homeVouchers,
+                            onTap: actions.onVouchers,
+                            tint: Tokens.colorPayments),
                     ],
                     compact: true,
                   )));
         },
         tint: Tokens.colorPayments,
-      ),
-      // Mobility & Travel cluster: journey + bus
-      _SatSpec(
-        icon: Icons.directions_car_filled,
-        label: l.isArabic ? 'التنقل والسفر' : 'Mobility & Travel',
-        onTap: () {
-          Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => HomeSubGrid(
-                    title: l.isArabic ? 'التنقل والسفر' : 'Mobility & Travel',
-                    specs: [
-                      _SatSpec(
-                          icon: Icons.route,
-                          label: l.mobilityTitle,
-                          onTap: actions.onMobility,
-                          tint: Tokens.colorBus),
-                      _SatSpec(
-                          icon: Icons.directions_bus,
-                          label: l.busTitle,
-                          onTap: actions.onBus,
-                          tint: Tokens.colorBus),
-                    ],
-                    compact: true,
-                  )));
-        },
-        tint: Tokens.colorBus,
       ),
       // Social
       _SatSpec(
@@ -123,6 +103,13 @@ class HomeRouteGrid extends StatelessWidget {
         label: l.homeChat,
         onTap: actions.onChat,
         tint: Tokens.accent,
+      ),
+      // Mobility
+      _SatSpec(
+        icon: Icons.local_taxi_outlined,
+        label: l.isArabic ? 'التنقّل' : 'Mobility',
+        onTap: actions.onRide,
+        tint: const Color(0xFF0EA5E9),
       ),
       // Admin / Ops tiles (only when applicable)
       if (showOps)
@@ -167,7 +154,7 @@ class HomeRouteGrid extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: PayActionButton(
+                    child: _QuickActionButton(
                       icon: Icons.qr_code_scanner,
                       label: 'Scan & pay',
                       onTap: actions.onScanPay,
@@ -176,7 +163,7 @@ class HomeRouteGrid extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: PayActionButton(
+                    child: _QuickActionButton(
                       icon: Icons.compare_arrows_outlined,
                       label: 'P2P',
                       onTap: actions.onP2P,
@@ -189,22 +176,24 @@ class HomeRouteGrid extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: PayActionButton(
+                    child: _QuickActionButton(
                       icon: Icons.account_balance_wallet_outlined,
                       label: 'Topup',
                       onTap: actions.onTopup,
                       tint: Tokens.colorPayments,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: PayActionButton(
-                      icon: Icons.bolt,
-                      label: 'Sonic',
-                      onTap: actions.onSonic,
-                      tint: Tokens.colorPayments,
+                  if (showSonic) ...[
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _QuickActionButton(
+                        icon: Icons.bolt,
+                        label: 'Sonic',
+                        onTap: actions.onSonic,
+                        tint: Tokens.colorPayments,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ],
@@ -278,6 +267,47 @@ class _HomeGridTile extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _QuickActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final Color tint;
+
+  const _QuickActionButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    required this.tint,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.tonal(
+      onPressed: onTap,
+      style: FilledButton.styleFrom(
+        backgroundColor: tint.withValues(alpha: .15),
+        foregroundColor: tint,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 18),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -9,7 +9,7 @@ class OnboardingPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
-    final title = l.isArabic ? 'ابدأ مع Shamell' : 'Shamell – quick guide';
+    final title = l.isArabic ? 'ابدأ مع SyrChat' : 'SyrChat – quick guide';
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
@@ -25,8 +25,8 @@ class OnboardingPage extends StatelessWidget {
               children: [
                 Text(
                   l.isArabic
-                      ? '١) افتح التطبيق وحدّد \"مستخدم\" في الأعلى.\n٢) أدخل رقم هاتفك واضغط على \"طلب رمز\".\n٣) أدخل رمز الـ SMS وستتم عملية تسجيل الدخول.'
-                      : '1) At the top, select the role \"User\".\n2) Enter your phone number and tap \"Request code\".\n3) Type the SMS code – then you are signed in.',
+                      ? '١) افتح SyrChat وحدّد \"مستخدم\" في الأعلى.\n٢) اضغط \"تسجيل الدخول\" ثم أكّد عبر Face ID / Touch ID.\n٣) إذا كان هذا الجهاز غير مُسجّل بعد، اربطه عبر تسجيل دخول الجهاز (QR) أو اطلب من المشرف تفعيل الوصول.'
+                      : '1) Open SyrChat and select the role \"User\".\n2) Tap \"Sign in\" and approve Face ID / Touch ID.\n3) If this device is not enrolled yet, pair it via QR device login or ask an admin to provision access.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
@@ -45,24 +45,13 @@ class OnboardingPage extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             FormSection(
-              title: l.isArabic ? 'التنقل والرحلات' : '3. Journeys & mobility',
+              title:
+                  l.isArabic ? 'الدردشة وجهات الاتصال' : '3. Chats & contacts',
               children: [
                 Text(
                   l.isArabic
-                      ? '١) افتح صفحة \"Journey\" من الشاشة الرئيسية.\n٢) راجع ملخص التنقل وسجل رحلات الباص.\n٣) استخدمها لمتابعة حجوزاتك وتنقلاتك.'
-                      : '1) On the home screen open \"Journey\".\n2) Review your mobility overview and bus trip history.\n3) Use it to track bookings and trips.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            FormSection(
-              title: l.isArabic ? 'حجز الباص' : '4. Bus booking',
-              children: [
-                Text(
-                  l.isArabic
-                      ? '١) من الشاشة الرئيسية اختر \"Bus\" للحجوزات بين المدن.\n٢) اختر مدينة الانطلاق والوصول والتاريخ ثم احجز وادفع من محفظتك.\n٣) راجع حجوزاتك من \"Journey\" أو \"My trips\".'
-                      : '1) On the home screen open \"Bus\" for intercity bookings.\n2) Select origin, destination and date, then book and pay from your wallet.\n3) Review bookings in \"Journey\" or \"My trips\".',
+                      ? '١) افتح \"Chats\" لبدء محادثة مع جهات اتصالك.\n٢) من تبويب \"Contacts\" أضف جهة جديدة عبر رمز دعوة أو QR.\n٣) أنشئ مجموعة عند الحاجة لإدارة المحادثات الجماعية.'
+                      : '1) Open \"Chats\" to start conversations with your contacts.\n2) In \"Contacts\", add a new contact via an invite token or QR.\n3) Create a group when you need shared conversations.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
@@ -70,12 +59,24 @@ class OnboardingPage extends StatelessWidget {
             const SizedBox(height: 16),
             FormSection(
               title:
-                  l.isArabic ? 'الحسابات الرسمية والخدمات' : '5. Official accounts',
+                  l.isArabic ? 'الإعدادات والخصوصية' : '4. Settings & privacy',
               children: [
                 Text(
                   l.isArabic
-                      ? '١) افتح \"Contacts\" ثم \"Service accounts\".\n٢) تابع \"Shamell Bus\" للحصول على التحديثات.\n٣) استخدم \"Shamell Pay\" للتحويلات ورؤية المعاملات.'
-                      : '1) Open \"Contacts\" then \"Service accounts\".\n2) Follow \"Shamell Bus\" for updates.\n3) Use \"Shamell Pay\" for transfers and transaction history.',
+                      ? '١) من تبويب \"Settings\" اضبط الإشعارات والخصوصية.\n٢) فعّل قفل التطبيق والخيارات الأمنية المناسبة.\n٣) راجع إدارة التخزين عند الحاجة.'
+                      : '1) In \"Settings\", configure notifications and privacy.\n2) Enable app lock and security options as needed.\n3) Review storage management when required.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            FormSection(
+              title: l.isArabic ? 'الخدمات داخل التطبيق' : '5. In-app services',
+              children: [
+                Text(
+                  l.isArabic
+                      ? '١) استخدم \"Payments\" للتحويلات والمدفوعات.\n٢) راجع السجل من داخل المحفظة.\n٣) الخدمات المتاحة قد تختلف حسب إعدادات الخادم وحسابك.'
+                      : '1) Use \"Payments\" for transfers and payments.\n2) Review history from inside your wallet.\n3) Available services may vary by server and account settings.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],
@@ -86,8 +87,8 @@ class OnboardingPage extends StatelessWidget {
               children: [
                 Text(
                   l.isArabic
-                      ? 'كمستخدم نهائي ترى فقط الأجزاء المخصصة لك. المشغلون والمديرون لديهم واجهات منفصلة (مثل مشغل الباص).'
-                      : 'As an end user you only see the parts that are enabled for you. Operators and admins have their own consoles (for example bus operator).',
+                      ? 'كمستخدم نهائي ترى فقط الأجزاء المخصصة لك. للمشغلين والمديرين واجهات مستقلة لإدارة النظام.'
+                      : 'As an end user, you only see enabled areas. Operators and admins use separate system management consoles.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ],

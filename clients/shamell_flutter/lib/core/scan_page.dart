@@ -1,10 +1,15 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'l10n.dart';
-import 'wechat_ui.dart';
+import 'media_access_policy.dart';
+import 'shamell_ui.dart';
 
 class ScanPage extends StatefulWidget {
-  const ScanPage({super.key});
+  final bool? allowManualEntry;
+
+  const ScanPage({super.key, this.allowManualEntry});
 
   @override
   State<ScanPage> createState() => _ScanPageState();
@@ -14,6 +19,8 @@ class _ScanPageState extends State<ScanPage> {
   final MobileScannerController _controller = MobileScannerController();
   bool _torchOn = false;
   bool _popped = false;
+
+  bool get _allowManualEntry => widget.allowManualEntry ?? !kReleaseMode;
 
   @override
   void dispose() {
@@ -31,9 +38,109 @@ class _ScanPageState extends State<ScanPage> {
     } catch (_) {}
   }
 
+  void _submitScanValue(String raw) {
+    final normalized = raw.trim();
+    if (_popped || normalized.isEmpty || !mounted) return;
+    _popped = true;
+    Navigator.pop(context, normalized);
+  }
+
+  Future<void> _openManualEntrySheet() async {
+    if (!_allowManualEntry || _popped) return;
+    try {
+      await _controller.stop();
+    } catch (_) {}
+    final raw = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return ScanManualEntrySheet(
+          onSubmit: (value) => Navigator.pop(sheetContext, value),
+        );
+      },
+    );
+    try {
+      await _controller.start();
+    } catch (_) {}
+    if (raw == null) return;
+    _submitScanValue(raw);
+  }
+
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
+    final cameraAllowed = shamellAllowsCameraCapture();
+    final manualEntryAction = _allowManualEntry
+        ? IconButton(
+            tooltip: l.isArabic ? 'إدخال الرمز يدويًا' : 'Enter code manually',
+            icon: const Icon(Icons.keyboard_alt_outlined),
+            onPressed: _openManualEntrySheet,
+          )
+        : null;
+    if (!cameraAllowed) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          title: Text(l.isArabic ? 'مسح رمز QR' : 'Scan QR'),
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          actions: [
+            if (manualEntryAction != null) manualEntryAction,
+          ],
+        ),
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.no_photography_outlined,
+                    color: Colors.white70,
+                    size: 42,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    shamellRestrictedMediaMessage(
+                      context,
+                      camera: true,
+                      microphone: false,
+                    ),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (_allowManualEntry) ...[
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: _openManualEntrySheet,
+                      icon: const Icon(Icons.keyboard_alt_outlined),
+                      label: Text(
+                        l.isArabic
+                            ? 'إدخال الرمز يدويًا'
+                            : 'Enter code manually',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: BorderSide(
+                          color: Colors.white.withValues(alpha: .24),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -47,6 +154,7 @@ class _ScanPageState extends State<ScanPage> {
             icon: Icon(_torchOn ? Icons.flash_on : Icons.flash_off),
             onPressed: _toggleTorch,
           ),
+          if (manualEntryAction != null) manualEntryAction,
         ],
       ),
       body: Stack(
@@ -59,8 +167,7 @@ class _ScanPageState extends State<ScanPage> {
               if (codes.isEmpty) return;
               final raw = codes.first.rawValue;
               if (raw == null || raw.isEmpty) return;
-              _popped = true;
-              Navigator.pop(context, raw);
+              _submitScanValue(raw);
             },
           ),
           const Positioned.fill(
@@ -106,11 +213,137 @@ class _ScanPageState extends State<ScanPage> {
                       ),
                     ),
                   ),
+                  if (_allowManualEntry) ...[
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: _openManualEntrySheet,
+                      icon: const Icon(Icons.keyboard_alt_outlined),
+                      label: Text(
+                        l.isArabic
+                            ? 'إدخال الرمز يدويًا'
+                            : 'Enter code manually',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: BorderSide(
+                          color: Colors.white.withValues(alpha: .24),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class ScanManualEntrySheet extends StatefulWidget {
+  final ValueChanged<String> onSubmit;
+
+  const ScanManualEntrySheet({super.key, required this.onSubmit});
+
+  @override
+  State<ScanManualEntrySheet> createState() => _ScanManualEntrySheetState();
+}
+
+class _ScanManualEntrySheetState extends State<ScanManualEntrySheet> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    try {
+      final data = await Clipboard.getData('text/plain');
+      final text = data?.text?.trim() ?? '';
+      if (text.isEmpty || !mounted) return;
+      _controller.text = text;
+      _controller.selection = TextSelection.collapsed(offset: text.length);
+    } catch (_) {}
+  }
+
+  void _submit() {
+    final raw = _controller.text.trim();
+    if (raw.isEmpty) return;
+    widget.onSubmit(raw);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isArabic = L10n.of(context).isArabic;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: Material(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(24),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  isArabic ? 'استيراد الرمز يدويًا' : 'Manual scan import',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isArabic
+                      ? 'ألصق حمولة QR أو الرابط أو رقم المحفظة أو @alias.'
+                      : 'Paste a QR payload, link, wallet ID, or @alias.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _controller,
+                  autofocus: true,
+                  minLines: 2,
+                  maxLines: 6,
+                  decoration: InputDecoration(
+                    labelText: isArabic ? 'الرمز أو الرابط' : 'Code or link',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _pasteFromClipboard,
+                      icon: const Icon(Icons.content_paste_go_outlined),
+                      label: Text(isArabic ? 'لصق' : 'Paste'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(isArabic ? 'إلغاء' : 'Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: _submit,
+                      child: Text(isArabic ? 'استخدام الرمز' : 'Use code'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -143,7 +376,7 @@ class _ScannerOverlayPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final overlayPaint = Paint()..color = Colors.black.withValues(alpha: .55);
     final borderPaint = Paint()
-      ..color = WeChatPalette.green.withValues(alpha: .95)
+      ..color = ShamellPalette.green.withValues(alpha: .95)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -160,7 +393,7 @@ class _ScannerOverlayPainter extends CustomPainter {
       ..fillType = PathFillType.evenOdd;
     canvas.drawPath(path, overlayPaint);
 
-    // Draw WeChat-like corner brackets.
+    // Draw SyrChat-like corner brackets.
     const corner = 22.0;
     const inset = 8.0;
     final left = rect.left + inset;

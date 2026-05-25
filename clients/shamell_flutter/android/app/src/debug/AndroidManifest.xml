@@ -8,6 +8,7 @@
 
     <!-- Debug-only: allow http:// for local dev tooling and non-TLS test endpoints. -->
     <application
-        android:usesCleartextTraffic="true"
-        tools:replace="android:usesCleartextTraffic" />
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/debug_network_security_config"
+        tools:replace="android:usesCleartextTraffic,android:networkSecurityConfig" />
 </manifest>

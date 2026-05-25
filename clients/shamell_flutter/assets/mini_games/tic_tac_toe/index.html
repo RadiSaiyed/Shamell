@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#1f2a44" />
+    <title>Drei-Männer-Mühle</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!--
+      Single-page mini-game. The menu screen and the in-game board are
+      both rendered here; JS toggles the `.is-active` class on each
+      <section data-screen> to swap views without a router. Keeping
+      everything in one document means a single WebView load — no
+      hash-routing flicker, no extra HTTP requests inside the asset
+      sandbox.
+    -->
+    <main id="app">
+      <section class="screen is-active" data-screen="menu">
+        <header class="menu-header">
+          <h1>Drei-Männer-Mühle</h1>
+          <p class="subtitle">
+            Setze 3 Steine, dann zieh sie auf jedes freie Feld. Wer
+            zuerst 3 in einer Reihe schafft, gewinnt.
+          </p>
+        </header>
+
+        <div class="stats stats--two-col" id="stats">
+          <div class="stat">
+            <span class="stat-label">Siege X</span>
+            <span class="stat-value" data-stat="wins_x">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Siege O</span>
+            <span class="stat-value" data-stat="wins_o">0</span>
+          </div>
+        </div>
+
+        <div class="mode-list">
+          <button class="mode-btn" data-mode="local">
+            <span class="mode-title">2 Spieler · lokal</span>
+            <span class="mode-desc">Pass &amp; Play am selben Gerät</span>
+          </button>
+          <button class="mode-btn" data-mode="ai-easy">
+            <span class="mode-title">vs. KI · Leicht</span>
+            <span class="mode-desc">Zufällige Züge — gut zum Lernen</span>
+          </button>
+          <button class="mode-btn" data-mode="ai-medium">
+            <span class="mode-title">vs. KI · Mittel</span>
+            <span class="mode-desc">Gewinnt &amp; blockiert offensichtliche Drohungen</span>
+          </button>
+          <button class="mode-btn" data-mode="ai-hard">
+            <span class="mode-title">vs. KI · Schwer</span>
+            <span class="mode-desc">Alpha-Beta-Suche — verzeiht keinen Fehler</span>
+          </button>
+          <button class="mode-btn is-disabled" data-mode="online" disabled>
+            <span class="mode-title">Online · über Shamell-Chat</span>
+            <span class="mode-desc">Bald verfügbar</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="game">
+        <header class="game-header">
+          <button class="icon-btn" id="back-to-menu" aria-label="Zurück zum Menü">‹</button>
+          <div class="turn-indicator" id="turn-indicator">
+            <span class="turn-dot" data-player="X"></span>
+            <span class="turn-label" id="turn-label">X ist am Zug</span>
+            <span class="phase-tag" id="phase-label">Setzphase</span>
+          </div>
+          <button class="icon-btn" id="restart-btn" aria-label="Neue Runde">↻</button>
+        </header>
+
+        <div class="board" id="board" role="grid" aria-label="Spielfeld">
+          <!-- 9 cells injected by game.js so we can attach handlers
+               and keep the markup DRY. -->
+        </div>
+
+        <div class="result-banner" id="result-banner" aria-live="polite"></div>
+
+        <footer class="game-footer">
+          <button class="ghost-btn" id="new-round-btn">Nochmal</button>
+          <button class="ghost-btn" id="change-mode-btn">Modus wechseln</button>
+        </footer>
+      </section>
+    </main>
+
+    <script src="game.js"></script>
+  </body>
+</html>

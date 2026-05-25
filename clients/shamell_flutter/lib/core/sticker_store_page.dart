@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
+import 'session_cookie_store.dart';
+import 'shamell_loading_shimmer.dart';
 import 'sticker_store.dart';
 
 class StickerStorePage extends StatefulWidget {
@@ -195,7 +197,10 @@ class _StickerStorePageState extends State<StickerStorePage> {
       });
       final r = await http.post(
         uri,
-        headers: const {"content-type": "application/json"},
+        headers: await shamellSessionHeadersForBaseUrl(
+          widget.baseUrl,
+          json: true,
+        ),
         body: body,
       );
       if (r.statusCode >= 200 && r.statusCode < 300) {
@@ -293,7 +298,7 @@ class _StickerStorePageState extends State<StickerStorePage> {
 
     Widget body;
     if (_loading) {
-      body = const Center(child: CircularProgressIndicator());
+      body = const ShamellSkeletonList(itemCount: 6);
     } else {
       body = ListView.builder(
         controller: _scrollController,
@@ -642,7 +647,7 @@ class _StickerStorePageState extends State<StickerStorePage> {
               runSpacing: 4,
               children: [
                 ChoiceChip(
-                  label: Text(l.mirsaalStickersFilterAll),
+                  label: Text(l.isArabic ? 'الكل' : 'All'),
                   selected: !_filterInstalledOnly && _filterTag == 'all',
                   onSelected: (sel) {
                     if (!sel) return;
@@ -653,7 +658,7 @@ class _StickerStorePageState extends State<StickerStorePage> {
                   },
                 ),
                 ChoiceChip(
-                  label: Text(l.mirsaalStickersFilterInstalled),
+                  label: Text(l.isArabic ? 'المثبتة' : 'Installed'),
                   selected: _filterInstalledOnly,
                   onSelected: (sel) {
                     setState(() {
