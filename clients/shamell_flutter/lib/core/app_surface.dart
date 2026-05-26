@@ -7,6 +7,7 @@ enum ShamellAppSurface {
   operator,
   busOperator,
   hotelOperator,
+  carrier,
   syrcom,
 }
 
@@ -48,6 +49,13 @@ ShamellAppSurface shamellParseAppSurface(String raw) {
     case 'hotels_admin':
     case 'hotel':
       return ShamellAppSurface.hotelOperator;
+    case 'carrier':
+    case 'spediteur':
+    case 'disponent':
+    case 'freight_carrier':
+    case 'freight':
+    case 'forwarder':
+      return ShamellAppSurface.carrier;
     case 'syrcom':
     case 'sirkom':
     case 'work':
@@ -83,13 +91,17 @@ bool shamellIsBusOperatorSurface([ShamellAppSurface? surface]) =>
 bool shamellIsHotelOperatorSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.hotelOperator;
 
+bool shamellIsCarrierSurface([ShamellAppSurface? surface]) =>
+    (surface ?? shamellActiveAppSurface) == ShamellAppSurface.carrier;
+
 bool shamellIsSyrComSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.syrcom;
 
 bool shamellIsAnyOperatorSurface([ShamellAppSurface? surface]) =>
     shamellIsRideOperatorSurface(surface) ||
     shamellIsBusOperatorSurface(surface) ||
-    shamellIsHotelOperatorSurface(surface);
+    shamellIsHotelOperatorSurface(surface) ||
+    shamellIsCarrierSurface(surface);
 
 bool shamellIsManagedAccountSurface([ShamellAppSurface? surface]) =>
     shamellIsAnyOperatorSurface(surface) || shamellIsSyrComSurface(surface);

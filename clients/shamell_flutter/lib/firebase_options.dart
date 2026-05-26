@@ -139,6 +139,11 @@ String? _firebaseAndroidAppIdForSurface(ShamellAppSurface surface) {
       // until a real Android app is registered in the shamell Firebase
       // project for online.shamell.hoteloperator.
       return null;
+    case ShamellAppSurface.carrier:
+      // Same status as hotelOperator: no Firebase app registered yet
+      // for online.shamell.carrier. Phase 3 (carrier endpoints + push
+      // notifications for load offers) will provision one.
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseAndroidAppIdSyrCom);
     case ShamellAppSurface.superapp:
@@ -158,6 +163,8 @@ String? _firebaseIosAppIdForSurface(ShamellAppSurface surface) {
       return _usableFirebaseValue(_firebaseIosAppIdBusOperator);
     case ShamellAppSurface.hotelOperator:
       return null;
+    case ShamellAppSurface.carrier:
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseIosAppIdSyrCom);
     case ShamellAppSurface.superapp:
@@ -176,6 +183,8 @@ String? _firebaseIosBundleIdForSurface(ShamellAppSurface surface) {
     case ShamellAppSurface.busOperator:
       return _usableFirebaseValue(_firebaseIosBundleIdBusOperator);
     case ShamellAppSurface.hotelOperator:
+      return null;
+    case ShamellAppSurface.carrier:
       return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseIosBundleIdSyrCom);

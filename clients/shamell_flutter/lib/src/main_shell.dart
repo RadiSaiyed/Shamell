@@ -656,6 +656,13 @@ Widget shamellBuildSignedInHome({
       api: SuperappAPI.light(baseUrl: baseUrlOverride ?? ''),
     );
   }
+  if (shamellIsCarrierSurface(appSurface)) {
+    // Standalone Carrier (Spediteur-Disponent) app — SyrTrans Phase 2
+    // scaffold. Lands in a minimal console that probes the freight
+    // service health endpoint. Real fleet UI + carrier login flow
+    // arrives with the BFF carrier endpoints in Phase 3.
+    return CarrierConsolePage(baseUrl: baseUrlOverride);
+  }
   if (shamellIsSyrComSurface(appSurface)) {
     return SyrComWorkbenchPage(baseUrl: baseUrlOverride);
   }

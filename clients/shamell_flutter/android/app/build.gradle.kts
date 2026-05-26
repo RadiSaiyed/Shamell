@@ -260,6 +260,11 @@ android {
             applicationId = "online.shamell.hoteloperator"
             resValue("string", "app_name", "SyrChat Hotels")
         }
+        create("carrier") {
+            dimension = "app"
+            applicationId = "online.shamell.carrier"
+            resValue("string", "app_name", "SyrChat Carrier")
+        }
         create("syrcom") {
             dimension = "app"
             applicationId = "online.shamell.syrcom"
@@ -362,6 +367,7 @@ androidComponents {
             appFlavor != "operator" &&
             appFlavor != "busOperator" &&
             appFlavor != "hotelOperator" &&
+            appFlavor != "carrier" &&
             appFlavor != "syrcom"
         ) {
             variant.enable = false

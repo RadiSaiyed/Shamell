@@ -40,7 +40,7 @@ Output:
     qr-*.png
 
 Options:
-  --flavors LIST   Comma-separated subset of: user, ride, driver, operator, bus_operator, hotel_operator
+  --flavors LIST   Comma-separated subset of: user, ride, driver, operator, bus_operator, hotel_operator, carrier
 EOF
 }
 
@@ -455,7 +455,7 @@ release_id="android-apk-${version_name//[^0-9A-Za-z._-]/-}-${release_stamp}"
 printf 'APP_RELEASE_ID=%s\n' "$release_id" >> "$release_dart_defines_file"
 printf 'APP_VERSION=%s\n' "$version_name" >> "$release_dart_defines_file"
 
-all_flavors=(user ride driver operator busOperator hotelOperator)
+all_flavors=(user ride driver operator busOperator hotelOperator carrier)
 flavors=()
 if [[ -z "${REQUESTED_FLAVORS_RAW// }" ]]; then
   flavors=("${all_flavors[@]}")
@@ -466,9 +466,10 @@ else
     case "$flavor" in
       bus_operator|busoperator) flavor="busOperator" ;;
       hotel_operator|hoteloperator|hotels_operator|hotel) flavor="hotelOperator" ;;
+      spediteur|forwarder|freight_carrier|freight) flavor="carrier" ;;
     esac
     case "$flavor" in
-      user|ride|driver|operator|busOperator|hotelOperator)
+      user|ride|driver|operator|busOperator|hotelOperator|carrier)
         case " ${flavors[*]-} " in
           *" $flavor "*) ;;
           *)
@@ -497,6 +498,7 @@ target_for_flavor() {
     operator) printf '%s\n' "lib/main_operator.dart" ;;
     busOperator) printf '%s\n' "lib/main_bus_operator.dart" ;;
     hotelOperator) printf '%s\n' "lib/main_hotel_operator.dart" ;;
+    carrier) printf '%s\n' "lib/main_carrier.dart" ;;
     *) return 1 ;;
   esac
 }
@@ -509,6 +511,7 @@ title_for_flavor() {
     operator) printf '%s\n' "Shamell Control" ;;
     busOperator) printf '%s\n' "Shamell Bus" ;;
     hotelOperator) printf '%s\n' "Shamell Hotels" ;;
+    carrier) printf '%s\n' "Shamell Carrier" ;;
     *) return 1 ;;
   esac
 }
@@ -521,6 +524,7 @@ summary_for_flavor() {
     operator) printf '%s\n' "Operations console for ride supervision (Shamell Control)." ;;
     busOperator) printf '%s\n' "Bus-operations console: dispatch, boarding, and on-the-ground field ops (Shamell Bus)." ;;
     hotelOperator) printf '%s\n' "Hotels console for front-desk and partner staff: bookings, room-service orders, and settlement." ;;
+    carrier) printf '%s\n' "Carrier (Spediteur) console for cold-chain freight: fleet, drivers, certificates, and load offers (SyrTrans)." ;;
     *) return 1 ;;
   esac
 }
@@ -533,6 +537,7 @@ package_for_flavor() {
     operator) printf '%s\n' "online.shamell.operator" ;;
     busOperator) printf '%s\n' "online.shamell.busoperator" ;;
     hotelOperator) printf '%s\n' "online.shamell.hoteloperator" ;;
+    carrier) printf '%s\n' "online.shamell.carrier" ;;
     *) return 1 ;;
   esac
 }
@@ -547,6 +552,7 @@ slug_for_flavor() {
     operator) printf '%s\n' "operator" ;;
     busOperator) printf '%s\n' "busoperator" ;;
     hotelOperator) printf '%s\n' "hoteloperator" ;;
+    carrier) printf '%s\n' "carrier" ;;
     *) return 1 ;;
   esac
 }
