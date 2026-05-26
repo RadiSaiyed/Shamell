@@ -9,6 +9,9 @@ class VoipCallPage extends StatelessWidget {
   final String peerId;
   final String? displayName;
   final String mode; // 'audio' | 'video'
+  /// Accepted for API parity with the mobile implementation; the web
+  /// stub doesn't play a ringback (no calls on web).
+  final bool isCaller;
 
   const VoipCallPage({
     super.key,
@@ -16,6 +19,7 @@ class VoipCallPage extends StatelessWidget {
     required this.peerId,
     this.displayName,
     this.mode = 'video',
+    this.isCaller = false,
   });
 
   @override

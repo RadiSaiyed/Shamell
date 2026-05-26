@@ -243,6 +243,7 @@ class _WeChatContactInfoPageState extends State<WeChatContactInfoPage> {
         peerId: peerId,
         displayName: name.isEmpty ? peerId : name,
         mode: mode,
+        isCaller: true,
       ),
     );
   }

@@ -193,6 +193,7 @@ class _ShamellContactInfoPageState extends State<ShamellContactInfoPage> {
         peerId: peerId,
         displayName: name.isEmpty ? peerId : name,
         mode: mode,
+        isCaller: true,
       ),
     );
   }

@@ -141,3 +141,89 @@ class ShamellSoundEffects {
     }
   }
 }
+
+/// Looping ringback ("tut-tut") for the caller while their VoIP call is
+/// waiting for the peer to answer. Separate from [ShamellSoundEffects]
+/// because:
+///   - Lifecycle is start/stop driven by call state, not a single trigger.
+///   - Plays in a loop (CEPT-style: 1 s tone + 4 s silence).
+///   - Volume is tuned for an in-call backdrop, not a notification ping.
+///
+/// Callee-side incoming ringtone keeps using the native foreground
+/// service ([IncomingCallRinger]) so it works under doze / lock screen.
+class ShamellCallRingback {
+  ShamellCallRingback._();
+
+  static AudioPlayer? _player;
+  static Future<AudioPlayer>? _loading;
+
+  static Future<void> start() async {
+    if (!ShamellSoundEffects.enabled.value) return;
+    if (_isInTestHarness) return;
+    try {
+      final player = await _ensurePlayer();
+      await player.setVolume(0.55);
+      await player.seek(Duration.zero);
+      await player.play();
+    } catch (_) {
+      // Ringback is cosmetic — never block the call setup on a sound
+      // load failure (e.g. media policy disabled on some surface).
+    }
+  }
+
+  static Future<void> stop() async {
+    final player = _player;
+    if (player == null) return;
+    try {
+      if (player.playing) {
+        await player.stop();
+      }
+    } catch (_) {}
+  }
+
+  /// Drop the cached player. Call from teardown / page dispose so we
+  /// don't keep a held AudioFocus longer than needed.
+  static Future<void> dispose() async {
+    final player = _player;
+    _player = null;
+    _loading = null;
+    if (player == null) return;
+    try {
+      await player.dispose();
+    } catch (_) {}
+  }
+
+  static Future<AudioPlayer> _ensurePlayer() {
+    final existing = _player;
+    if (existing != null) return Future<AudioPlayer>.value(existing);
+    final loading = _loading;
+    if (loading != null) return loading;
+    final future = () async {
+      final player = AudioPlayer();
+      try {
+        await player.setAsset('assets/sfx/ringback.wav');
+        await player.setLoopMode(LoopMode.one);
+        _player = player;
+        return player;
+      } catch (_) {
+        await player.dispose();
+        rethrow;
+      } finally {
+        _loading = null;
+      }
+    }();
+    _loading = future;
+    return future;
+  }
+
+  static bool get _isInTestHarness {
+    if (kIsWeb) return false;
+    try {
+      return WidgetsBinding.instance.runtimeType
+          .toString()
+          .contains('TestWidgetsFlutterBinding');
+    } catch (_) {
+      return false;
+    }
+  }
+}

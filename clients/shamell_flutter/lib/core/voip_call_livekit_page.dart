@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 
+import 'app_sounds.dart';
 import 'call_signaling.dart';
 import 'chat/chat_service.dart' show ChatLocalStore;
 import 'l10n.dart';
@@ -30,6 +31,12 @@ class VoipCallPage extends StatefulWidget {
   final bool autoStart;
   final VoidCallback? onCriticalSignalingSessionFailure;
   final String? callIdOverride;
+  /// `true` when this page is opened from the caller side (outgoing call).
+  /// Drives the local ringback ("tut-tut") that plays from page open until
+  /// the peer joins the room. Callee opens this page via the incoming-call
+  /// accept flow, where the callee-side native ringtone already played in
+  /// the incoming banner — they pass `false` (the default).
+  final bool isCaller;
 
   const VoipCallPage({
     super.key,
@@ -40,6 +47,7 @@ class VoipCallPage extends StatefulWidget {
     this.autoStart = true,
     this.onCriticalSignalingSessionFailure,
     this.callIdOverride,
+    this.isCaller = false,
   });
 
   @override
@@ -90,6 +98,13 @@ class _VoipCallPageState extends State<VoipCallPage>
     }
     if (widget.autoStart) {
       unawaited(_bootstrap());
+    }
+    // Caller-side ringback: play immediately on page open so the caller
+    // hears the dial tone while the room is being set up + peer is
+    // ringing. Stopped on ParticipantConnectedEvent (peer joined) or in
+    // _cleanup (call ended / failed).
+    if (widget.isCaller) {
+      unawaited(ShamellCallRingback.start());
     }
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_connected && _active && mounted) {
@@ -230,6 +245,8 @@ class _VoipCallPageState extends State<VoipCallPage>
           _onRoomDisconnected(event.reason?.toString() ?? 'closed');
         })
         ..on<lk.ParticipantConnectedEvent>((event) {
+          // Peer joined → stop caller-side ringback. No-op for callee.
+          unawaited(ShamellCallRingback.stop());
           if (mounted) {
             setState(() {
               _statusLabel = '${event.participant.identity} joined';
@@ -304,6 +321,11 @@ class _VoipCallPageState extends State<VoipCallPage>
   }
 
   Future<void> _cleanup() async {
+    // Stop ringback first so it doesn't keep tooting while the user
+    // sees a "Call ended" surface.
+    try {
+      await ShamellCallRingback.stop();
+    } catch (_) {}
     final room = _room;
     _room = null;
     final listener = _roomListener;

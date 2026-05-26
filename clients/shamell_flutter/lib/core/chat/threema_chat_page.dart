@@ -19053,6 +19053,7 @@ extension _MirsaalChatHelpers on _ThreemaChatPageState {
           peerId: p.id,
           displayName: _displayNameForPeer(p),
           mode: mode,
+          isCaller: true,
         ),
       ),
     );
