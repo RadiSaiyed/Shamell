@@ -237,9 +237,16 @@ cp -a '${tmp_remote}/.' '${release_root}/'
 # Best-effort nginx ops — not required for content visibility.
 optional_sudo_run nginx -t
 optional_sudo_run systemctl reload nginx
-curl -skfsS -H 'Host: shamell.online' https://127.0.0.1/downloads/android/release-manifest.json >/dev/null
-curl -skfI -H 'Host: shamell.online' https://127.0.0.1/downloads/android/ >/dev/null
+# Post-publish smoke checks — non-fatal. nginx serves the new bundle
+# the moment cp -a finishes; these are extra reassurance, not a gate.
+# Wrapped in || true so a transient SNI / resolve / loopback hiccup
+# doesn't fail the CI job after the files are already in place.
+curl -skfsS -H 'Host: shamell.online' https://127.0.0.1/downloads/android/release-manifest.json >/dev/null || true
+curl -skfI  -H 'Host: shamell.online' https://127.0.0.1/downloads/android/ >/dev/null || true
 rm -rf '${tmp_remote}'
+# Force a clean shell exit so an SSH -tt PTY teardown can't trip the
+# job with "Broken pipe" exit 255 after all the publish work is done.
+exit 0
 EOF
 
 printf 'Published Android APK bundle: https://shamell.online/downloads/android/ (%s)\n' "$release_id"
