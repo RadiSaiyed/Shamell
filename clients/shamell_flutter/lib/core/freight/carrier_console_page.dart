@@ -5,30 +5,28 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../l10n.dart';
+import '../session_cookie_store.dart';
 
-// Fallback prod base URL used when the surface dispatcher doesn't
-// inject one. Carriers launching the standalone APK from the wild
-// will hit this; in-app launches always pass a configured baseUrl.
+/// Phase 2.5 Carrier Console.
+///
+/// On launch the page loads the caller's organizations via
+/// `GET /v1/freight/orgs`:
+///   - Loading: spinner.
+///   - Empty: setup wizard (name + country + optional tax_id + contact).
+///     Submit posts to `POST /v1/freight/orgs`; on success we slip the
+///     new org into the dashboard view in-place (no second fetch).
+///   - Non-empty: dashboard listing each org with role + status badge.
+///     A floating-action button reopens the wizard for additional orgs.
+///
+/// Auth: every request carries the standard Shamell session headers
+/// from [shamellSessionHeadersForBaseUrl]. The BFF's `freight_proxy`
+/// resolves the session → `X-Shamell-Account-Id` injected upstream;
+/// this page only knows the public surface.
+///
+/// Phase 3 will add Fleet (Vehicles/Trailers/CoolingUnits) + Drivers
+/// + Certificates as tabs in this same shell.
 const String _fallbackBaseUrl = 'https://api.shamell.online';
 
-/// Phase-2 Carrier Console: a deliberately minimal landing screen
-/// that proves the mobile → BFF → freight_service chain works on a
-/// real device. Real fleet management UI (orgs, vehicles, trailers,
-/// drivers, certificates) lands in Phase 3 once the BFF carrier
-/// endpoints exist; that work copies the shape of `HotelAdminConsolePage`
-/// (login flow + tabbed dashboard + SSE live updates + manual polling
-/// fallback).
-///
-/// Rationale for shipping a scaffold this early:
-/// - The CI pipeline (signed APK + Play Integrity + TLS pinning +
-///   Hetzner publish) takes ~30 min and has many gotchas (we hit
-///   ripgrep-missing, JDK 21, Firebase configs, variant allowlists).
-///   Building the flavor end-to-end NOW, before there's much UI to
-///   debug, keeps the operational debt small.
-/// - The few pilot Spediteure can install the APK, hit the health
-///   probe button, and confirm the backend is reachable from their
-///   network/device. Useful sanity check before we ask them to
-///   register fleet data.
 class CarrierConsolePage extends StatefulWidget {
   final String? baseUrl;
 
@@ -39,244 +37,295 @@ class CarrierConsolePage extends StatefulWidget {
 }
 
 class _CarrierConsolePageState extends State<CarrierConsolePage> {
-  bool _probing = false;
-  String? _lastProbeResult;
-  String? _lastProbeError;
+  late final String _baseUrl;
+  bool _loading = true;
+  String? _loadError;
+  List<_OrgEntry> _orgs = const [];
+  bool _showWizard = false;
 
-  Future<void> _probeHealth() async {
-    if (_probing) return;
+  @override
+  void initState() {
+    super.initState();
+    final trimmed =
+        (widget.baseUrl ?? '').trim().replaceAll(RegExp(r'/+$'), '');
+    _baseUrl = trimmed.isEmpty ? _fallbackBaseUrl : trimmed;
+    unawaited(_loadOrgs());
+  }
+
+  Future<Map<String, String>> _authHeaders() async {
+    final base = await shamellSessionHeadersForBaseUrl(_baseUrl);
+    return {
+      ...base,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  Future<void> _loadOrgs() async {
     setState(() {
-      _probing = true;
-      _lastProbeResult = null;
-      _lastProbeError = null;
+      _loading = true;
+      _loadError = null;
     });
-    final trimmed = (widget.baseUrl ?? '').trim().replaceAll(RegExp(r'/+$'), '');
-    final base = trimmed.isEmpty ? _fallbackBaseUrl : trimmed;
-    final url = Uri.parse('$base/v1/freight/health');
     try {
+      final headers = await _authHeaders();
       final resp = await http
-          .get(url, headers: const {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 8));
+          .get(Uri.parse('$_baseUrl/v1/freight/orgs'), headers: headers)
+          .timeout(const Duration(seconds: 10));
       if (!mounted) return;
-      if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        // Pretty-print to confirm shape — operators expect
-        // { status, service, env, migrations_applied }.
-        try {
-          final parsed = json.decode(resp.body) as Map<String, dynamic>;
-          setState(() {
-            _lastProbeResult =
-                'HTTP ${resp.statusCode}\n${const JsonEncoder.withIndent('  ').convert(parsed)}';
-          });
-        } catch (_) {
-          setState(() {
-            _lastProbeResult = 'HTTP ${resp.statusCode}\n${resp.body}';
-          });
-        }
-      } else {
+      if (resp.statusCode == 401) {
         setState(() {
-          _lastProbeError = 'HTTP ${resp.statusCode}\n${resp.body}';
+          _loading = false;
+          _loadError =
+              'Sitzung abgelaufen — bitte erneut anmelden.\n(Session expired — please sign in again.)';
         });
+        return;
       }
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        setState(() {
+          _loading = false;
+          _loadError = 'HTTP ${resp.statusCode}\n${resp.body}';
+        });
+        return;
+      }
+      final parsed = json.decode(resp.body) as List<dynamic>;
+      final orgs = parsed
+          .whereType<Map<String, dynamic>>()
+          .map(_OrgEntry.fromJson)
+          .toList(growable: false);
+      setState(() {
+        _loading = false;
+        _orgs = orgs;
+        // First-launch UX: if the caller has no orgs yet, drop them
+        // straight into the wizard. They came here to register a
+        // company, not to look at an empty list.
+        _showWizard = orgs.isEmpty;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _lastProbeError = e.toString();
+        _loading = false;
+        _loadError = e.toString();
       });
-    } finally {
-      if (mounted) {
-        setState(() => _probing = false);
+    }
+  }
+
+  Future<_OrgEntry?> _submitWizard(_OrgDraft draft) async {
+    try {
+      final headers = await _authHeaders();
+      final resp = await http
+          .post(
+            Uri.parse('$_baseUrl/v1/freight/orgs'),
+            headers: headers,
+            body: json.encode(draft.toJson()),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return null;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        // Surface backend's `{error,message}` shape verbatim so the
+        // user sees the exact reason (e.g. duplicate tax_id).
+        String detail;
+        try {
+          final parsed = json.decode(resp.body) as Map<String, dynamic>;
+          detail = (parsed['message'] as String?) ?? resp.body;
+        } catch (_) {
+          detail = resp.body;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('HTTP ${resp.statusCode} — $detail'),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 6),
+        ));
+        return null;
       }
+      final parsed = json.decode(resp.body) as Map<String, dynamic>;
+      return _OrgEntry.fromJson(parsed);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+      return null;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
-    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(l.isArabic ? 'سرتشات شحن (Carrier)' : 'SyrChat Carrier'),
         backgroundColor: const Color(0xFF0F766E),
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تحديث' : 'Refresh',
+            onPressed: _loading ? null : _loadOrgs,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
+      body: SafeArea(child: _buildBody(l)),
+      floatingActionButton: (!_loading && _orgs.isNotEmpty && !_showWizard)
+          ? FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF0F766E),
+              onPressed: () => setState(() => _showWizard = true),
+              icon: const Icon(Icons.add),
+              label:
+                  Text(l.isArabic ? 'إضافة شركة' : 'Add organization'),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildBody(L10n l) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_loadError != null) {
+      return _ErrorPanel(message: _loadError!, onRetry: _loadOrgs);
+    }
+    if (_showWizard) {
+      return _SetupWizard(
+        firstTime: _orgs.isEmpty,
+        onSubmit: (draft) async {
+          final entry = await _submitWizard(draft);
+          if (entry != null) {
+            setState(() {
+              _orgs = [entry, ..._orgs];
+              _showWizard = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(l.isArabic
+                  ? 'تم إنشاء "${entry.name}"'
+                  : 'Created "${entry.name}"'),
+              backgroundColor: const Color(0xFF0F766E),
+            ));
+          }
+        },
+        onCancel: _orgs.isEmpty ? null : () => setState(() => _showWizard = false),
+      );
+    }
+    return _Dashboard(orgs: _orgs);
+  }
+}
+
+// ──────────────────────── data model ─────────────────────────────
+
+class _OrgEntry {
+  final String id;
+  final String name;
+  final String orgKind;
+  final String? taxId;
+  final String countryIso2;
+  final String? city;
+  final String status;
+  final String role;
+
+  _OrgEntry({
+    required this.id,
+    required this.name,
+    required this.orgKind,
+    required this.taxId,
+    required this.countryIso2,
+    required this.city,
+    required this.status,
+    required this.role,
+  });
+
+  static _OrgEntry fromJson(Map<String, dynamic> json) => _OrgEntry(
+        id: (json['id'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        orgKind: (json['org_kind'] ?? 'carrier').toString(),
+        taxId: json['tax_id'] as String?,
+        countryIso2: (json['country_iso2'] ?? '').toString(),
+        city: json['city'] as String?,
+        status: (json['status'] ?? 'draft').toString(),
+        role: (json['role'] ?? 'owner').toString(),
+      );
+}
+
+class _OrgDraft {
+  final String name;
+  final String countryIso2;
+  final String? taxId;
+  final String? city;
+  final String? phone;
+  final String? email;
+  final String? legalForm;
+  final String orgKind;
+
+  _OrgDraft({
+    required this.name,
+    required this.countryIso2,
+    this.taxId,
+    this.city,
+    this.phone,
+    this.email,
+    this.legalForm,
+    this.orgKind = 'carrier',
+  });
+
+  Map<String, dynamic> toJson() {
+    final out = <String, dynamic>{
+      'name': name,
+      'country_iso2': countryIso2,
+      'org_kind': orgKind,
+    };
+    if (taxId != null && taxId!.isNotEmpty) out['tax_id'] = taxId;
+    if (city != null && city!.isNotEmpty) out['city'] = city;
+    if (phone != null && phone!.isNotEmpty) out['phone'] = phone;
+    if (email != null && email!.isNotEmpty) out['email'] = email;
+    if (legalForm != null && legalForm!.isNotEmpty) {
+      out['legal_form'] = legalForm;
+    }
+    return out;
+  }
+}
+
+// ──────────────────────── views ──────────────────────────────────
+
+class _ErrorPanel extends StatelessWidget {
+  final String message;
+  final Future<void> Function() onRetry;
+
+  const _ErrorPanel({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Row(
-              children: [
-                Container(
-                  width: 56,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0F766E).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Icon(
-                    Icons.local_shipping_outlined,
-                    color: Color(0xFF0F766E),
-                    size: 32,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        l.isArabic ? 'وحدة الشاحن' : 'Carrier Console',
-                        style: theme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        l.isArabic
-                            ? 'مرحلة الإعداد — إدارة الأسطول قريباً'
-                            : 'Scaffold build — fleet management coming soon',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: 0.66),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            Card(
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(
-                  color: theme.dividerColor.withValues(alpha: 0.6),
-                ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.isArabic
-                          ? 'تحقّق من الاتصال بالخادم'
-                          : 'Backend connectivity check',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      l.isArabic
-                          ? 'يستدعي /v1/freight/health عبر بوابة سرتشات لإثبات وصول الجهاز إلى خدمة الشحن.'
-                          : 'Calls /v1/freight/health through the SyrChat gateway to prove this device can reach the freight service.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: 0.66),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    FilledButton.icon(
-                      onPressed: _probing ? null : _probeHealth,
-                      icon: _probing
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.network_check_outlined),
-                      label: Text(
-                        l.isArabic ? 'فحص الاتصال' : 'Probe /v1/freight/health',
-                      ),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF0F766E),
-                      ),
-                    ),
-                    if (_lastProbeResult != null) ...[
-                      const SizedBox(height: 14),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF07C160).withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: SelectableText(
-                          _lastProbeResult!,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                            height: 1.35,
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (_lastProbeError != null) ...[
-                      const SizedBox(height: 14),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFEF4444).withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: SelectableText(
-                          _lastProbeError!,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                            height: 1.35,
-                            color: Color(0xFFB91C1C),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
+            const Icon(Icons.cloud_off_outlined, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
             Text(
-              l.isArabic ? 'قريباً' : 'Coming next',
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+              l.isArabic ? 'تعذّر التحميل' : 'Could not load',
+              style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
-            _ComingSoonRow(
-              icon: Icons.business_outlined,
-              text: l.isArabic
-                  ? 'إعداد الشركة + التحقّق KYC'
-                  : 'Organization setup + KYC verification',
+            SelectableText(
+              message,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+                height: 1.35,
+              ),
+              textAlign: TextAlign.center,
             ),
-            _ComingSoonRow(
-              icon: Icons.directions_bus_filled_outlined,
-              text: l.isArabic
-                  ? 'المركبات والمقطورات (مع المبرّدات وشهادات ATP)'
-                  : 'Vehicles and trailers (with cooling units + ATP certs)',
-            ),
-            _ComingSoonRow(
-              icon: Icons.badge_outlined,
-              text: l.isArabic
-                  ? 'السائقون مع شهادات BKF/ADR'
-                  : 'Drivers with BKF/ADR certificates',
-            ),
-            _ComingSoonRow(
-              icon: Icons.local_offer_outlined,
-              text: l.isArabic
-                  ? 'عروض الشحن وقبول الحجوزات'
-                  : 'Load offers and booking accept',
-            ),
-            _ComingSoonRow(
-              icon: Icons.thermostat_outlined,
-              text: l.isArabic
-                  ? 'تتبّع درجات الحرارة في الوقت الفعلي'
-                  : 'Real-time temperature tracking',
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () => onRetry(),
+              icon: const Icon(Icons.refresh),
+              label: Text(l.isArabic ? 'إعادة المحاولة' : 'Retry'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+              ),
             ),
           ],
         ),
@@ -285,35 +334,466 @@ class _CarrierConsolePageState extends State<CarrierConsolePage> {
   }
 }
 
-class _ComingSoonRow extends StatelessWidget {
-  final IconData icon;
-  final String text;
+class _Dashboard extends StatelessWidget {
+  final List<_OrgEntry> orgs;
 
-  const _ComingSoonRow({required this.icon, required this.text});
+  const _Dashboard({required this.orgs});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      itemCount: orgs.length + 1,
+      itemBuilder: (context, i) {
+        if (i == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              l.isArabic
+                  ? '${orgs.length} شركة مرتبطة بحسابك'
+                  : '${orgs.length} organization${orgs.length == 1 ? '' : 's'} linked to your account',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.66),
+              ),
+            ),
+          );
+        }
+        return _OrgCard(entry: orgs[i - 1]);
+      },
+    );
+  }
+}
+
+class _OrgCard extends StatelessWidget {
+  final _OrgEntry entry;
+
+  const _OrgCard({required this.entry});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+    final l = L10n.of(context);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F766E).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.business_outlined,
+                    color: Color(0xFF0F766E),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.name,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${entry.countryIso2}${entry.city != null ? ' · ${entry.city}' : ''} · ${entry.orgKind}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.66),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _StatusBadge(status: entry.status),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _Chip(
+                  icon: Icons.shield_outlined,
+                  label: l.isArabic
+                      ? 'الدور: ${entry.role}'
+                      : 'Role: ${entry.role}',
+                ),
+                if ((entry.taxId ?? '').isNotEmpty)
+                  _Chip(
+                    icon: Icons.receipt_long_outlined,
+                    label: 'Tax: ${entry.taxId}',
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  final String status;
+
+  const _StatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      'verified' => const Color(0xFF07C160),
+      'submitted' || 'in_review' => const Color(0xFFEAB308),
+      'rejected' || 'suspended' => const Color(0xFFEF4444),
+      _ => const Color(0xFF6B7280),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.35), width: 0.7),
+      ),
+      child: Text(
+        status,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 11,
+          letterSpacing: 0.3,
+        ),
+      ),
+    );
+  }
+}
+
+class _Chip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _Chip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.5)),
+      ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 18,
-            color: theme.colorScheme.onSurface.withValues(alpha: 0.55),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              text,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
+          Icon(icon, size: 14),
+          const SizedBox(width: 6),
+          Text(label, style: theme.textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+}
+
+// ──────────────────────── setup wizard ───────────────────────────
+
+class _SetupWizard extends StatefulWidget {
+  final bool firstTime;
+  final Future<void> Function(_OrgDraft) onSubmit;
+  final VoidCallback? onCancel;
+
+  const _SetupWizard({
+    required this.firstTime,
+    required this.onSubmit,
+    this.onCancel,
+  });
+
+  @override
+  State<_SetupWizard> createState() => _SetupWizardState();
+}
+
+class _SetupWizardState extends State<_SetupWizard> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _country = TextEditingController(text: 'SY');
+  final _taxId = TextEditingController();
+  final _city = TextEditingController();
+  final _phone = TextEditingController();
+  final _email = TextEditingController();
+  final _legalForm = TextEditingController();
+  String _orgKind = 'carrier';
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _country.dispose();
+    _taxId.dispose();
+    _city.dispose();
+    _phone.dispose();
+    _email.dispose();
+    _legalForm.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onSubmit(_OrgDraft(
+        name: _name.text.trim(),
+        countryIso2: _country.text.trim().toUpperCase(),
+        taxId: _taxId.text.trim().isEmpty ? null : _taxId.text.trim(),
+        city: _city.text.trim().isEmpty ? null : _city.text.trim(),
+        phone: _phone.text.trim().isEmpty ? null : _phone.text.trim(),
+        email: _email.text.trim().isEmpty ? null : _email.text.trim(),
+        legalForm:
+            _legalForm.text.trim().isEmpty ? null : _legalForm.text.trim(),
+        orgKind: _orgKind,
+      ));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (widget.firstTime) ...[
+              Text(
+                l.isArabic
+                    ? 'مرحباً بك في وحدة الشاحن'
+                    : 'Welcome to the Carrier Console',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                l.isArabic
+                    ? 'لنبدأ بتسجيل شركتك. سيراجع فريق سرتشات الطلب وستتلقى تحديثاً قريباً.'
+                    : 'Let\'s register your company. The SyrChat team reviews the submission and notifies you within a business day.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.66),
+                ),
+              ),
+              const SizedBox(height: 20),
+            ] else ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      l.isArabic ? 'إضافة شركة جديدة' : 'Add a new organization',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  if (widget.onCancel != null)
+                    TextButton(
+                      onPressed: widget.onCancel,
+                      child: Text(l.isArabic ? 'إلغاء' : 'Cancel'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+            ],
+            _TextField(
+              controller: _name,
+              label: l.isArabic ? 'اسم الشركة' : 'Company name',
+              required: true,
+              validator: (v) {
+                final s = (v ?? '').trim();
+                if (s.length < 2 || s.length > 200) {
+                  return l.isArabic
+                      ? 'بين حرفين و200 حرف'
+                      : '2–200 characters';
+                }
+                return null;
+              },
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _country,
+                    label: l.isArabic ? 'البلد (ISO2)' : 'Country (ISO2)',
+                    hint: 'SY',
+                    required: true,
+                    maxLength: 2,
+                    textCapitalization: TextCapitalization.characters,
+                    validator: (v) {
+                      final s = (v ?? '').trim();
+                      if (s.length != 2) {
+                        return l.isArabic
+                            ? 'رمز بلد من حرفين'
+                            : '2-letter code';
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _TextField(
+                    controller: _city,
+                    label: l.isArabic ? 'المدينة' : 'City',
+                  ),
+                ),
+              ],
+            ),
+            _TextField(
+              controller: _taxId,
+              label: l.isArabic ? 'الرقم الضريبي (اختياري)' : 'Tax ID (optional)',
+            ),
+            _TextField(
+              controller: _legalForm,
+              label:
+                  l.isArabic ? 'الشكل القانوني (اختياري)' : 'Legal form (optional)',
+              hint: 'GmbH, LLC, ش.ذ.م.م',
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _phone,
+                    label: l.isArabic ? 'الهاتف' : 'Phone',
+                    keyboardType: TextInputType.phone,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _TextField(
+                    controller: _email,
+                    label: l.isArabic ? 'البريد' : 'Email',
+                    keyboardType: TextInputType.emailAddress,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l.isArabic ? 'نوع الشركة' : 'Org kind',
+              style: theme.textTheme.labelLarge,
+            ),
+            const SizedBox(height: 6),
+            SegmentedButton<String>(
+              segments: [
+                ButtonSegment(
+                  value: 'carrier',
+                  label: Text(l.isArabic ? 'شاحن' : 'Carrier'),
+                  icon: const Icon(Icons.local_shipping_outlined),
+                ),
+                ButtonSegment(
+                  value: 'shipper',
+                  label: Text(l.isArabic ? 'مرسل' : 'Shipper'),
+                  icon: const Icon(Icons.inventory_2_outlined),
+                ),
+                ButtonSegment(
+                  value: 'both',
+                  label: Text(l.isArabic ? 'كلاهما' : 'Both'),
+                  icon: const Icon(Icons.compare_arrows),
+                ),
+              ],
+              selected: {_orgKind},
+              onSelectionChanged: (s) =>
+                  setState(() => _orgKind = s.first),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: _busy ? null : _submit,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.check),
+              label: Text(
+                widget.firstTime
+                    ? (l.isArabic
+                        ? 'تسجيل الشركة'
+                        : 'Register company')
+                    : (l.isArabic ? 'إضافة' : 'Add'),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                minimumSize: const Size.fromHeight(48),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TextField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  final bool required;
+  final int? maxLength;
+  final TextInputType? keyboardType;
+  final TextCapitalization textCapitalization;
+  final String? Function(String?)? validator;
+
+  const _TextField({
+    required this.controller,
+    required this.label,
+    this.hint,
+    this.required = false,
+    this.maxLength,
+    this.keyboardType,
+    this.textCapitalization = TextCapitalization.none,
+    this.validator,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: required ? '$label *' : label,
+          hintText: hint,
+          border: const OutlineInputBorder(),
+          isDense: true,
+          counterText: '',
+        ),
+        maxLength: maxLength,
+        keyboardType: keyboardType,
+        textCapitalization: textCapitalization,
+        validator: validator,
       ),
     );
   }
