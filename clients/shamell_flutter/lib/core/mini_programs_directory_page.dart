@@ -303,7 +303,12 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
 
   List<Map<String, dynamic>> _localMiniPrograms() {
     final out = <Map<String, dynamic>>[];
-    for (final m in visibleMiniApps()) {
+    // When the directory is opened with the Gaming filter (via the
+    // Discover "Gaming" tile or a deep link), surface the games. In all
+    // other views games stay hidden — they have their own discovery
+    // surface and shouldn't appear in the generic services list.
+    final includeGaming = _categoryFilter == 'Gaming';
+    for (final m in visibleMiniApps(includeGaming: includeGaming)) {
       final id = m.id.trim();
       if (id.isEmpty) continue;
       final scopes = <String>[];

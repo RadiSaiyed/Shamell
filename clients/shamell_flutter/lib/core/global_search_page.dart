@@ -247,7 +247,10 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return const <Map<String, dynamic>>[];
     final results = <Map<String, dynamic>>[];
-    for (final app in visibleMiniApps()) {
+    // Search surfaces every mini-app, including games — a user typing
+    // "jump" or "morris" should still find them even though games are
+    // hidden from the generic Mini Programs grid.
+    for (final app in visibleMiniApps(includeGaming: true)) {
       if (!app.enabled) continue;
       final runtimeId = (app.runtimeAppId ?? app.id).trim();
       if (runtimeId.isEmpty) continue;
@@ -1549,7 +1552,10 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   bool _isLocalMiniProgramId(String id) {
     final normalized = id.trim().toLowerCase();
     if (normalized.isEmpty) return false;
-    for (final app in visibleMiniApps()) {
+    // Search surfaces every mini-app, including games — a user typing
+    // "jump" or "morris" should still find them even though games are
+    // hidden from the generic Mini Programs grid.
+    for (final app in visibleMiniApps(includeGaming: true)) {
       final runtimeId = (app.runtimeAppId ?? app.id).trim().toLowerCase();
       if (app.id.trim().toLowerCase() == normalized ||
           runtimeId == normalized) {

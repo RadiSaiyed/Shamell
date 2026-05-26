@@ -23,7 +23,16 @@ const bool kMiniAppsShowPartner = true;
 const bool kMiniAppsShowBeta =
     bool.fromEnvironment('MINIAPPS_SHOW_BETA', defaultValue: false);
 
-List<MiniAppDescriptor> visibleMiniApps() {
+/// Returns mini-apps visible in consumer-facing surfaces.
+///
+/// [includeGaming] — set to `true` only for surfaces that explicitly
+/// curate the Gaming category (the Discover "Gaming" tile opens the
+/// directory with this flag, and global search uses it so the user can
+/// search for games by name). Default `false` keeps games out of the
+/// generic Mini Programs hub / quick-shelf / directory listing — games
+/// have their own discovery surface and shouldn't dilute the regular
+/// services grid.
+List<MiniAppDescriptor> visibleMiniApps({bool includeGaming = false}) {
   return kMiniApps.where((m) {
     if (!m.enabled) return false;
     if (!kMiniAppsShowPartner && !m.official) return false;
@@ -34,6 +43,11 @@ List<MiniAppDescriptor> visibleMiniApps() {
     // routing for an authenticated operator client continues to
     // work — only the consumer tile-grid hides them.
     if (m.operatorOnly) return false;
+    // Gaming category is gated to its own surface (the Discover
+    // "Gaming" tile / directory filtered by category=='Gaming').
+    // Callers that genuinely want to enumerate games pass
+    // `includeGaming: true`.
+    if (!includeGaming && m.categoryEn == 'Gaming') return false;
     return true;
   }).toList();
 }

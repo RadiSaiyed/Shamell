@@ -3508,8 +3508,12 @@ class _HomePageState extends State<HomePage> with SafeSetStateMixin<HomePage> {
   }
 
   List<MiniAppDescriptor> _sortedMiniProgramDescriptors() {
+    // Mirrors visibleMiniApps()'s default policy: exclude operator-only
+    // surfaces + the Gaming category (games live on their own Discover
+    // tile, not in the generic Mini Programs shelf / quick panel).
     final descriptors = MiniAppRegistry.descriptors
-        .where((d) => d.enabled)
+        .where((d) =>
+            d.enabled && !d.operatorOnly && d.categoryEn != 'Gaming')
         .toList(growable: false);
     final sorted = descriptors.toList(growable: true)
       ..sort((a, b) {
@@ -4811,38 +4815,6 @@ class _HomePageState extends State<HomePage> with SafeSetStateMixin<HomePage> {
         );
       }
 
-      Widget miniProgramsPreview() {
-        final apps =
-            _sortedMiniProgramDescriptors().take(3).toList(growable: false);
-        if (apps.isEmpty) return const SizedBox.shrink();
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < apps.length; i++) ...[
-              if (i > 0) const SizedBox(width: 4),
-              Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  color: _miniProgramAccent(apps[i].id).withValues(alpha: .12),
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(
-                    color:
-                        _miniProgramAccent(apps[i].id).withValues(alpha: .28),
-                    width: .7,
-                  ),
-                ),
-                child: Icon(
-                  apps[i].icon,
-                  size: 15,
-                  color: _miniProgramAccent(apps[i].id),
-                ),
-              ),
-            ],
-          ],
-        );
-      }
-
       // Moments + Official Accounts + Nearby share a single "Discover"
       // card so the social/discovery surfaces sit together at the top
       // of the tab instead of being split across three cards.
@@ -4900,31 +4872,21 @@ class _HomePageState extends State<HomePage> with SafeSetStateMixin<HomePage> {
           ),
       ];
 
-      final miniProgramCount =
-          MiniAppRegistry.descriptors.where((d) => d.enabled).length;
       // Count enabled Gaming-category mini-programs so the Discover
-      // tile can show "N games inside SyrChat" instead of a static
-      // string. The Gaming directory currently lists Jump-Jump as
-      // the first member; future games (e.g. memory, snake) drop in
-      // by adding a sibling `_MiniAppRegistration` with
-      // `categoryEn: 'Gaming'`.
+      // Gaming tile only renders when there's at least one game to show.
+      // Future games (e.g. memory, snake) drop in by adding a sibling
+      // `_MiniAppRegistration` with `categoryEn: 'Gaming'`.
       final gamingCount = MiniAppRegistry.descriptors
           .where((d) => d.enabled && d.categoryEn == 'Gaming')
           .length;
       final discoverPlatformTiles = <Widget>[
-        discoverTile(
-          icon: Icons.widgets_outlined,
-          accent: const Color(0xFF7C3AED),
-          title: l.isArabic ? 'البرامج المصغّرة' : 'Mini Programs',
-          subtitle: l.isArabic
-              ? '$miniProgramCount خدمة داخل سرتشات'
-              : '$miniProgramCount services inside SyrChat',
-          trailingPreview: miniProgramsPreview(),
-          onTap: () => unawaited(_showMiniProgramsQuickPanel()),
-        ),
-        // New "Gaming" category — opens the Mini Programs directory
-        // pre-filtered to gaming-category mini-apps. The Jump-Jump
-        // WeChat-style 跳一跳 entry is the first member.
+        // "Mini Programs" tile removed here — the Discover tab already
+        // shows the Mini Programs Quick Shelf at the top (header +
+        // 4-item shelf, opens the same hub), and a second tile labelled
+        // the same created a duplicate-entry-point confusion.
+        // Gaming gets its own tile + a dedicated directory page; games
+        // are excluded from the regular Mini Programs surfaces via
+        // visibleMiniApps()'s includeGaming flag.
         if (gamingCount > 0)
           discoverTile(
             icon: Icons.sports_esports_outlined,
