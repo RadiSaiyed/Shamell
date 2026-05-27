@@ -53,6 +53,14 @@ loadHotels()
   });
 
 async function loadHotels() {
+  // hotels-data.js (loaded before app.js) sets window.SHAMELL_HOTELS_DATA.
+  // We used to fetch('hotels.json'), but Android WebView blocks fetch() of
+  // file:// resources unless allowFileAccessFromFileURLs is explicitly
+  // turned on — and that setting is deprecated in webview_flutter. Using
+  // a plain <script> tag works under file:// without any extra config.
+  if (window.SHAMELL_HOTELS_DATA) return window.SHAMELL_HOTELS_DATA;
+  // Defensive fallback in case the bundle is ever served from http(s)
+  // (web preview, future PWA host) where fetch() works.
   const res = await fetch('hotels.json', { cache: 'no-cache' });
   if (!res.ok) throw new Error('hotels.json HTTP ' + res.status);
   return res.json();
