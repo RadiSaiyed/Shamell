@@ -724,6 +724,13 @@ class _MiniProgramsDirectoryPageState extends State<MiniProgramsDirectoryPage> {
                 hay.contains('saved') ||
                 hay.contains('مفض');
             break;
+          case 'Gaming':
+            // Match against the descriptor's category — entries from
+            // _localMiniPrograms() copy categoryEn into description_en,
+            // so a category-name compare is unambiguous and doesn't
+            // depend on the game's title containing the word "game".
+            matches = descEn == 'Gaming' || descAr == 'الألعاب';
+            break;
           default:
             matches = false;
         }
