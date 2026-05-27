@@ -171,7 +171,11 @@ if [[ -d "$WELL_KNOWN_DIR" ]]; then
 fi
 
 echo "Installing configs on ${HOST_ALIAS}"
-ssh -tt "$HOST_ALIAS" "bash -s" <<EOF
+# No -tt: the heredoc's sudo calls go through sudo_run with -S (stdin),
+# so no real TTY is needed. PTY allocation made the session race with
+# its own teardown on success and emit "client_loop: send disconnect:
+# Broken pipe" + exit 255 even though `nginx -t` + reload had completed.
+ssh "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'
 
