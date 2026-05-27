@@ -208,7 +208,7 @@ class _CarrierConsolePageState extends State<CarrierConsolePage> {
         onCancel: _orgs.isEmpty ? null : () => setState(() => _showWizard = false),
       );
     }
-    return _Dashboard(orgs: _orgs);
+    return _Dashboard(orgs: _orgs, baseUrl: _baseUrl);
   }
 }
 
@@ -336,8 +336,9 @@ class _ErrorPanel extends StatelessWidget {
 
 class _Dashboard extends StatelessWidget {
   final List<_OrgEntry> orgs;
+  final String baseUrl;
 
-  const _Dashboard({required this.orgs});
+  const _Dashboard({required this.orgs, required this.baseUrl});
 
   @override
   Widget build(BuildContext context) {
@@ -360,7 +361,14 @@ class _Dashboard extends StatelessWidget {
             ),
           );
         }
-        return _OrgCard(entry: orgs[i - 1]);
+        final entry = orgs[i - 1];
+        return _OrgCard(
+          entry: entry,
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) =>
+                _OrgVehiclesPage(baseUrl: baseUrl, org: entry),
+          )),
+        );
       },
     );
   }
@@ -368,8 +376,9 @@ class _Dashboard extends StatelessWidget {
 
 class _OrgCard extends StatelessWidget {
   final _OrgEntry entry;
+  final VoidCallback? onTap;
 
-  const _OrgCard({required this.entry});
+  const _OrgCard({required this.entry, this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -382,69 +391,80 @@ class _OrgCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0F766E).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(10),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F766E).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.business_outlined,
+                      color: Color(0xFF0F766E),
+                    ),
                   ),
-                  child: const Icon(
-                    Icons.business_outlined,
-                    color: Color(0xFF0F766E),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        entry.name,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          entry.name,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${entry.countryIso2}${entry.city != null ? ' · ${entry.city}' : ''} · ${entry.orgKind}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface
-                              .withValues(alpha: 0.66),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${entry.countryIso2}${entry.city != null ? ' · ${entry.city}' : ''} · ${entry.orgKind}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: 0.66),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                _StatusBadge(status: entry.status),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _Chip(
-                  icon: Icons.shield_outlined,
-                  label: l.isArabic
-                      ? 'الدور: ${entry.role}'
-                      : 'Role: ${entry.role}',
-                ),
-                if ((entry.taxId ?? '').isNotEmpty)
+                  _StatusBadge(status: entry.status),
+                  if (onTap != null) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.chevron_right,
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
                   _Chip(
-                    icon: Icons.receipt_long_outlined,
-                    label: 'Tax: ${entry.taxId}',
+                    icon: Icons.shield_outlined,
+                    label: l.isArabic
+                        ? 'الدور: ${entry.role}'
+                        : 'Role: ${entry.role}',
                   ),
-              ],
-            ),
-          ],
+                  if ((entry.taxId ?? '').isNotEmpty)
+                    _Chip(
+                      icon: Icons.receipt_long_outlined,
+                      label: 'Tax: ${entry.taxId}',
+                    ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -794,6 +814,508 @@ class _TextField extends StatelessWidget {
         keyboardType: keyboardType,
         textCapitalization: textCapitalization,
         validator: validator,
+      ),
+    );
+  }
+}
+
+// ──────────────────────── Vehicles (Fleet tab) ───────────────────
+
+class _Vehicle {
+  final String id;
+  final String plateNumber;
+  final String vehicleType;
+  final int? axleCount;
+  final String? vin;
+  final String? firstRegisteredAt;
+  final String status;
+
+  _Vehicle({
+    required this.id,
+    required this.plateNumber,
+    required this.vehicleType,
+    required this.axleCount,
+    required this.vin,
+    required this.firstRegisteredAt,
+    required this.status,
+  });
+
+  static _Vehicle fromJson(Map<String, dynamic> json) => _Vehicle(
+        id: (json['id'] ?? '').toString(),
+        plateNumber: (json['plate_number'] ?? '').toString(),
+        vehicleType: (json['vehicle_type'] ?? '').toString(),
+        axleCount: (json['axle_count'] as num?)?.toInt(),
+        vin: json['vin'] as String?,
+        firstRegisteredAt: json['first_registered_at'] as String?,
+        status: (json['status'] ?? 'active').toString(),
+      );
+}
+
+class _OrgVehiclesPage extends StatefulWidget {
+  final String baseUrl;
+  final _OrgEntry org;
+
+  const _OrgVehiclesPage({required this.baseUrl, required this.org});
+
+  @override
+  State<_OrgVehiclesPage> createState() => _OrgVehiclesPageState();
+}
+
+class _OrgVehiclesPageState extends State<_OrgVehiclesPage> {
+  bool _loading = true;
+  String? _loadError;
+  List<_Vehicle> _vehicles = const [];
+
+  bool get _canWrite =>
+      widget.org.role == 'owner' ||
+      widget.org.role == 'manager' ||
+      widget.org.role == 'dispatcher';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<Map<String, String>> _authHeaders() async {
+    final base = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
+    return {
+      ...base,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final headers = await _authHeaders();
+      final resp = await http
+          .get(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.org.id}/vehicles'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode == 401) {
+        setState(() {
+          _loading = false;
+          _loadError =
+              'Sitzung abgelaufen — bitte erneut anmelden.\n(Session expired — please sign in again.)';
+        });
+        return;
+      }
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        setState(() {
+          _loading = false;
+          _loadError = 'HTTP ${resp.statusCode}\n${resp.body}';
+        });
+        return;
+      }
+      final parsed = json.decode(resp.body) as List<dynamic>;
+      setState(() {
+        _loading = false;
+        _vehicles = parsed
+            .whereType<Map<String, dynamic>>()
+            .map(_Vehicle.fromJson)
+            .toList(growable: false);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _openAddSheet() async {
+    final created = await showModalBottomSheet<_Vehicle>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        // SegmentedButton + form needs extra room above the keyboard.
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(ctx).viewInsets.bottom,
+        ),
+        child: _AddVehicleSheet(
+          baseUrl: widget.baseUrl,
+          orgId: widget.org.id,
+          authHeaders: _authHeaders,
+        ),
+      ),
+    );
+    if (created != null && mounted) {
+      setState(() => _vehicles = [..._vehicles, created]);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          l.isArabic
+              ? 'الأسطول · ${widget.org.name}'
+              : 'Fleet · ${widget.org.name}',
+        ),
+        backgroundColor: const Color(0xFF0F766E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تحديث' : 'Refresh',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SafeArea(child: _buildBody(l)),
+      floatingActionButton: (_canWrite && !_loading && _loadError == null)
+          ? FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF0F766E),
+              onPressed: _openAddSheet,
+              icon: const Icon(Icons.add),
+              label: Text(l.isArabic ? 'إضافة مركبة' : 'Add vehicle'),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildBody(L10n l) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return _ErrorPanel(message: _loadError!, onRetry: _load);
+    }
+    if (_vehicles.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.local_shipping_outlined,
+                  size: 48, color: Colors.grey),
+              const SizedBox(height: 12),
+              Text(
+                l.isArabic ? 'لا توجد مركبات بعد' : 'No vehicles yet',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _canWrite
+                    ? (l.isArabic
+                        ? 'أضف أول لوحة من زر الإضافة في الأسفل.'
+                        : 'Add the first plate using the button below.')
+                    : (l.isArabic
+                        ? 'ليس لديك صلاحية الإضافة.'
+                        : 'Your role does not allow adding vehicles.'),
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      itemCount: _vehicles.length,
+      itemBuilder: (_, i) => _VehicleCard(vehicle: _vehicles[i]),
+    );
+  }
+}
+
+class _VehicleCard extends StatelessWidget {
+  final _Vehicle vehicle;
+
+  const _VehicleCard({required this.vehicle});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = L10n.of(context);
+    final typeLabel = switch (vehicle.vehicleType) {
+      'truck_solo' => l.isArabic ? 'شاحنة منفردة' : 'Truck (solo)',
+      'truck_trailer_tractor' =>
+        l.isArabic ? 'جرّار مع مقطورة' : 'Tractor + trailer',
+      'van' => l.isArabic ? 'فان' : 'Van',
+      _ => vehicle.vehicleType,
+    };
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F766E).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.local_shipping_outlined,
+                  color: Color(0xFF0F766E)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    vehicle.plateNumber,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    [
+                      typeLabel,
+                      if (vehicle.axleCount != null)
+                        '${vehicle.axleCount} ${l.isArabic ? 'محاور' : 'axles'}',
+                    ].join(' · '),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface
+                          .withValues(alpha: 0.66),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _StatusBadge(status: vehicle.status),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AddVehicleSheet extends StatefulWidget {
+  final String baseUrl;
+  final String orgId;
+  final Future<Map<String, String>> Function() authHeaders;
+
+  const _AddVehicleSheet({
+    required this.baseUrl,
+    required this.orgId,
+    required this.authHeaders,
+  });
+
+  @override
+  State<_AddVehicleSheet> createState() => _AddVehicleSheetState();
+}
+
+class _AddVehicleSheetState extends State<_AddVehicleSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _plate = TextEditingController();
+  final _vin = TextEditingController();
+  final _axles = TextEditingController();
+  String _vehicleType = 'truck_solo';
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _plate.dispose();
+    _vin.dispose();
+    _axles.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    try {
+      final headers = await widget.authHeaders();
+      final body = <String, dynamic>{
+        'plate_number': _plate.text.trim(),
+        'vehicle_type': _vehicleType,
+      };
+      final axlesText = _axles.text.trim();
+      if (axlesText.isNotEmpty) {
+        body['axle_count'] = int.tryParse(axlesText);
+      }
+      final vinText = _vin.text.trim();
+      if (vinText.isNotEmpty) body['vin'] = vinText;
+      final resp = await http
+          .post(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.orgId}/vehicles'),
+            headers: headers,
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        String detail;
+        try {
+          final parsed = json.decode(resp.body) as Map<String, dynamic>;
+          detail = (parsed['message'] as String?) ?? resp.body;
+        } catch (_) {
+          detail = resp.body;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('HTTP ${resp.statusCode} — $detail'),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 6),
+        ));
+        return;
+      }
+      final parsed = json.decode(resp.body) as Map<String, dynamic>;
+      Navigator.of(context).pop(_Vehicle.fromJson(parsed));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              alignment: Alignment.center,
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              l.isArabic ? 'إضافة مركبة' : 'Add vehicle',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 16),
+            _TextField(
+              controller: _plate,
+              label: l.isArabic ? 'رقم اللوحة' : 'Plate number',
+              required: true,
+              maxLength: 32,
+              textCapitalization: TextCapitalization.characters,
+              validator: (v) {
+                final s = (v ?? '').trim();
+                if (s.isEmpty || s.length > 32) {
+                  return l.isArabic
+                      ? '1–32 حرف'
+                      : '1–32 characters';
+                }
+                return null;
+              },
+            ),
+            Text(
+              l.isArabic ? 'نوع المركبة' : 'Vehicle type',
+              style: theme.textTheme.labelLarge,
+            ),
+            const SizedBox(height: 6),
+            SegmentedButton<String>(
+              segments: [
+                ButtonSegment(
+                  value: 'truck_solo',
+                  label: Text(l.isArabic ? 'منفردة' : 'Solo'),
+                  icon: const Icon(Icons.local_shipping_outlined),
+                ),
+                ButtonSegment(
+                  value: 'truck_trailer_tractor',
+                  label: Text(l.isArabic ? 'جرّار' : 'Tractor'),
+                  icon: const Icon(Icons.rv_hookup_outlined),
+                ),
+                ButtonSegment(
+                  value: 'van',
+                  label: Text(l.isArabic ? 'فان' : 'Van'),
+                  icon: const Icon(Icons.airport_shuttle_outlined),
+                ),
+              ],
+              selected: {_vehicleType},
+              onSelectionChanged: (s) =>
+                  setState(() => _vehicleType = s.first),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _axles,
+                    label: l.isArabic
+                        ? 'عدد المحاور (اختياري)'
+                        : 'Axles (optional)',
+                    keyboardType: TextInputType.number,
+                    validator: (v) {
+                      final s = (v ?? '').trim();
+                      if (s.isEmpty) return null;
+                      final n = int.tryParse(s);
+                      if (n == null || n < 2 || n > 8) {
+                        return l.isArabic ? '2–8' : '2–8';
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: _TextField(
+                    controller: _vin,
+                    label: 'VIN ${l.isArabic ? '(اختياري)' : '(optional)'}',
+                    textCapitalization: TextCapitalization.characters,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _busy ? null : _submit,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.check),
+              label: Text(l.isArabic ? 'حفظ' : 'Save'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                minimumSize: const Size.fromHeight(48),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
