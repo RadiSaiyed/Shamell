@@ -535,7 +535,10 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
     if (signupRoleFilter is String) {
       final trimmed = signupRoleFilter.trim();
       if (trimmed == RoleSignupRoleIds.driver ||
-          trimmed == RoleSignupRoleIds.operator) {
+          trimmed == RoleSignupRoleIds.operator ||
+          trimmed == RoleSignupRoleIds.busOperator ||
+          trimmed == RoleSignupRoleIds.hotelOperator ||
+          trimmed == RoleSignupRoleIds.carrier) {
         _signupRoleFilter = trimmed;
       }
     }
@@ -2567,6 +2570,20 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
     final operatorCount = requests
         .where((r) => r.requestedRoleId == RoleSignupRoleIds.operator)
         .length;
+    // Cycle 146 — cross-flavor signup queues. Each of these maps to a
+    // dedicated standalone-app gate (Bus / Hotel / Carrier APKs); the
+    // operator console is the single review surface, so we surface
+    // them as siblings to driver/operator instead of forcing admins
+    // to filter by raw role-id from a URL.
+    final busOperatorCount = requests
+        .where((r) => r.requestedRoleId == RoleSignupRoleIds.busOperator)
+        .length;
+    final hotelOperatorCount = requests
+        .where((r) => r.requestedRoleId == RoleSignupRoleIds.hotelOperator)
+        .length;
+    final carrierCount = requests
+        .where((r) => r.requestedRoleId == RoleSignupRoleIds.carrier)
+        .length;
     final filtered = _signupRoleFilter == null
         ? requests
         : requests
@@ -2648,6 +2665,54 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
                     if (!selected) return;
                     setState(() {
                       _signupRoleFilter = RoleSignupRoleIds.operator;
+                      _persistOperatorUiState();
+                    });
+                  },
+                ),
+                ChoiceChip(
+                  label: Text(
+                    isArabic
+                        ? 'مشغّلو الحافلات ($busOperatorCount)'
+                        : 'Bus operators ($busOperatorCount)',
+                  ),
+                  selected:
+                      _signupRoleFilter == RoleSignupRoleIds.busOperator,
+                  onSelected: (selected) {
+                    if (!selected) return;
+                    setState(() {
+                      _signupRoleFilter = RoleSignupRoleIds.busOperator;
+                      _persistOperatorUiState();
+                    });
+                  },
+                ),
+                ChoiceChip(
+                  label: Text(
+                    isArabic
+                        ? 'مشغّلو الفنادق ($hotelOperatorCount)'
+                        : 'Hotel operators ($hotelOperatorCount)',
+                  ),
+                  selected:
+                      _signupRoleFilter == RoleSignupRoleIds.hotelOperator,
+                  onSelected: (selected) {
+                    if (!selected) return;
+                    setState(() {
+                      _signupRoleFilter = RoleSignupRoleIds.hotelOperator;
+                      _persistOperatorUiState();
+                    });
+                  },
+                ),
+                ChoiceChip(
+                  label: Text(
+                    isArabic
+                        ? 'ناقلون ($carrierCount)'
+                        : 'Carriers ($carrierCount)',
+                  ),
+                  selected:
+                      _signupRoleFilter == RoleSignupRoleIds.carrier,
+                  onSelected: (selected) {
+                    if (!selected) return;
+                    setState(() {
+                      _signupRoleFilter = RoleSignupRoleIds.carrier;
                       _persistOperatorUiState();
                     });
                   },
