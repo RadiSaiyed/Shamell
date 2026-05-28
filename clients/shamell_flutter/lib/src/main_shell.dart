@@ -695,11 +695,21 @@ Widget shamellBuildSignedInHome({
     );
   }
   if (shamellIsCarrierSurface(appSurface)) {
-    // Standalone Carrier (Spediteur-Disponent) app — SyrTrans Phase 2
-    // scaffold. Lands in a minimal console that probes the freight
-    // service health endpoint. Real fleet UI + carrier login flow
-    // arrives with the BFF carrier endpoints in Phase 3.
-    return CarrierConsolePage(baseUrl: baseUrlOverride);
+    // Standalone Carrier (Spediteur-Disponent) app. Same wrapping
+    // pattern as BusOperator / HotelOperator — RoleSignupGuard fronts
+    // the console with the freight.carrier_admin self-service signup
+    // form when the caller lacks the role; once approved (admin via
+    // the Carriers tab in the operator console's Signups workspace),
+    // the privilege refresh unmounts the gate and CarrierConsolePage
+    // proceeds to org-setup / fleet management.
+    return RoleSignupGuard(
+      baseUrl: baseUrlOverride ?? '',
+      roleId: RoleSignupRoleIds.carrier,
+      roleLabel: 'Carrier',
+      roleLabelArabic: 'ناقل',
+      fields: RoleSignupFormFields.carrier,
+      builder: (_) => CarrierConsolePage(baseUrl: baseUrlOverride),
+    );
   }
   if (shamellIsSyrComSurface(appSurface)) {
     return SyrComWorkbenchPage(baseUrl: baseUrlOverride);
