@@ -656,6 +656,23 @@ Widget shamellBuildSignedInHome({
     // multi-modal hub.
     return RideOperatorConsolePage(baseUrl: baseUrlOverride);
   }
+  if (shamellIsBusOperatorSurface(appSurface)) {
+    // Standalone Bus Operator app — same pattern as taxiOperator: land
+    // straight in the coach operations console. RoleSignupGuard fronts
+    // it with the coach.operator_admin self-service signup form when
+    // the caller lacks the role, so a fresh applicant can apply and
+    // an admin approves from the operator console's "Bus operators"
+    // tab in the Signups workspace.
+    return RoleSignupGuard(
+      baseUrl: baseUrlOverride ?? '',
+      roleId: RoleSignupRoleIds.busOperator,
+      roleLabel: 'Bus operator',
+      roleLabelArabic: 'مشغّل الحافلات',
+      fields: RoleSignupFormFields.busOperator,
+      builder: (_) =>
+          CoachOperatorConsolePage(baseUrl: baseUrlOverride ?? ''),
+    );
+  }
   if (shamellIsHotelOperatorSurface(appSurface)) {
     // Standalone Hotel Operator app: skip the superapp shell and land
     // straight in the admin console. Construct a light SuperappAPI
