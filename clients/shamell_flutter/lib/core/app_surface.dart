@@ -5,6 +5,7 @@ enum ShamellAppSurface {
   ride,
   driver,
   operator,
+  taxiOperator,
   busOperator,
   hotelOperator,
   carrier,
@@ -32,8 +33,13 @@ ShamellAppSurface shamellParseAppSurface(String raw) {
     case 'operator':
     case 'ops':
     case 'ride_operator':
-    case 'taxi_operator':
       return ShamellAppSurface.operator;
+    case 'taxi_operator':
+    case 'taxioperator':
+    case 'taxi_ops':
+    case 'taxiops':
+    case 'taxi_control':
+      return ShamellAppSurface.taxiOperator;
     case 'bus_operator':
     case 'busoperator':
     case 'bus_ops':
@@ -85,6 +91,9 @@ bool shamellIsRideDriverSurface([ShamellAppSurface? surface]) =>
 bool shamellIsRideOperatorSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.operator;
 
+bool shamellIsTaxiOperatorSurface([ShamellAppSurface? surface]) =>
+    (surface ?? shamellActiveAppSurface) == ShamellAppSurface.taxiOperator;
+
 bool shamellIsBusOperatorSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.busOperator;
 
@@ -99,6 +108,7 @@ bool shamellIsSyrComSurface([ShamellAppSurface? surface]) =>
 
 bool shamellIsAnyOperatorSurface([ShamellAppSurface? surface]) =>
     shamellIsRideOperatorSurface(surface) ||
+    shamellIsTaxiOperatorSurface(surface) ||
     shamellIsBusOperatorSurface(surface) ||
     shamellIsHotelOperatorSurface(surface) ||
     shamellIsCarrierSurface(surface);
@@ -110,7 +120,8 @@ bool shamellIsRideStandaloneSurface([ShamellAppSurface? surface]) {
   final current = surface ?? shamellActiveAppSurface;
   return current == ShamellAppSurface.ride ||
       current == ShamellAppSurface.driver ||
-      current == ShamellAppSurface.operator;
+      current == ShamellAppSurface.operator ||
+      current == ShamellAppSurface.taxiOperator;
 }
 
 bool shamellSurfaceAllowsPublicAccountCreate([ShamellAppSurface? surface]) =>
@@ -131,6 +142,9 @@ String shamellSurfaceAppTitle({
   }
   if (shamellIsRideOperatorSurface(surface)) {
     return isArabic ? 'سرتشات كونترول' : 'SyrChat Control';
+  }
+  if (shamellIsTaxiOperatorSurface(surface)) {
+    return isArabic ? 'سرتشات تاكسي' : 'SyrChat Taxi Control';
   }
   if (shamellIsRideRiderSurface(surface)) {
     return isArabic ? 'سرتشات رايد' : 'SyrChat Ride';
@@ -159,6 +173,11 @@ String shamellSurfaceAutomaticSetupDescription({
     return isArabic
         ? 'تتطلب هذه الواجهة حساب تشغيل مصرحاً به على سرتشات.'
         : 'This console requires an authorized SyrChat operations account.';
+  }
+  if (shamellIsTaxiOperatorSurface(surface)) {
+    return isArabic
+        ? 'تتطلب وحدة تحكم التاكسي حساب مشغّل تاكسي مصرحاً به على سرتشات.'
+        : 'The taxi operations console requires an authorized SyrChat taxi-operator account.';
   }
   if (shamellIsRideRiderSurface(surface)) {
     return isArabic
@@ -224,6 +243,11 @@ String shamellSurfaceManagedSignInDescription({
         ? 'استخدم جهازاً سبق اعتماده، أو افتح تدفق تسجيل الدخول المعتمد من SyrChat Control. لا يمكن إنشاء حسابات تشغيل عامة من هذا التطبيق.'
         : 'Use a device that is already approved, or open the managed sign-in flow from SyrChat Control. Public operations accounts cannot be created from this app.';
   }
+  if (shamellIsTaxiOperatorSurface(surface)) {
+    return isArabic
+        ? 'استخدم جهازاً سبق اعتماده، أو افتح تدفق تسجيل الدخول المعتمد من SyrChat Taxi. لا يمكن إنشاء حسابات مشغّل تاكسي عامة من هذا التطبيق.'
+        : 'Use a device that is already approved, or open the managed sign-in flow from SyrChat Taxi. Public taxi-operator accounts cannot be created from this app.';
+  }
   if (shamellIsSyrComSurface(surface)) {
     return isArabic
         ? 'استخدم جهازاً سبق اعتماده من مؤسستك، أو افتح تدفق تسجيل الدخول الذي زوّدك به مسؤول سركم. لا يمكن إنشاء حسابات سركم بشكل عام من هذا التطبيق.'
@@ -251,6 +275,11 @@ String shamellSurfaceAccountCreateBusyLabel({
   }
   if (shamellIsRideOperatorSurface(surface)) {
     return isArabic ? 'جارٍ فتح وحدة التشغيل…' : 'Opening operations console…';
+  }
+  if (shamellIsTaxiOperatorSurface(surface)) {
+    return isArabic
+        ? 'جارٍ فتح وحدة تحكم التاكسي…'
+        : 'Opening taxi-operations console…';
   }
   if (shamellIsRideRiderSurface(surface)) {
     return isArabic
@@ -285,6 +314,11 @@ String shamellSurfaceAccountCreateSuccessLabel({
         ? 'تم فتح وحدة التشغيل: $shamellId'
         : 'Operations console ready: $shamellId';
   }
+  if (shamellIsTaxiOperatorSurface(surface)) {
+    return isArabic
+        ? 'تم فتح وحدة تحكم التاكسي: $shamellId'
+        : 'Taxi-operations console ready: $shamellId';
+  }
   if (shamellIsRideRiderSurface(surface)) {
     return isArabic
         ? 'تم إعداد حساب الراكب: $shamellId'
@@ -309,6 +343,9 @@ IconData shamellSurfaceBrandIcon([ShamellAppSurface? surface]) {
   }
   if (shamellIsRideOperatorSurface(surface)) {
     return Icons.monitor_outlined;
+  }
+  if (shamellIsTaxiOperatorSurface(surface)) {
+    return Icons.local_taxi_outlined;
   }
   if (shamellIsSyrComSurface(surface)) {
     return Icons.business_center_outlined;

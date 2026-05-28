@@ -647,6 +647,15 @@ Widget shamellBuildSignedInHome({
       accent: const Color(0xFF2563EB),
     );
   }
+  if (shamellIsTaxiOperatorSurface(appSurface)) {
+    // Standalone Taxi Operator app — skip the superapp shell and land
+    // straight in the ride-operations console. Same authoritative
+    // surface as the legacy 'operator' flavor's mobile branch above,
+    // but reachable as its own APK (online.shamell.taxioperator) so
+    // taxi-fleet operators don't need to wade through Shamell Control's
+    // multi-modal hub.
+    return RideOperatorConsolePage(baseUrl: baseUrlOverride);
+  }
   if (shamellIsHotelOperatorSurface(appSurface)) {
     // Standalone Hotel Operator app: skip the superapp shell and land
     // straight in the admin console. Construct a light SuperappAPI

@@ -270,6 +270,11 @@ android {
             applicationId = "online.shamell.syrcom"
             resValue("string", "app_name", "SyrCom")
         }
+        create("taxiOperator") {
+            dimension = "app"
+            applicationId = "online.shamell.taxioperator"
+            resValue("string", "app_name", "SyrChat Taxi")
+        }
         create("admin") {
             dimension = "app"
             applicationId = "online.shamell.app.admin"
@@ -365,6 +370,7 @@ androidComponents {
             appFlavor != "ride" &&
             appFlavor != "driver" &&
             appFlavor != "operator" &&
+            appFlavor != "taxiOperator" &&
             appFlavor != "busOperator" &&
             appFlavor != "hotelOperator" &&
             appFlavor != "carrier" &&

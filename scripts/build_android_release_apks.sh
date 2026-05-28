@@ -40,7 +40,7 @@ Output:
     qr-*.png
 
 Options:
-  --flavors LIST   Comma-separated subset of: user, ride, driver, operator, bus_operator, hotel_operator, carrier, syrcom
+  --flavors LIST   Comma-separated subset of: user, ride, driver, operator, taxi_operator, bus_operator, hotel_operator, carrier, syrcom
 EOF
 }
 
@@ -455,7 +455,7 @@ release_id="android-apk-${version_name//[^0-9A-Za-z._-]/-}-${release_stamp}"
 printf 'APP_RELEASE_ID=%s\n' "$release_id" >> "$release_dart_defines_file"
 printf 'APP_VERSION=%s\n' "$version_name" >> "$release_dart_defines_file"
 
-all_flavors=(user ride driver operator busOperator hotelOperator carrier syrcom)
+all_flavors=(user ride driver operator taxiOperator busOperator hotelOperator carrier syrcom)
 flavors=()
 if [[ -z "${REQUESTED_FLAVORS_RAW// }" ]]; then
   flavors=("${all_flavors[@]}")
@@ -466,11 +466,12 @@ else
     case "$flavor" in
       bus_operator|busoperator) flavor="busOperator" ;;
       hotel_operator|hoteloperator|hotels_operator|hotel) flavor="hotelOperator" ;;
+      taxi_operator|taxioperator|taxi_ops|taxiops|taxi_control) flavor="taxiOperator" ;;
       spediteur|forwarder|freight_carrier|freight) flavor="carrier" ;;
       syr_com|syrcommerce|commerce) flavor="syrcom" ;;
     esac
     case "$flavor" in
-      user|ride|driver|operator|busOperator|hotelOperator|carrier|syrcom)
+      user|ride|driver|operator|taxiOperator|busOperator|hotelOperator|carrier|syrcom)
         case " ${flavors[*]-} " in
           *" $flavor "*) ;;
           *)
@@ -501,6 +502,7 @@ target_for_flavor() {
     hotelOperator) printf '%s\n' "lib/main_hotel_operator.dart" ;;
     carrier) printf '%s\n' "lib/main_carrier.dart" ;;
     syrcom) printf '%s\n' "lib/main_syrcom.dart" ;;
+    taxiOperator) printf '%s\n' "lib/main_taxi_operator.dart" ;;
     *) return 1 ;;
   esac
 }
@@ -515,6 +517,7 @@ title_for_flavor() {
     hotelOperator) printf '%s\n' "Shamell Hotels" ;;
     carrier) printf '%s\n' "Shamell Carrier" ;;
     syrcom) printf '%s\n' "SyrCom" ;;
+    taxiOperator) printf '%s\n' "Shamell Taxi" ;;
     *) return 1 ;;
   esac
 }
@@ -529,6 +532,7 @@ summary_for_flavor() {
     hotelOperator) printf '%s\n' "Hotels console for front-desk and partner staff: bookings, room-service orders, and settlement." ;;
     carrier) printf '%s\n' "Carrier (Spediteur) console for cold-chain freight: fleet, drivers, certificates, and load offers (SyrTrans)." ;;
     syrcom) printf '%s\n' "SyrCom — enterprise surface of the Shamell platform (business/B2B counterpart of SyrChat)." ;;
+    taxiOperator) printf '%s\n' "Standalone taxi-operations console: live trips, driver dispatch, support queue, and payouts (SyrChat Taxi)." ;;
     *) return 1 ;;
   esac
 }
@@ -543,6 +547,7 @@ package_for_flavor() {
     hotelOperator) printf '%s\n' "online.shamell.hoteloperator" ;;
     carrier) printf '%s\n' "online.shamell.carrier" ;;
     syrcom) printf '%s\n' "online.shamell.syrcom" ;;
+    taxiOperator) printf '%s\n' "online.shamell.taxioperator" ;;
     *) return 1 ;;
   esac
 }
@@ -559,6 +564,7 @@ slug_for_flavor() {
     hotelOperator) printf '%s\n' "hoteloperator" ;;
     carrier) printf '%s\n' "carrier" ;;
     syrcom) printf '%s\n' "syrcom" ;;
+    taxiOperator) printf '%s\n' "taxioperator" ;;
     *) return 1 ;;
   esac
 }
