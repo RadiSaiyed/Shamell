@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../l10n.dart';
+import '../session_cookie_store.dart';
 import '../superapp_api.dart';
 import 'hotels_operator_login_page.dart';
 import 'hotels_operator_session.dart';
@@ -93,20 +94,78 @@ class _HotelAdminConsolePageState extends State<HotelAdminConsolePage>
     final cached = await _sessionStore.load();
     if (!mounted) return;
     if (cached != null && cached.canAdminister(widget.hotelId)) {
-      setState(() {
-        _session = cached;
-        _bootstrapping = false;
-      });
-      _refreshAll();
-      unawaited(_startSseSubscription());
-      _poll =
-          Timer.periodic(const Duration(seconds: 12), (_) => _refreshAll());
+      _activateSession(cached);
+      return;
+    }
+    // Phase 9 bridge — before falling back to the legacy
+    // hotel-operator login, see whether the caller already holds the
+    // platform `hotels.operator` role with a grant on this hotel. If
+    // yes, we ride the Shamell session cookie and skip the bearer
+    // token entirely (the BFF injects X-Shamell-Account-Id upstream
+    // and hotels-service's dual-auth resolves the grant).
+    final platform = await _tryPlatformAuthSession();
+    if (!mounted) return;
+    if (platform != null) {
+      _activateSession(platform);
       return;
     }
     setState(() {
       _bootstrapping = false;
     });
     await _promptLogin();
+  }
+
+  void _activateSession(HotelsOperatorSession session) {
+    setState(() {
+      _session = session;
+      _bootstrapping = false;
+    });
+    _refreshAll();
+    unawaited(_startSseSubscription());
+    _poll =
+        Timer.periodic(const Duration(seconds: 12), (_) => _refreshAll());
+  }
+
+  /// Probes `/v1/hotels/me/grants`; returns a platform-auth session
+  /// when the response includes a grant on `widget.hotelId`. Null on
+  /// any other outcome — the caller falls through to legacy login.
+  Future<HotelsOperatorSession?> _tryPlatformAuthSession() async {
+    try {
+      final base = widget.api.baseUrl.replaceAll(RegExp(r'/+$'), '');
+      if (base.isEmpty) return null;
+      final factory = widget.api.httpClientFactory;
+      final client = factory != null ? factory() : http.Client();
+      try {
+        final headers = await shamellSessionHeadersForBaseUrl(base);
+        final resp = await client.get(
+          Uri.parse('$base/v1/hotels/me/grants'),
+          headers: headers,
+        ).timeout(const Duration(seconds: 8));
+        if (resp.statusCode != 200) return null;
+        final decoded = jsonDecode(resp.body);
+        if (decoded is! List) return null;
+        final hotelId = widget.hotelId.trim();
+        for (final raw in decoded.whereType<Map>()) {
+          final entry = raw.cast<String, dynamic>();
+          if ((entry['hotel_id'] ?? '').toString().trim() != hotelId) {
+            continue;
+          }
+          return HotelsOperatorSession.platformAuth(
+            hotelId: hotelId,
+            role: (entry['role'] ?? 'staff').toString(),
+            displayName: 'Platform operator',
+          );
+        }
+        return null;
+      } finally {
+        if (factory == null) client.close();
+      }
+    } catch (_) {
+      // Network blips, 5xx, malformed JSON: treat as "no platform auth
+      // available", fall through to the legacy login. The user can
+      // still get in via username/password.
+      return null;
+    }
   }
 
   Future<void> _promptLogin() async {
@@ -162,7 +221,12 @@ class _HotelAdminConsolePageState extends State<HotelAdminConsolePage>
     final h = <String, String>{
       if (extra != null) ...extra,
     };
-    if (session != null) {
+    // Platform-auth sessions carry no bearer token; the BFF injects
+    // X-Shamell-Account-Id after authenticating the Shamell session
+    // cookie (sent automatically by the browser/HTTP client). Adding
+    // an empty Authorization header would confuse the upstream auth
+    // dispatcher, so we skip it entirely for that mode.
+    if (session != null && !session.isPlatformAuth) {
       h['authorization'] = session.authorizationHeader();
     }
     return h;
@@ -202,7 +266,8 @@ class _HotelAdminConsolePageState extends State<HotelAdminConsolePage>
         ..headers.addAll({
           'Accept': 'text/event-stream',
           'Cache-Control': 'no-cache',
-          'Authorization': 'Bearer ${_session!.token}',
+          if (!_session!.isPlatformAuth)
+            'Authorization': 'Bearer ${_session!.token}',
         });
       // ignore: discarded_futures
       final resp = await _sseClient!.send(req).timeout(

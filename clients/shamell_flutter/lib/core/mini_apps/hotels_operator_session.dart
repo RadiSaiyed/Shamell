@@ -32,12 +32,45 @@ class HotelsOperatorSession {
     this.contactEmail,
   });
 
-  bool get isExpired => DateTime.now().toUtc().isAfter(tokenExpiresAt);
+  /// Marker for sessions that ride the Shamell platform cookie
+  /// instead of the legacy hotel-operator bearer token. Set by
+  /// `HotelsOperatorSession.platformAuth(...)` after a successful
+  /// `/v1/hotels/me/grants` call; the rest of the console uses it to
+  /// skip the Authorization header (the BFF injects
+  /// X-Shamell-Account-Id upstream so the hotels-service dual-auth
+  /// path picks up).
+  bool get isPlatformAuth => token.isEmpty;
+
+  bool get isExpired {
+    if (isPlatformAuth) return false; // Shamell session owns its lifecycle.
+    return DateTime.now().toUtc().isAfter(tokenExpiresAt);
+  }
 
   bool canAdminister(String hotelId) =>
       hotels.any((g) => g.hotelId == hotelId.trim());
 
-  String authorizationHeader() => 'Bearer $token';
+  String authorizationHeader() => isPlatformAuth ? '' : 'Bearer $token';
+
+  /// Construct a session that piggybacks on the Shamell platform cookie
+  /// — no bearer token. The single grant carries the hotel + role
+  /// returned by `/v1/hotels/me/grants`. `tokenExpiresAt` is set to a
+  /// far-future date so legacy code paths reading it never trip the
+  /// expiry guard; `isExpired` short-circuits to false anyway via
+  /// `isPlatformAuth`.
+  factory HotelsOperatorSession.platformAuth({
+    required String hotelId,
+    required String role,
+    String displayName = 'Platform operator',
+  }) {
+    return HotelsOperatorSession(
+      token: '',
+      tokenExpiresAt: DateTime.utc(9999, 12, 31),
+      operatorId: '',
+      loginId: '',
+      displayName: displayName,
+      hotels: [HotelsOperatorGrant(hotelId: hotelId, role: role)],
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'token': token,
