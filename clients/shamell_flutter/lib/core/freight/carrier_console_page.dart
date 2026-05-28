@@ -4,7 +4,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import '../account_privilege_store.dart';
 import '../l10n.dart';
+import '../role_signup_api.dart';
+import '../role_signup_gate.dart';
 import '../session_cookie_store.dart';
 
 /// Phase 2.5 Carrier Console.
@@ -42,6 +45,12 @@ class _CarrierConsolePageState extends State<CarrierConsolePage> {
   String? _loadError;
   List<_OrgEntry> _orgs = const [];
   bool _showWizard = false;
+  // Snapshot of the caller's platform roles/permissions. Drives the
+  // self-service signup gate: when the user lacks freight.carrier_admin
+  // (and isn't a platform superadmin), the gate replaces the org
+  // dashboard with a request form. Approval is fronted by the operator
+  // console's Signups workspace and lands here via privilege refresh.
+  AccountPrivilegeSnapshot _privileges = AccountPrivilegeSnapshot.empty;
 
   @override
   void initState() {
@@ -49,7 +58,44 @@ class _CarrierConsolePageState extends State<CarrierConsolePage> {
     final trimmed =
         (widget.baseUrl ?? '').trim().replaceAll(RegExp(r'/+$'), '');
     _baseUrl = trimmed.isEmpty ? _fallbackBaseUrl : trimmed;
-    unawaited(_loadOrgs());
+    unawaited(_bootstrap());
+  }
+
+  bool get _carrierAccessAllowed =>
+      _privileges.isSuperadmin ||
+      _privileges.isAdmin ||
+      _privileges.roles.contains(RoleSignupRoleIds.carrier);
+
+  Future<void> _bootstrap() async {
+    // Load privilege snapshot first so we can decide signup-gate vs.
+    // dashboard before the (potentially failing) GET /v1/freight/orgs.
+    // The org fetch is gated on _carrierAccessAllowed to avoid lighting
+    // up a confusing "Session expired" panel when the real cause is
+    // "you don't have the role yet."
+    try {
+      final snap = await loadAccountPrivilegeSnapshotForBaseUrl(_baseUrl);
+      if (!mounted) return;
+      setState(() => _privileges = snap);
+    } catch (_) {
+      // Soft-fail: stale snapshot is fine, the gate will fall back
+      // to its "no role" branch which is the safer default.
+    }
+    if (_carrierAccessAllowed) {
+      await _loadOrgs();
+    } else if (mounted) {
+      setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _refreshPrivilegesAndReload() async {
+    try {
+      final snap = await loadAccountPrivilegeSnapshotForBaseUrl(_baseUrl);
+      if (!mounted) return;
+      setState(() => _privileges = snap);
+    } catch (_) {}
+    if (_carrierAccessAllowed) {
+      await _loadOrgs();
+    }
   }
 
   Future<Map<String, String>> _authHeaders() async {
@@ -183,6 +229,23 @@ class _CarrierConsolePageState extends State<CarrierConsolePage> {
   Widget _buildBody(L10n l) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
+    }
+    // Self-service signup gate. If the caller doesn't hold the
+    // freight.carrier_admin platform role yet, the page is replaced
+    // with a request form. The gate polls for status; an admin
+    // approval flips _carrierAccessAllowed on the next privilege
+    // refresh and the dashboard takes over.
+    if (!_carrierAccessAllowed) {
+      return RoleSignupGate(
+        roleId: RoleSignupRoleIds.carrier,
+        roleLabel: 'carrier',
+        roleLabelArabic: 'ناقل',
+        fields: RoleSignupFormFields.carrier,
+        api: RoleSignupApi(baseUrl: _baseUrl),
+        isArabic: l.isArabic,
+        onSubmitted: () =>
+            unawaited(_refreshPrivilegesAndReload()),
+      );
     }
     if (_loadError != null) {
       return _ErrorPanel(message: _loadError!, onRetry: _loadOrgs);

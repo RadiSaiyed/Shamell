@@ -23,7 +23,13 @@ import 'session_cookie_store.dart';
 /// `SIGNUP_REQUESTABLE_ROLES` on the server.
 class RoleSignupRoleIds {
   static const String driver = 'rides.driver';
+  // Ride/Taxi operator console (Shamell Control + the dedicated
+  // TaxiOperator flavor both request the same platform role).
   static const String operator = 'rides.driver_ops';
+  static const String taxiOperator = 'rides.driver_ops';
+  static const String busOperator = 'coach.operator_admin';
+  static const String hotelOperator = 'hotels.operator';
+  static const String carrier = 'freight.carrier_admin';
 }
 
 class RoleSignupRequest {

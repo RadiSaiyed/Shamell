@@ -124,11 +124,24 @@ bool shamellIsRideStandaloneSurface([ShamellAppSurface? surface]) {
       current == ShamellAppSurface.taxiOperator;
 }
 
-bool shamellSurfaceAllowsPublicAccountCreate([ShamellAppSurface? surface]) =>
-    !shamellIsManagedAccountSurface(surface);
+bool shamellSurfaceAllowsPublicAccountCreate([ShamellAppSurface? surface]) {
+  // Carrier ships the self-service role-signup gate
+  // (RoleSignupRoleIds.carrier → freight.carrier_admin). Users CAN
+  // create a public Shamell account through this app; the role grant
+  // itself is approval-gated by the superadmin after they fill out
+  // the request form inside the console.
+  if (shamellIsCarrierSurface(surface)) return true;
+  return !shamellIsManagedAccountSurface(surface);
+}
 
-bool shamellSurfaceUsesUsernamePasswordAuth([ShamellAppSurface? surface]) =>
-    !shamellIsManagedAccountSurface(surface);
+bool shamellSurfaceUsesUsernamePasswordAuth([ShamellAppSurface? surface]) {
+  // Same rationale as shamellSurfaceAllowsPublicAccountCreate: the
+  // Carrier login surface accepts standard username/password auth so
+  // applicants can sign in before the platform role lands. Other
+  // managed surfaces still route through their device-approval flows.
+  if (shamellIsCarrierSurface(surface)) return true;
+  return !shamellIsManagedAccountSurface(surface);
+}
 
 String shamellSurfaceAppTitle({
   required bool isArabic,

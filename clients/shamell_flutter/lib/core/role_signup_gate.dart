@@ -124,6 +124,116 @@ class RoleSignupFormFields {
       minLength: 10,
     ),
   ];
+
+  /// Bus / coach operator onboarding — name, phone, operator company
+  /// name, reason. Mirrors the `coach.operator_admin` role definition.
+  static const List<RoleSignupFormField> busOperator = <RoleSignupFormField>[
+    RoleSignupFormField(
+      key: 'full_name',
+      label: 'Full name',
+      labelArabic: 'الاسم الكامل',
+      keyboard: TextInputType.name,
+      maxLength: 96,
+    ),
+    RoleSignupFormField(
+      key: 'phone',
+      label: 'Phone (with country code)',
+      labelArabic: 'رقم الهاتف (مع رمز الدولة)',
+      hint: '+963 9XX XXX XXX',
+      hintArabic: '+963 9XX XXX XXX',
+      defaultValue: '+963 ',
+      keyboard: TextInputType.phone,
+      maxLength: 32,
+    ),
+    RoleSignupFormField(
+      key: 'operator_company',
+      label: 'Bus / coach operator company name',
+      labelArabic: 'اسم شركة الحافلات',
+      maxLength: 120,
+    ),
+    RoleSignupFormField(
+      key: 'reason',
+      label: 'Role you need on the operator console',
+      labelArabic: 'الدور المطلوب على وحدة المشغّل',
+      hint: 'Dispatcher, boarding agent, settlement viewer …',
+      hintArabic: 'مرسل، موظف صعود، مراجع تسوية …',
+      maxLength: 240,
+      minLength: 10,
+    ),
+  ];
+
+  /// Hotel operator onboarding — name, phone, hotel name, hotel
+  /// address. Mirrors the `hotels.operator` role definition; admin
+  /// confirms the hotel exists before approving and attaches the
+  /// requester to that hotel via the hotels-service membership table.
+  static const List<RoleSignupFormField> hotelOperator = <RoleSignupFormField>[
+    RoleSignupFormField(
+      key: 'full_name',
+      label: 'Full name',
+      labelArabic: 'الاسم الكامل',
+      keyboard: TextInputType.name,
+      maxLength: 96,
+    ),
+    RoleSignupFormField(
+      key: 'phone',
+      label: 'Phone (with country code)',
+      labelArabic: 'رقم الهاتف (مع رمز الدولة)',
+      hint: '+963 9XX XXX XXX',
+      hintArabic: '+963 9XX XXX XXX',
+      defaultValue: '+963 ',
+      keyboard: TextInputType.phone,
+      maxLength: 32,
+    ),
+    RoleSignupFormField(
+      key: 'hotel_name',
+      label: 'Hotel name',
+      labelArabic: 'اسم الفندق',
+      maxLength: 120,
+    ),
+    RoleSignupFormField(
+      key: 'hotel_city',
+      label: 'Hotel city / address',
+      labelArabic: 'مدينة الفندق / العنوان',
+      maxLength: 160,
+    ),
+  ];
+
+  /// Carrier / Spediteur onboarding — name, phone, company, tax id.
+  /// Mirrors the `freight.carrier_admin` role definition. Admin
+  /// approves the platform role; the carrier setup wizard inside the
+  /// app then creates / attaches the actual freight_organizations row.
+  static const List<RoleSignupFormField> carrier = <RoleSignupFormField>[
+    RoleSignupFormField(
+      key: 'full_name',
+      label: 'Full name',
+      labelArabic: 'الاسم الكامل',
+      keyboard: TextInputType.name,
+      maxLength: 96,
+    ),
+    RoleSignupFormField(
+      key: 'phone',
+      label: 'Phone (with country code)',
+      labelArabic: 'رقم الهاتف (مع رمز الدولة)',
+      hint: '+963 9XX XXX XXX',
+      hintArabic: '+963 9XX XXX XXX',
+      defaultValue: '+963 ',
+      keyboard: TextInputType.phone,
+      maxLength: 32,
+    ),
+    RoleSignupFormField(
+      key: 'carrier_company',
+      label: 'Carrier (Spediteur) company name',
+      labelArabic: 'اسم شركة النقل',
+      maxLength: 160,
+    ),
+    RoleSignupFormField(
+      key: 'tax_id',
+      label: 'Tax ID (optional)',
+      labelArabic: 'الرقم الضريبي (اختياري)',
+      maxLength: 48,
+      required: false,
+    ),
+  ];
 }
 
 class RoleSignupGate extends StatefulWidget {
