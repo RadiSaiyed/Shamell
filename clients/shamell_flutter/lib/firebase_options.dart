@@ -144,6 +144,11 @@ String? _firebaseAndroidAppIdForSurface(ShamellAppSurface surface) {
       // for online.shamell.carrier. Phase 3 (carrier endpoints + push
       // notifications for load offers) will provision one.
       return null;
+    case ShamellAppSurface.taxiOperator:
+      // Standalone Taxi Operator flavor — same status as
+      // hotelOperator/carrier: ships without Firebase until an app
+      // is registered for online.shamell.taxioperator.
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseAndroidAppIdSyrCom);
     case ShamellAppSurface.superapp:
@@ -165,6 +170,8 @@ String? _firebaseIosAppIdForSurface(ShamellAppSurface surface) {
       return null;
     case ShamellAppSurface.carrier:
       return null;
+    case ShamellAppSurface.taxiOperator:
+      return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseIosAppIdSyrCom);
     case ShamellAppSurface.superapp:
@@ -185,6 +192,8 @@ String? _firebaseIosBundleIdForSurface(ShamellAppSurface surface) {
     case ShamellAppSurface.hotelOperator:
       return null;
     case ShamellAppSurface.carrier:
+      return null;
+    case ShamellAppSurface.taxiOperator:
       return null;
     case ShamellAppSurface.syrcom:
       return _usableFirebaseValue(_firebaseIosBundleIdSyrCom);
