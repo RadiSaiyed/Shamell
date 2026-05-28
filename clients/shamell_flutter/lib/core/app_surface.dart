@@ -125,14 +125,16 @@ bool shamellIsRideStandaloneSurface([ShamellAppSurface? surface]) {
 }
 
 bool shamellSurfaceAllowsPublicAccountCreate([ShamellAppSurface? surface]) {
-  // Flavors that ship the self-service role-signup gate
-  // (Carrier → freight.carrier_admin, BusOperator →
-  // coach.operator_admin). Users CAN create a public Shamell account
-  // through these apps; the role grant itself stays approval-gated by
-  // the superadmin after they fill out the request form inside the
-  // console.
+  // Flavors that ship the self-service role-signup gate. Users CAN
+  // create a public Shamell account through these apps; the role
+  // grant itself stays approval-gated by the superadmin after they
+  // fill out the request form inside the console.
+  //   - Carrier        → freight.carrier_admin
+  //   - BusOperator    → coach.operator_admin
+  //   - HotelOperator  → hotels.operator (Phase 9 platform bridge)
   if (shamellIsCarrierSurface(surface) ||
-      shamellIsBusOperatorSurface(surface)) {
+      shamellIsBusOperatorSurface(surface) ||
+      shamellIsHotelOperatorSurface(surface)) {
     return true;
   }
   return !shamellIsManagedAccountSurface(surface);
@@ -144,7 +146,8 @@ bool shamellSurfaceUsesUsernamePasswordAuth([ShamellAppSurface? surface]) {
   // can sign in before the platform role lands. Other managed surfaces
   // still route through their device-approval flows.
   if (shamellIsCarrierSurface(surface) ||
-      shamellIsBusOperatorSurface(surface)) {
+      shamellIsBusOperatorSurface(surface) ||
+      shamellIsHotelOperatorSurface(surface)) {
     return true;
   }
   return !shamellIsManagedAccountSurface(surface);

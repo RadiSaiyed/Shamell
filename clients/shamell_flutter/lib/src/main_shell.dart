@@ -674,12 +674,24 @@ Widget shamellBuildSignedInHome({
     );
   }
   if (shamellIsHotelOperatorSurface(appSurface)) {
-    // Standalone Hotel Operator app: skip the superapp shell and land
-    // straight in the admin console. Construct a light SuperappAPI
-    // since the page only needs baseUrl + HTTP plumbing — operator
-    // auth is handled inside HotelAdminConsolePage's own bootstrap.
-    return HotelAdminConsolePage(
-      api: SuperappAPI.light(baseUrl: baseUrlOverride ?? ''),
+    // Standalone Hotel Operator app — Phase 9 bridge. The legacy
+    // HotelAdminConsolePage uses its own service-side login flow
+    // (hotel_operators table + HMAC bearer-token); platform-account
+    // signup goes through the RoleSignupGuard wrap. Once the user has
+    // hotels.operator on their platform session, the page renders and
+    // can call /v1/hotels/me/grants to discover the hotels they're
+    // attached to. Legacy operators (no Shamell session, just the
+    // bearer-token flow) still work because HotelAdminConsolePage's
+    // own bootstrap handles that path.
+    return RoleSignupGuard(
+      baseUrl: baseUrlOverride ?? '',
+      roleId: RoleSignupRoleIds.hotelOperator,
+      roleLabel: 'Hotel operator',
+      roleLabelArabic: 'مشغّل الفندق',
+      fields: RoleSignupFormFields.hotelOperator,
+      builder: (_) => HotelAdminConsolePage(
+        api: SuperappAPI.light(baseUrl: baseUrlOverride ?? ''),
+      ),
     );
   }
   if (shamellIsCarrierSurface(appSurface)) {
