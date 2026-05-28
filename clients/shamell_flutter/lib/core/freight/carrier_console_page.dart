@@ -977,6 +977,14 @@ class _OrgVehiclesPageState extends State<_OrgVehiclesPage> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
+            tooltip: l.isArabic ? 'سجل النشاط' : 'Activity log',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) =>
+                  _OrgActivityPage(baseUrl: widget.baseUrl, org: widget.org),
+            )),
+            icon: const Icon(Icons.history_outlined),
+          ),
+          IconButton(
             tooltip: l.isArabic ? 'تحديث' : 'Refresh',
             onPressed: _loading ? null : _load,
             icon: const Icon(Icons.refresh),
@@ -1321,6 +1329,283 @@ class _AddVehicleSheetState extends State<_AddVehicleSheet> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ──────────────────────── Audit / Activity log ───────────────────
+
+class _AuditEvent {
+  final String id;
+  final String actorKind; // 'user' | 'system' | 'api'
+  final String? actorId;
+  final String eventKind; // e.g. 'org_created', 'vehicle_added'
+  final String targetKind;
+  final String targetId;
+  final Map<String, dynamic> payload;
+  final DateTime createdAt;
+
+  _AuditEvent({
+    required this.id,
+    required this.actorKind,
+    required this.actorId,
+    required this.eventKind,
+    required this.targetKind,
+    required this.targetId,
+    required this.payload,
+    required this.createdAt,
+  });
+
+  static _AuditEvent fromJson(Map<String, dynamic> json) => _AuditEvent(
+        id: (json['id'] ?? '').toString(),
+        actorKind: (json['actor_kind'] ?? '').toString(),
+        actorId: json['actor_id']?.toString(),
+        eventKind: (json['event_kind'] ?? '').toString(),
+        targetKind: (json['target_kind'] ?? '').toString(),
+        targetId: (json['target_id'] ?? '').toString(),
+        payload: (json['payload'] is Map<String, dynamic>)
+            ? (json['payload'] as Map<String, dynamic>)
+            : <String, dynamic>{},
+        createdAt: DateTime.tryParse((json['created_at'] ?? '').toString())
+                ?.toLocal() ??
+            DateTime.fromMillisecondsSinceEpoch(0),
+      );
+}
+
+class _OrgActivityPage extends StatefulWidget {
+  final String baseUrl;
+  final _OrgEntry org;
+
+  const _OrgActivityPage({required this.baseUrl, required this.org});
+
+  @override
+  State<_OrgActivityPage> createState() => _OrgActivityPageState();
+}
+
+class _OrgActivityPageState extends State<_OrgActivityPage> {
+  bool _loading = true;
+  String? _loadError;
+  List<_AuditEvent> _events = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<Map<String, String>> _authHeaders() async {
+    final base = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
+    return {...base, 'Accept': 'application/json'};
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final headers = await _authHeaders();
+      final resp = await http
+          .get(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.org.id}/audit'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode == 401) {
+        setState(() {
+          _loading = false;
+          _loadError =
+              'Sitzung abgelaufen — bitte erneut anmelden.\n(Session expired — please sign in again.)';
+        });
+        return;
+      }
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        setState(() {
+          _loading = false;
+          _loadError = 'HTTP ${resp.statusCode}\n${resp.body}';
+        });
+        return;
+      }
+      final parsed = json.decode(resp.body) as List<dynamic>;
+      setState(() {
+        _loading = false;
+        _events = parsed
+            .whereType<Map<String, dynamic>>()
+            .map(_AuditEvent.fromJson)
+            .toList(growable: false);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          l.isArabic
+              ? 'سجل النشاط · ${widget.org.name}'
+              : 'Activity · ${widget.org.name}',
+        ),
+        backgroundColor: const Color(0xFF0F766E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تحديث' : 'Refresh',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SafeArea(child: _buildBody(l)),
+    );
+  }
+
+  Widget _buildBody(L10n l) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return _ErrorPanel(message: _loadError!, onRetry: _load);
+    }
+    if (_events.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.history_outlined,
+                  size: 48, color: Colors.grey),
+              const SizedBox(height: 12),
+              Text(
+                l.isArabic ? 'لا توجد أحداث بعد' : 'No activity yet',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                l.isArabic
+                    ? 'كل تغيير في الشركة يظهر هنا (تعديل المركبات، السائقين، الوثائق، إلخ).'
+                    : 'Every mutation on this org lands here (vehicles, drivers, documents, etc.).',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      itemCount: _events.length,
+      itemBuilder: (_, i) => _ActivityRow(event: _events[i]),
+    );
+  }
+}
+
+class _ActivityRow extends StatelessWidget {
+  final _AuditEvent event;
+
+  const _ActivityRow({required this.event});
+
+  String _humanEvent(L10n l) {
+    final ar = l.isArabic;
+    switch (event.eventKind) {
+      case 'org_created':
+        return ar ? 'تم إنشاء الشركة' : 'Organization created';
+      case 'vehicle_added':
+        final plate = event.payload['plate_number'] ?? '';
+        return ar
+            ? 'أضيفت مركبة ${plate.toString().isEmpty ? '' : '($plate)'}'
+            : 'Vehicle added ${plate.toString().isEmpty ? '' : '($plate)'}';
+      default:
+        return event.eventKind;
+    }
+  }
+
+  IconData _iconFor() {
+    switch (event.targetKind) {
+      case 'vehicle':
+        return Icons.local_shipping_outlined;
+      case 'organization':
+        return Icons.business_outlined;
+      case 'driver':
+        return Icons.person_outline;
+      case 'document':
+        return Icons.description_outlined;
+      default:
+        return Icons.bolt_outlined;
+    }
+  }
+
+  String _timeAgo(L10n l) {
+    final delta = DateTime.now().difference(event.createdAt);
+    final ar = l.isArabic;
+    if (delta.inMinutes < 1) return ar ? 'الآن' : 'just now';
+    if (delta.inHours < 1) {
+      return ar ? 'منذ ${delta.inMinutes} د' : '${delta.inMinutes}m ago';
+    }
+    if (delta.inDays < 1) {
+      return ar ? 'منذ ${delta.inHours} س' : '${delta.inHours}h ago';
+    }
+    if (delta.inDays < 30) {
+      return ar ? 'منذ ${delta.inDays} ي' : '${delta.inDays}d ago';
+    }
+    return '${event.createdAt.year}-${event.createdAt.month.toString().padLeft(2, '0')}-${event.createdAt.day.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = L10n.of(context);
+    final actorLabel = event.actorKind == 'system'
+        ? (l.isArabic ? 'النظام' : 'system')
+        : (event.actorId != null && event.actorId!.isNotEmpty
+            ? event.actorId!.substring(0, event.actorId!.length.clamp(0, 12))
+            : event.actorKind);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F766E).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(_iconFor(), color: const Color(0xFF0F766E), size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _humanEvent(l),
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$actorLabel · ${_timeAgo(l)}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color:
+                        theme.colorScheme.onSurface.withValues(alpha: 0.55),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
