@@ -1,0 +1,158 @@
+name: Operator Flavor Web Publish
+
+# Builds and publishes the standalone operator-flavor Flutter web
+# bundles to https://shamell.online/<slug>/. Each flavor runs in
+# parallel via the matrix; a failure of one doesn't block the others.
+#
+# Sibling to `Shamell Control Web Publish` which is hard-coded to
+# the legacy `operator` flavor → /control/.
+
+'on':
+  workflow_dispatch:
+    inputs:
+      flavors:
+        description: >
+          Comma-separated subset to build (carrier, busOperator,
+          hotelOperator, taxiOperator). Empty = all four.
+        required: false
+        type: string
+        default: ''
+      sync_nginx:
+        description: Sync Hetzner Nginx before publishing
+        required: false
+        type: boolean
+        default: true
+      publish_to_production:
+        description: Publish bundles to https://shamell.online/<slug>/
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-matrix:
+    # The matrix below could ship statically, but inputs.flavors lets a
+    # caller rebuild just one flavor without spending CI minutes on the
+    # other three. This job turns the comma-list (or empty default)
+    # into a JSON array the strategy.matrix can fan out over.
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+    steps:
+      - id: compute
+        env:
+          REQUESTED: ${{ inputs.flavors }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          all_flavors = [
+              {"name": "carrier",       "slug": "carrier"},
+              {"name": "busOperator",   "slug": "bus-control"},
+              {"name": "hotelOperator", "slug": "hotels-admin"},
+              {"name": "taxiOperator",  "slug": "taxi-control"},
+          ]
+          requested = os.environ.get("REQUESTED", "").strip()
+          if not requested:
+              selected = all_flavors
+          else:
+              names = {p.strip() for p in requested.split(",") if p.strip()}
+              # Accept the same case-insensitive shortcuts the build
+              # script does, so a typo doesn't silently drop a flavor.
+              alias = {
+                  "carrier": "carrier",
+                  "busoperator": "busOperator",
+                  "bus_operator": "busOperator",
+                  "bus": "busOperator",
+                  "hoteloperator": "hotelOperator",
+                  "hotel_operator": "hotelOperator",
+                  "hotel": "hotelOperator",
+                  "taxioperator": "taxiOperator",
+                  "taxi_operator": "taxiOperator",
+                  "taxi": "taxiOperator",
+              }
+              normalized = set()
+              for n in names:
+                  key = n.lower()
+                  if key not in alias:
+                      raise SystemExit(f"unknown flavor: {n}")
+                  normalized.add(alias[key])
+              selected = [f for f in all_flavors if f["name"] in normalized]
+          print(f"matrix={json.dumps({'include': selected})}")
+          PY
+
+  build-and-publish:
+    needs: resolve-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve-matrix.outputs.matrix) }}
+    env:
+      ARTIFACT_DIR: ${{ github.workspace }}/.artifacts/${{ matrix.slug }}-web-release
+      HETZNER_HOST: ${{ secrets.SHAMELL_HETZNER_HOST }}
+      HETZNER_USER: ${{ secrets.SHAMELL_HETZNER_USER }}
+      REMOTE_SUDO_PASSWORD: ${{ secrets.SHAMELL_HETZNER_SUDO_PASSWORD }}
+      SHAMELL_FIREBASE_API_KEY: ${{ secrets.SHAMELL_FIREBASE_API_KEY }}
+      SHAMELL_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.SHAMELL_FIREBASE_MESSAGING_SENDER_ID }}
+      SHAMELL_FIREBASE_PROJECT_ID: ${{ secrets.SHAMELL_FIREBASE_PROJECT_ID }}
+      SHAMELL_FIREBASE_STORAGE_BUCKET: ${{ secrets.SHAMELL_FIREBASE_STORAGE_BUCKET }}
+      SHAMELL_FIREBASE_AUTH_DOMAIN: ${{ secrets.SHAMELL_FIREBASE_AUTH_DOMAIN }}
+      SHAMELL_FIREBASE_MEASUREMENT_ID: ${{ secrets.SHAMELL_FIREBASE_MEASUREMENT_ID }}
+      SHAMELL_FIREBASE_WEB_APP_ID: ${{ secrets.SHAMELL_FIREBASE_WEB_APP_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
+        with:
+          flutter-version: "3.38.5"
+
+      - name: Build web bundle (${{ matrix.name }})
+        run: |
+          ./scripts/build_operator_flavor_web_release.sh \
+            --flavor "${{ matrix.name }}" \
+            --output-dir "${ARTIFACT_DIR}"
+
+      - name: Upload artifact (${{ matrix.slug }})
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.slug }}-web-release
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: error
+
+      - name: Install SSH key
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${{ secrets.SHAMELL_HETZNER_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${HETZNER_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Sync Hetzner Nginx
+        # Done once per matrix entry rather than as a separate
+        # earlier job because matrix entries run in their own VMs
+        # and there's no shared SSH agent. The nginx sync is
+        # idempotent so a parallel double-run is harmless.
+        if: ${{ inputs.publish_to_production && inputs.sync_nginx }}
+        run: |
+          ./scripts/sync_hetzner_nginx.sh "${HETZNER_USER}@${HETZNER_HOST}"
+
+      - name: Publish ${{ matrix.slug }} web bundle
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          ./scripts/publish_operator_flavor_web_release.sh \
+            --source-dir "${ARTIFACT_DIR}" \
+            --slug "${{ matrix.slug }}" \
+            --host "${HETZNER_USER}@${HETZNER_HOST}"
+
+      - name: Verify public URL
+        if: ${{ inputs.publish_to_production }}
+        run: |
+          curl -fsSI "https://shamell.online/${{ matrix.slug }}/"
+          curl -fsS "https://shamell.online/${{ matrix.slug }}/release-manifest.json" >/dev/null
