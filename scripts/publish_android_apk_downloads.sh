@@ -231,6 +231,23 @@ optional_sudo_run() {
 install -d -m 0755 '${REMOTE_ROOT}' || true
 install -d -m 0755 '${REMOTE_ROOT}/releases' || true
 install -d -m 0755 '${release_root}'
+# Prune historical release archives — keep only the N newest by name.
+# Each archive is ~1.5 GB (9 flavors × ~175 MB APKs); without this the
+# 38 GB Hetzner disk fills up within ~3 weeks and a future cp fails
+# with "No space left on device" mid-archive. The release_id timestamp
+# format (android-apk-<ver>-YYYYMMDDTHHMMSSZ) sorts chronologically
+# under reverse lexical sort. The current ${release_id} is excluded
+# from prune because it hasn't been archived yet at this point.
+releases_keep='${ANDROID_RELEASES_KEEP:-2}'
+ls -1 '${REMOTE_ROOT}/releases' 2>/dev/null \
+  | grep -v "^${release_id}$" \
+  | sort -r \
+  | tail -n +\$releases_keep \
+  | while IFS= read -r old; do
+      [ -n "\$old" ] || continue
+      rm -rf "${REMOTE_ROOT}/releases/\$old"
+      echo "pruned old release archive: \$old"
+    done
 find '${REMOTE_ROOT}' -mindepth 1 -maxdepth 1 ! -name releases -exec rm -rf {} +
 cp -a '${tmp_remote}/.' '${REMOTE_ROOT}/'
 cp -a '${tmp_remote}/.' '${release_root}/'
