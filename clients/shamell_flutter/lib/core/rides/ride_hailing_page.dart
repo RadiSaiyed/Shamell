@@ -21,7 +21,7 @@ import '../ride_chat_sheet.dart';
 import '../ride_rating_api.dart';
 import '../ride_history_page.dart';
 import '../cancellation_reason_picker.dart';
-import '../coach_bus/coach_passenger_hub_page.dart';
+import '../coach_bus/coach_bus_mini_program_page.dart';
 import '../promo_api.dart';
 import '../promo_entry_dialog.dart';
 import '../ride_share_api.dart';
@@ -857,16 +857,19 @@ class _RideHailingPageState extends State<RideHailingPage> {
     );
   }
 
-  /// Cycle 217 — opens the Coach Bus passenger hub. Intercity
-  /// bus booking lives there end-to-end (search → offers →
-  /// booking → live tracking).
+  /// Cycle 217 — opens the Coach Bus passenger surface. Per user
+  /// feedback (2026-05-29), lands directly on the search/plan tab of
+  /// the full mini-program shell (Plan / Trips / Tickets) rather than
+  /// the older Hub page that puts a hero CTA in front of search.
+  /// Same end-to-end flow (search → offers → booking → live
+  /// tracking), one tap fewer to start a new journey.
   Future<void> _openCoachBusHub() async {
     if (!mounted) return;
     final baseUrl = widget.baseUrl;
     if (baseUrl == null) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (ctx) => CoachPassengerHubPage(baseUrl: baseUrl),
+        builder: (ctx) => CoachBusMiniProgramPage(baseUrl: baseUrl),
       ),
     );
   }
