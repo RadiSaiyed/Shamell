@@ -3355,15 +3355,149 @@ class _OrgBookingsPageState extends State<_OrgBookingsPage> {
   String? _loadError;
   List<_Booking> _bookings = const [];
 
+  bool get _canWrite =>
+      widget.org.role == 'owner' ||
+      widget.org.role == 'manager' ||
+      widget.org.role == 'dispatcher';
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
   }
 
-  Future<Map<String, String>> _authHeaders() async {
+  Future<Map<String, String>> _authHeaders({bool jsonBody = false}) async {
     final base = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
-    return {...base, 'Accept': 'application/json'};
+    return {
+      ...base,
+      'Accept': 'application/json',
+      if (jsonBody) 'Content-Type': 'application/json',
+    };
+  }
+
+  /// Walk a booking forward by one state ('confirmed'→'in_transit',
+  /// 'in_transit'→'delivered'). Optionally attaches a proof URI the
+  /// dispatcher pasted into the prompt (Foto-POD anchor for the PDF's
+  /// Tier-1 row); a blank URI is accepted — the timestamp alone is
+  /// enough to advance the booking. Refreshes the list on success.
+  Future<void> _transition(_Booking booking, String action) async {
+    final l = L10n.of(context);
+    final proofUri = await _promptProofUri(action, booking, l);
+    if (proofUri == null) return; // user cancelled
+    try {
+      final headers = await _authHeaders(jsonBody: true);
+      final resp = await http
+          .post(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/bookings/${booking.id}/$action'),
+            headers: headers,
+            body: json.encode({
+              if (proofUri.isNotEmpty) 'proof_uri': proofUri,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        String detail;
+        try {
+          final parsed = json.decode(resp.body) as Map<String, dynamic>;
+          detail = (parsed['message'] as String?) ?? resp.body;
+        } catch (_) {
+          detail = resp.body;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('HTTP ${resp.statusCode} — $detail'),
+          backgroundColor: Colors.red.shade700,
+        ));
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(action == 'pickup'
+            ? (l.isArabic ? 'تم تسجيل الاستلام ✓' : 'Pickup recorded ✓')
+            : (l.isArabic ? 'تم تسجيل التسليم ✓' : 'Delivery recorded ✓')),
+        backgroundColor: const Color(0xFF047857),
+      ));
+      unawaited(_load());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    }
+  }
+
+  Future<String?> _promptProofUri(
+    String action,
+    _Booking booking,
+    L10n l,
+  ) async {
+    final ctl = TextEditingController();
+    final isPickup = action == 'pickup';
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          isPickup
+              ? (l.isArabic ? 'تأكيد الاستلام' : 'Confirm pickup')
+              : (l.isArabic ? 'تأكيد التسليم' : 'Confirm delivery'),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isPickup
+                  ? (l.isArabic
+                      ? 'سيتم تحديث حالة الحجز إلى "في الطريق" وستظهر طابع الزمن على رابط التتبع العام.'
+                      : 'Booking flips to "in transit" and the timestamp appears on the public tracking page.')
+                  : (l.isArabic
+                      ? 'سيتم تحديث حالة الحجز إلى "تم التسليم" وستظهر طابع الزمن على رابط التتبع العام.'
+                      : 'Booking flips to "delivered" and the timestamp appears on the public tracking page.'),
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: ctl,
+              decoration: InputDecoration(
+                labelText: isPickup
+                    ? (l.isArabic
+                        ? 'رابط صورة الاستلام (اختياري)'
+                        : 'Pickup photo URL (optional)')
+                    : (l.isArabic
+                        ? 'رابط صورة التسليم (اختياري)'
+                        : 'Delivery photo URL (optional)'),
+                hintText: 'https://…',
+                border: const OutlineInputBorder(),
+                isDense: true,
+              ),
+              maxLength: 1024,
+              keyboardType: TextInputType.url,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: Text(l.isArabic ? 'إلغاء' : 'Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(ctx).pop(ctl.text.trim()),
+            icon: Icon(isPickup
+                ? Icons.local_shipping_outlined
+                : Icons.check_circle_outline),
+            label: Text(isPickup
+                ? (l.isArabic ? 'تسجيل الاستلام' : 'Mark picked up')
+                : (l.isArabic ? 'تسجيل التسليم' : 'Mark delivered')),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+            ),
+          ),
+        ],
+      ),
+    );
+    return result;
   }
 
   Future<void> _load() async {
@@ -3467,6 +3601,9 @@ class _OrgBookingsPageState extends State<_OrgBookingsPage> {
       itemBuilder: (_, i) => _BookingCard(
         booking: _bookings[i],
         onShare: widget.onShare,
+        onMarkPickedUp: _canWrite ? () => _transition(_bookings[i], 'pickup') : null,
+        onMarkDelivered:
+            _canWrite ? () => _transition(_bookings[i], 'delivery') : null,
       ),
     );
   }
@@ -3475,8 +3612,15 @@ class _OrgBookingsPageState extends State<_OrgBookingsPage> {
 class _BookingCard extends StatelessWidget {
   final _Booking booking;
   final Future<void> Function(String token) onShare;
+  final VoidCallback? onMarkPickedUp;
+  final VoidCallback? onMarkDelivered;
 
-  const _BookingCard({required this.booking, required this.onShare});
+  const _BookingCard({
+    required this.booking,
+    required this.onShare,
+    required this.onMarkPickedUp,
+    required this.onMarkDelivered,
+  });
 
   String _statusLabel(L10n l) {
     final ar = l.isArabic;
@@ -3599,24 +3743,51 @@ class _BookingCard extends StatelessWidget {
                       ?.copyWith(color: const Color(0xFF047857)),
                 ),
               ),
-            if (hasToken) ...[
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  FilledButton.icon(
+            const SizedBox(height: 12),
+            // Action row — share tracking + step the booking forward.
+            // Status-aware: only the *next* allowed transition is shown.
+            //  confirmed   → "Mark picked up"
+            //  in_transit  → "Mark delivered"
+            //  delivered / cancelled → no transition button
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.end,
+              children: [
+                if (hasToken)
+                  OutlinedButton.icon(
                     onPressed: () => onShare(booking.trackingToken!),
                     icon: const Icon(Icons.qr_code_2, size: 18),
                     label: Text(l.isArabic
                         ? 'مشاركة رمز التتبع'
                         : 'Share tracking'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF0F766E),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF0F766E),
+                      side: const BorderSide(color: Color(0xFF0F766E)),
                     ),
                   ),
-                ],
-              ),
-            ],
+                if (booking.status == 'confirmed' && onMarkPickedUp != null)
+                  FilledButton.icon(
+                    onPressed: onMarkPickedUp,
+                    icon: const Icon(Icons.local_shipping_outlined, size: 18),
+                    label: Text(
+                        l.isArabic ? 'تسجيل الاستلام' : 'Mark picked up'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFEA580C),
+                    ),
+                  ),
+                if (booking.status == 'in_transit' && onMarkDelivered != null)
+                  FilledButton.icon(
+                    onPressed: onMarkDelivered,
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: Text(
+                        l.isArabic ? 'تسجيل التسليم' : 'Mark delivered'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF047857),
+                    ),
+                  ),
+              ],
+            ),
           ],
         ),
       ),
