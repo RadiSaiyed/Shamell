@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n.dart';
 import '../session_cookie_store.dart';
@@ -2327,6 +2328,25 @@ class _MarketplacePageState extends State<_MarketplacePage> {
     }
   }
 
+  /// Same Google-Maps route launcher as `_OfferCard._openRoute`. Lives
+  /// on the page state so the booking-success SnackBar's "Navigate"
+  /// action can fire it after the card is already gone from the list.
+  Future<void> _openRouteForOffer(_LoadOffer offer) async {
+    String fmt(String? city, String country) {
+      final c = (city ?? '').trim();
+      return c.isEmpty
+          ? country
+          : '${Uri.encodeComponent(c)},${Uri.encodeComponent(country)}';
+    }
+    final uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1'
+      '&origin=${fmt(offer.pickupCity, offer.pickupCountry)}'
+      '&destination=${fmt(offer.deliveryCity, offer.deliveryCountry)}'
+      '&travelmode=driving',
+    );
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
   Future<void> _bookOffer(_LoadOffer offer) async {
     final l = L10n.of(context);
     final confirmed = await showDialog<bool>(
@@ -2386,7 +2406,12 @@ class _MarketplacePageState extends State<_MarketplacePage> {
             ? 'تم الحجز ✓ رمز التتبع: $token'
             : 'Booked ✓ Tracking: $token'),
         backgroundColor: const Color(0xFF0F766E),
-        duration: const Duration(seconds: 5),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          textColor: Colors.white,
+          label: l.isArabic ? 'المسار' : 'Navigate',
+          onPressed: () => _openRouteForOffer(offer),
+        ),
       ));
       unawaited(_load());
     } catch (e) {
@@ -2605,6 +2630,39 @@ class _OfferCard extends StatelessWidget {
     }
   }
 
+  /// Open the offer's pickup → delivery route in Google Maps.
+  /// Falls back to a query-only search when the city is missing, so a
+  /// country-only lane still produces a useful map. Web: opens a tab.
+  /// Mobile: Maps app if installed, otherwise browser.
+  Future<void> _openRoute(BuildContext context, _LoadOffer offer) async {
+    String fmt(String? city, String country) {
+      final c = (city ?? '').trim();
+      return c.isEmpty
+          ? country
+          : '${Uri.encodeComponent(c)},${Uri.encodeComponent(country)}';
+    }
+    final origin = fmt(offer.pickupCity, offer.pickupCountry);
+    final destination = fmt(offer.deliveryCity, offer.deliveryCountry);
+    final uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1'
+      '&origin=$origin'
+      '&destination=$destination'
+      '&travelmode=driving',
+    );
+    final launched = await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(L10n.of(context).isArabic
+            ? 'تعذّر فتح خرائط جوجل'
+            : 'Could not open Google Maps'),
+        backgroundColor: Colors.red.shade700,
+      ));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2693,6 +2751,17 @@ class _OfferCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                // "Navigate" is available on every offer regardless of
+                // ownership / role — a viewer or a competitor org can
+                // still want to inspect the route before deciding to
+                // book. Tap opens Google Maps with origin + dest
+                // pre-filled; Maps picks driving mode by default.
+                TextButton.icon(
+                  onPressed: () => _openRoute(context, offer),
+                  icon: const Icon(Icons.navigation_outlined, size: 18),
+                  label: Text(l.isArabic ? 'المسار' : 'Route'),
+                ),
+                const SizedBox(width: 4),
                 if (ownOrg)
                   Chip(
                     label: Text(l.isArabic ? 'حمولتك' : 'Your post'),
