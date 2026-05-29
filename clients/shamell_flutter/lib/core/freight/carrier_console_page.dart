@@ -977,6 +977,14 @@ class _OrgVehiclesPageState extends State<_OrgVehiclesPage> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
+            tooltip: l.isArabic ? 'السوق' : 'Marketplace',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) =>
+                  _MarketplacePage(baseUrl: widget.baseUrl, org: widget.org),
+            )),
+            icon: const Icon(Icons.storefront_outlined),
+          ),
+          IconButton(
             tooltip: l.isArabic ? 'السائقون' : 'Drivers',
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(
               builder: (_) =>
@@ -2101,6 +2109,1016 @@ class _AddDriverSheetState extends State<_AddDriverSheet> {
                     )
                   : const Icon(Icons.check),
               label: Text(l.isArabic ? 'حفظ' : 'Save'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                minimumSize: const Size.fromHeight(48),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ──────────────────────── Marketplace (Phase 3) ──────────────────
+
+class _LoadOffer {
+  final String id;
+  final String orgId;
+  final String postedKind;
+  final String pickupCountry;
+  final String? pickupCity;
+  final String deliveryCountry;
+  final String? deliveryCity;
+  final DateTime? earliestPickupAt;
+  final String cargoKind;
+  final String? cargoDescription;
+  final int? weightKg;
+  final bool requiresTemperatureControl;
+  final double? temperatureMinC;
+  final double? temperatureMaxC;
+  final bool requiresAtpCertificate;
+  final bool requiresGdpCompliance;
+  final bool requiresHaccpCompliance;
+  final bool pharmaComplianceMode;
+  final String pricingKind;
+  final int? priceMinorUnits;
+  final String currency;
+  final String status;
+  final String? notes;
+  final String? publicReference;
+
+  _LoadOffer({
+    required this.id,
+    required this.orgId,
+    required this.postedKind,
+    required this.pickupCountry,
+    required this.pickupCity,
+    required this.deliveryCountry,
+    required this.deliveryCity,
+    required this.earliestPickupAt,
+    required this.cargoKind,
+    required this.cargoDescription,
+    required this.weightKg,
+    required this.requiresTemperatureControl,
+    required this.temperatureMinC,
+    required this.temperatureMaxC,
+    required this.requiresAtpCertificate,
+    required this.requiresGdpCompliance,
+    required this.requiresHaccpCompliance,
+    required this.pharmaComplianceMode,
+    required this.pricingKind,
+    required this.priceMinorUnits,
+    required this.currency,
+    required this.status,
+    required this.notes,
+    required this.publicReference,
+  });
+
+  static double? _asDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString());
+  }
+
+  static _LoadOffer fromJson(Map<String, dynamic> json) => _LoadOffer(
+        id: (json['id'] ?? '').toString(),
+        orgId: (json['org_id'] ?? '').toString(),
+        postedKind: (json['posted_kind'] ?? 'load_request').toString(),
+        pickupCountry: (json['pickup_country_iso2'] ?? '').toString(),
+        pickupCity: json['pickup_city'] as String?,
+        deliveryCountry: (json['delivery_country_iso2'] ?? '').toString(),
+        deliveryCity: json['delivery_city'] as String?,
+        earliestPickupAt:
+            DateTime.tryParse((json['earliest_pickup_at'] ?? '').toString())
+                ?.toLocal(),
+        cargoKind: (json['cargo_kind'] ?? 'general').toString(),
+        cargoDescription: json['cargo_description'] as String?,
+        weightKg: (json['weight_kg'] as num?)?.toInt(),
+        requiresTemperatureControl:
+            json['requires_temperature_control'] == true,
+        temperatureMinC: _asDouble(json['temperature_min_c']),
+        temperatureMaxC: _asDouble(json['temperature_max_c']),
+        requiresAtpCertificate: json['requires_atp_certificate'] == true,
+        requiresGdpCompliance: json['requires_gdp_compliance'] == true,
+        requiresHaccpCompliance: json['requires_haccp_compliance'] == true,
+        pharmaComplianceMode: json['pharma_compliance_mode'] == true,
+        pricingKind: (json['pricing_kind'] ?? 'fixed').toString(),
+        priceMinorUnits: (json['price_minor_units'] as num?)?.toInt(),
+        currency: (json['currency'] ?? 'SYP').toString(),
+        status: (json['status'] ?? 'open').toString(),
+        notes: json['notes'] as String?,
+        publicReference: json['public_reference'] as String?,
+      );
+}
+
+class _MarketplacePage extends StatefulWidget {
+  final String baseUrl;
+  final _OrgEntry org;
+
+  const _MarketplacePage({required this.baseUrl, required this.org});
+
+  @override
+  State<_MarketplacePage> createState() => _MarketplacePageState();
+}
+
+class _MarketplacePageState extends State<_MarketplacePage> {
+  bool _loading = true;
+  String? _loadError;
+  List<_LoadOffer> _offers = const [];
+
+  String? _pickupFilter;
+  String? _deliveryFilter;
+  bool _coldOnly = false;
+  bool _pharmaOnly = false;
+
+  bool get _canWrite =>
+      widget.org.role == 'owner' ||
+      widget.org.role == 'manager' ||
+      widget.org.role == 'dispatcher';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<Map<String, String>> _authHeaders() async {
+    final base = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
+    return {
+      ...base,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final headers = await _authHeaders();
+      final query = <String, String>{
+        if ((_pickupFilter ?? '').isNotEmpty) 'pickup_country': _pickupFilter!,
+        if ((_deliveryFilter ?? '').isNotEmpty)
+          'delivery_country': _deliveryFilter!,
+        if (_coldOnly) 'cold_chain_only': 'true',
+        if (_pharmaOnly) 'pharma_only': 'true',
+      };
+      final uri = Uri.parse('${widget.baseUrl}/v1/freight/load-offers/search')
+          .replace(queryParameters: query.isEmpty ? null : query);
+      final resp = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        setState(() {
+          _loading = false;
+          _loadError = 'HTTP ${resp.statusCode}\n${resp.body}';
+        });
+        return;
+      }
+      final parsed = json.decode(resp.body) as List<dynamic>;
+      setState(() {
+        _loading = false;
+        _offers = parsed
+            .whereType<Map<String, dynamic>>()
+            .map(_LoadOffer.fromJson)
+            .toList(growable: false);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _openPostSheet() async {
+    final created = await showModalBottomSheet<_LoadOffer>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(ctx).viewInsets.bottom,
+        ),
+        child: _PostLoadOfferSheet(
+          baseUrl: widget.baseUrl,
+          orgId: widget.org.id,
+          authHeaders: _authHeaders,
+        ),
+      ),
+    );
+    if (created != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(L10n.of(context).isArabic
+            ? 'تم نشر الحمولة (${created.publicReference ?? ''})'
+            : 'Load posted (${created.publicReference ?? ''})'),
+        backgroundColor: const Color(0xFF0F766E),
+      ));
+      unawaited(_load());
+    }
+  }
+
+  Future<void> _bookOffer(_LoadOffer offer) async {
+    final l = L10n.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.isArabic ? 'تأكيد الحجز' : 'Confirm booking'),
+        content: Text(
+          l.isArabic
+              ? 'سيتم تخصيص هذه الحمولة لشركتك "${widget.org.name}".'
+              : 'This load will be assigned to "${widget.org.name}" as carrier.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(l.isArabic ? 'إلغاء' : 'Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+            ),
+            child: Text(l.isArabic ? 'احجز' : 'Book'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final headers = await _authHeaders();
+      final resp = await http
+          .post(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/load-offers/${offer.id}/book'),
+            headers: headers,
+            body: json.encode({'carrier_org_id': widget.org.id}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        String detail;
+        try {
+          final parsed = json.decode(resp.body) as Map<String, dynamic>;
+          detail = (parsed['message'] as String?) ?? resp.body;
+        } catch (_) {
+          detail = resp.body;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('HTTP ${resp.statusCode} — $detail'),
+          backgroundColor: Colors.red.shade700,
+        ));
+        return;
+      }
+      final parsed = json.decode(resp.body) as Map<String, dynamic>;
+      final token = (parsed['tracking_token'] ?? '').toString();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(l.isArabic
+            ? 'تم الحجز ✓ رمز التتبع: $token'
+            : 'Booked ✓ Tracking: $token'),
+        backgroundColor: const Color(0xFF0F766E),
+        duration: const Duration(seconds: 5),
+      ));
+      unawaited(_load());
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(l.isArabic ? 'سوق الشحن' : 'Freight marketplace'),
+        backgroundColor: const Color(0xFF0F766E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تحديث' : 'Refresh',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildFilterBar(l),
+            const Divider(height: 1),
+            Expanded(child: _buildBody(l)),
+          ],
+        ),
+      ),
+      floatingActionButton: (_canWrite)
+          ? FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF0F766E),
+              onPressed: _openPostSheet,
+              icon: const Icon(Icons.add),
+              label: Text(l.isArabic ? 'نشر حمولة' : 'Post load'),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildFilterBar(L10n l) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: _CountryFilterField(
+                  label: l.isArabic ? 'من' : 'From',
+                  value: _pickupFilter,
+                  onChanged: (v) => setState(() => _pickupFilter = v),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.arrow_forward, color: Colors.grey, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _CountryFilterField(
+                  label: l.isArabic ? 'إلى' : 'To',
+                  value: _deliveryFilter,
+                  onChanged: (v) => setState(() => _deliveryFilter = v),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            children: [
+              FilterChip(
+                label: Text(l.isArabic ? 'تبريد فقط' : 'Cold chain'),
+                avatar: const Icon(Icons.ac_unit, size: 16),
+                selected: _coldOnly,
+                onSelected: (v) => setState(() => _coldOnly = v),
+              ),
+              FilterChip(
+                label: Text(l.isArabic ? 'دواء فقط' : 'Pharma only'),
+                avatar: const Icon(Icons.medication_outlined, size: 16),
+                selected: _pharmaOnly,
+                onSelected: (v) => setState(() => _pharmaOnly = v),
+              ),
+              FilledButton.tonalIcon(
+                onPressed: _load,
+                icon: const Icon(Icons.search, size: 16),
+                label: Text(l.isArabic ? 'بحث' : 'Search'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(L10n l) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return _ErrorPanel(message: _loadError!, onRetry: _load);
+    }
+    if (_offers.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.search_off_outlined,
+                  size: 48, color: Colors.grey),
+              const SizedBox(height: 12),
+              Text(
+                l.isArabic ? 'لا توجد حمولات مفتوحة' : 'No open loads',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                l.isArabic
+                    ? 'جرّب تصفية أخرى أو انشر حمولتك بنفسك بالزر أدناه.'
+                    : 'Try a different filter, or post your own load with the button below.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      itemCount: _offers.length,
+      itemBuilder: (_, i) {
+        final offer = _offers[i];
+        final isOwn = offer.orgId == widget.org.id;
+        return _OfferCard(
+          offer: offer,
+          onBook: (isOwn || !_canWrite) ? null : () => _bookOffer(offer),
+          ownOrg: isOwn,
+        );
+      },
+    );
+  }
+}
+
+class _CountryFilterField extends StatelessWidget {
+  final String label;
+  final String? value;
+  final ValueChanged<String?> onChanged;
+
+  const _CountryFilterField({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      initialValue: value,
+      onChanged: (v) {
+        final trimmed = v.trim().toUpperCase();
+        onChanged(trimmed.isEmpty ? null : trimmed);
+      },
+      maxLength: 2,
+      textCapitalization: TextCapitalization.characters,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: 'SY',
+        border: const OutlineInputBorder(),
+        isDense: true,
+        counterText: '',
+      ),
+    );
+  }
+}
+
+class _OfferCard extends StatelessWidget {
+  final _LoadOffer offer;
+  final VoidCallback? onBook;
+  final bool ownOrg;
+
+  const _OfferCard({
+    required this.offer,
+    required this.onBook,
+    required this.ownOrg,
+  });
+
+  String _price(L10n l) {
+    final cents = offer.priceMinorUnits;
+    if (cents == null) return l.isArabic ? 'قابل للتفاوض' : 'Negotiable';
+    final units = (cents / 100).toStringAsFixed(0);
+    return '$units ${offer.currency}';
+  }
+
+  IconData _cargoIcon() {
+    switch (offer.cargoKind) {
+      case 'pharma':
+        return Icons.medication_outlined;
+      case 'perishable':
+        return Icons.ac_unit;
+      case 'dangerous':
+        return Icons.warning_amber_rounded;
+      case 'liquid':
+        return Icons.water_drop_outlined;
+      case 'bulk':
+        return Icons.inventory_2_outlined;
+      default:
+        return Icons.inventory_outlined;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = L10n.of(context);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(_cargoIcon(), color: const Color(0xFF0F766E), size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${offer.pickupCountry} → ${offer.deliveryCountry}',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Text(
+                  _price(l),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF0F766E),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              [
+                if (offer.pickupCity != null) offer.pickupCity!,
+                if (offer.deliveryCity != null) '→ ${offer.deliveryCity!}',
+              ].join(' '),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.66),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                _SmallTag(label: offer.cargoKind.toUpperCase()),
+                if (offer.weightKg != null)
+                  _SmallTag(label: '${offer.weightKg} kg'),
+                if (offer.requiresTemperatureControl)
+                  _SmallTag(
+                    icon: Icons.ac_unit,
+                    label: (offer.temperatureMinC != null &&
+                            offer.temperatureMaxC != null)
+                        ? '${offer.temperatureMinC!.toStringAsFixed(0)}…${offer.temperatureMaxC!.toStringAsFixed(0)}°C'
+                        : 'Cold chain',
+                    accent: Colors.blue,
+                  ),
+                if (offer.requiresAtpCertificate)
+                  const _SmallTag(label: 'ATP', accent: Colors.indigo),
+                if (offer.requiresGdpCompliance)
+                  const _SmallTag(label: 'GDP', accent: Colors.indigo),
+                if (offer.requiresHaccpCompliance)
+                  const _SmallTag(label: 'HACCP', accent: Colors.indigo),
+                if (offer.pricingKind == 'instant')
+                  const _SmallTag(label: 'INSTANT', accent: Colors.orange),
+                if (offer.publicReference != null)
+                  _SmallTag(label: '#${offer.publicReference!}'),
+              ],
+            ),
+            if (offer.cargoDescription != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                offer.cargoDescription!,
+                style: theme.textTheme.bodyMedium,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (ownOrg)
+                  Chip(
+                    label: Text(l.isArabic ? 'حمولتك' : 'Your post'),
+                    backgroundColor:
+                        const Color(0xFF0F766E).withValues(alpha: 0.1),
+                  )
+                else if (onBook != null)
+                  FilledButton.icon(
+                    onPressed: onBook,
+                    icon: const Icon(Icons.check),
+                    label: Text(l.isArabic ? 'احجز الآن' : 'Book now'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F766E),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SmallTag extends StatelessWidget {
+  final String label;
+  final IconData? icon;
+  final Color? accent;
+  const _SmallTag({required this.label, this.icon, this.accent});
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = accent ?? const Color(0xFF0F766E);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.35), width: 0.6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PostLoadOfferSheet extends StatefulWidget {
+  final String baseUrl;
+  final String orgId;
+  final Future<Map<String, String>> Function() authHeaders;
+
+  const _PostLoadOfferSheet({
+    required this.baseUrl,
+    required this.orgId,
+    required this.authHeaders,
+  });
+
+  @override
+  State<_PostLoadOfferSheet> createState() => _PostLoadOfferSheetState();
+}
+
+class _PostLoadOfferSheetState extends State<_PostLoadOfferSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _pickupCountry = TextEditingController(text: 'SY');
+  final _pickupCity = TextEditingController();
+  final _deliveryCountry = TextEditingController();
+  final _deliveryCity = TextEditingController();
+  final _weight = TextEditingController();
+  final _price = TextEditingController();
+  final _notes = TextEditingController();
+  final _tempMin = TextEditingController();
+  final _tempMax = TextEditingController();
+  String _cargoKind = 'general';
+  String _pricingKind = 'fixed';
+  bool _atp = false;
+  bool _gdp = false;
+  bool _haccp = false;
+  bool _pharmaMode = false;
+  bool _busy = false;
+
+  bool get _showColdFields =>
+      _cargoKind == 'perishable' || _cargoKind == 'pharma';
+
+  @override
+  void dispose() {
+    _pickupCountry.dispose();
+    _pickupCity.dispose();
+    _deliveryCountry.dispose();
+    _deliveryCity.dispose();
+    _weight.dispose();
+    _price.dispose();
+    _notes.dispose();
+    _tempMin.dispose();
+    _tempMax.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    try {
+      final headers = await widget.authHeaders();
+      final body = <String, dynamic>{
+        'pickup_country_iso2':
+            _pickupCountry.text.trim().toUpperCase(),
+        if (_pickupCity.text.trim().isNotEmpty)
+          'pickup_city': _pickupCity.text.trim(),
+        'delivery_country_iso2':
+            _deliveryCountry.text.trim().toUpperCase(),
+        if (_deliveryCity.text.trim().isNotEmpty)
+          'delivery_city': _deliveryCity.text.trim(),
+        'cargo_kind': _cargoKind,
+        if (_weight.text.trim().isNotEmpty)
+          'weight_kg': int.tryParse(_weight.text.trim()),
+        'pricing_kind': _pricingKind,
+        if (_price.text.trim().isNotEmpty)
+          'price_minor_units':
+              ((double.tryParse(_price.text.trim()) ?? 0) * 100).round(),
+        'currency': 'SYP',
+        if (_notes.text.trim().isNotEmpty) 'notes': _notes.text.trim(),
+      };
+      if (_showColdFields || _tempMin.text.isNotEmpty) {
+        body['requires_temperature_control'] = true;
+        if (_tempMin.text.trim().isNotEmpty) {
+          body['temperature_min_c'] = double.tryParse(_tempMin.text.trim());
+        }
+        if (_tempMax.text.trim().isNotEmpty) {
+          body['temperature_max_c'] = double.tryParse(_tempMax.text.trim());
+        }
+      }
+      if (_atp) body['requires_atp_certificate'] = true;
+      if (_gdp) body['requires_gdp_compliance'] = true;
+      if (_haccp) body['requires_haccp_compliance'] = true;
+      if (_pharmaMode) body['pharma_compliance_mode'] = true;
+
+      final resp = await http
+          .post(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.orgId}/load-offers'),
+            headers: headers,
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        String detail;
+        try {
+          final parsed = json.decode(resp.body) as Map<String, dynamic>;
+          detail = (parsed['message'] as String?) ?? resp.body;
+        } catch (_) {
+          detail = resp.body;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('HTTP ${resp.statusCode} — $detail'),
+          backgroundColor: Colors.red.shade700,
+        ));
+        return;
+      }
+      final parsed = json.decode(resp.body) as Map<String, dynamic>;
+      Navigator.of(context).pop(_LoadOffer.fromJson(parsed));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              alignment: Alignment.center,
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              l.isArabic ? 'نشر حمولة' : 'Post load',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _pickupCountry,
+                    label: l.isArabic ? 'من (ISO2)' : 'From (ISO2)',
+                    required: true,
+                    maxLength: 2,
+                    textCapitalization: TextCapitalization.characters,
+                    validator: (v) =>
+                        (v ?? '').trim().length == 2 ? null : '2 letters',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: _TextField(
+                    controller: _pickupCity,
+                    label: l.isArabic ? 'مدينة' : 'City',
+                  ),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _deliveryCountry,
+                    label: l.isArabic ? 'إلى (ISO2)' : 'To (ISO2)',
+                    required: true,
+                    maxLength: 2,
+                    textCapitalization: TextCapitalization.characters,
+                    validator: (v) =>
+                        (v ?? '').trim().length == 2 ? null : '2 letters',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: _TextField(
+                    controller: _deliveryCity,
+                    label: l.isArabic ? 'مدينة' : 'City',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(l.isArabic ? 'نوع الحمولة' : 'Cargo kind',
+                style: theme.textTheme.labelLarge),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (final kind in [
+                  'general',
+                  'perishable',
+                  'pharma',
+                  'dangerous',
+                  'liquid',
+                  'bulk',
+                ])
+                  ChoiceChip(
+                    label: Text(kind),
+                    selected: _cargoKind == kind,
+                    onSelected: (sel) {
+                      if (sel) setState(() => _cargoKind = kind);
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _weight,
+                    label: l.isArabic ? 'الوزن (كغ)' : 'Weight (kg)',
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _TextField(
+                    controller: _price,
+                    label: l.isArabic ? 'السعر (ل.س)' : 'Price (SYP)',
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
+            ),
+            if (_showColdFields) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(top: 4, bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.ac_unit,
+                            color: Colors.blue, size: 18),
+                        const SizedBox(width: 6),
+                        Text(
+                          l.isArabic
+                              ? 'متطلبات سلسلة التبريد'
+                              : 'Cold-chain requirements',
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: Colors.blue.shade800,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _TextField(
+                            controller: _tempMin,
+                            label: l.isArabic ? 'حد أدنى °م' : 'Min °C',
+                            keyboardType: const TextInputType.numberWithOptions(
+                                signed: true, decimal: true),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _TextField(
+                            controller: _tempMax,
+                            label: l.isArabic ? 'حد أعلى °م' : 'Max °C',
+                            keyboardType: const TextInputType.numberWithOptions(
+                                signed: true, decimal: true),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        FilterChip(
+                          label: const Text('ATP'),
+                          selected: _atp,
+                          onSelected: (v) => setState(() => _atp = v),
+                        ),
+                        FilterChip(
+                          label: const Text('GDP'),
+                          selected: _gdp,
+                          onSelected: (v) => setState(() => _gdp = v),
+                        ),
+                        FilterChip(
+                          label: const Text('HACCP'),
+                          selected: _haccp,
+                          onSelected: (v) => setState(() => _haccp = v),
+                        ),
+                        if (_cargoKind == 'pharma')
+                          FilterChip(
+                            label: Text(l.isArabic
+                                ? 'وضع صيدلاني صارم'
+                                : 'Pharma-strict mode'),
+                            selected: _pharmaMode,
+                            onSelected: (v) =>
+                                setState(() => _pharmaMode = v),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 4),
+            Text(l.isArabic ? 'نوع التسعير' : 'Pricing',
+                style: theme.textTheme.labelLarge),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (final kind in ['fixed', 'instant', 'negotiable', 'auction'])
+                  ChoiceChip(
+                    label: Text(kind),
+                    selected: _pricingKind == kind,
+                    onSelected: (sel) {
+                      if (sel) setState(() => _pricingKind = kind);
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _TextField(
+              controller: _notes,
+              label: l.isArabic ? 'ملاحظات' : 'Notes',
+              maxLength: 240,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _busy ? null : _submit,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.publish),
+              label: Text(l.isArabic ? 'نشر' : 'Publish'),
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF0F766E),
                 minimumSize: const Size.fromHeight(48),
