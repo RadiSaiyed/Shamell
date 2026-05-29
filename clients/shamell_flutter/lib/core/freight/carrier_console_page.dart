@@ -977,6 +977,14 @@ class _OrgVehiclesPageState extends State<_OrgVehiclesPage> {
         foregroundColor: Colors.white,
         actions: [
           IconButton(
+            tooltip: l.isArabic ? 'السائقون' : 'Drivers',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) =>
+                  _OrgDriversPage(baseUrl: widget.baseUrl, org: widget.org),
+            )),
+            icon: const Icon(Icons.people_alt_outlined),
+          ),
+          IconButton(
             tooltip: l.isArabic ? 'سجل النشاط' : 'Activity log',
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(
               builder: (_) =>
@@ -1606,6 +1614,500 @@ class _ActivityRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ──────────────────────── Drivers roster ─────────────────────────
+
+class _Driver {
+  final String id;
+  final String firstName;
+  final String lastName;
+  final String? countryIso2;
+  final String? phone;
+  final String? shamellAccountId;
+  final List<String> languages;
+  final String status;
+
+  _Driver({
+    required this.id,
+    required this.firstName,
+    required this.lastName,
+    required this.countryIso2,
+    required this.phone,
+    required this.shamellAccountId,
+    required this.languages,
+    required this.status,
+  });
+
+  String get displayName => '$firstName $lastName'.trim();
+
+  static _Driver fromJson(Map<String, dynamic> json) {
+    final langsRaw = json['languages'];
+    final langs = langsRaw is List
+        ? langsRaw.map((e) => e.toString()).toList(growable: false)
+        : const <String>[];
+    return _Driver(
+      id: (json['id'] ?? '').toString(),
+      firstName: (json['first_name'] ?? '').toString(),
+      lastName: (json['last_name'] ?? '').toString(),
+      countryIso2: json['country_iso2'] as String?,
+      phone: json['phone'] as String?,
+      shamellAccountId: json['shamell_account_id'] as String?,
+      languages: langs,
+      status: (json['status'] ?? 'active').toString(),
+    );
+  }
+}
+
+class _OrgDriversPage extends StatefulWidget {
+  final String baseUrl;
+  final _OrgEntry org;
+
+  const _OrgDriversPage({required this.baseUrl, required this.org});
+
+  @override
+  State<_OrgDriversPage> createState() => _OrgDriversPageState();
+}
+
+class _OrgDriversPageState extends State<_OrgDriversPage> {
+  bool _loading = true;
+  String? _loadError;
+  List<_Driver> _drivers = const [];
+
+  bool get _canWrite =>
+      widget.org.role == 'owner' ||
+      widget.org.role == 'manager' ||
+      widget.org.role == 'dispatcher';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<Map<String, String>> _authHeaders() async {
+    final base = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
+    return {
+      ...base,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final headers = await _authHeaders();
+      final resp = await http
+          .get(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.org.id}/drivers'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode == 401) {
+        setState(() {
+          _loading = false;
+          _loadError = 'Sitzung abgelaufen — bitte erneut anmelden.';
+        });
+        return;
+      }
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        setState(() {
+          _loading = false;
+          _loadError = 'HTTP ${resp.statusCode}\n${resp.body}';
+        });
+        return;
+      }
+      final parsed = json.decode(resp.body) as List<dynamic>;
+      setState(() {
+        _loading = false;
+        _drivers = parsed
+            .whereType<Map<String, dynamic>>()
+            .map(_Driver.fromJson)
+            .toList(growable: false);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _openAddSheet() async {
+    final created = await showModalBottomSheet<_Driver>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(ctx).viewInsets.bottom,
+        ),
+        child: _AddDriverSheet(
+          baseUrl: widget.baseUrl,
+          orgId: widget.org.id,
+          authHeaders: _authHeaders,
+        ),
+      ),
+    );
+    if (created != null && mounted) {
+      setState(() => _drivers = [created, ..._drivers]);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          l.isArabic
+              ? 'السائقون · ${widget.org.name}'
+              : 'Drivers · ${widget.org.name}',
+        ),
+        backgroundColor: const Color(0xFF0F766E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تحديث' : 'Refresh',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SafeArea(child: _buildBody(l)),
+      floatingActionButton: (_canWrite && !_loading && _loadError == null)
+          ? FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF0F766E),
+              onPressed: _openAddSheet,
+              icon: const Icon(Icons.person_add_alt_1),
+              label: Text(l.isArabic ? 'إضافة سائق' : 'Add driver'),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildBody(L10n l) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return _ErrorPanel(message: _loadError!, onRetry: _load);
+    }
+    if (_drivers.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.people_alt_outlined,
+                  size: 48, color: Colors.grey),
+              const SizedBox(height: 12),
+              Text(
+                l.isArabic ? 'لا يوجد سائقون بعد' : 'No drivers yet',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _canWrite
+                    ? (l.isArabic
+                        ? 'أضف سائقًا. يمكنه ربط حسابه في SyrChat لاحقًا.'
+                        : 'Add a driver. They can link their SyrChat account later.')
+                    : (l.isArabic
+                        ? 'دورك لا يسمح بالإضافة.'
+                        : 'Your role does not allow adding drivers.'),
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      itemCount: _drivers.length,
+      itemBuilder: (_, i) => _DriverCard(driver: _drivers[i]),
+    );
+  }
+}
+
+class _DriverCard extends StatelessWidget {
+  final _Driver driver;
+
+  const _DriverCard({required this.driver});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = L10n.of(context);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F766E).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(22),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                (driver.firstName.isNotEmpty
+                        ? driver.firstName.substring(0, 1)
+                        : '?') +
+                    (driver.lastName.isNotEmpty
+                        ? driver.lastName.substring(0, 1)
+                        : ''),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: const Color(0xFF0F766E),
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    driver.displayName,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    [
+                      if (driver.countryIso2 != null) driver.countryIso2!,
+                      if (driver.phone != null) driver.phone!,
+                      if (driver.shamellAccountId != null)
+                        l.isArabic ? 'مرتبط بـ SyrChat' : 'SyrChat-linked',
+                    ].join(' · '),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color:
+                          theme.colorScheme.onSurface.withValues(alpha: 0.66),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _StatusBadge(status: driver.status),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AddDriverSheet extends StatefulWidget {
+  final String baseUrl;
+  final String orgId;
+  final Future<Map<String, String>> Function() authHeaders;
+
+  const _AddDriverSheet({
+    required this.baseUrl,
+    required this.orgId,
+    required this.authHeaders,
+  });
+
+  @override
+  State<_AddDriverSheet> createState() => _AddDriverSheetState();
+}
+
+class _AddDriverSheetState extends State<_AddDriverSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _firstName = TextEditingController();
+  final _lastName = TextEditingController();
+  final _country = TextEditingController(text: 'SY');
+  final _phone = TextEditingController(text: '+963 ');
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _firstName.dispose();
+    _lastName.dispose();
+    _country.dispose();
+    _phone.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    try {
+      final headers = await widget.authHeaders();
+      final body = <String, dynamic>{
+        'first_name': _firstName.text.trim(),
+        'last_name': _lastName.text.trim(),
+        if (_country.text.trim().isNotEmpty)
+          'country_iso2': _country.text.trim().toUpperCase(),
+        if (_phone.text.trim().isNotEmpty) 'phone': _phone.text.trim(),
+      };
+      final resp = await http
+          .post(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.orgId}/drivers'),
+            headers: headers,
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        String detail;
+        try {
+          final parsed = json.decode(resp.body) as Map<String, dynamic>;
+          detail = (parsed['message'] as String?) ?? resp.body;
+        } catch (_) {
+          detail = resp.body;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('HTTP ${resp.statusCode} — $detail'),
+          backgroundColor: Colors.red.shade700,
+        ));
+        return;
+      }
+      final parsed = json.decode(resp.body) as Map<String, dynamic>;
+      Navigator.of(context).pop(_Driver.fromJson(parsed));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('$e'),
+          backgroundColor: Colors.red.shade700,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              alignment: Alignment.center,
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              l.isArabic ? 'إضافة سائق' : 'Add driver',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _firstName,
+                    label: l.isArabic ? 'الاسم الأول' : 'First name',
+                    required: true,
+                    maxLength: 64,
+                    validator: (v) {
+                      final s = (v ?? '').trim();
+                      if (s.isEmpty || s.length > 64) {
+                        return l.isArabic ? '1–64 حرف' : '1–64 characters';
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _TextField(
+                    controller: _lastName,
+                    label: l.isArabic ? 'الكنية' : 'Last name',
+                    required: true,
+                    maxLength: 64,
+                    validator: (v) {
+                      final s = (v ?? '').trim();
+                      if (s.isEmpty || s.length > 64) {
+                        return l.isArabic ? '1–64 حرف' : '1–64 characters';
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: _TextField(
+                    controller: _country,
+                    label: l.isArabic ? 'البلد (ISO2)' : 'Country (ISO2)',
+                    hint: 'SY',
+                    maxLength: 2,
+                    textCapitalization: TextCapitalization.characters,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: _TextField(
+                    controller: _phone,
+                    label: l.isArabic ? 'الهاتف' : 'Phone',
+                    keyboardType: TextInputType.phone,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _busy ? null : _submit,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.check),
+              label: Text(l.isArabic ? 'حفظ' : 'Save'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                minimumSize: const Size.fromHeight(48),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
