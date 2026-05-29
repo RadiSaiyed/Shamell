@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n.dart';
@@ -2328,23 +2330,96 @@ class _MarketplacePageState extends State<_MarketplacePage> {
     }
   }
 
-  /// Same Google-Maps route launcher as `_OfferCard._openRoute`. Lives
-  /// on the page state so the booking-success SnackBar's "Navigate"
-  /// action can fire it after the card is already gone from the list.
-  Future<void> _openRouteForOffer(_LoadOffer offer) async {
-    String fmt(String? city, String country) {
-      final c = (city ?? '').trim();
-      return c.isEmpty
-          ? country
-          : '${Uri.encodeComponent(c)},${Uri.encodeComponent(country)}';
-    }
-    final uri = Uri.parse(
-      'https://www.google.com/maps/dir/?api=1'
-      '&origin=${fmt(offer.pickupCity, offer.pickupCountry)}'
-      '&destination=${fmt(offer.deliveryCity, offer.deliveryCountry)}'
-      '&travelmode=driving',
+  /// Public tracking link for a freshly-issued tracking_token. Opens a
+  /// dialog with the URL, a QR code (consignees scan from a printed
+  /// CMR), and a "Copy" button so the dispatcher can paste it into
+  /// chat / WhatsApp. The link itself is the credential — anyone with
+  /// it can read the stripped public view at shamell.online/track/.
+  Future<void> _showTrackingShareDialog(String token) async {
+    final l = L10n.of(context);
+    final url = 'https://shamell.online/track/?t=$token';
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.isArabic
+            ? 'مشاركة رابط التتبع'
+            : 'Share tracking link'),
+        content: SizedBox(
+          width: 280,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: const Color(0xFF0F766E)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: QrImageView(
+                  data: url,
+                  size: 220,
+                  backgroundColor: Colors.white,
+                  // Medium error correction is the right trade-off for
+                  // a screen-scanned URL: the link is short, so a
+                  // bigger error-correction overhead would only blow
+                  // up the module count without buying real resilience.
+                  errorCorrectionLevel: QrErrorCorrectLevel.M,
+                ),
+              ),
+              const SizedBox(height: 14),
+              SelectableText(
+                url,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                l.isArabic
+                    ? 'الرابط نفسه هو بيانات الاعتماد — أي شخص يحصل عليه يمكنه رؤية الحالة.'
+                    : 'The link itself is the credential — anyone with it can see the status.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.grey.shade600,
+                    ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: url));
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(l.isArabic ? 'تم النسخ ✓' : 'Copied ✓'),
+                  backgroundColor: const Color(0xFF0F766E),
+                  duration: const Duration(seconds: 2),
+                ));
+              }
+            },
+            icon: const Icon(Icons.copy),
+            label: Text(l.isArabic ? 'نسخ الرابط' : 'Copy link'),
+          ),
+          FilledButton.icon(
+            onPressed: () async {
+              await launchUrl(Uri.parse(url),
+                  mode: LaunchMode.externalApplication);
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            icon: const Icon(Icons.open_in_new),
+            label: Text(l.isArabic ? 'افتح' : 'Open'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+            ),
+          ),
+        ],
+      ),
     );
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   Future<void> _bookOffer(_LoadOffer offer) async {
@@ -2401,16 +2476,21 @@ class _MarketplacePageState extends State<_MarketplacePage> {
       }
       final parsed = json.decode(resp.body) as Map<String, dynamic>;
       final token = (parsed['tracking_token'] ?? '').toString();
+      // After-booking UX: snackbar with "Share" → tracking-link QR
+      // dialog (Tier-1 shareable-tracking-link). "Navigate" stays
+      // reachable from the offer card; here we lead with Share since
+      // the consignee usually needs the link before the carrier needs
+      // the route.
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(l.isArabic
             ? 'تم الحجز ✓ رمز التتبع: $token'
             : 'Booked ✓ Tracking: $token'),
         backgroundColor: const Color(0xFF0F766E),
-        duration: const Duration(seconds: 8),
+        duration: const Duration(seconds: 10),
         action: SnackBarAction(
           textColor: Colors.white,
-          label: l.isArabic ? 'المسار' : 'Navigate',
-          onPressed: () => _openRouteForOffer(offer),
+          label: l.isArabic ? 'مشاركة' : 'Share',
+          onPressed: () => _showTrackingShareDialog(token),
         ),
       ));
       unawaited(_load());
@@ -2433,6 +2513,17 @@ class _MarketplacePageState extends State<_MarketplacePage> {
         backgroundColor: const Color(0xFF0F766E),
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'حجوزاتي' : 'My bookings',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => _OrgBookingsPage(
+                baseUrl: widget.baseUrl,
+                org: widget.org,
+                onShare: _showTrackingShareDialog,
+              ),
+            )),
+            icon: const Icon(Icons.assignment_turned_in_outlined),
+          ),
           IconButton(
             tooltip: l.isArabic ? 'تحديث' : 'Refresh',
             onPressed: _loading ? null : _load,
@@ -3197,5 +3288,354 @@ class _PostLoadOfferSheetState extends State<_PostLoadOfferSheet> {
         ),
       ),
     );
+  }
+}
+
+// ──────────────────────── My Bookings ────────────────────────────
+
+class _Booking {
+  final String id;
+  final String loadOfferId;
+  final String status;
+  final int? priceMinorUnits;
+  final String currency;
+  final String? trackingToken;
+  final DateTime createdAt;
+  final DateTime? pickupProofAt;
+  final DateTime? deliveryProofAt;
+
+  _Booking({
+    required this.id,
+    required this.loadOfferId,
+    required this.status,
+    required this.priceMinorUnits,
+    required this.currency,
+    required this.trackingToken,
+    required this.createdAt,
+    required this.pickupProofAt,
+    required this.deliveryProofAt,
+  });
+
+  static _Booking fromJson(Map<String, dynamic> json) => _Booking(
+        id: (json['id'] ?? '').toString(),
+        loadOfferId: (json['load_offer_id'] ?? '').toString(),
+        status: (json['status'] ?? '').toString(),
+        priceMinorUnits: (json['price_minor_units'] as num?)?.toInt(),
+        currency: (json['currency'] ?? 'SYP').toString(),
+        trackingToken: json['tracking_token'] as String?,
+        createdAt: DateTime.tryParse((json['created_at'] ?? '').toString())
+                ?.toLocal() ??
+            DateTime.fromMillisecondsSinceEpoch(0),
+        pickupProofAt:
+            DateTime.tryParse((json['pickup_proof_at'] ?? '').toString())
+                ?.toLocal(),
+        deliveryProofAt:
+            DateTime.tryParse((json['delivery_proof_at'] ?? '').toString())
+                ?.toLocal(),
+      );
+}
+
+class _OrgBookingsPage extends StatefulWidget {
+  final String baseUrl;
+  final _OrgEntry org;
+  final Future<void> Function(String token) onShare;
+
+  const _OrgBookingsPage({
+    required this.baseUrl,
+    required this.org,
+    required this.onShare,
+  });
+
+  @override
+  State<_OrgBookingsPage> createState() => _OrgBookingsPageState();
+}
+
+class _OrgBookingsPageState extends State<_OrgBookingsPage> {
+  bool _loading = true;
+  String? _loadError;
+  List<_Booking> _bookings = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<Map<String, String>> _authHeaders() async {
+    final base = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
+    return {...base, 'Accept': 'application/json'};
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final headers = await _authHeaders();
+      final resp = await http
+          .get(
+            Uri.parse(
+                '${widget.baseUrl}/v1/freight/orgs/${widget.org.id}/bookings'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        setState(() {
+          _loading = false;
+          _loadError = 'HTTP ${resp.statusCode}\n${resp.body}';
+        });
+        return;
+      }
+      final parsed = json.decode(resp.body) as List<dynamic>;
+      setState(() {
+        _loading = false;
+        _bookings = parsed
+            .whereType<Map<String, dynamic>>()
+            .map(_Booking.fromJson)
+            .toList(growable: false);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          l.isArabic
+              ? 'حجوزاتي · ${widget.org.name}'
+              : 'My bookings · ${widget.org.name}',
+        ),
+        backgroundColor: const Color(0xFF0F766E),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: l.isArabic ? 'تحديث' : 'Refresh',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SafeArea(child: _buildBody(l)),
+    );
+  }
+
+  Widget _buildBody(L10n l) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loadError != null) {
+      return _ErrorPanel(message: _loadError!, onRetry: _load);
+    }
+    if (_bookings.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.assignment_turned_in_outlined,
+                  size: 48, color: Colors.grey),
+              const SizedBox(height: 12),
+              Text(
+                l.isArabic ? 'لا توجد حجوزات بعد' : 'No bookings yet',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                l.isArabic
+                    ? 'احجز حمولة من السوق وستظهر هنا.'
+                    : 'Book a load from the marketplace and it lands here.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      itemCount: _bookings.length,
+      itemBuilder: (_, i) => _BookingCard(
+        booking: _bookings[i],
+        onShare: widget.onShare,
+      ),
+    );
+  }
+}
+
+class _BookingCard extends StatelessWidget {
+  final _Booking booking;
+  final Future<void> Function(String token) onShare;
+
+  const _BookingCard({required this.booking, required this.onShare});
+
+  String _statusLabel(L10n l) {
+    final ar = l.isArabic;
+    switch (booking.status) {
+      case 'pending':     return ar ? 'قيد الانتظار' : 'PENDING';
+      case 'confirmed':   return ar ? 'مؤكد'        : 'CONFIRMED';
+      case 'in_transit':  return ar ? 'في الطريق'   : 'IN TRANSIT';
+      case 'delivered':   return ar ? 'تم التسليم'  : 'DELIVERED';
+      case 'cancelled':   return ar ? 'ملغى'        : 'CANCELLED';
+      default:            return booking.status.toUpperCase();
+    }
+  }
+
+  Color _statusColor() {
+    switch (booking.status) {
+      case 'pending':     return const Color(0xFFEAB308);
+      case 'confirmed':   return const Color(0xFF2563EB);
+      case 'in_transit':  return const Color(0xFFEA580C);
+      case 'delivered':   return const Color(0xFF047857);
+      case 'cancelled':   return const Color(0xFFB91C1C);
+      default:            return const Color(0xFF6B7280);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = L10n.of(context);
+    final color = _statusColor();
+    final priceText = booking.priceMinorUnits == null
+        ? '—'
+        : '${(booking.priceMinorUnits! / 100).toStringAsFixed(0)} ${booking.currency}';
+    final hasToken = (booking.trackingToken ?? '').isNotEmpty;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: color.withValues(alpha: 0.35),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Text(
+                    _statusLabel(l),
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 11,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  priceText,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF0F766E),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (hasToken)
+              Text(
+                '#${booking.trackingToken}',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                  color: const Color(0xFF0F766E),
+                ),
+              ),
+            const SizedBox(height: 4),
+            Text(
+              l.isArabic
+                  ? 'تم الحجز ${_relative(l, booking.createdAt)}'
+                  : 'Booked ${_relative(l, booking.createdAt)}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+            if (booking.pickupProofAt != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '✓ ' +
+                      (l.isArabic
+                          ? 'تم الاستلام ${_relative(l, booking.pickupProofAt!)}'
+                          : 'Picked up ${_relative(l, booking.pickupProofAt!)}'),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: const Color(0xFF047857)),
+                ),
+              ),
+            if (booking.deliveryProofAt != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '✓ ' +
+                      (l.isArabic
+                          ? 'تم التسليم ${_relative(l, booking.deliveryProofAt!)}'
+                          : 'Delivered ${_relative(l, booking.deliveryProofAt!)}'),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: const Color(0xFF047857)),
+                ),
+              ),
+            if (hasToken) ...[
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () => onShare(booking.trackingToken!),
+                    icon: const Icon(Icons.qr_code_2, size: 18),
+                    label: Text(l.isArabic
+                        ? 'مشاركة رمز التتبع'
+                        : 'Share tracking'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F766E),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _relative(L10n l, DateTime when) {
+    final delta = DateTime.now().difference(when);
+    final ar = l.isArabic;
+    if (delta.inMinutes < 1) return ar ? 'الآن' : 'just now';
+    if (delta.inHours < 1) {
+      return ar ? 'منذ ${delta.inMinutes} د' : '${delta.inMinutes}m ago';
+    }
+    if (delta.inDays < 1) {
+      return ar ? 'منذ ${delta.inHours} س' : '${delta.inHours}h ago';
+    }
+    if (delta.inDays < 30) {
+      return ar ? 'منذ ${delta.inDays} ي' : '${delta.inDays}d ago';
+    }
+    return '${when.year}-${when.month.toString().padLeft(2, '0')}-${when.day.toString().padLeft(2, '0')}';
   }
 }
