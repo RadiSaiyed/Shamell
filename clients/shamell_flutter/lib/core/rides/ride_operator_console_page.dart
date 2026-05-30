@@ -16,6 +16,7 @@ import '../notification_service.dart';
 import '../operator_cancellation_analytics_page.dart';
 import '../operator_promo_management_page.dart';
 import '../operator_scheduled_rides_page.dart';
+import 'operator_activity_page.dart';
 import '../passenger_rating_api.dart';
 import '../privacy_redaction.dart';
 import '../safety_alerts_api.dart';
@@ -4017,6 +4018,25 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
                     baseUrl: baseUrl,
                     isOperator: true,
                   ),
+                ),
+              );
+            },
+          ),
+          // Activity log (module 8 of the operator-console-inventory
+          // gap-list, 2026-05-30). Lands the superadmin on the
+          // platform-wide /admin/user-activity feed so the same surface
+          // they use for dispatch / cases also surfaces the audit
+          // protocol — no separate dashboard hop required.
+          IconButton(
+            tooltip: l.isArabic ? 'سجل النشاط' : 'Activity log',
+            icon: const Icon(Icons.history_outlined),
+            onPressed: () {
+              final baseUrl = widget.baseUrl;
+              if (baseUrl == null) return;
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (ctx) =>
+                      OperatorActivityPage(baseUrl: baseUrl),
                 ),
               );
             },
