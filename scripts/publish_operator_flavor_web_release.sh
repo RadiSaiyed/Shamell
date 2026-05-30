@@ -111,7 +111,10 @@ ssh_args=()
 if [[ -z "${remote_sudo_password_b64}" ]]; then
   ssh_args+=(-tt)
 fi
-ssh "${ssh_args[@]}" "$HOST_ALIAS" "bash -s" <<EOF
+# Bash expansion of an empty array under `set -u` errors with
+# "unbound variable" — the `+` form expands to nothing when the
+# array is empty, which is what we want here.
+ssh ${ssh_args[@]+"${ssh_args[@]}"} "$HOST_ALIAS" "bash -s" <<EOF
 set -euo pipefail
 REMOTE_SUDO_PASSWORD_B64='${remote_sudo_password_b64}'
 

@@ -30,6 +30,10 @@ class RoleSignupRoleIds {
   static const String busOperator = 'coach.operator_admin';
   static const String hotelOperator = 'hotels.operator';
   static const String carrier = 'freight.carrier_admin';
+  // SyrCom workforce-member onboarding — the WeCom-style enterprise
+  // companion app; approval is per-organization and admin-reviewed
+  // through the operator console's Signups workspace.
+  static const String syrcom = 'syrcom.workforce_member';
 }
 
 class RoleSignupRequest {

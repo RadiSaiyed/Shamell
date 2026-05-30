@@ -624,27 +624,43 @@ Widget shamellBuildSignedInHome({
     return RideDriverPage(baseUrl: baseUrlOverride);
   }
   if (shamellIsRideOperatorSurface(appSurface)) {
-    if (kIsWeb) {
-      if (!shamellAllowControlWebSessionBypass(appSurface: appSurface)) {
-        return ShamellControlDashboardHubPage(baseUrl: baseUrlOverride ?? '');
-      }
-      final localhostDashboardOverride =
-          shamellBuildLocalhostOperatorDashboardOverride(
-        baseUrlOverride: baseUrlOverride,
-      );
-      if (localhostDashboardOverride != null) {
-        return localhostDashboardOverride;
-      }
-      return ShamellControlDashboardHubPage(baseUrl: baseUrlOverride ?? '');
-    }
-    return ShamellControlDomainDashboardPage(
+    // Shamell Control. Wrap in RoleSignupGuard so a freshly-signed-in
+    // user without `rides.driver_ops` is shown the self-service signup
+    // form instead of a blank dashboard. Approval flips them through
+    // the operator console's Signups workspace and the next privilege
+    // refresh unmounts the gate. Same pattern as carrier/bus/hotel.
+    return RoleSignupGuard(
       baseUrl: baseUrlOverride ?? '',
-      pathSegments: const <String>['admin', 'dashboards', 'rides'],
-      title: 'Ride control',
-      subtitle:
-          'Ride trips, driver supply, dispatch offers, support pressure, payment failures, and live tracking authority.',
-      icon: Icons.local_taxi_outlined,
-      accent: const Color(0xFF2563EB),
+      roleId: RoleSignupRoleIds.operator,
+      roleLabel: 'Shamell Control operator',
+      roleLabelArabic: 'مشغّل وحدة التحكم',
+      fields: RoleSignupFormFields.operator,
+      builder: (_) {
+        if (kIsWeb) {
+          if (!shamellAllowControlWebSessionBypass(appSurface: appSurface)) {
+            return ShamellControlDashboardHubPage(
+                baseUrl: baseUrlOverride ?? '');
+          }
+          final localhostDashboardOverride =
+              shamellBuildLocalhostOperatorDashboardOverride(
+            baseUrlOverride: baseUrlOverride,
+          );
+          if (localhostDashboardOverride != null) {
+            return localhostDashboardOverride;
+          }
+          return ShamellControlDashboardHubPage(
+              baseUrl: baseUrlOverride ?? '');
+        }
+        return ShamellControlDomainDashboardPage(
+          baseUrl: baseUrlOverride ?? '',
+          pathSegments: const <String>['admin', 'dashboards', 'rides'],
+          title: 'Ride control',
+          subtitle:
+              'Ride trips, driver supply, dispatch offers, support pressure, payment failures, and live tracking authority.',
+          icon: Icons.local_taxi_outlined,
+          accent: const Color(0xFF2563EB),
+        );
+      },
     );
   }
   if (shamellIsTaxiOperatorSurface(appSurface)) {
@@ -653,8 +669,16 @@ Widget shamellBuildSignedInHome({
     // surface as the legacy 'operator' flavor's mobile branch above,
     // but reachable as its own APK (online.shamell.taxioperator) so
     // taxi-fleet operators don't need to wade through Shamell Control's
-    // multi-modal hub.
-    return RideOperatorConsolePage(baseUrl: baseUrlOverride);
+    // multi-modal hub. RoleSignupGuard fronts it so a fresh applicant
+    // sees the signup form when they lack `rides.driver_ops`.
+    return RoleSignupGuard(
+      baseUrl: baseUrlOverride ?? '',
+      roleId: RoleSignupRoleIds.taxiOperator,
+      roleLabel: 'Taxi operator',
+      roleLabelArabic: 'مشغّل التاكسي',
+      fields: RoleSignupFormFields.operator,
+      builder: (_) => RideOperatorConsolePage(baseUrl: baseUrlOverride),
+    );
   }
   if (shamellIsBusOperatorSurface(appSurface)) {
     // Standalone Bus Operator app — same pattern as taxiOperator: land
@@ -712,7 +736,19 @@ Widget shamellBuildSignedInHome({
     );
   }
   if (shamellIsSyrComSurface(appSurface)) {
-    return SyrComWorkbenchPage(baseUrl: baseUrlOverride);
+    // Standalone SyrCom (WeCom-style enterprise) app. Same
+    // RoleSignupGuard pattern as the operator flavors — a fresh
+    // applicant signs up, the admin approves through the operator
+    // console's Signups workspace, and the next privilege refresh
+    // unmounts the gate and the workbench page mounts.
+    return RoleSignupGuard(
+      baseUrl: baseUrlOverride ?? '',
+      roleId: RoleSignupRoleIds.syrcom,
+      roleLabel: 'SyrCom workforce member',
+      roleLabelArabic: 'عضو فريق سركم',
+      fields: RoleSignupFormFields.syrcom,
+      builder: (_) => SyrComWorkbenchPage(baseUrl: baseUrlOverride),
+    );
   }
   return HomePage(
     lockedMode: AppMode.user,

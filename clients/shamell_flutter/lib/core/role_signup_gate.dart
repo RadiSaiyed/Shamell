@@ -234,6 +234,42 @@ class RoleSignupFormFields {
       required: false,
     ),
   ];
+
+  /// SyrCom (enterprise / WeCom-style) workforce-member onboarding.
+  /// Mirrors `syrcom.workforce_member` on the server. Admin approves
+  /// the platform role; the per-org workforce membership is attached
+  /// inside the SyrCom workbench once the role lands.
+  static const List<RoleSignupFormField> syrcom = <RoleSignupFormField>[
+    RoleSignupFormField(
+      key: 'full_name',
+      label: 'Full name',
+      labelArabic: 'الاسم الكامل',
+      keyboard: TextInputType.name,
+      maxLength: 96,
+    ),
+    RoleSignupFormField(
+      key: 'work_email',
+      label: 'Work email',
+      labelArabic: 'البريد المهني',
+      keyboard: TextInputType.emailAddress,
+      maxLength: 160,
+    ),
+    RoleSignupFormField(
+      key: 'organization_name',
+      label: 'Organization / company name',
+      labelArabic: 'اسم المؤسسة',
+      maxLength: 160,
+    ),
+    RoleSignupFormField(
+      key: 'reason',
+      label: 'Role you need inside SyrCom',
+      labelArabic: 'الدور المطلوب داخل سركم',
+      hint: 'Org admin, team lead, member, integrations …',
+      hintArabic: 'مسؤول المؤسسة، قائد فريق، عضو، تكاملات …',
+      maxLength: 240,
+      minLength: 10,
+    ),
+  ];
 }
 
 class RoleSignupGate extends StatefulWidget {

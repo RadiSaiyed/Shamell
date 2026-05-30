@@ -538,7 +538,8 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
           trimmed == RoleSignupRoleIds.operator ||
           trimmed == RoleSignupRoleIds.busOperator ||
           trimmed == RoleSignupRoleIds.hotelOperator ||
-          trimmed == RoleSignupRoleIds.carrier) {
+          trimmed == RoleSignupRoleIds.carrier ||
+          trimmed == RoleSignupRoleIds.syrcom) {
         _signupRoleFilter = trimmed;
       }
     }
@@ -2584,6 +2585,11 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
     final carrierCount = requests
         .where((r) => r.requestedRoleId == RoleSignupRoleIds.carrier)
         .length;
+    // Cycle 147 — SyrCom workforce-member queue. Same sibling pattern
+    // as the other cross-flavor tabs above.
+    final syrcomCount = requests
+        .where((r) => r.requestedRoleId == RoleSignupRoleIds.syrcom)
+        .length;
     final filtered = _signupRoleFilter == null
         ? requests
         : requests
@@ -2713,6 +2719,22 @@ class _RideOperatorConsolePageState extends State<RideOperatorConsolePage> {
                     if (!selected) return;
                     setState(() {
                       _signupRoleFilter = RoleSignupRoleIds.carrier;
+                      _persistOperatorUiState();
+                    });
+                  },
+                ),
+                ChoiceChip(
+                  label: Text(
+                    isArabic
+                        ? 'سركم ($syrcomCount)'
+                        : 'SyrCom ($syrcomCount)',
+                  ),
+                  selected:
+                      _signupRoleFilter == RoleSignupRoleIds.syrcom,
+                  onSelected: (selected) {
+                    if (!selected) return;
+                    setState(() {
+                      _signupRoleFilter = RoleSignupRoleIds.syrcom;
                       _persistOperatorUiState();
                     });
                   },

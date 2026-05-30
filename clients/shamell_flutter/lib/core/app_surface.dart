@@ -129,12 +129,18 @@ bool shamellSurfaceAllowsPublicAccountCreate([ShamellAppSurface? surface]) {
   // create a public Shamell account through these apps; the role
   // grant itself stays approval-gated by the superadmin after they
   // fill out the request form inside the console.
-  //   - Carrier        → freight.carrier_admin
-  //   - BusOperator    → coach.operator_admin
-  //   - HotelOperator  → hotels.operator (Phase 9 platform bridge)
+  //   - Carrier               → freight.carrier_admin
+  //   - BusOperator           → coach.operator_admin
+  //   - HotelOperator         → hotels.operator (Phase 9 platform bridge)
+  //   - Operator (Control)    → rides.driver_ops
+  //   - TaxiOperator          → rides.driver_ops
+  //   - SyrCom                → syrcom.workforce_member
   if (shamellIsCarrierSurface(surface) ||
       shamellIsBusOperatorSurface(surface) ||
-      shamellIsHotelOperatorSurface(surface)) {
+      shamellIsHotelOperatorSurface(surface) ||
+      shamellIsRideOperatorSurface(surface) ||
+      shamellIsTaxiOperatorSurface(surface) ||
+      shamellIsSyrComSurface(surface)) {
     return true;
   }
   return !shamellIsManagedAccountSurface(surface);
@@ -147,7 +153,10 @@ bool shamellSurfaceUsesUsernamePasswordAuth([ShamellAppSurface? surface]) {
   // still route through their device-approval flows.
   if (shamellIsCarrierSurface(surface) ||
       shamellIsBusOperatorSurface(surface) ||
-      shamellIsHotelOperatorSurface(surface)) {
+      shamellIsHotelOperatorSurface(surface) ||
+      shamellIsRideOperatorSurface(surface) ||
+      shamellIsTaxiOperatorSurface(surface) ||
+      shamellIsSyrComSurface(surface)) {
     return true;
   }
   return !shamellIsManagedAccountSurface(surface);

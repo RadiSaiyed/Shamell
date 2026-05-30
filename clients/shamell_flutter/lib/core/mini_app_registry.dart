@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'coach_miniprogram_page.dart';
+import 'freight/carrier_console_page.dart';
 import 'mini_app_contract.dart';
 import 'mini_app_descriptor.dart';
 import 'mini_apps/hotels_admin_page.dart';
@@ -11,6 +12,9 @@ import 'mini_games/mini_game_webview_page.dart';
 import 'mini_program_models.dart';
 import 'mini_program_runtime.dart';
 import 'rides/ride_hailing_page.dart';
+import 'role_signup_api.dart';
+import 'role_signup_gate.dart';
+import 'role_signup_guard.dart';
 import 'superapp_api.dart';
 
 class MiniAppRegistry {
@@ -297,6 +301,28 @@ class MiniAppRegistry {
         operatorOnly: true,
       ),
     ),
+    // SyrTrans (Spediteur / cold-chain freight marketplace) — same
+    // CarrierConsolePage that the standalone Carrier flavor lands on,
+    // wrapped in RoleSignupGuard(freight.carrier_admin) so a consumer
+    // user inside SyrChat can sign up to become a carrier from the
+    // mini-program tile without leaving the messenger.
+    _MiniAppRegistration(
+      app: _SyrTransMiniApp(
+        id: 'syrtrans',
+        manifestFallback: _syrTransManifest,
+      ),
+      descriptor: MiniAppDescriptor(
+        id: 'syrtrans',
+        icon: Icons.local_shipping_outlined,
+        titleEn: 'SyrTrans',
+        titleAr: 'سرترانس',
+        categoryEn: 'Logistics',
+        categoryAr: 'الخدمات اللوجستية',
+        rating: 4.7,
+        usageScore: 32,
+        runtimeAppId: 'syrtrans',
+      ),
+    ),
   ];
 
   static MiniApp? byId(String id) {
@@ -336,6 +362,21 @@ class MiniAppRegistry {
         clean == 'venezia_hotel' ||
         clean == 'hospitality') {
       return 'hotels';
+    }
+    // SyrTrans aliases — multiple shorthand ids land on the same
+    // mini-app so deep links from older spec docs / marketing
+    // copy still resolve.
+    if (clean == 'freight' ||
+        clean == 'cargo' ||
+        clean == 'logistics' ||
+        clean == 'transport' ||
+        clean == 'spediteur' ||
+        clean == 'carrier' ||
+        clean == 'cold_chain' ||
+        clean == 'coldchain' ||
+        clean == 'syr_trans' ||
+        clean == 'syr-trans') {
+      return 'syrtrans';
     }
     // Canonical id stays 'tic_tac_toe' for persisted-state stability.
     // First group: legacy aliases from the original classic Tic-Tac-Toe
@@ -508,6 +549,32 @@ class _HotelsAdminMiniApp extends _RuntimeMiniApp {
   Widget entry(BuildContext context, SuperappAPI api) {
     unawaited(api.recordModuleUse(id));
     return HotelAdminConsolePage(api: api);
+  }
+}
+
+/// SyrTrans freight-marketplace mini-app — same authoritative
+/// `CarrierConsolePage` as the standalone Carrier flavor, wrapped in
+/// `RoleSignupGuard(freight.carrier_admin)` so a consumer who taps
+/// SyrTrans from the SyrChat Mini Programs directory can sign up,
+/// wait for admin approval, and then return to a full carrier console
+/// without leaving the messenger.
+class _SyrTransMiniApp extends _RuntimeMiniApp {
+  const _SyrTransMiniApp({
+    required super.id,
+    super.manifestFallback,
+  });
+
+  @override
+  Widget entry(BuildContext context, SuperappAPI api) {
+    unawaited(api.recordModuleUse(id));
+    return RoleSignupGuard(
+      baseUrl: api.baseUrl,
+      roleId: RoleSignupRoleIds.carrier,
+      roleLabel: 'Carrier',
+      roleLabelArabic: 'ناقل',
+      fields: RoleSignupFormFields.carrier,
+      builder: (_) => CarrierConsolePage(baseUrl: api.baseUrl),
+    );
   }
 }
 
@@ -872,6 +939,36 @@ const MiniProgramManifest _jumpJumpManifest = MiniProgramManifest(
       labelAr: 'العب القفز القفز',
       kind: MiniProgramActionKind.openMod,
       modId: 'jump_jump',
+    ),
+    MiniProgramAction(
+      id: 'close',
+      labelEn: 'Close',
+      labelAr: 'إغلاق',
+      kind: MiniProgramActionKind.close,
+    ),
+  ],
+);
+
+/// Manifest for the **SyrTrans** freight-marketplace mini-app.
+/// Mirrors the descriptor above; the directory page shows the
+/// description before the carrier console boots.
+const MiniProgramManifest _syrTransManifest = MiniProgramManifest(
+  id: 'syrtrans',
+  titleEn: 'SyrTrans',
+  titleAr: 'سرترانس',
+  descriptionEn:
+      'Cold-chain and general-cargo freight marketplace. Browse open loads, '
+      'post a haul, and manage your fleet — Spediteur-Disponent inside SyrChat.',
+  descriptionAr:
+      'سوق الشحن للسلاسل المبردة والبضائع العامة. تصفح الحمولات المتاحة، '
+      'انشر رحلة شحن، وأدر أسطولك — منصة الناقل داخل سرتشات.',
+  actions: [
+    MiniProgramAction(
+      id: 'open_syrtrans',
+      labelEn: 'Open SyrTrans',
+      labelAr: 'فتح سرترانس',
+      kind: MiniProgramActionKind.openMod,
+      modId: 'syrtrans',
     ),
     MiniProgramAction(
       id: 'close',
