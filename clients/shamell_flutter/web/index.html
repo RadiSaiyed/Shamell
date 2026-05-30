@@ -18,6 +18,20 @@
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="A new Flutter project.">
 
+  <!-- Performance: cold-start budget. main.dart.js is the largest single
+       asset (~2.5MB brotli) and the bootstrap pipeline used to fetch it
+       only AFTER flutter_bootstrap.js parsed + canvaskit init started,
+       leaving ~7s of unused parallel-fetch capacity on slow links. The
+       preload hint lets the browser start the main.dart.js download in
+       parallel with bootstrap parsing. The gstatic preconnect warms the
+       canvaskit CDN (DNS + TLS) before the bootstrap requests it. Build
+       scripts rewrite the preload href to include the per-release cache
+       buster (?v=…) so the preload + actual request URLs match for
+       browser dedup. -->
+  <link rel="preload" href="main.dart.js" as="script" crossorigin>
+  <link rel="dns-prefetch" href="https://www.gstatic.com">
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">

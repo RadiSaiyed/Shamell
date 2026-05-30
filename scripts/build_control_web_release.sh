@@ -204,6 +204,17 @@ if bootstrap_path.exists():
     )
     bootstrap_path.write_text(bootstrap_js, encoding="utf-8")
 
+# Fingerprint the preload hint so it matches the cache-busted URL
+# the bootstrap actually fetches — otherwise the preload is a wasted
+# request and Chrome logs a console warning. Mirrors the same trick
+# applied to flutter_bootstrap.js above.
+index_html = index_path.read_text(encoding="utf-8")
+index_html = index_html.replace(
+    '<link rel="preload" href="main.dart.js" as="script" crossorigin>',
+    f'<link rel="preload" href="main.dart.js?v={release_id}" as="script" crossorigin>',
+)
+index_path.write_text(index_html, encoding="utf-8")
+
 service_worker_path.write_text(
     f"""// Kill-switch for older Flutter web service workers under /control/.
 // Release: {release_id}

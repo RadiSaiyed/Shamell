@@ -276,6 +276,17 @@ if bootstrap_path.exists():
     )
     bootstrap_path.write_text(bootstrap_js, encoding="utf-8")
 
+# Fingerprint the preload hint so it matches the cache-busted URL the
+# bootstrap actually fetches. Without this, the browser would treat
+# the preload as unrelated to the real request and download main.dart.js
+# twice (the preload would also surface as a console warning).
+index_html = index_path.read_text(encoding="utf-8")
+index_html = index_html.replace(
+    '<link rel="preload" href="main.dart.js" as="script" crossorigin>',
+    f'<link rel="preload" href="main.dart.js?v={release_id}" as="script" crossorigin>',
+)
+index_path.write_text(index_html, encoding="utf-8")
+
 # Kill-switch SW: any cached pre-release SW for this scope is replaced
 # with one that unregisters itself on activate.
 service_worker_path.write_text(
