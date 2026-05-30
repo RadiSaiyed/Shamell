@@ -101,9 +101,17 @@ release_root="${REMOTE_ROOT}/releases/${release_id}"
 
 echo "Copying ${SLUG} web bundle to ${HOST_ALIAS}:${tmp_remote}"
 ssh "$HOST_ALIAS" "rm -rf '$tmp_remote' && mkdir -p '$tmp_remote'"
+# canvaskit/ is ~24 MB of skia + wasm that Flutter web ships in
+# `build/web/canvaskit/` for offline / air-gapped serving. At runtime
+# the bootstrap reads `_flutter.buildConfig.engineRevision` and fetches
+# canvaskit from `https://www.gstatic.com/flutter-canvaskit/<rev>/...`
+# instead, so the local copy is dead bytes on disk + bandwidth on every
+# release rsync. Strip it from the publish payload.
 COPYFILE_DISABLE=1 tar -C "$SOURCE_DIR" \
   --exclude '.DS_Store' \
   --exclude '._*' \
+  --exclude './canvaskit' \
+  --exclude './canvaskit/*' \
   -cf - . | ssh "$HOST_ALIAS" "tar -xf - -C '$tmp_remote'"
 
 echo "Installing ${SLUG} web bundle on ${HOST_ALIAS}"
