@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'mini_program_models.dart';
 import 'superapp_api.dart';
 
-/// Frontend contract for WeChat‑style Mini‑Apps.
+/// Frontend contract for Shamell‑style Mini‑Apps.
 ///
 /// Each Mini‑App provides its own entry widget/route and an optional
 /// local manifest fallback for the Mini‑Program runtime.

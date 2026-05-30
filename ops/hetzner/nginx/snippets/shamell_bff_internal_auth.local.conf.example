@@ -1,0 +1,10 @@
+# Host-local internal auth attestation for BFF (required in prod).
+# This file is intended to live on the server as:
+#   /etc/nginx/snippets/shamell_bff_internal_auth.local.conf
+# Keep it root-owned and mode 0600.
+#
+# Set the same secret as BFF's INTERNAL_API_SECRET.
+# Do not commit the real secret to git.
+#
+# Example:
+#   proxy_set_header X-Internal-Secret "<INTERNAL_API_SECRET>";

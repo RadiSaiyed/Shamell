@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -12,7 +13,8 @@ import 'official_accounts_page.dart'
 import 'moments_page.dart';
 import 'channels_page.dart' show ChannelsPage;
 import 'global_media_page.dart';
-import 'wechat_ui.dart';
+import 'http_error.dart';
+import 'shamell_ui.dart';
 
 class GlobalSearchPage extends StatefulWidget {
   final String baseUrl;
@@ -48,7 +50,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   bool _miniProgramTrendingOnly = false;
   bool _channelCampaignOnly = false;
   bool _channelPromoOnly = false;
-  bool _momentRedpacketOnly = false;
   bool _officialCampaignOnly = false;
 
   @override
@@ -113,10 +114,9 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final h = <String, String>{};
     if (jsonBody) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
+        h['cookie'] = cookie;
       }
     } catch (_) {}
     return h;
@@ -128,11 +128,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
           .replace(queryParameters: const {'limit': '8'});
       final resp = await http.get(uri, headers: await _hdr());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        // Fallback: still show the Red‑packet Moments topic even if trending API fails.
-        if (!mounted) return;
-        setState(() {
-          _trendingTopics = const ['ShamellRedPacket'];
-        });
         return;
       }
       final decoded = jsonDecode(resp.body);
@@ -150,11 +145,6 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
         if (tag.isEmpty) continue;
         tags.add(tag);
       }
-      // Ensure the Red‑packet Moments topic is always visible in search.
-      const redTag = 'ShamellRedPacket';
-      if (!tags.any((t) => t.toLowerCase() == redTag.toLowerCase())) {
-        tags.add(redTag);
-      }
       if (!mounted || tags.isEmpty) return;
       setState(() {
         _trendingTopics = tags;
@@ -165,6 +155,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
   Future<void> _runSearch({bool commitHistory = true}) async {
     final q = _qCtrl.text.trim();
     if (q.isEmpty) return;
+    final isArabic = L10n.of(context).isArabic;
     final seq = ++_searchSeq;
     setState(() {
       _loading = true;
@@ -186,7 +177,11 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         if (!mounted || seq != _searchSeq) return;
         setState(() {
-          _error = resp.body.isNotEmpty ? resp.body : 'HTTP ${resp.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: resp.statusCode,
+            rawBody: resp.body,
+            isArabic: isArabic,
+          );
           _loading = false;
         });
         return;
@@ -208,7 +203,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     } catch (e) {
       if (!mounted || seq != _searchSeq) return;
       setState(() {
-        _error = e.toString();
+        _error = isArabic ? 'تعذّر تنفيذ البحث.' : 'Could not run search.';
         _loading = false;
       });
     }
@@ -221,8 +216,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final isArabic = l.isArabic;
     final isDark = theme.brightness == Brightness.dark;
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
-    final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
+    final dividerColor = isDark ? theme.dividerColor : ShamellPalette.divider;
 
     final tabs = <Tab>[
       Tab(text: isArabic ? 'الكل' : 'All'),
@@ -249,8 +244,8 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                   height: 36,
                   decoration: BoxDecoration(
                     color: isDark
-                        ? WeChatPalette.searchFillDark
-                        : WeChatPalette.searchFill,
+                        ? ShamellPalette.searchFillDark
+                        : ShamellPalette.searchFill,
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: TextField(
@@ -292,14 +287,14 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                         size: 18,
                         color: isDark
                             ? theme.colorScheme.onSurface.withValues(alpha: .55)
-                            : WeChatPalette.textSecondary,
+                            : ShamellPalette.textSecondary,
                       ),
                       hintText: isArabic ? 'بحث' : 'Search',
                       hintStyle: theme.textTheme.bodyMedium?.copyWith(
                         fontSize: 13,
                         color: isDark
                             ? theme.colorScheme.onSurface.withValues(alpha: .55)
-                            : WeChatPalette.textSecondary,
+                            : ShamellPalette.textSecondary,
                       ),
                       suffixIcon: _qCtrl.text.trim().isEmpty
                           ? null
@@ -310,7 +305,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                                 color: isDark
                                     ? theme.colorScheme.onSurface
                                         .withValues(alpha: .55)
-                                    : WeChatPalette.textSecondary,
+                                    : ShamellPalette.textSecondary,
                               ),
                               onPressed: () {
                                 setState(() {
@@ -331,7 +326,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               const SizedBox(width: 8),
               TextButton(
                 onPressed: () => Navigator.of(context).maybePop(),
-                child: Text(l.mirsaalDialogCancel),
+                child: Text(l.shamellDialogCancel),
               ),
             ],
           ),
@@ -352,7 +347,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               labelColor: theme.colorScheme.onSurface,
               unselectedLabelColor:
                   theme.colorScheme.onSurface.withValues(alpha: .55),
-              indicatorColor: WeChatPalette.green,
+              indicatorColor: ShamellPalette.green,
               indicatorSize: TabBarIndicatorSize.label,
               indicatorWeight: 2.4,
               labelStyle: const TextStyle(
@@ -383,7 +378,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               _error == null &&
               _results.isEmpty &&
               _history.isNotEmpty)
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 12),
               dividerIndent: 0,
               children: [
@@ -426,7 +421,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                               backgroundColor: isDark
                                   ? theme.colorScheme.surfaceContainerHighest
                                       .withValues(alpha: .35)
-                                  : WeChatPalette.searchFill,
+                                  : ShamellPalette.searchFill,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(18),
                               ),
@@ -454,7 +449,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               _error == null &&
               _results.isEmpty &&
               _trendingTopics.isNotEmpty)
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 12),
               dividerIndent: 0,
               children: [
@@ -500,7 +495,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
                               backgroundColor: isDark
                                   ? theme.colorScheme.surfaceContainerHighest
                                       .withValues(alpha: .35)
-                                  : WeChatPalette.searchFill,
+                                  : ShamellPalette.searchFill,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(18),
                               ),
@@ -531,7 +526,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
               ],
             ),
           if (!_loading && _error == null)
-            WeChatSection(
+            ShamellSection(
               margin: const EdgeInsets.only(top: 12),
               children: [
                 ListTile(
@@ -592,7 +587,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final tileBg = isDark ? theme.colorScheme.surface : Colors.white;
-    final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
+    final dividerColor = isDark ? theme.dividerColor : ShamellPalette.divider;
 
     Widget resultsList(List<Map<String, dynamic>> entries) {
       return ListView.separated(
@@ -878,59 +873,11 @@ class _GlobalSearchPageState extends State<GlobalSearchPage>
     if (filter == 'moment') {
       final filtered = <Map<String, dynamic>>[];
       for (final e in items) {
-        final extra = (e['extra'] is Map)
-            ? (e['extra'] as Map).cast<String, dynamic>()
-            : <String, dynamic>{};
-        final badgesRaw = extra['badges'];
-        final List<String> badges = badgesRaw is List
-            ? badgesRaw.whereType<String>().toList()
-            : const <String>[];
-        if (_momentRedpacketOnly && !badges.contains('redpacket')) {
-          continue;
-        }
         filtered.add(e);
       }
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (items.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                children: [
-                  ChoiceChip(
-                    label: Text(l.isArabic ? 'الكل' : 'All moments'),
-                    selected: !_momentRedpacketOnly,
-                    onSelected: (sel) {
-                      if (!sel) return;
-                      setState(() {
-                        _momentRedpacketOnly = false;
-                      });
-                    },
-                  ),
-                  ChoiceChip(
-                    label: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.card_giftcard_outlined, size: 14),
-                        const SizedBox(width: 4),
-                        Text(
-                          l.isArabic ? 'حزم حمراء' : 'Red‑packet moments',
-                        ),
-                      ],
-                    ),
-                    selected: _momentRedpacketOnly,
-                    onSelected: (sel) {
-                      setState(() {
-                        _momentRedpacketOnly = sel;
-                      });
-                    },
-                  ),
-                ],
-              ),
-            ),
           Expanded(
             child: filtered.isEmpty
                 ? Center(
@@ -1555,14 +1502,13 @@ void _appendBadges(
           return l.isArabic ? 'مقطع شائع' : 'Popular clip';
         case 'discussed':
           return l.isArabic ? 'نقاشات' : 'Discussed';
-        case 'redpacket':
-          return l.isArabic ? 'حزم حمراء' : 'Red‑packet';
         case 'live':
           return l.isArabic ? 'بث مباشر' : 'Live now';
         default:
-          return b;
+          return '';
       }
     }();
+    if (labelText.isEmpty) continue;
     metaChips.add(Padding(
       padding: const EdgeInsets.only(left: 6),
       child: Container(

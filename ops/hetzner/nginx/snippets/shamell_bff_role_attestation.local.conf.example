@@ -1,0 +1,11 @@
+# Host-local role-header attestation for BFF (optional).
+# This file is intended to live on the server as:
+#   /etc/nginx/snippets/shamell_bff_role_attestation.local.conf
+# Keep it root-owned and mode 0600.
+#
+# Add directives only when you have a trusted edge/auth source.
+# Example (conceptual):
+#   proxy_set_header X-Role-Auth "<same-secret-as-BFF_ROLE_HEADER_SECRET>";
+#   proxy_set_header X-Auth-Roles $http_x_trusted_roles;
+#
+# Leave empty to keep admin/operator role headers disabled at the edge.

@@ -1,12 +1,14 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'device_id.dart';
+import 'http_error.dart';
+import 'logout_wipe.dart';
 import '../main.dart' show LoginPage;
 
 class DevicesPage extends StatefulWidget {
@@ -34,24 +36,23 @@ class _DevicesPageState extends State<DevicesPage> {
   Future<Map<String, String>> _hdr() async {
     final h = <String, String>{};
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      if (cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      if (cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     return h;
   }
 
   Future<void> _loadCurrentDeviceId() async {
     try {
-      final id = await loadStableDeviceId() ?? await getOrCreateStableDeviceId();
+      final id =
+          await loadStableDeviceId() ?? await getOrCreateStableDeviceId();
       if (!mounted) return;
       setState(() => _currentDeviceId = id);
     } catch (_) {}
   }
 
   Future<void> _load() async {
+    final isArabic = L10n.of(context).isArabic;
     setState(() {
       _loading = true;
       _error = null;
@@ -61,7 +62,11 @@ class _DevicesPageState extends State<DevicesPage> {
       final resp = await http.get(uri, headers: await _hdr());
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
         setState(() {
-          _error = 'HTTP ${resp.statusCode}: ${resp.body}';
+          _error = sanitizeHttpError(
+            statusCode: resp.statusCode,
+            rawBody: resp.body,
+            isArabic: isArabic,
+          );
           _loading = false;
         });
         return;
@@ -81,7 +86,7 @@ class _DevicesPageState extends State<DevicesPage> {
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = isArabic ? 'تعذّر تحميل الأجهزة.' : 'Could not load devices.';
         _loading = false;
       });
     }
@@ -92,9 +97,9 @@ class _DevicesPageState extends State<DevicesPage> {
     final u = Uri.tryParse(base);
     if (u == null) return Uri.parse(base);
     final host = u.host.toLowerCase();
-    // Local dev: keep the demo endpoint for quick testing.
+    // Local dev: use the device-login page (works in all envs) to bootstrap a browser session.
     if (host == 'localhost' || host == '127.0.0.1') {
-      return u.replace(path: '/auth/device_login_demo', queryParameters: {});
+      return u.replace(path: '/auth/device_login', queryParameters: {});
     }
     // Production/staging: derive the web origin from the API hostname.
     if (host.startsWith('api.')) {
@@ -116,24 +121,87 @@ class _DevicesPageState extends State<DevicesPage> {
   }
 
   Future<void> _logoutThisDevice() async {
+    String cookie = '';
     try {
-      String? cookie;
-      try {
-        final sp = await SharedPreferences.getInstance();
-        cookie = sp.getString('sa_cookie');
-        await sp.remove('sa_cookie');
-        await sp.remove('chat.identity');
-      } catch (_) {}
+      cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+    } catch (_) {}
+    try {
       final uri = Uri.parse('${widget.baseUrl}/auth/logout');
       await http.post(
         uri,
         headers: {
-          if (cookie != null && cookie.isNotEmpty) 'Cookie': cookie,
+          if (cookie.isNotEmpty) 'cookie': cookie,
         },
       );
-    } catch (_) {
-      // Best-effort; ignore logout errors and still navigate back to login.
+    } catch (_) {}
+    await wipeLocalAccountData(preserveDevicePrefs: true);
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+      (_) => false,
+    );
+  }
+
+  Future<void> _logoutForgetDevice() async {
+    final l = L10n.of(context);
+    final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(l.menuLogoutForgetDeviceConfirmTitle),
+            content: Text(l.menuLogoutForgetDeviceConfirmBody),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: Text(l.shamellDialogCancel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFA5151),
+                  foregroundColor: Colors.white,
+                ),
+                child: Text(l.menuLogoutForgetDeviceConfirmAction),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!ok) return;
+
+    String cookie = '';
+    try {
+      cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+    } catch (_) {}
+
+    // Best-effort: remove this device server-side (revokes its sessions).
+    final did = (_currentDeviceId ?? (await loadStableDeviceId() ?? '')).trim();
+    if (did.isNotEmpty) {
+      try {
+        final uri = Uri.parse(
+          '${widget.baseUrl}/auth/devices/${Uri.encodeComponent(did)}',
+        );
+        await http.delete(
+          uri,
+          headers: {
+            if (cookie.isNotEmpty) 'cookie': cookie,
+          },
+        );
+      } catch (_) {}
     }
+
+    // Best-effort: clear server session cookie.
+    try {
+      final uri = Uri.parse('${widget.baseUrl}/auth/logout');
+      await http.post(
+        uri,
+        headers: {
+          if (cookie.isNotEmpty) 'cookie': cookie,
+        },
+      );
+    } catch (_) {}
+
+    await wipeLocalForForgetDevice();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
@@ -181,8 +249,8 @@ class _DevicesPageState extends State<DevicesPage> {
               children: [
                 Text(
                   l.isArabic
-                      ? 'مرسال ويب / سطح المكتب'
-                      : 'Mirsaal Web / Desktop sessions',
+                      ? 'شامل ويب / سطح المكتب'
+                      : 'Shamell Web / Desktop sessions',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -190,8 +258,8 @@ class _DevicesPageState extends State<DevicesPage> {
                 const SizedBox(height: 4),
                 Text(
                   l.isArabic
-                      ? 'افتح رمز QR تسجيل الدخول من Mirsaal Web، امسحه ضوئياً عبر \"مسح\" في مرسال، ثم أكّد تسجيل الدخول هنا. ستظهر الأجهزة المرتبطة بالأسفل.'
-                      : 'Open a device login QR on Mirsaal Web, scan it via \"Scan\" in Mirsaal, then confirm the login here. Linked devices will appear below.',
+                      ? 'افتح رمز QR تسجيل الدخول من Shamell Web، امسحه ضوئياً عبر \"مسح\" في شامل، ثم أكّد تسجيل الدخول هنا. ستظهر الأجهزة المرتبطة بالأسفل.'
+                      : 'Open a device login QR on Shamell Web, scan it via \"Scan\" in Shamell, then confirm the login here. Linked devices will appear below.',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurface.withValues(alpha: .70),
                   ),
@@ -214,8 +282,8 @@ class _DevicesPageState extends State<DevicesPage> {
                         const SizedBox(height: 8),
                         Text(
                           l.isArabic
-                              ? 'لا توجد أجهزة مرتبطة بهذا الحساب بعد.\nسجّل الدخول من مرسال على جهاز آخر لرؤيته هنا.'
-                              : 'No linked devices yet.\nSign in to Mirsaal on another device to see it here.',
+                              ? 'لا توجد أجهزة مرتبطة بهذا الحساب بعد.\nسجّل الدخول من شامل على جهاز آخر لرؤيته هنا.'
+                              : 'No linked devices yet.\nSign in to Shamell on another device to see it here.',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: theme.colorScheme.onSurface
@@ -267,7 +335,7 @@ class _DevicesPageState extends State<DevicesPage> {
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                   child: Text(
-                                    l.mirsaalDevicesThisDevice,
+                                    l.shamellDevicesThisDevice,
                                     style: theme.textTheme.bodySmall?.copyWith(
                                       fontSize: 10,
                                       color: theme.colorScheme.primary
@@ -339,7 +407,7 @@ class _DevicesPageState extends State<DevicesPage> {
                     color: theme.colorScheme.error.withValues(alpha: .90),
                   ),
                   label: Text(
-                    l.mirsaalDevicesLogoutOthers,
+                    l.shamellDevicesLogoutOthers,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.error.withValues(alpha: .90),
                     ),
@@ -368,6 +436,27 @@ class _DevicesPageState extends State<DevicesPage> {
                 ),
               ),
             ),
+          if (_currentDeviceId != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: Icon(
+                    Icons.delete_forever,
+                    size: 18,
+                    color: theme.colorScheme.error.withValues(alpha: .90),
+                  ),
+                  label: Text(
+                    l.menuLogoutForgetDevice,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.error.withValues(alpha: .90),
+                    ),
+                  ),
+                  onPressed: _logoutForgetDevice,
+                ),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Align(
@@ -376,8 +465,8 @@ class _DevicesPageState extends State<DevicesPage> {
                 icon: const Icon(Icons.qr_code, size: 18),
                 label: Text(
                   l.isArabic
-                      ? 'فتح مرسال ويب / سطح المكتب'
-                      : 'Open Mirsaal Web / Desktop',
+                      ? 'فتح شامل ويب / سطح المكتب'
+                      : 'Open Shamell Web / Desktop',
                 ),
                 onPressed: () async {
                   final url = _webDesktopUrl();
@@ -388,8 +477,8 @@ class _DevicesPageState extends State<DevicesPage> {
                       SnackBar(
                         content: Text(
                           l.isArabic
-                              ? 'تعذّر فتح مرسال ويب.'
-                              : 'Could not open Mirsaal Web.',
+                              ? 'تعذّر فتح شامل ويب.'
+                              : 'Could not open Shamell Web.',
                         ),
                       ),
                     );
@@ -440,11 +529,11 @@ class _DevicesPageState extends State<DevicesPage> {
           context: context,
           builder: (ctx) => AlertDialog(
             title: Text(l.isArabic ? 'تأكيد' : 'Confirm'),
-            content: Text(l.mirsaalDevicesLogoutOthersConfirm),
+            content: Text(l.shamellDevicesLogoutOthersConfirm),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(false),
-                child: Text(l.mirsaalDialogCancel),
+                child: Text(l.shamellDialogCancel),
               ),
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(true),

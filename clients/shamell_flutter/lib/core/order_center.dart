@@ -1,8 +1,8 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'ui_kit.dart';
@@ -31,10 +31,9 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
   Future<Map<String, String>> _hdr({bool json = false}) async {
     final h = <String, String>{};
     if (json) h['content-type'] = 'application/json';
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
+    final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      h['Cookie'] = cookie;
+      h['cookie'] = cookie;
     }
     return h;
   }
@@ -121,9 +120,8 @@ class _OrderCenterPageState extends State<OrderCenterPage> {
                 ),
               FormSection(
                 title: l.isArabic ? 'التنقل' : 'Mobility',
-                subtitle: l.isArabic
-                    ? 'أحدث رحلات الحافلات'
-                    : 'Recent bus trips',
+                subtitle:
+                    l.isArabic ? 'أحدث رحلات الحافلات' : 'Recent bus trips',
                 children: [
                   if (_bus.isEmpty)
                     Text(

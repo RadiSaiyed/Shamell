@@ -21,9 +21,9 @@ void main() {
   testWidgets('ServiceAccounts subtitle shows EN and AR', (tester) async {
     final lEn = L10n(const Locale('en'));
     final lAr = L10n(const Locale('ar'));
-    expect(lEn.mirsaalContactsServiceAccountsSubtitle,
+    expect(lEn.shamellContactsServiceAccountsSubtitle,
         'Shamell Bus, Pay and more');
-    expect(lAr.mirsaalContactsServiceAccountsSubtitle,
-        'Shamell Bus, Pay والمزيد');
+    expect(
+        lAr.shamellContactsServiceAccountsSubtitle, 'Shamell Bus, Pay والمزيد');
   });
 }

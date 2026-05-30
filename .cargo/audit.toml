@@ -1,0 +1,6 @@
+[advisories]
+# sqlx 0.8 currently pulls sqlx-mysql/rsa transitively via sqlx-macros.
+# This workspace is Postgres-only, but the advisory remains in Cargo.lock
+# until upstream offers a fixed dependency path.
+# Track and remove once a fixed sqlx/rsa chain is available.
+ignore = ["RUSTSEC-2023-0071"]

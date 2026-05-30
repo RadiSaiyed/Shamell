@@ -1,9 +1,10 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
+import 'http_error.dart';
 import 'l10n.dart';
 import 'status_banner.dart';
 import 'ui_kit.dart';
@@ -43,9 +44,10 @@ class _JourneyPageState extends State<JourneyPage> {
     });
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/journey_snapshot');
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      final r = await http.get(uri, headers: {'Cookie': cookie});
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      final r = await http.get(uri, headers: {
+        if (cookie.isNotEmpty) 'cookie': cookie,
+      });
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final home = j['home'];
@@ -56,10 +58,17 @@ class _JourneyPageState extends State<JourneyPage> {
             ? bs.whereType<Map<String, dynamic>>().toList()
             : <Map<String, dynamic>>[]);
       } else {
-        _error = '${r.statusCode}: ${r.body}';
+        _error = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
       }
     } catch (e) {
-      _error = 'Error: $e';
+      _error = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted) {
       setState(() {

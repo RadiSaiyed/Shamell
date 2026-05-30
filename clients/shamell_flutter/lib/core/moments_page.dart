@@ -9,27 +9,30 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'glass.dart';
 import 'l10n.dart';
 import 'perf.dart';
 import 'mini_apps_config.dart';
 import 'ui_kit.dart';
-import 'chat/threema_chat_page.dart';
-import 'wechat_ui.dart';
-import 'wechat_moments_composer_page.dart';
-import 'wechat_photo_viewer_page.dart';
+import 'chat/shamell_chat_page.dart';
+import 'shamell_ui.dart';
+import 'shamell_moments_composer_page.dart';
+import 'shamell_photo_viewer_page.dart';
 
-Future<Map<String, String>> _hdrMoments({bool json = false}) async {
+Future<Map<String, String>> _hdrMoments({
+  required String baseUrl,
+  bool json = false,
+}) async {
   final headers = <String, String>{};
   if (json) {
     headers['content-type'] = 'application/json';
   }
   try {
-    final sp = await SharedPreferences.getInstance();
-    final cookie = sp.getString('sa_cookie') ?? '';
+    final cookie = await getSessionCookieHeader(baseUrl) ?? '';
     if (cookie.isNotEmpty) {
-      headers['sa_cookie'] = cookie;
+      headers['cookie'] = cookie;
     }
   } catch (_) {}
   return headers;
@@ -45,7 +48,6 @@ class MomentsPage extends StatefulWidget {
   final String? officialCategory;
   final String? officialCity;
   final bool showOnlyMine;
-  final bool initialRedpacketOnly;
   final String? topicTag;
   final bool initialHotOfficialsOnly;
   final String? timelineAuthorId;
@@ -62,7 +64,6 @@ class MomentsPage extends StatefulWidget {
     this.officialCategory,
     this.officialCity,
     this.showOnlyMine = false,
-    this.initialRedpacketOnly = false,
     this.topicTag,
     this.initialHotOfficialsOnly = false,
     this.timelineAuthorId,
@@ -106,7 +107,6 @@ class _MomentsPageState extends State<MomentsPage> {
   final Set<String> _hiddenPostIds = <String>{};
   String? _preferredCity;
   bool _isAdmin = false;
-  bool _filterRedpacketOnly = false;
   bool _filterCloseFriendsOnly = false;
   bool _filterMiniProgramOnly = false;
   bool _filterOfficialLinkedOnly = false;
@@ -145,7 +145,7 @@ class _MomentsPageState extends State<MomentsPage> {
     final idx = initialIndex.clamp(0, cleaned.length - 1);
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) => WeChatPhotoViewerPage(
+        builder: (_) => ShamellPhotoViewerPage(
           baseUrl: widget.baseUrl,
           sources: cleaned,
           initialIndex: idx,
@@ -155,7 +155,7 @@ class _MomentsPageState extends State<MomentsPage> {
     );
   }
 
-  Widget _buildWeChatCoverHeader(L10n l, ThemeData theme) {
+  Widget _buildShamellCoverHeader(L10n l, ThemeData theme) {
     final isArabic = l.isArabic;
     final isFriendTimeline = (widget.timelineAuthorId ?? '').trim().isNotEmpty;
 
@@ -334,16 +334,16 @@ class _MomentsPageState extends State<MomentsPage> {
     }
   }
 
-  Future<void> _openWeChatComposer({
+  Future<void> _openShamellComposer({
     String initialText = '',
     Uint8List? initialImageBytes,
     String? initialImageMime,
     String initialVisibilityScope = 'public',
     bool clearPresetOnClose = false,
   }) async {
-    final draft = await Navigator.of(context).push<WeChatMomentDraft>(
+    final draft = await Navigator.of(context).push<ShamellMomentDraft>(
       MaterialPageRoute(
-        builder: (_) => WeChatMomentsComposerPage(
+        builder: (_) => ShamellMomentsComposerPage(
           baseUrl: widget.baseUrl,
           initialText: initialText,
           initialImageBytes: initialImageBytes,
@@ -421,7 +421,6 @@ class _MomentsPageState extends State<MomentsPage> {
   void initState() {
     super.initState();
     _inlineCommentFocus.addListener(_onInlineCommentFocusChanged);
-    _filterRedpacketOnly = widget.initialRedpacketOnly;
     _filterHotOfficialsOnly = widget.initialHotOfficialsOnly;
     _markCommentsSeen();
     _loadPreset();
@@ -685,7 +684,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/official_accounts')
           .replace(queryParameters: const {'followed_only': 'false'});
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       final list = <_MomentOfficialAccount>[];
@@ -722,7 +721,7 @@ class _MomentsPageState extends State<MomentsPage> {
   Future<void> _loadMyOfficialStats() async {
     try {
       final uri = Uri.parse('${widget.baseUrl}/me/official_moments_stats');
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       if (decoded is! Map) return;
@@ -735,26 +734,23 @@ class _MomentsPageState extends State<MomentsPage> {
 
   Future<void> _loadFriendsSummary() async {
     try {
-      final friendsUri = Uri.parse('${widget.baseUrl}/me/friends');
-      final friendsResp =
-          await http.get(friendsUri, headers: await _hdrMoments());
       final tags = <String>{};
-      if (friendsResp.statusCode >= 200 && friendsResp.statusCode < 300) {
-        final decoded = jsonDecode(friendsResp.body);
-        if (decoded is Map && decoded['friends'] is List) {
-          final list = decoded['friends'] as List;
-          for (final e in list) {
-            if (e is Map && e['tags'] is List) {
-              for (final t in (e['tags'] as List)) {
-                final v = (t ?? '').toString().trim();
-                if (v.isNotEmpty) {
-                  tags.add(v);
-                }
-              }
+      // Best-practice: keep audience tags local-only to avoid leaking
+      // social graph metadata to the backend by default.
+      try {
+        final sp = await SharedPreferences.getInstance();
+        final raw = sp.getString('friends.tags') ?? '{}';
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          decoded.forEach((_, v) {
+            final text = (v ?? '').toString();
+            for (final part in text.split(',')) {
+              final tag = part.trim();
+              if (tag.isNotEmpty) tags.add(tag);
             }
-          }
+          });
         }
-      }
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _availableAudienceTags = tags.toList()..sort();
@@ -850,16 +846,6 @@ class _MomentsPageState extends State<MomentsPage> {
     );
   }
 
-  bool _isRedPacketText(String text) {
-    final t = text.toLowerCase();
-    if (t.contains('red packet')) return true;
-    if (t.contains('red packets')) return true;
-    if (t.contains('i am sending red packets via shamell pay')) return true;
-    if (text.contains('حزمة حمراء')) return true;
-    if (text.contains('حزمًا حمراء')) return true;
-    return false;
-  }
-
   Future<void> _pickImage({ImageSource source = ImageSource.gallery}) async {
     try {
       final picker = ImagePicker();
@@ -917,7 +903,7 @@ class _MomentsPageState extends State<MomentsPage> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         unawaited(
-          _openWeChatComposer(
+          _openShamellComposer(
             initialText: (_presetText ?? '').trim(),
             initialImageBytes: _presetImage,
             initialImageMime: null,
@@ -1042,11 +1028,10 @@ class _MomentsPageState extends State<MomentsPage> {
 
   Future<void> _loadMyMomentsPseudonym() async {
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = (sp.getString('sa_cookie') ?? '').trim();
-      final pseudo = cookie.isEmpty
+      final tok = (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
+      final pseudo = tok.isEmpty
           ? null
-          : 'User ${crypto.sha1.convert(utf8.encode(cookie)).toString().substring(0, 6)}';
+          : 'User ${crypto.sha1.convert(utf8.encode(tok)).toString().substring(0, 6)}';
       if (!mounted) return;
       setState(() {
         _myMomentsPseudonym = pseudo;
@@ -1058,7 +1043,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/topics/trending')
           .replace(queryParameters: const {'limit': '8'});
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -1350,7 +1335,7 @@ class _MomentsPageState extends State<MomentsPage> {
         uri = Uri.parse('${widget.baseUrl}/moments/feed')
             .replace(queryParameters: qp);
       }
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
       if (r.statusCode != 200) return;
       final body = r.body;
       if (body.isEmpty) return;
@@ -1398,7 +1383,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$postId/comments')
           .replace(queryParameters: const {'limit': '100'});
-      final r = await http.get(uri, headers: await _hdrMoments());
+      final r = await http.get(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl));
       if (r.statusCode < 200 || r.statusCode >= 300) return const [];
       final decoded = jsonDecode(r.body);
       List<dynamic> raw = const [];
@@ -1451,7 +1436,7 @@ class _MomentsPageState extends State<MomentsPage> {
       }
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(payload),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) return null;
@@ -1492,7 +1477,7 @@ class _MomentsPageState extends State<MomentsPage> {
           : Uri.parse('${widget.baseUrl}/moments/comments/$id');
       final r = await http.delete(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
       );
       return r.statusCode >= 200 && r.statusCode < 300;
     } catch (_) {
@@ -1538,7 +1523,7 @@ class _MomentsPageState extends State<MomentsPage> {
     if (id.isEmpty) return;
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$id/like');
-      await http.post(uri, headers: await _hdrMoments(json: true));
+      await http.post(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true));
     } catch (_) {}
   }
 
@@ -1574,7 +1559,7 @@ class _MomentsPageState extends State<MomentsPage> {
     if (id.isEmpty) return;
     try {
       final uri = Uri.parse('${widget.baseUrl}/moments/$id/like');
-      await http.delete(uri, headers: await _hdrMoments(json: true));
+      await http.delete(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true));
     } catch (_) {}
   }
 
@@ -1631,7 +1616,7 @@ class _MomentsPageState extends State<MomentsPage> {
           reverseCurve: Curves.easeInCubic,
         );
 
-        final menu = _WeChatMomentActionMenu(
+        final menu = _ShamellMomentActionMenu(
           likeLabel: likeLabel,
           commentLabel: commentLabel,
           likeEnabled: true,
@@ -1650,7 +1635,7 @@ class _MomentsPageState extends State<MomentsPage> {
         );
 
         final arrow = ClipPath(
-          clipper: _WeChatPopoverArrowClipper(),
+          clipper: _ShamellPopoverArrowClipper(),
           child: Container(
             width: 10,
             height: 12,
@@ -1930,8 +1915,8 @@ class _MomentsPageState extends State<MomentsPage> {
 
         final arrow = ClipPath(
           clipper: showAbove
-              ? _WeChatPopoverDownArrowClipper()
-              : _WeChatPopoverUpArrowClipper(),
+              ? _ShamellPopoverDownArrowClipper()
+              : _ShamellPopoverUpArrowClipper(),
           child: Container(
             width: arrowW,
             height: arrowH,
@@ -2130,7 +2115,7 @@ class _MomentsPageState extends State<MomentsPage> {
       }
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(payload),
       );
       if (r.statusCode >= 200 && r.statusCode < 300) {
@@ -2282,7 +2267,7 @@ class _MomentsPageState extends State<MomentsPage> {
       final payload = jsonEncode(<String, dynamic>{'visibility': next});
       await http.patch(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
         body: payload,
       );
     } catch (_) {}
@@ -2298,7 +2283,7 @@ class _MomentsPageState extends State<MomentsPage> {
       });
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
         body: payload,
       );
       if (!mounted) return;
@@ -2536,10 +2521,9 @@ class _MomentsPageState extends State<MomentsPage> {
     final youLabel = l.isArabic ? 'أنت' : 'You';
     String? myPseudonym;
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = (sp.getString('sa_cookie') ?? '').trim();
-      if (cookie.isNotEmpty) {
-        final hex = crypto.sha1.convert(utf8.encode(cookie)).toString();
+      final tok = (await getSessionTokenForBaseUrl(widget.baseUrl) ?? '').trim();
+      if (tok.isNotEmpty) {
+        final hex = crypto.sha1.convert(utf8.encode(tok)).toString();
         if (hex.length >= 6) {
           myPseudonym = 'User ${hex.substring(0, 6)}';
         }
@@ -2633,18 +2617,19 @@ class _MomentsPageState extends State<MomentsPage> {
         final isDark = theme.brightness == Brightness.dark;
         final sheetBg = isDark ? theme.colorScheme.surface : Colors.white;
         final inputBg =
-            isDark ? theme.colorScheme.surface : WeChatPalette.background;
+            isDark ? theme.colorScheme.surface : ShamellPalette.background;
         final dividerColor =
-            isDark ? theme.dividerColor : WeChatPalette.divider;
+            isDark ? theme.dividerColor : ShamellPalette.divider;
         final nameColor =
             isDark ? theme.colorScheme.primary : const Color(0xFF576B95);
         final fieldBg = isDark
             ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55)
             : Colors.white;
-        final fieldBorder = isDark ? theme.dividerColor : WeChatPalette.divider;
+        final fieldBorder =
+            isDark ? theme.dividerColor : ShamellPalette.divider;
         final sendDisabledBg = isDark
             ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .45)
-            : WeChatPalette.searchFill;
+            : ShamellPalette.searchFill;
 
         final baseStyle = theme.textTheme.bodyMedium?.copyWith(fontSize: 13) ??
             const TextStyle(fontSize: 13);
@@ -3335,7 +3320,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                                 : null,
                                             style: TextButton.styleFrom(
                                               backgroundColor:
-                                                  WeChatPalette.green,
+                                                  ShamellPalette.green,
                                               disabledBackgroundColor:
                                                   sendDisabledBg,
                                               foregroundColor: Colors.white,
@@ -3386,15 +3371,15 @@ class _MomentsPageState extends State<MomentsPage> {
   Widget _buildInlineCommentBar(L10n l, ThemeData theme) {
     final isDark = theme.brightness == Brightness.dark;
     final inputBg =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
-    final dividerColor = isDark ? theme.dividerColor : WeChatPalette.divider;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
+    final dividerColor = isDark ? theme.dividerColor : ShamellPalette.divider;
     final fieldBg = isDark
         ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55)
         : Colors.white;
-    final fieldBorder = isDark ? theme.dividerColor : WeChatPalette.divider;
+    final fieldBorder = isDark ? theme.dividerColor : ShamellPalette.divider;
     final sendDisabledBg = isDark
         ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .45)
-        : WeChatPalette.searchFill;
+        : ShamellPalette.searchFill;
 
     final baseStyle = theme.textTheme.bodyMedium?.copyWith(fontSize: 13) ??
         const TextStyle(fontSize: 13);
@@ -3513,7 +3498,7 @@ class _MomentsPageState extends State<MomentsPage> {
                           ? () => unawaited(_submitInlineComment())
                           : null,
                       style: TextButton.styleFrom(
-                        backgroundColor: WeChatPalette.green,
+                        backgroundColor: ShamellPalette.green,
                         disabledBackgroundColor: sendDisabledBg,
                         foregroundColor: Colors.white,
                         disabledForegroundColor:
@@ -3584,7 +3569,6 @@ class _MomentsPageState extends State<MomentsPage> {
       final avatarUrl = (p['avatar_url'] ?? '').toString();
       final isLocal = p['id']?.toString().startsWith('local_') ?? false;
       final visibility = (p['visibility'] ?? 'public').toString();
-      final isRedPacket = _isRedPacketText(text);
       final hasOfficialReply = (p['has_official_reply'] as bool?) ?? false;
       final originAccId =
           (p['origin_official_account_id'] ?? '').toString().trim();
@@ -3996,52 +3980,6 @@ class _MomentsPageState extends State<MomentsPage> {
         );
       }
 
-      if (isRedPacket) {
-        content.add(
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.card_giftcard,
-                  size: 14,
-                  color: theme.colorScheme.primary.withValues(
-                      alpha: theme.brightness == Brightness.dark ? .90 : .80),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  l.isArabic ? 'حزمة حمراء' : 'Red packet',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface.withValues(alpha: .80),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-        final originItemId =
-            (p['origin_official_item_id'] ?? '').toString().trim();
-        if (originItemId.isNotEmpty) {
-          content.add(
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                l.isArabic
-                    ? 'من حملة حزم حمراء: $originItemId'
-                    : 'From red‑packet campaign: $originItemId',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontSize: 11,
-                  color: theme.colorScheme.onSurface.withValues(alpha: .70),
-                ),
-              ),
-            ),
-          );
-        }
-      }
-
       content.add(const SizedBox(height: 6));
 
       var displayText = text;
@@ -4126,7 +4064,7 @@ class _MomentsPageState extends State<MomentsPage> {
       final locationLabel = (p['location_label'] ?? '').toString().trim();
       if (locationLabel.isNotEmpty) {
         final linkColor =
-            isDark ? theme.colorScheme.primary : WeChatPalette.linkBlue;
+            isDark ? theme.colorScheme.primary : ShamellPalette.linkBlue;
         content.add(
           Text(
             locationLabel,
@@ -4171,7 +4109,7 @@ class _MomentsPageState extends State<MomentsPage> {
                       ? theme.colorScheme.surfaceContainerHighest.withValues(
                           alpha: .55,
                         )
-                      : WeChatPalette.searchFill;
+                      : ShamellPalette.searchFill;
                   return InkWell(
                     borderRadius: BorderRadius.circular(4),
                     onTap: () => _showMomentPostActionsPopover(btnCtx, p),
@@ -4207,7 +4145,7 @@ class _MomentsPageState extends State<MomentsPage> {
       if (showSocial) {
         final bubbleBg = isDark
             ? theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55)
-            : WeChatPalette.searchFill;
+            : ShamellPalette.searchFill;
         final baseStyle = theme.textTheme.bodySmall?.copyWith(
               fontSize: 12,
               color: theme.colorScheme.onSurface.withValues(alpha: .82),
@@ -4281,7 +4219,7 @@ class _MomentsPageState extends State<MomentsPage> {
         final likeIcon =
             likedByMe ? Icons.thumb_up_alt : Icons.thumb_up_alt_outlined;
         final likeColor = likedByMe
-            ? (isDark ? theme.colorScheme.secondary : WeChatPalette.green)
+            ? (isDark ? theme.colorScheme.secondary : ShamellPalette.green)
             : theme.colorScheme.onSurface.withValues(alpha: .65);
 
         content.add(
@@ -4504,12 +4442,6 @@ class _MomentsPageState extends State<MomentsPage> {
           return v == 'close_friends';
         });
       }
-      if (_filterRedpacketOnly) {
-        base = base.where((p) {
-          final t = ((p['text'] ?? p['content'] ?? '')).toString();
-          return _isRedPacketText(t);
-        });
-      }
       if (_filterMiniProgramOnly) {
         base = base.where((p) {
           final t = ((p['text'] ?? p['content'] ?? '')).toString();
@@ -4608,7 +4540,7 @@ class _MomentsPageState extends State<MomentsPage> {
           height: 1,
           thickness: 0.5,
           indent: 64,
-          color: isDark ? theme.dividerColor : WeChatPalette.divider,
+          color: isDark ? theme.dividerColor : ShamellPalette.divider,
         ),
         itemBuilder: (_, i) {
           final p = filtered[i];
@@ -4618,7 +4550,7 @@ class _MomentsPageState extends State<MomentsPage> {
     }
 
     final bgColor =
-        isDark ? theme.colorScheme.surface : WeChatPalette.background;
+        isDark ? theme.colorScheme.surface : ShamellPalette.background;
     final isFriendTimeline = (widget.timelineAuthorId ?? '').trim().isNotEmpty;
     final showInlineComposer = _enableInlineComposer;
     final showAdvancedFilters = _enableAdvancedFilters;
@@ -4631,7 +4563,7 @@ class _MomentsPageState extends State<MomentsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _buildWeChatCoverHeader(l, theme),
+                _buildShamellCoverHeader(l, theme),
                 Container(
                   color: isDark ? theme.colorScheme.surface : Colors.white,
                   child: Column(
@@ -4740,8 +4672,8 @@ class _MomentsPageState extends State<MomentsPage> {
                               const SizedBox(height: 4),
                               Text(
                                 l.isArabic
-                                    ? 'حدد من يمكنه رؤية هذه اللحظة (كما في WeChat).'
-                                    : 'Choose who can see this moment (similar to WeChat).',
+                                    ? 'حدد من يمكنه رؤية هذه اللحظة (كما في Shamell).'
+                                    : 'Choose who can see this moment (similar to Shamell).',
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   fontSize: 11,
                                   color: theme.colorScheme.onSurface
@@ -4862,7 +4794,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                       const SizedBox(width: 6),
                                       Expanded(
                                         child: Text(
-                                          l.mirsaalMomentsAudienceHint,
+                                          l.shamellMomentsAudienceHint,
                                           style: theme.textTheme.bodySmall
                                               ?.copyWith(
                                             fontSize: 11,
@@ -5098,16 +5030,13 @@ class _MomentsPageState extends State<MomentsPage> {
                             final svcRaw = _myOfficialStats?['service_shares'];
                             final subRaw =
                                 _myOfficialStats?['subscription_shares'];
-                            final rpRaw =
-                                _myOfficialStats?['redpacket_shares_30d'];
                             final hotRaw = _myOfficialStats?['hot_accounts'];
                             final total =
                                 totalRaw is num ? totalRaw.toInt() : 0;
                             final svc = svcRaw is num ? svcRaw.toInt() : 0;
                             final sub = subRaw is num ? subRaw.toInt() : 0;
-                            final rp = rpRaw is num ? rpRaw.toInt() : 0;
                             final hot = hotRaw is num ? hotRaw.toInt() : 0;
-                            if (total <= 0 && rp <= 0 && hot <= 0) {
+                            if (total <= 0 && hot <= 0) {
                               return const SizedBox.shrink();
                             }
 
@@ -5160,16 +5089,6 @@ class _MomentsPageState extends State<MomentsPage> {
                                   isAr
                                       ? 'خدمات: $svc · اشتراكات: $sub'
                                       : 'Services: $svc · Subscriptions: $sub',
-                                ),
-                              );
-                            }
-                            if (rp > 0) {
-                              pills.add(
-                                pill(
-                                  Icons.redeem_outlined,
-                                  isAr
-                                      ? 'حزم حمراء في ٣٠ يوماً: $rp'
-                                      : 'Red‑packet moments (30d): $rp',
                                 ),
                               );
                             }
@@ -5240,7 +5159,7 @@ class _MomentsPageState extends State<MomentsPage> {
                         _buildOfficialFiltersRow(l),
                       if (showAdvancedFilters && !isFriendTimeline)
                         const SizedBox(height: 8),
-                      // Topic bar – WeChat-like Moments topics (Wallet)
+                      // Topic bar – Shamell-like Moments topics (Wallet)
                       if (showAdvancedFilters && !isFriendTimeline)
                         _buildTopicBar(l),
                       _buildFeedList(),
@@ -5271,7 +5190,7 @@ class _MomentsPageState extends State<MomentsPage> {
           if (widget.showComposer && !isFriendTimeline)
             GestureDetector(
               onLongPress: () {
-                unawaited(_openWeChatComposer());
+                unawaited(_openShamellComposer());
               },
               child: IconButton(
                 tooltip: l.isArabic ? 'إضافة لحظة' : 'New moment',
@@ -5305,7 +5224,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                 );
                                 if (picked == null) return;
                                 if (!mounted) return;
-                                await _openWeChatComposer(
+                                await _openShamellComposer(
                                   initialImageBytes: picked.bytes,
                                   initialImageMime: picked.mime,
                                 );
@@ -5325,7 +5244,7 @@ class _MomentsPageState extends State<MomentsPage> {
                                 );
                                 if (picked == null) return;
                                 if (!mounted) return;
-                                await _openWeChatComposer(
+                                await _openShamellComposer(
                                   initialImageBytes: picked.bytes,
                                   initialImageMime: picked.mime,
                                 );
@@ -5875,7 +5794,7 @@ class _MomentsPageState extends State<MomentsPage> {
         context,
         MaterialPageRoute(
           builder: (_) =>
-              ThreemaChatPage(baseUrl: widget.baseUrl, initialPeerId: peerId),
+              ShamellChatPage(baseUrl: widget.baseUrl, initialPeerId: peerId),
         ),
       );
     } catch (_) {}
@@ -5896,7 +5815,7 @@ class _MomentsPageState extends State<MomentsPage> {
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/official_accounts/$accountId/$endpoint');
-      final r = await http.post(uri, headers: await _hdrMoments(json: true));
+      final r = await http.post(uri, headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true));
       if (r.statusCode < 200 || r.statusCode >= 300) return;
       setState(() {
         _officialAccounts[accountId] = _MomentOfficialAccount(
@@ -5940,7 +5859,7 @@ class _MomentsPageState extends State<MomentsPage> {
           Uri.parse('${widget.baseUrl}/moments/admin/posts/$postId/comment');
       final r = await http.post(
         uri,
-        headers: await _hdrMoments(json: true),
+        headers: await _hdrMoments(baseUrl: widget.baseUrl, json: true),
         body: jsonEncode(payload),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) {
@@ -5955,14 +5874,14 @@ class _MomentsPageState extends State<MomentsPage> {
   }
 }
 
-class _WeChatMomentActionMenu extends StatelessWidget {
+class _ShamellMomentActionMenu extends StatelessWidget {
   final String likeLabel;
   final String commentLabel;
   final bool likeEnabled;
   final VoidCallback onLike;
   final VoidCallback onComment;
 
-  const _WeChatMomentActionMenu({
+  const _ShamellMomentActionMenu({
     required this.likeLabel,
     required this.commentLabel,
     required this.likeEnabled,
@@ -6054,7 +5973,7 @@ class _WeChatMomentActionMenu extends StatelessWidget {
   }
 }
 
-class _WeChatPopoverArrowClipper extends CustomClipper<Path> {
+class _ShamellPopoverArrowClipper extends CustomClipper<Path> {
   @override
   Path getClip(Size size) {
     final path = Path();
@@ -6066,10 +5985,10 @@ class _WeChatPopoverArrowClipper extends CustomClipper<Path> {
   }
 
   @override
-  bool shouldReclip(_WeChatPopoverArrowClipper oldClipper) => false;
+  bool shouldReclip(_ShamellPopoverArrowClipper oldClipper) => false;
 }
 
-class _WeChatPopoverDownArrowClipper extends CustomClipper<Path> {
+class _ShamellPopoverDownArrowClipper extends CustomClipper<Path> {
   @override
   Path getClip(Size size) {
     final path = Path();
@@ -6081,10 +6000,10 @@ class _WeChatPopoverDownArrowClipper extends CustomClipper<Path> {
   }
 
   @override
-  bool shouldReclip(_WeChatPopoverDownArrowClipper oldClipper) => false;
+  bool shouldReclip(_ShamellPopoverDownArrowClipper oldClipper) => false;
 }
 
-class _WeChatPopoverUpArrowClipper extends CustomClipper<Path> {
+class _ShamellPopoverUpArrowClipper extends CustomClipper<Path> {
   @override
   Path getClip(Size size) {
     final path = Path();
@@ -6096,7 +6015,7 @@ class _WeChatPopoverUpArrowClipper extends CustomClipper<Path> {
   }
 
   @override
-  bool shouldReclip(_WeChatPopoverUpArrowClipper oldClipper) => false;
+  bool shouldReclip(_ShamellPopoverUpArrowClipper oldClipper) => false;
 }
 
 class _MomentOfficialAccount {

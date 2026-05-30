@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../../core/glass.dart';
 import '../../core/l10n.dart';
+import '../../core/http_error.dart';
 import 'payments_send.dart' show PayActionButton; // reuse styled button
 import '../../core/scan_page.dart';
 
@@ -175,9 +176,26 @@ class _PaymentScanTabState extends State<PaymentScanTab> {
           Uri.parse('${widget.baseUrl}/payments/transfer'),
           headers: {'content-type': 'application/json'},
           body: jsonEncode(body));
-      setState(() => out = '${r.statusCode}: ${r.body}');
+      if (r.statusCode >= 200 && r.statusCode < 300) {
+        setState(() {
+          out = L10n.of(context).isArabic ? 'تم إرسال الدفع.' : 'Payment sent.';
+        });
+      } else {
+        setState(() {
+          out = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
+        });
+      }
     } catch (e) {
-      setState(() => out = 'Error: $e');
+      setState(() {
+        out = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     }
   }
 

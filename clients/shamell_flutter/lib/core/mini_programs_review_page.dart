@@ -1,10 +1,11 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'l10n.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class MiniProgramsReviewPage extends StatefulWidget {
   final String baseUrl;
@@ -29,10 +30,9 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
   Future<Map<String, String>> _hdr() async {
     final headers = <String, String>{};
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -68,7 +68,7 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
         _loading = false;
       });
     }
@@ -95,13 +95,11 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
         body: jsonEncode(body),
       );
       if (r.statusCode < 200 || r.statusCode >= 300) {
-        String msg = 'HTTP ${r.statusCode}';
-        try {
-          final decoded = jsonDecode(r.body);
-          if (decoded is Map && decoded['detail'] != null) {
-            msg = decoded['detail'].toString();
-          }
-        } catch (_) {}
+        final msg = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: l.isArabic,
+        );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(msg)),
@@ -121,7 +119,9 @@ class _MiniProgramsReviewPageState extends State<MiniProgramsReviewPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(e.toString()),
+          content: Text(
+            sanitizeExceptionForUi(error: e, isArabic: l.isArabic),
+          ),
         ),
       );
     }

@@ -11,7 +11,7 @@
 		<key>CFBundleInfoDictionaryVersion</key>
 		<string>6.0</string>
 		<key>CFBundleName</key>
-		<string>SuperApp</string>
+		<string>Shamell</string>
 		<key>CFBundlePackageType</key>
 		<string>APPL</string>
 		<key>CFBundleShortVersionString</key>
@@ -41,12 +41,18 @@
 		</array>
 		<key>NSCameraUsageDescription</key>
 		<string>Camera is used to scan payment QR codes.</string>
+		<key>NSMicrophoneUsageDescription</key>
+		<string>Microphone access is used to record voice notes and make calls.</string>
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>Photo library access is used to pick images for Moments.</string>
 		<key>NSPhotoLibraryAddUsageDescription</key>
 		<string>Photo library access is used to save Moments images to your gallery.</string>
 		<key>NSLocationWhenInUseUsageDescription</key>
 		<string>Location is used to share your position with riders and dispatch.</string>
+		<key>NSContactsUsageDescription</key>
+		<string>Contacts are used to pick a payment recipient from your address book.</string>
+		<key>NSFaceIDUsageDescription</key>
+		<string>Face ID is used to unlock Shamell with biometrics.</string>
 		<key>UIStatusBarHidden</key>
 		<false/>
 	</dict>

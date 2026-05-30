@@ -5,12 +5,14 @@ server {
 
     listen 80;
     server_name api.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
     server_name api.shamell.online;
+    access_log /var/log/nginx/access.log shamell_noquery;
     ssl_certificate /etc/letsencrypt/live/api.shamell.online/fullchain.pem; # managed by Certbot
     ssl_certificate_key /etc/letsencrypt/live/api.shamell.online/privkey.pem; # managed by Certbot
     include /etc/letsencrypt/options-ssl-nginx.conf;
@@ -26,14 +28,48 @@ server {
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # Internal BFF routes must never be reachable from the public Internet.
+    location ^~ /internal/ {
+        return 404;
+    }
+
+    # OpenAPI/Docs only for trusted source + localhost.
+    location = /openapi.json {
+        include /etc/nginx/snippets/shamell_docs_allowlist.local.conf;
+        deny all;
+
+        proxy_pass http://127.0.0.1:8080/openapi.json;
+        proxy_http_version 1.1;
+
+        include /etc/nginx/snippets/shamell_bff_edge_hardening.conf;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /docs {
+        include /etc/nginx/snippets/shamell_docs_allowlist.local.conf;
+        deny all;
+
+        proxy_pass http://127.0.0.1:8080/docs;
+        proxy_http_version 1.1;
+
+        include /etc/nginx/snippets/shamell_bff_edge_hardening.conf;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location / {
         # BFF listens on 127.0.0.1:8080 via docker-proxy.
         proxy_pass http://127.0.0.1:8080/;
         proxy_http_version 1.1;
 
-        # Never forward internal auth headers from the public Internet.
-        # The BFF adds these for service-to-service calls on the private network.
-        proxy_set_header X-Internal-Secret "";
+        # Strip sensitive headers from public traffic and optionally set
+        # trusted role headers via host-local attestation snippet.
+        include /etc/nginx/snippets/shamell_bff_edge_hardening.conf;
 
         # WebSocket/SSE support (BFF + Chat WS via BFF).
         proxy_set_header Upgrade $http_upgrade;
