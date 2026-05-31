@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import 'account_privilege_store.dart';
 import 'role_signup_api.dart';
 import 'role_signup_gate.dart';
+import 'session_cookie_store.dart';
 
 /// Wraps a console page with the self-service role-signup gate so the
 /// page only renders for users that already hold [roleId] (or are
@@ -55,20 +58,51 @@ class _RoleSignupGuardState extends State<RoleSignupGuard> {
       _privileges.roles.contains(widget.roleId);
 
   Future<void> _loadPrivileges() async {
+    // 1. Cached snapshot — fast, always works offline.
+    AccountPrivilegeSnapshot snap = AccountPrivilegeSnapshot.empty;
     try {
-      final snap =
-          await loadAccountPrivilegeSnapshotForBaseUrl(widget.baseUrl);
-      if (!mounted) return;
-      setState(() {
-        _privileges = snap;
-        _loading = false;
-      });
-    } catch (_) {
-      // Soft-fail: stale snapshot is fine — the gate's "no role"
-      // branch is the safer default to render. The user can still
-      // submit a request; admin approval refreshes the snapshot.
-      if (mounted) setState(() => _loading = false);
-    }
+      snap = await loadAccountPrivilegeSnapshotForBaseUrl(widget.baseUrl);
+    } catch (_) {/* stale-cache fallback handled below */}
+
+    // 2. Live overlay from /me/access-context. The local snapshot is
+    // only written on login — if an admin grants this user the role
+    // AFTER they signed in, the cache stays stale and the gate would
+    // keep showing the signup form even though the role is already
+    // attached. The live fetch closes that window: any role-grant
+    // becomes visible on the next page-mount without needing a fresh
+    // login. Soft-fail keeps the cached snapshot if the live call
+    // can't reach the BFF.
+    try {
+      final headers = await shamellSessionHeadersForBaseUrl(widget.baseUrl);
+      final resp = await http
+          .get(
+            Uri.parse('${widget.baseUrl}/me/access-context'),
+            headers: {...headers, 'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 6));
+      if (resp.statusCode == 200) {
+        final parsed = json.decode(resp.body) as Map<String, dynamic>;
+        final liveRoles = (parsed['roles'] as List?)
+                ?.map((e) => e.toString())
+                .toList(growable: false) ??
+            const <String>[];
+        final liveIsSuperadmin = parsed['is_superadmin'] == true;
+        final liveIsAdmin = parsed['is_admin'] == true;
+        // Merge live + cached; live wins where they overlap.
+        snap = AccountPrivilegeSnapshot(
+          roles: liveRoles.isNotEmpty ? liveRoles : snap.roles,
+          isSuperadmin: liveIsSuperadmin || snap.isSuperadmin,
+          isAdmin: liveIsAdmin || snap.isAdmin,
+          operatorIds: snap.operatorIds,
+        );
+      }
+    } catch (_) {/* live fetch optional; cached snapshot already loaded */}
+
+    if (!mounted) return;
+    setState(() {
+      _privileges = snap;
+      _loading = false;
+    });
   }
 
   @override
