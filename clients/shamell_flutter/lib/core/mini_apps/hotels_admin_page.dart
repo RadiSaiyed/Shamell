@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../l10n.dart';
+import '../rides/operator_activity_page.dart';
 import '../session_cookie_store.dart';
 import '../superapp_api.dart';
 import 'hotels_operator_login_page.dart';
@@ -693,6 +694,20 @@ class _HotelAdminConsolePageState extends State<HotelAdminConsolePage>
           ],
         ),
         actions: [
+          // Activity log (operator-console-inventory module 8).
+          IconButton(
+            tooltip: l.isArabic ? 'سجل النشاط' : 'Activity log',
+            icon: const Icon(Icons.history_outlined),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => OperatorActivityPage(
+                    baseUrl: widget.api.baseUrl,
+                  ),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _refreshAll,

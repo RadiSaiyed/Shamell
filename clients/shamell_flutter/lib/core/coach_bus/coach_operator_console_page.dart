@@ -14,6 +14,7 @@ import '../shamell_loading_shimmer.dart';
 import '../status_banner.dart';
 import 'coach_catalog_import_run_filter_store.dart';
 import 'coach_operator_disruption_broadcast_page.dart';
+import '../rides/operator_activity_page.dart';
 import 'coach_payout_import_batch_filter_store.dart';
 import 'coach_saved_view_pin_store.dart';
 import 'coach_saved_view_usage_store.dart';
@@ -17042,6 +17043,23 @@ class _CoachOperatorConsolePageState extends State<CoachOperatorConsolePage>
                 );
               },
               icon: const Icon(Icons.campaign_outlined),
+            ),
+            // Activity log (operator-console-inventory module 8). Same
+            // flavor-agnostic page the Taxi operator already uses; lands
+            // the admin on /admin/user-activity without leaving the bus
+            // console.
+            IconButton(
+              tooltip: isArabic ? 'سجل النشاط' : 'Activity log',
+              icon: const Icon(Icons.history_outlined),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => OperatorActivityPage(
+                      baseUrl: widget.baseUrl,
+                    ),
+                  ),
+                );
+              },
             ),
             IconButton(
               tooltip: isArabic ? 'تحديث' : 'Refresh queues',
