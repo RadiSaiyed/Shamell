@@ -265,6 +265,15 @@ android {
             applicationId = "online.shamell.carrier"
             resValue("string", "app_name", "SyrChat Carrier")
         }
+        create("shipper") {
+            // Cycle 206 — Shipper / Verlader companion to the Carrier
+            // flavor. Same SyrTrans backend, mirrored RoleSignupGuard
+            // gate; shippers post loads + manage bids inbox instead of
+            // accepting them.
+            dimension = "app"
+            applicationId = "online.shamell.shipper"
+            resValue("string", "app_name", "SyrChat Shipper")
+        }
         create("syrcom") {
             dimension = "app"
             applicationId = "online.shamell.syrcom"
@@ -374,6 +383,7 @@ androidComponents {
             appFlavor != "busOperator" &&
             appFlavor != "hotelOperator" &&
             appFlavor != "carrier" &&
+            appFlavor != "shipper" &&
             appFlavor != "syrcom"
         ) {
             variant.enable = false

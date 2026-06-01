@@ -455,7 +455,7 @@ release_id="android-apk-${version_name//[^0-9A-Za-z._-]/-}-${release_stamp}"
 printf 'APP_RELEASE_ID=%s\n' "$release_id" >> "$release_dart_defines_file"
 printf 'APP_VERSION=%s\n' "$version_name" >> "$release_dart_defines_file"
 
-all_flavors=(user ride driver operator taxiOperator busOperator hotelOperator carrier syrcom)
+all_flavors=(user ride driver operator taxiOperator busOperator hotelOperator carrier shipper syrcom)
 flavors=()
 if [[ -z "${REQUESTED_FLAVORS_RAW// }" ]]; then
   flavors=("${all_flavors[@]}")
@@ -468,10 +468,11 @@ else
       hotel_operator|hoteloperator|hotels_operator|hotel) flavor="hotelOperator" ;;
       taxi_operator|taxioperator|taxi_ops|taxiops|taxi_control) flavor="taxiOperator" ;;
       spediteur|forwarder|freight_carrier|freight) flavor="carrier" ;;
+      verlader|freight_shipper|load_poster|cargo_owner) flavor="shipper" ;;
       syr_com|syrcommerce|commerce) flavor="syrcom" ;;
     esac
     case "$flavor" in
-      user|ride|driver|operator|taxiOperator|busOperator|hotelOperator|carrier|syrcom)
+      user|ride|driver|operator|taxiOperator|busOperator|hotelOperator|carrier|shipper|syrcom)
         case " ${flavors[*]-} " in
           *" $flavor "*) ;;
           *)
@@ -501,6 +502,7 @@ target_for_flavor() {
     busOperator) printf '%s\n' "lib/main_bus_operator.dart" ;;
     hotelOperator) printf '%s\n' "lib/main_hotel_operator.dart" ;;
     carrier) printf '%s\n' "lib/main_carrier.dart" ;;
+    shipper) printf '%s\n' "lib/main_shipper.dart" ;;
     syrcom) printf '%s\n' "lib/main_syrcom.dart" ;;
     taxiOperator) printf '%s\n' "lib/main_taxi_operator.dart" ;;
     *) return 1 ;;
@@ -516,6 +518,7 @@ title_for_flavor() {
     busOperator) printf '%s\n' "Shamell Bus" ;;
     hotelOperator) printf '%s\n' "Shamell Hotels" ;;
     carrier) printf '%s\n' "Shamell Carrier" ;;
+    shipper) printf '%s\n' "Shamell Shipper" ;;
     syrcom) printf '%s\n' "SyrCom" ;;
     taxiOperator) printf '%s\n' "Shamell Taxi" ;;
     *) return 1 ;;
@@ -531,6 +534,7 @@ summary_for_flavor() {
     busOperator) printf '%s\n' "Bus-operations console: dispatch, boarding, and on-the-ground field ops (Shamell Bus)." ;;
     hotelOperator) printf '%s\n' "Hotels console for front-desk and partner staff: bookings, room-service orders, and settlement." ;;
     carrier) printf '%s\n' "Carrier (Spediteur) console for cold-chain freight: fleet, drivers, certificates, and load offers (SyrTrans)." ;;
+    shipper) printf '%s\n' "Shipper (Verlader) console for SyrTrans: post loads, manage bids inbox, watch live cold-chain telemetry." ;;
     syrcom) printf '%s\n' "SyrCom — enterprise surface of the Shamell platform (business/B2B counterpart of SyrChat)." ;;
     taxiOperator) printf '%s\n' "Standalone taxi-operations console: live trips, driver dispatch, support queue, and payouts (SyrChat Taxi)." ;;
     *) return 1 ;;
@@ -546,6 +550,7 @@ package_for_flavor() {
     busOperator) printf '%s\n' "online.shamell.busoperator" ;;
     hotelOperator) printf '%s\n' "online.shamell.hoteloperator" ;;
     carrier) printf '%s\n' "online.shamell.carrier" ;;
+    shipper) printf '%s\n' "online.shamell.shipper" ;;
     syrcom) printf '%s\n' "online.shamell.syrcom" ;;
     taxiOperator) printf '%s\n' "online.shamell.taxioperator" ;;
     *) return 1 ;;
@@ -563,6 +568,7 @@ slug_for_flavor() {
     busOperator) printf '%s\n' "busoperator" ;;
     hotelOperator) printf '%s\n' "hoteloperator" ;;
     carrier) printf '%s\n' "carrier" ;;
+    shipper) printf '%s\n' "shipper" ;;
     syrcom) printf '%s\n' "syrcom" ;;
     taxiOperator) printf '%s\n' "taxioperator" ;;
     *) return 1 ;;

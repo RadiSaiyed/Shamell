@@ -735,6 +735,19 @@ Widget shamellBuildSignedInHome({
       builder: (_) => CarrierConsolePage(baseUrl: baseUrlOverride),
     );
   }
+  if (shamellIsShipperSurface(appSurface)) {
+    // Cycle 206 — Shipper / Verlader flavor. Reuses the
+    // freight.carrier_admin role (org_kind gates the actions) and the
+    // same RoleSignupGuard pattern as Carrier.
+    return RoleSignupGuard(
+      baseUrl: baseUrlOverride ?? '',
+      roleId: RoleSignupRoleIds.shipper,
+      roleLabel: 'Shipper',
+      roleLabelArabic: 'شاحن',
+      fields: RoleSignupFormFields.shipper,
+      builder: (_) => ShipperConsolePage(baseUrl: baseUrlOverride),
+    );
+  }
   if (shamellIsSyrComSurface(appSurface)) {
     // Standalone SyrCom (WeCom-style enterprise) app. Same
     // RoleSignupGuard pattern as the operator flavors — a fresh

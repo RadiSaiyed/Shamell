@@ -235,6 +235,42 @@ class RoleSignupFormFields {
     ),
   ];
 
+  /// Cycle 206 — Shipper / Verlader onboarding. Reuses the carrier
+  /// role under the hood; field set asks for shipper-context details
+  /// instead of carrier-fleet ones.
+  static const List<RoleSignupFormField> shipper = <RoleSignupFormField>[
+    RoleSignupFormField(
+      key: 'full_name',
+      label: 'Full name',
+      labelArabic: 'الاسم الكامل',
+      keyboard: TextInputType.name,
+      maxLength: 96,
+    ),
+    RoleSignupFormField(
+      key: 'phone',
+      label: 'Phone (with country code)',
+      labelArabic: 'رقم الهاتف (مع رمز الدولة)',
+      hint: '+963 9XX XXX XXX',
+      hintArabic: '+963 9XX XXX XXX',
+      defaultValue: '+963 ',
+      keyboard: TextInputType.phone,
+      maxLength: 32,
+    ),
+    RoleSignupFormField(
+      key: 'shipper_company',
+      label: 'Shipper (Verlader) company name',
+      labelArabic: 'اسم شركة الشحن',
+      maxLength: 160,
+    ),
+    RoleSignupFormField(
+      key: 'tax_id',
+      label: 'Tax ID (optional)',
+      labelArabic: 'الرقم الضريبي (اختياري)',
+      maxLength: 48,
+      required: false,
+    ),
+  ];
+
   /// SyrCom (enterprise / WeCom-style) workforce-member onboarding.
   /// Mirrors `syrcom.workforce_member` on the server. Admin approves
   /// the platform role; the per-org workforce membership is attached

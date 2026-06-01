@@ -30,6 +30,11 @@ class RoleSignupRoleIds {
   static const String busOperator = 'coach.operator_admin';
   static const String hotelOperator = 'hotels.operator';
   static const String carrier = 'freight.carrier_admin';
+  // Cycle 206 — shipper-side flavor. Same role for now (org_kind on
+  // freight_organizations gates carrier vs shipper actions); a
+  // dedicated freight.shipper_admin can be added later if shipper-only
+  // permissions need to diverge from carrier-only ones.
+  static const String shipper = 'freight.carrier_admin';
   // SyrCom workforce-member onboarding — the WeCom-style enterprise
   // companion app; approval is per-organization and admin-reviewed
   // through the operator console's Signups workspace.

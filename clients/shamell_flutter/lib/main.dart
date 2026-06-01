@@ -137,6 +137,7 @@ import 'core/mini_program_shelf_prefs.dart';
 import 'core/mini_app_registry.dart';
 import 'core/mini_apps/hotels_admin_page.dart';
 import 'core/freight/carrier_console_page.dart';
+import 'core/freight/shipper_console_page.dart';
 import 'core/official_accounts_page.dart';
 import 'core/official_owner_console_page.dart';
 import 'core/platform_feature_events.dart';

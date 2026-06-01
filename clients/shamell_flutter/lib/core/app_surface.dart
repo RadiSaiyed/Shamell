@@ -9,6 +9,7 @@ enum ShamellAppSurface {
   busOperator,
   hotelOperator,
   carrier,
+  shipper,
   syrcom,
 }
 
@@ -62,6 +63,12 @@ ShamellAppSurface shamellParseAppSurface(String raw) {
     case 'freight':
     case 'forwarder':
       return ShamellAppSurface.carrier;
+    case 'shipper':
+    case 'verlader':
+    case 'freight_shipper':
+    case 'load_poster':
+    case 'cargo_owner':
+      return ShamellAppSurface.shipper;
     case 'syrcom':
     case 'sirkom':
     case 'work':
@@ -103,6 +110,9 @@ bool shamellIsHotelOperatorSurface([ShamellAppSurface? surface]) =>
 bool shamellIsCarrierSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.carrier;
 
+bool shamellIsShipperSurface([ShamellAppSurface? surface]) =>
+    (surface ?? shamellActiveAppSurface) == ShamellAppSurface.shipper;
+
 bool shamellIsSyrComSurface([ShamellAppSurface? surface]) =>
     (surface ?? shamellActiveAppSurface) == ShamellAppSurface.syrcom;
 
@@ -111,7 +121,8 @@ bool shamellIsAnyOperatorSurface([ShamellAppSurface? surface]) =>
     shamellIsTaxiOperatorSurface(surface) ||
     shamellIsBusOperatorSurface(surface) ||
     shamellIsHotelOperatorSurface(surface) ||
-    shamellIsCarrierSurface(surface);
+    shamellIsCarrierSurface(surface) ||
+    shamellIsShipperSurface(surface);
 
 bool shamellIsManagedAccountSurface([ShamellAppSurface? surface]) =>
     shamellIsAnyOperatorSurface(surface) || shamellIsSyrComSurface(surface);
@@ -136,6 +147,7 @@ bool shamellSurfaceAllowsPublicAccountCreate([ShamellAppSurface? surface]) {
   //   - TaxiOperator          → rides.driver_ops
   //   - SyrCom                → syrcom.workforce_member
   if (shamellIsCarrierSurface(surface) ||
+      shamellIsShipperSurface(surface) ||
       shamellIsBusOperatorSurface(surface) ||
       shamellIsHotelOperatorSurface(surface) ||
       shamellIsRideOperatorSurface(surface) ||
@@ -152,6 +164,7 @@ bool shamellSurfaceUsesUsernamePasswordAuth([ShamellAppSurface? surface]) {
   // can sign in before the platform role lands. Other managed surfaces
   // still route through their device-approval flows.
   if (shamellIsCarrierSurface(surface) ||
+      shamellIsShipperSurface(surface) ||
       shamellIsBusOperatorSurface(surface) ||
       shamellIsHotelOperatorSurface(surface) ||
       shamellIsRideOperatorSurface(surface) ||

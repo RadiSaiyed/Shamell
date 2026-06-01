@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'coach_miniprogram_page.dart';
 import 'freight/carrier_console_page.dart';
+import 'freight/driver_mini_program_page.dart';
 import 'mini_app_contract.dart';
 import 'mini_app_descriptor.dart';
 import 'mini_apps/hotels_admin_page.dart';
@@ -323,6 +324,28 @@ class MiniAppRegistry {
         runtimeAppId: 'syrtrans',
       ),
     ),
+    // Cycle 207 — SyrTrans Driver mini-program. Lives inside the
+    // SyrChat user flavor (no standalone APK; driver privacy +
+    // device commingling concerns flagged at planning time). Trucker
+    // surface: assigned runs, temperature reading entry, status
+    // transitions (pickup / delivery).
+    _MiniAppRegistration(
+      app: _SyrTransDriverMiniApp(
+        id: 'syrtrans_driver',
+        manifestFallback: _syrTransDriverManifest,
+      ),
+      descriptor: MiniAppDescriptor(
+        id: 'syrtrans_driver',
+        icon: Icons.fire_truck_outlined,
+        titleEn: 'SyrTrans Driver',
+        titleAr: 'سائق سرترانس',
+        categoryEn: 'Logistics',
+        categoryAr: 'الخدمات اللوجستية',
+        rating: 4.6,
+        usageScore: 18,
+        runtimeAppId: 'syrtrans_driver',
+      ),
+    ),
   ];
 
   static MiniApp? byId(String id) {
@@ -377,6 +400,14 @@ class MiniAppRegistry {
         clean == 'syr_trans' ||
         clean == 'syr-trans') {
       return 'syrtrans';
+    }
+    // Cycle 207 — driver mini-program aliases.
+    if (clean == 'driver' ||
+        clean == 'trucker' ||
+        clean == 'syrtrans-driver' ||
+        clean == 'syr_trans_driver' ||
+        clean == 'freight_driver') {
+      return 'syrtrans_driver';
     }
     // Canonical id stays 'tic_tac_toe' for persisted-state stability.
     // First group: legacy aliases from the original classic Tic-Tac-Toe
@@ -575,6 +606,23 @@ class _SyrTransMiniApp extends _RuntimeMiniApp {
       fields: RoleSignupFormFields.carrier,
       builder: (_) => CarrierConsolePage(baseUrl: api.baseUrl),
     );
+  }
+}
+
+/// Cycle 207 — Driver mini-program. Trucker surface inside the
+/// SyrChat user flavor; no RoleSignupGuard because driver linkage is
+/// per-org (a dispatcher binds the driver's account to the carrier
+/// org via freight_drivers.account_id), not a platform role.
+class _SyrTransDriverMiniApp extends _RuntimeMiniApp {
+  const _SyrTransDriverMiniApp({
+    required super.id,
+    super.manifestFallback,
+  });
+
+  @override
+  Widget entry(BuildContext context, SuperappAPI api) {
+    unawaited(api.recordModuleUse(id));
+    return FreightDriverMiniProgramPage(baseUrl: api.baseUrl);
   }
 }
 
@@ -969,6 +1017,36 @@ const MiniProgramManifest _syrTransManifest = MiniProgramManifest(
       labelAr: 'فتح سرترانس',
       kind: MiniProgramActionKind.openMod,
       modId: 'syrtrans',
+    ),
+    MiniProgramAction(
+      id: 'close',
+      labelEn: 'Close',
+      labelAr: 'إغلاق',
+      kind: MiniProgramActionKind.close,
+    ),
+  ],
+);
+
+// Cycle 207 — Driver mini-program manifest.
+const MiniProgramManifest _syrTransDriverManifest = MiniProgramManifest(
+  id: 'syrtrans_driver',
+  titleEn: 'SyrTrans Driver',
+  titleAr: 'سائق سرترانس',
+  descriptionEn:
+      'Trucker companion for SyrTrans haulers. See your assigned runs, '
+      'submit cold-chain temperature readings, and confirm pickup + '
+      'delivery — all without leaving SyrChat.',
+  descriptionAr:
+      'تطبيق السائق لشاحنات سرترانس. شاهد رحلاتك المخصصة، أرسل قراءات '
+      'درجة حرارة سلسلة التبريد، وأكّد الاستلام والتسليم — كل ذلك '
+      'دون الخروج من سرتشات.',
+  actions: [
+    MiniProgramAction(
+      id: 'open_syrtrans_driver',
+      labelEn: 'Open driver app',
+      labelAr: 'فتح تطبيق السائق',
+      kind: MiniProgramActionKind.openMod,
+      modId: 'syrtrans_driver',
     ),
     MiniProgramAction(
       id: 'close',
