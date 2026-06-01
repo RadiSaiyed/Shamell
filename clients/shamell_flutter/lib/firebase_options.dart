@@ -140,9 +140,11 @@ String? _firebaseAndroidAppIdForSurface(ShamellAppSurface surface) {
       // project for online.shamell.hoteloperator.
       return null;
     case ShamellAppSurface.carrier:
-      // Same status as hotelOperator: no Firebase app registered yet
-      // for online.shamell.carrier. Phase 3 (carrier endpoints + push
-      // notifications for load offers) will provision one.
+    case ShamellAppSurface.shipper:
+      // SyrTrans carrier (Phase 3 carrier-side endpoints) +
+      // Cycle 206 shipper-side flavor. Neither has a Firebase
+      // Android app registered yet; both ship without push until
+      // the SyrTrans push integration provisions them.
       return null;
     case ShamellAppSurface.taxiOperator:
       // Standalone Taxi Operator flavor — same status as
@@ -169,6 +171,7 @@ String? _firebaseIosAppIdForSurface(ShamellAppSurface surface) {
     case ShamellAppSurface.hotelOperator:
       return null;
     case ShamellAppSurface.carrier:
+    case ShamellAppSurface.shipper:
       return null;
     case ShamellAppSurface.taxiOperator:
       return null;
@@ -192,6 +195,7 @@ String? _firebaseIosBundleIdForSurface(ShamellAppSurface surface) {
     case ShamellAppSurface.hotelOperator:
       return null;
     case ShamellAppSurface.carrier:
+    case ShamellAppSurface.shipper:
       return null;
     case ShamellAppSurface.taxiOperator:
       return null;
