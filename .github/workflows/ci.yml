@@ -90,7 +90,7 @@ jobs:
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/repo" \
             -w /repo \
-            rhysd/actionlint:1.7.8
+            rhysd/actionlint:1.7.8@sha256:96d4a8c87dbbfb3bdd324f8fdc285fc3df5261e2decc619a4dd7e8ee52bbfd46
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -117,10 +117,12 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
 
       - name: Detect Rust workspace
         id: detect_rust
@@ -166,6 +168,14 @@ jobs:
         if: steps.detect_rust.outputs.present == 'true'
         run: cargo audit -D warnings
 
+      - name: Install cargo-deny
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo install cargo-deny --locked --version 0.19.0
+
+      - name: cargo deny (licenses, bans, sources)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: cargo deny check licenses bans sources
+
       - name: Guard legacy artifacts are absent
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_no_legacy_artifacts.sh
@@ -177,6 +187,58 @@ jobs:
       - name: Guard Nginx edge hardening
         if: steps.detect_rust.outputs.present == 'true'
         run: ./scripts/check_nginx_edge_hardening.sh
+
+      - name: Guard deploy env invariants
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_deploy_env_invariants.sh
+
+      - name: Account-create profile smoke (strict + interim)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: bash ./scripts/ci_account_create_profiles.sh
+
+      - name: Guard image digest pinning
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_image_digest_pinning.sh
+
+      - name: Guard Rust reqwest client timeouts
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_rust_http_client_timeouts.sh
+
+      - name: Guard Rust runtime panic-prone calls
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_runtime_panics.sh
+
+      - name: Guard frontend UI error sanitization
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_frontend_error_sanitization.sh
+
+      - name: Guard Flutter HTTP timeout usage
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_flutter_http_timeouts.sh
+
+      - name: Guard no raw debug logs in Flutter lib
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_raw_debug_logs.sh
+
+      - name: Guard Flutter CI version pinning
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_flutter_ci_version_pinning.sh
+
+      - name: Guard Kotlin/flutter_webrtc compatibility
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_kotlin_webrtc_compat.sh
+
+      - name: Guard no dev-only plugin registrations in Android runtime
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_dev_plugin_registrations.sh
+
+      - name: Guard no secrets in URLs (query strings)
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_secrets_in_urls.sh
+
+      - name: Guard no payments phone routing
+        if: steps.detect_rust.outputs.present == 'true'
+        run: ./scripts/check_no_payments_phone_routing.sh
 
       - name: Skip note (no Cargo.toml)
         if: steps.detect_rust.outputs.present != 'true'
@@ -192,12 +254,73 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
         with:
-          channel: stable
+          flutter-version: "3.38.5"
 
       - name: Flutter pub get
         working-directory: clients/shamell_flutter
         run: flutter pub get
 
-      - name: Flutter smoke test
+      - name: Guard Flutter record platform compatibility
+        run: ./scripts/check_flutter_record_platform_compat.sh
+
+      - name: Guard iOS flutter_webrtc Pod lock sync
+        run: ./scripts/check_ios_webrtc_pod_lock_sync.sh
+
+      - name: Flutter analyze
         working-directory: clients/shamell_flutter
-        run: flutter test test/ratchet_kdf_test.dart
+        run: flutter analyze
+
+      - name: Flutter test suite
+        working-directory: clients/shamell_flutter
+        run: flutter test
+
+  flutter-macos-smoke:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1508160852fb97248640997f7cfb38da241df0ba # v2.9.1
+        with:
+          flutter-version: "3.38.5"
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Flutter pub get
+        working-directory: clients/shamell_flutter
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: clients/shamell_flutter
+        run: flutter analyze
+
+      - name: Build macOS debug app
+        working-directory: clients/shamell_flutter
+        run: flutter build macos --debug --no-pub
+
+      - name: Runtime smoke log guard
+        working-directory: clients/shamell_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="$(mktemp)"
+          flutter run -d macos --debug -t lib/main.dart >"$log_file" 2>&1 &
+          run_pid=$!
+          sleep 45
+          if kill -0 "$run_pid" 2>/dev/null; then
+            kill "$run_pid" || true
+          fi
+          wait "$run_pid" || true
+          echo "---- flutter run log (tail) ----"
+          tail -n 200 "$log_file" || true
+          if ! grep -q "HOME_PAGE_BUILD: Shamell" "$log_file"; then
+            echo "Missing app startup marker in macOS smoke run."
+            exit 1
+          fi
+          if grep -E "OSStatus error 13|Could not locate configuration file: 'GoogleService-Info\\.plist'" "$log_file"; then
+            echo "Detected forbidden runtime errors in macOS smoke run."
+            exit 1
+          fi

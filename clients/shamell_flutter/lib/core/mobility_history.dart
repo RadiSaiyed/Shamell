@@ -1,12 +1,17 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'http_error.dart';
 import 'ui_kit.dart';
 import 'skeleton.dart';
 import 'l10n.dart';
+import 'safe_set_state.dart';
+
+const Duration _mobilityHistoryRequestTimeout = Duration(seconds: 15);
 
 class MobilityHistoryPage extends StatefulWidget {
   final String baseUrl;
@@ -18,7 +23,8 @@ class MobilityHistoryPage extends StatefulWidget {
   State<MobilityHistoryPage> createState() => _MobilityHistoryPageState();
 }
 
-class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
+class _MobilityHistoryPageState extends State<MobilityHistoryPage>
+    with SafeSetStateMixin<MobilityHistoryPage> {
   bool _loading = true;
   String _statusFilter = 'all';
   final List<String> _statuses = const ['all', 'completed', 'canceled'];
@@ -96,8 +102,10 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
       final uri = Uri.parse('${widget.baseUrl}/me/mobility_history')
           .replace(queryParameters: qp);
       final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
-      final r = await http.get(uri, headers: {'Cookie': cookie});
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
+      final r = await http.get(uri, headers: {
+        if (cookie.isNotEmpty) 'cookie': cookie,
+      }).timeout(_mobilityHistoryRequestTimeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final bs = j['bus'];
@@ -115,10 +123,17 @@ class _MobilityHistoryPageState extends State<MobilityHistoryPage> {
           } catch (_) {}
         }
       } else {
-        _out = '${r.statusCode}: ${r.body}';
+        _out = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
       }
     } catch (e) {
-      _out = 'Error: $e';
+      _out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     if (mounted && showSpinner) {
       setState(() => _loading = false);

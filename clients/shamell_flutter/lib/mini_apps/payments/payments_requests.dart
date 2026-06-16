@@ -3,12 +3,16 @@ import 'package:flutter/material.dart';
 import '../../core/glass.dart';
 import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/l10n.dart';
 import '../../core/app_shell_widgets.dart' show AppBG; // reuse bg only
 import 'payments_send.dart' show PayActionButton;
 import '../../core/format.dart' show fmtCents;
 import '../../core/design_tokens.dart';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import '../../core/http_error.dart';
+import '../../core/safe_set_state.dart';
+
+const Duration _paymentsRequestsRequestTimeout = Duration(seconds: 15);
 
 class IncomingRequestBanner extends StatelessWidget {
   final Map<String, dynamic> req;
@@ -66,7 +70,8 @@ class RequestsPage extends StatefulWidget {
   State<RequestsPage> createState() => _RequestsPageState();
 }
 
-class _RequestsPageState extends State<RequestsPage> {
+class _RequestsPageState extends State<RequestsPage>
+    with SafeSetStateMixin<RequestsPage> {
   List<Map<String, dynamic>> incoming = [];
   List<Map<String, dynamic>> outgoing = [];
   String out = '';
@@ -86,7 +91,10 @@ class _RequestsPageState extends State<RequestsPage> {
       outgoing = o;
       out = '';
     } catch (e) {
-      out = '${L10n.of(context).historyErrorPrefix}: $e';
+      out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
     }
     setState(() => loading = false);
   }
@@ -97,36 +105,62 @@ class _RequestsPageState extends State<RequestsPage> {
         '&kind=' +
         kind +
         '&limit=100');
-    final r = await http.get(u, headers: await _hdrPR());
-    if (r.statusCode != 200) throw Exception('${r.statusCode}: ${r.body}');
+    final r = await http
+        .get(u, headers: await _hdrPR(widget.baseUrl))
+        .timeout(_paymentsRequestsRequestTimeout);
+    if (r.statusCode != 200) {
+      throw Exception(
+        sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        ),
+      );
+    }
     return (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
   }
 
   Future<void> _accept(String id) async {
-    final r = await http.post(
-        Uri.parse('${widget.baseUrl}/payments/requests/' +
-            Uri.encodeComponent(id) +
-            '/accept'),
-        headers: await _hdrPR());
+    final r = await http
+        .post(
+            Uri.parse('${widget.baseUrl}/payments/requests/' +
+                Uri.encodeComponent(id) +
+                '/accept'),
+            headers: await _hdrPR(widget.baseUrl))
+        .timeout(_paymentsRequestsRequestTimeout);
     if (!mounted) return;
     if (r.statusCode == 200) {
       _loadAll();
     } else {
-      setState(() => out = '${r.statusCode}: ${r.body}');
+      setState(() {
+        out = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     }
   }
 
   Future<void> _cancel(String id) async {
-    final r = await http.post(
-        Uri.parse('${widget.baseUrl}/payments/requests/' +
-            Uri.encodeComponent(id) +
-            '/cancel'),
-        headers: await _hdrPR());
+    final r = await http
+        .post(
+            Uri.parse('${widget.baseUrl}/payments/requests/' +
+                Uri.encodeComponent(id) +
+                '/cancel'),
+            headers: await _hdrPR(widget.baseUrl))
+        .timeout(_paymentsRequestsRequestTimeout);
     if (!mounted) return;
     if (r.statusCode == 200) {
       _loadAll();
     } else {
-      setState(() => out = '${r.statusCode}: ${r.body}');
+      setState(() {
+        out = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
+      });
     }
   }
 
@@ -402,15 +436,14 @@ class _RequestsPageState extends State<RequestsPage> {
   }
 }
 
-Future<String?> _getCookiePR() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+Future<String?> _getCookiePR(String baseUrl) async {
+  return await getSessionCookieHeader(baseUrl);
 }
 
-Future<Map<String, String>> _hdrPR({bool json = false}) async {
+Future<Map<String, String>> _hdrPR(String baseUrl, {bool json = false}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
-  final c = await _getCookiePR();
-  if (c != null && c.isNotEmpty) h['Cookie'] = c;
+  final c = await _getCookiePR(baseUrl);
+  if (c != null && c.isNotEmpty) h['cookie'] = c;
   return h;
 }

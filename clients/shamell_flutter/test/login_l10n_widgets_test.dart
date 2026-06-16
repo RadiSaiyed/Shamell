@@ -13,12 +13,12 @@ void main() {
   testWidgets('LoginPage shows EN labels', (tester) async {
     final lEn = L10n(const Locale('en'));
     expect(lEn.loginTitle, 'Sign in');
-    expect(lEn.loginPhone, 'Phone (+963…)');
+    expect(lEn.loginBiometricSignIn, 'Sign in with biometrics');
   });
 
   testWidgets('LoginPage shows AR labels', (tester) async {
     final lAr = L10n(const Locale('ar'));
     expect(lAr.loginTitle, 'تسجيل الدخول');
-    expect(lAr.loginPhone, 'رقم الهاتف (+963…)');
+    expect(lAr.loginBiometricSignIn, 'تسجيل الدخول بالبصمة');
   });
 }

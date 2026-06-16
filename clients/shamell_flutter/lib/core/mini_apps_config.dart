@@ -5,7 +5,7 @@ export 'mini_app_descriptor.dart';
 
 /// Global mini-app registry for the enduser Shamell app.
 ///
-/// WeChat‑style: this list is derived from the single MiniAppRegistry
+/// Shamell‑style: this list is derived from the single MiniAppRegistry
 /// source of truth.
 List<MiniAppDescriptor> get kMiniApps => MiniAppRegistry.descriptors;
 

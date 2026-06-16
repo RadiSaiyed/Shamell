@@ -1,5 +1,7 @@
 part of '../main.dart';
 
+const Duration _accountCreateRequestTimeout = Duration(seconds: 15);
+
 class SuperApp extends StatelessWidget {
   const SuperApp({super.key});
 
@@ -7,9 +9,12 @@ class SuperApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     // Debug log to verify HomePage from this repo is running on device.
-    debugPrint('HOME_PAGE_BUILD: Shamell');
-    // WeChat-like light theme: flat surfaces + WeChat green accent.
-    const wechatGreen = WeChatPalette.green;
+    assert(() {
+      debugPrint('HOME_PAGE_BUILD: Shamell');
+      return true;
+    }());
+    // Shamell-like light theme: flat surfaces + Shamell green accent.
+    const shamellGreen = ShamellPalette.green;
     final baseBtnShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(8),
     );
@@ -17,21 +22,21 @@ class SuperApp extends StatelessWidget {
       useMaterial3: true,
       brightness: Brightness.light,
       colorScheme: const ColorScheme.light(
-        primary: wechatGreen,
-        secondary: wechatGreen,
+        primary: shamellGreen,
+        secondary: shamellGreen,
         surface: Colors.white,
         onSurface: Color(0xFF111111),
       ),
-      scaffoldBackgroundColor: WeChatPalette.background,
-      dividerColor: WeChatPalette.divider,
+      scaffoldBackgroundColor: ShamellPalette.background,
+      dividerColor: ShamellPalette.divider,
       dividerTheme: const DividerThemeData(
-        color: WeChatPalette.divider,
+        color: ShamellPalette.divider,
         thickness: 0.5,
         space: 1,
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
         backgroundColor: Colors.white,
-        selectedItemColor: wechatGreen,
+        selectedItemColor: shamellGreen,
         unselectedItemColor: Color(0xFF8A8A8A),
         elevation: 0.5,
       ),
@@ -42,7 +47,7 @@ class SuperApp extends StatelessWidget {
       elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
         elevation: 0,
-        backgroundColor: wechatGreen,
+        backgroundColor: shamellGreen,
         foregroundColor: Colors.white,
         shape: baseBtnShape,
         minimumSize: const Size.fromHeight(48),
@@ -50,7 +55,7 @@ class SuperApp extends StatelessWidget {
       filledButtonTheme: FilledButtonThemeData(
           style: ButtonStyle(
         elevation: const WidgetStatePropertyAll(0),
-        backgroundColor: const WidgetStatePropertyAll(wechatGreen),
+        backgroundColor: const WidgetStatePropertyAll(shamellGreen),
         foregroundColor: const WidgetStatePropertyAll(Colors.white),
         shape: WidgetStatePropertyAll(baseBtnShape),
         minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
@@ -74,7 +79,7 @@ class SuperApp extends StatelessWidget {
             borderSide: const BorderSide(color: Color(0xFFDDDDDD), width: 1.0)),
         focusedBorder: const OutlineInputBorder(
             borderRadius: BorderRadius.all(Radius.circular(16)),
-            borderSide: BorderSide(color: wechatGreen, width: 2.0)),
+            borderSide: BorderSide(color: shamellGreen, width: 2.0)),
         labelStyle: const TextStyle(color: Color(0xFF555555)),
         hintStyle: const TextStyle(color: Color(0xFF999999)),
       ),
@@ -82,7 +87,7 @@ class SuperApp extends StatelessWidget {
         color: Colors.white,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: WeChatPalette.divider)),
+            side: const BorderSide(color: ShamellPalette.divider)),
         elevation: 0,
         shadowColor: Colors.black.withValues(alpha: .05),
       ),
@@ -109,8 +114,8 @@ class SuperApp extends StatelessWidget {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
-        primary: wechatGreen,
-        secondary: wechatGreen,
+        primary: shamellGreen,
+        secondary: shamellGreen,
         surface: Color(0xFF1C1C1E),
         onSurface: Color(0xFFEDEDED),
       ),
@@ -123,7 +128,7 @@ class SuperApp extends StatelessWidget {
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
         backgroundColor: Color(0xFF1C1C1E),
-        selectedItemColor: wechatGreen,
+        selectedItemColor: shamellGreen,
         unselectedItemColor: Color(0xFF9A9A9A),
         elevation: 0.5,
       ),
@@ -136,7 +141,7 @@ class SuperApp extends StatelessWidget {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           elevation: 0,
-          backgroundColor: wechatGreen,
+          backgroundColor: shamellGreen,
           foregroundColor: Colors.white,
           shape: baseBtnShape,
           minimumSize: const Size.fromHeight(48),
@@ -145,7 +150,7 @@ class SuperApp extends StatelessWidget {
       filledButtonTheme: FilledButtonThemeData(
         style: ButtonStyle(
           elevation: const WidgetStatePropertyAll(0),
-          backgroundColor: const WidgetStatePropertyAll(wechatGreen),
+          backgroundColor: const WidgetStatePropertyAll(shamellGreen),
           foregroundColor: const WidgetStatePropertyAll(Colors.white),
           shape: WidgetStatePropertyAll(baseBtnShape),
           minimumSize: const WidgetStatePropertyAll(Size.fromHeight(48)),
@@ -174,7 +179,7 @@ class SuperApp extends StatelessWidget {
         ),
         focusedBorder: const OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(16)),
-          borderSide: BorderSide(color: wechatGreen, width: 2.0),
+          borderSide: BorderSide(color: shamellGreen, width: 2.0),
         ),
         labelStyle: const TextStyle(color: Color(0xFFB0B0B0)),
         hintStyle: const TextStyle(color: Color(0xFF8A8A8A)),
@@ -275,28 +280,37 @@ class AppScaffold extends StatelessWidget {
 }
 
 Future<String?> _getCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final base = (sp.getString('base_url') ?? '').trim();
+    if (base.isNotEmpty) {
+      return await getSessionCookieHeader(base);
+    }
+  } catch (_) {}
+  final fallbackBase = const String.fromEnvironment(
+    'BASE_URL',
+    defaultValue: 'https://api.shamell.online',
+  );
+  return await getSessionCookieHeader(fallbackBase);
 }
 
-Future<void> _setCookie(String v) async {
-  final sp = await SharedPreferences.getInstance();
-  await sp.setString('sa_cookie', v);
-}
-
-Future<void> _clearCookie() async {
-  final sp = await SharedPreferences.getInstance();
-  await sp.remove('sa_cookie');
-}
-
-Future<Map<String, String>> _hdr({bool json = false}) async {
+Future<Map<String, String>> _hdr({bool json = false, String? baseUrl}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
-  final c = await _getCookie();
-  if (c != null && c.isNotEmpty) {
-    // Custom Header statt Cookie-Header, damit Web-Clients nicht
-    // an Browser-Restriktionen scheitern.
-    h['sa_cookie'] = c;
+  final host = Uri.tryParse((baseUrl ?? '').trim())?.host.toLowerCase();
+  if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
+    // Local dev shortcut: edge-attested client IP is normally injected by
+    // reverse proxy; direct localhost calls provide an explicit loopback IP.
+    h['x-shamell-client-ip'] = '127.0.0.1';
+  }
+  final b = (baseUrl ?? '').trim();
+  if (b.isNotEmpty) {
+    final c = await getSessionCookieHeader(b);
+    if (c != null && c.isNotEmpty) {
+      // Best practice: use real Cookie header so prod/staging can disable
+      // header-based session auth without breaking native clients.
+      h['cookie'] = c;
+    }
   }
   return h;
 }
@@ -308,476 +322,498 @@ class LoginGate extends StatefulWidget {
 }
 
 class _LoginGateState extends State<LoginGate> {
-  String? _c;
-  bool _skip = false;
-  @override
-  void initState() {
-    super.initState();
-    _init();
-  }
-
-  Future<void> _init() async {
-    _c = await _getCookie();
-    // In Hybrid (APP_MODE=auto), always show login; never skip.
-    final defSkip = _envSkipLogin ||
-        (currentAppMode != AppMode.auto &&
-            (currentAppMode == AppMode.operator ||
-                currentAppMode == AppMode.admin));
-    bool skip = defSkip;
-    bool requireBiometrics = false;
-    try {
-      final sp = await SharedPreferences.getInstance();
-      skip = sp.getBool('skip_login') ?? defSkip;
-      requireBiometrics = sp.getBool('require_biometrics') ?? false;
-    } catch (_) {
-      skip = defSkip;
-    }
-    // When a session cookie exists and the user has previously
-    // completed OTP login on this device, optionally gate access
-    // behind biometrics instead of auto-skipping the login screen.
-    if (!kIsWeb &&
-        requireBiometrics &&
-        _c != null &&
-        _c!.isNotEmpty &&
-        (currentAppMode == AppMode.user ||
-            currentAppMode == AppMode.operator ||
-            currentAppMode == AppMode.admin)) {
-      final ok = await _authenticateWithBiometrics();
-      skip = ok;
-    }
-    if (!mounted) return;
-    setState(() {
-      _skip = skip;
-    });
-  }
-
-  Future<bool> _authenticateWithBiometrics() async {
-    try {
-      final auth = LocalAuthentication();
-      final canCheck =
-          await auth.canCheckBiometrics || await auth.isDeviceSupported();
-      if (!canCheck) {
-        // If the device no longer supports biometrics, fall back to
-        // normal cookie-based auto-login.
-        return true;
-      }
-      const reason = 'Authenticate to unlock Shamell';
-      final didAuth = await auth.authenticate(
-        localizedReason: reason,
-        options: const AuthenticationOptions(
-          biometricOnly: true,
-        ),
-      );
-      return didAuth;
-    } catch (_) {
-      // Never hard-block login because of biometric errors.
-      return true;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    // In Hybrid mode always force explicit login first.
-    if (currentAppMode == AppMode.auto) {
-      return const LoginPage();
-    }
-    return (_skip || (_c != null && _c!.isNotEmpty))
-        ? const HomePage()
-        : const LoginPage();
+    return const HomePage(lockedMode: AppMode.user);
   }
 }
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final bool hasSession;
+  const LoginPage({super.key, this.hasSession = false});
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage>
+    with SafeSetStateMixin<LoginPage> {
   final baseCtrl = TextEditingController(
     text: const String.fromEnvironment(
       'BASE_URL',
-      defaultValue: 'http://localhost:8080',
+      defaultValue: 'https://api.shamell.online',
     ),
   );
-  final nameCtrl = TextEditingController();
-  final phoneCtrl = TextEditingController();
-  final codeCtrl = TextEditingController();
   String out = '';
-  AppMode _loginMode = AppMode.user;
-  static const List<String> _regionCodes = <String>[
-    '+963',
-    '+971',
-    '+966',
-  ];
-  String _selectedDialCode = '+963';
-  bool _superadminLogin = false;
-  bool _driverLogin = false;
-  bool _canBiometricLogin = false;
-  bool _showAdvanced = false;
+  bool _busy = false;
+  bool _hasSessionCookie = false;
+  bool _autoCreateKickoffScheduled = false;
+  Timer? _autoCreateRetryTimer;
+
   @override
   void initState() {
     super.initState();
     _loadBase();
   }
 
+  @override
+  void dispose() {
+    _autoCreateRetryTimer?.cancel();
+    baseCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadBase() async {
+    final fallbackBase = const String.fromEnvironment(
+      'BASE_URL',
+      defaultValue: 'https://api.shamell.online',
+    ).trim();
+    final fallbackHost = Uri.tryParse(fallbackBase)?.host ?? '';
+    final hasReachableFallback = fallbackBase.isNotEmpty &&
+        isSecureApiBaseUrl(fallbackBase) &&
+        !isLocalhostHost(fallbackHost);
+
     try {
       final sp = await SharedPreferences.getInstance();
-      final b = sp.getString('base_url');
-      if (b != null && b.isNotEmpty) {
-        final v = b.trim();
-        // Ignore legacy dev defaults so the new
-        // default BFF port (8080) is used automatically.
-        if (!(v.contains('localhost:5003') || v.contains('127.0.0.1:5003'))) {
-          baseCtrl.text = v;
-        }
-      }
-      final lastPhone = sp.getString('last_login_phone');
-      String? detectedDialCode;
-      String? localPhonePart;
-      if (lastPhone != null && lastPhone.isNotEmpty) {
-        final v = lastPhone.trim();
-        for (final code in _regionCodes) {
-          if (v.startsWith(code)) {
-            detectedDialCode = code;
-            localPhonePart = v.substring(code.length);
-            break;
-          }
-        }
-        phoneCtrl.text = localPhonePart ?? v;
-      }
-      final lastName = sp.getString('last_login_name');
-      if (lastName != null && lastName.isNotEmpty) {
-        nameCtrl.text = lastName;
-      }
-      final requireBiometrics = sp.getBool('require_biometrics') ?? false;
-      final cookie = await _getCookie();
-      final hasCookie = cookie != null && cookie.isNotEmpty;
-      final canBio = !kIsWeb && requireBiometrics && hasCookie;
-      if (mounted) {
-        setState(() {
-          _canBiometricLogin = canBio;
-          if (detectedDialCode != null && detectedDialCode.isNotEmpty) {
-            _selectedDialCode = detectedDialCode!;
-          }
-        });
-      }
-    } catch (_) {}
-  }
-
-  String _normalizedPhone() {
-    final raw = phoneCtrl.text.trim();
-    if (raw.isEmpty) return raw;
-    if (raw.startsWith('+')) return raw;
-    final code = _selectedDialCode.trim();
-    if (code.isEmpty) return raw;
-    return '$code$raw';
-  }
-
-  Future<void> _request() async {
-    setState(() => out = 'Requesting code…');
-    final uri = Uri.parse('${baseCtrl.text.trim()}/auth/request_code');
-    final resp = await http.post(uri,
-        headers: await _hdr(json: true),
-        body: jsonEncode({'phone': _normalizedPhone()}));
-    try {
-      final j = jsonDecode(resp.body);
-      final code = (j['code'] ?? '').toString();
-      codeCtrl.text = code;
-      if (resp.statusCode == 200) {
-        final ttl = j['ttl'];
-        final ttlText = ttl is int ? 'Valid for ${(ttl / 60).round()} min' : '';
-        setState(
-            () => out = ttlText.isEmpty ? 'Code sent.' : 'Code sent. $ttlText');
-        if (code.isNotEmpty && mounted) {
-          showDialog(
-            context: context,
-            builder: (_) => AlertDialog(
-              title: const Text('Demo OTP'),
-              content: SelectableText(code,
-                  style: const TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.w700)),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: code));
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('OTP copied')));
-                  },
-                  child: const Text('Copy'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _verify();
-                  },
-                  child: const Text('Auto verify'),
-                ),
-              ],
-            ),
-          );
-        }
-      } else if (resp.statusCode == 429) {
-        // Freundliche Backoff-Anzeige (z.B. bei Rate-Limiting)
-        showBackoff(context, resp);
-        setState(() => out = 'Too many attempts. Please wait a moment.');
+      final stored = (sp.getString('base_url') ?? '').trim();
+      final host = Uri.tryParse(stored)?.host ?? '';
+      final shouldPinToFallback = stored.isEmpty ||
+          !isSecureApiBaseUrl(stored) ||
+          (hasReachableFallback && stored != fallbackBase) ||
+          (hasReachableFallback && isLocalhostHost(host));
+      if (shouldPinToFallback) {
+        baseCtrl.text = fallbackBase;
+        try {
+          await sp.setString('base_url', fallbackBase);
+        } catch (_) {}
       } else {
-        setState(() => out = 'Could not send code (${resp.statusCode}).');
-      }
-    } catch (_) {
-      setState(() => out = 'Unexpected response (${resp.statusCode}).');
-    }
-  }
-
-  Future<void> _verify() async {
-    setState(() => out = 'Verifying…');
-    final uri = Uri.parse('${baseCtrl.text.trim()}/auth/verify');
-    final deviceId = await getOrCreateStableDeviceId();
-    final resp = await http.post(uri,
-        headers: await _hdr(json: true),
-        body: jsonEncode({
-          'phone': _normalizedPhone(),
-          'code': codeCtrl.text.trim(),
-          'name': nameCtrl.text.trim(),
-          'device_id': deviceId,
-        }));
-    // Prefer reading session ID from JSON body (for web):
-    try {
-      final j = jsonDecode(resp.body);
-      final sess = (j['session'] ?? '').toString();
-      if (sess.isNotEmpty) {
-        await _setCookie('sa_session=$sess');
-      }
-    } catch (_) {
-      // Fallback: Set-Cookie header (only works outside the browser)
-      try {
-        final sc = resp.headers['set-cookie'];
-        if (sc != null) {
-          final m = RegExp(r'sa_session=([^;]+)').firstMatch(sc);
-          if (m != null) {
-            await _setCookie('sa_session=${m.group(1)}');
-          }
-        }
-      } catch (_) {}
-    }
-    if (resp.statusCode == 200) {
-      setState(() => out = 'Signed in successfully.');
-    } else if (resp.statusCode == 400) {
-      setState(() => out = 'Invalid code. Please try again.');
-    } else if (resp.statusCode == 429) {
-      setState(() => out = 'Too many attempts. Please wait a moment.');
-    } else {
-      setState(() => out = 'Login failed (${resp.statusCode}).');
-    }
-    if (!mounted) return;
-    if (resp.statusCode == 200) {
-      try {
-        final sp = await SharedPreferences.getInstance();
-        await sp.setString('base_url', baseCtrl.text.trim());
-        await sp.setString('last_login_phone', _normalizedPhone());
-        await sp.setString('last_login_name', nameCtrl.text.trim());
-        // Mark this device as eligible for biometric login
-        // after the first successful OTP sign-in.
-        await sp.setBool('require_biometrics', true);
-      } catch (_) {}
-      // Decide post-login destination based on selected login mode.
-      await _handlePostLoginNavigation();
-    }
-  }
-
-  Future<void> _loginWithBiometrics() async {
-    if (kIsWeb) {
-      setState(() => out = 'Biometric login is not available on web.');
-      return;
-    }
-    setState(() => out = 'Authenticating…');
-    try {
-      final auth = LocalAuthentication();
-      final canCheck =
-          await auth.canCheckBiometrics || await auth.isDeviceSupported();
-      if (!canCheck) {
-        setState(() =>
-            out = 'Biometric authentication is not available on this device.');
-        return;
-      }
-      const reason = 'Authenticate to unlock Shamell';
-      final didAuth = await auth.authenticate(
-        localizedReason: reason,
-        options: const AuthenticationOptions(
-          biometricOnly: true,
-        ),
-      );
-      if (!didAuth) {
-        setState(() => out = 'Authentication cancelled.');
-        return;
-      }
-    } catch (e) {
-      setState(() => out = 'Biometric authentication failed: $e');
-      return;
-    }
-    // Reuse stored base URL and phone (if any) and continue
-    // with the same post-login navigation as after OTP login.
-    try {
-      final sp = await SharedPreferences.getInstance();
-      final b = sp.getString('base_url');
-      final lastPhone = sp.getString('last_login_phone');
-      if (b != null && b.isNotEmpty) {
-        baseCtrl.text = b.trim();
-      }
-      if (lastPhone != null && lastPhone.isNotEmpty) {
-        phoneCtrl.text = lastPhone;
+        baseCtrl.text = stored;
       }
     } catch (_) {}
-    await _handlePostLoginNavigation();
+    await _maybeAutoCreateOnFirstLaunch();
+  }
+
+  bool _shouldAutoCreateNow() {
+    if (kIsWeb) return false;
+    final isMobilePlatform = defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    if (!isMobilePlatform) return false;
+    if (widget.hasSession || _hasSessionCookie) {
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _maybeAutoCreateOnFirstLaunch() async {
+    if (!mounted || _autoCreateKickoffScheduled || !_shouldAutoCreateNow()) {
+      return;
+    }
+    _autoCreateKickoffScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _busy || !_shouldAutoCreateNow()) return;
+      unawaited(_createNewAccount());
+    });
+  }
+
+  void _scheduleAutoCreateRetry({
+    Duration delay = const Duration(seconds: 4),
+  }) {
+    if (!mounted || !_shouldAutoCreateNow()) return;
+    if (_autoCreateRetryTimer?.isActive == true) return;
+    _autoCreateRetryTimer = Timer(delay, () {
+      if (!mounted || _busy || !_shouldAutoCreateNow()) return;
+      unawaited(_createNewAccount());
+    });
+  }
+
+  String _extractApiDetail(String rawBody) {
+    final text = rawBody.trim();
+    if (text.isEmpty) return '';
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        final detail = decoded['detail'];
+        if (detail is String) return detail.trim();
+      }
+    } catch (_) {}
+    return text;
+  }
+
+  String _accountCreateHttpError({
+    required int statusCode,
+    required String rawBody,
+    required bool isArabic,
+  }) {
+    final detail = _extractApiDetail(rawBody).toLowerCase();
+    if (detail.contains('account creation temporarily unavailable')) {
+      return isArabic
+          ? 'إنشاء حساب جديد معطّل على هذا الخادم حالياً.'
+          : 'New account creation is currently disabled on this server.';
+    }
+    if (detail.contains('internal auth required')) {
+      return isArabic
+          ? 'هذا الخادم لا يسمح بإنشاء حسابات عامة.'
+          : 'This server does not allow public account creation.';
+    }
+    if (statusCode == 404 && (detail.isEmpty || detail.contains('not found'))) {
+      return isArabic
+          ? 'هذا الخادم لا يدعم إنشاء حساب جديد حالياً.'
+          : 'This server does not currently support new account creation.';
+    }
+    return sanitizeHttpError(
+      statusCode: statusCode,
+      rawBody: rawBody,
+      isArabic: isArabic,
+    );
+  }
+
+  bool _isAccountCreatePermanentFailure({
+    required int statusCode,
+    required String rawBody,
+  }) {
+    final detail = _extractApiDetail(rawBody).toLowerCase();
+    if (detail.contains('account creation temporarily unavailable'))
+      return true;
+    if (detail.contains('internal auth required')) return true;
+    if (statusCode == 404 && (detail.isEmpty || detail.contains('not found'))) {
+      return true;
+    }
+    return false;
+  }
+
+  bool _isRetryableHttpStatus(int statusCode) {
+    return statusCode == 408 ||
+        statusCode == 425 ||
+        statusCode == 429 ||
+        statusCode >= 500;
+  }
+
+  bool _isLikelyNetworkError(Object error) {
+    final raw = error.toString().toLowerCase();
+    return raw.contains('socket') ||
+        raw.contains('network') ||
+        raw.contains('connection') ||
+        raw.contains('timeout');
+  }
+
+  String _sanitizeLoginException({
+    required Object error,
+    required bool isArabic,
+    String? baseUrl,
+  }) {
+    final fallback = sanitizeExceptionForUi(error: error, isArabic: isArabic);
+    final raw = error.toString().trim().toLowerCase();
+    final isLikelyNetwork = raw.contains('socket') ||
+        raw.contains('network') ||
+        raw.contains('connection') ||
+        raw.contains('timeout');
+    final isMobilePlatform = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android);
+    if (!isLikelyNetwork || !isMobilePlatform) return fallback;
+
+    final base = (baseUrl ?? baseCtrl.text).trim();
+    final host = Uri.tryParse(base)?.host ?? '';
+    if (!isLocalhostHost(host)) return fallback;
+
+    return isArabic
+        ? 'خطأ في الشبكة. على الهاتف يشير localhost إلى نفس الجهاز. استخدم رابط خادم قابل للوصول (ويُفضَّل HTTPS).'
+        : 'Network error. On a phone, localhost points to the phone itself. Use a reachable server URL (HTTPS preferred).';
+  }
+
+  Future<void> _createNewAccount() async {
+    void setOutSafe(String message) {
+      if (!mounted) return;
+      setState(() => out = message);
+    }
+
+    final l = L10n.of(context);
+    if (_busy) return;
+    final base = baseCtrl.text.trim();
+    if (base.isEmpty) {
+      setOutSafe(
+          l.isArabic ? 'عنوان الخادم مطلوب.' : 'Server URL is required.');
+      return;
+    }
+    if (!isSecureApiBaseUrl(base)) {
+      setOutSafe(l.isArabic
+          ? 'يجب استخدام HTTPS (وفي وضع التطوير يُسمح بـ HTTP على localhost أو الشبكة المحلية).'
+          : 'HTTPS is required (non-release builds also allow HTTP for localhost/LAN).');
+      return;
+    }
+    if (kIsWeb) {
+      setOutSafe(l.isArabic
+          ? 'إنشاء حساب جديد غير متاح على الويب.'
+          : 'Creating a new account is not available on web.');
+      return;
+    }
+    final isMobilePlatform = defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    if (!isMobilePlatform) {
+      setOutSafe(l.isArabic
+          ? 'إنشاء معرّف جديد متاح فقط على iOS/Android.'
+          : 'Creating a new ID is only supported on iOS/Android.');
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+      out =
+          l.isArabic ? 'جارٍ إنشاء معرّف جديد…' : 'Creating a new Shamell ID…';
+    });
+
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.setString('base_url', base);
+    } catch (_) {}
+
+    final deviceId = await getOrCreateStableDeviceId();
+    final didTrim = deviceId.trim();
+    String? powSolution;
+    String? challengeToken;
+    String? iosDeviceCheckTokenB64;
+    String? androidPlayIntegrityToken;
+
+    // Best practice: for public account creation, require an attestation layer.
+    // Server policy may enforce:
+    // - PoW (cheap, anti-abuse)
+    // - hardware attestation (stronger anti-fraud / anti-bot)
+    final challengeUri =
+        Uri.parse('${base.trim()}/auth/account/create/challenge');
+    try {
+      Future<bool> prepareAttestation() async {
+        powSolution = null;
+        challengeToken = null;
+        iosDeviceCheckTokenB64 = null;
+        androidPlayIntegrityToken = null;
+
+        final chResp = await http.post(
+          challengeUri,
+          headers: await _hdr(json: true, baseUrl: base),
+          body: jsonEncode(<String, Object?>{
+            'device_id': didTrim.isEmpty ? null : didTrim,
+          }),
+        ).timeout(_accountCreateRequestTimeout);
+        if (chResp.statusCode == 404) {
+          // Legacy dev servers may not have attestation endpoints.
+          return true;
+        }
+        if (chResp.statusCode != 200) {
+          if (_isRetryableHttpStatus(chResp.statusCode) &&
+              !_isAccountCreatePermanentFailure(
+                statusCode: chResp.statusCode,
+                rawBody: chResp.body,
+              )) {
+            _scheduleAutoCreateRetry();
+          }
+          setOutSafe(_accountCreateHttpError(
+            statusCode: chResp.statusCode,
+            rawBody: chResp.body,
+            isArabic: l.isArabic,
+          ));
+          return false;
+        }
+
+        final decoded = jsonDecode(chResp.body);
+        if (decoded is! Map) {
+          setOutSafe(l.isArabic
+              ? 'استجابة غير صالحة من الخادم.'
+              : 'Invalid server response.');
+          return false;
+        }
+
+        final tok = (decoded['challenge_token'] ?? decoded['token'] ?? '')
+            .toString()
+            .trim();
+        if (tok.isNotEmpty) {
+          challengeToken = tok;
+        }
+
+        final hwEnabled = decoded['hw_attestation_enabled'] == true;
+        final hwRequired = decoded['hw_attestation_required'] == true;
+        final hwNonceB64 =
+            (decoded['hw_attestation_nonce_b64'] ?? '').toString().trim();
+
+        if (hwEnabled) {
+          if (!mounted) return false;
+          setState(() {
+            out = l.isArabic ? 'جارٍ التحقق من الجهاز…' : 'Attesting device…';
+          });
+
+          // Each platform returns its own token; others return null.
+          iosDeviceCheckTokenB64 =
+              await HardwareAttestation.tryGetAppleDeviceCheckTokenB64();
+          androidPlayIntegrityToken =
+              await HardwareAttestation.tryGetPlayIntegrityToken(
+            nonceB64: hwNonceB64,
+          );
+
+          final ok = (iosDeviceCheckTokenB64 != null &&
+                  iosDeviceCheckTokenB64!.trim().isNotEmpty) ||
+              (androidPlayIntegrityToken != null &&
+                  androidPlayIntegrityToken!.trim().isNotEmpty);
+          if (!ok && hwRequired) {
+            setOutSafe(l.isArabic
+                ? 'تعذّر إجراء التحقق من الجهاز.'
+                : 'Device attestation failed.');
+            return false;
+          }
+        }
+
+        final powEnabled = decoded['enabled'] == true;
+        if (powEnabled) {
+          final token = (decoded['token'] ?? '').toString().trim();
+          final nonce = (decoded['nonce'] ?? '').toString().trim();
+          final diffRaw = decoded['difficulty_bits'];
+          final diffBits = diffRaw is num
+              ? diffRaw.toInt()
+              : int.tryParse((diffRaw ?? '').toString()) ?? -1;
+          if (token.isEmpty || nonce.isEmpty || diffBits < 0) {
+            setOutSafe(l.isArabic
+                ? 'فشل إنشاء التحقق. حاول مرة أخرى.'
+                : 'Failed to start attestation. Try again.');
+            return false;
+          }
+          // Keep compatibility: if server only returns `token` when PoW is enabled,
+          // treat it as the challenge token.
+          if (challengeToken == null || challengeToken!.trim().isEmpty) {
+            challengeToken = token;
+          }
+
+          if (!mounted) return false;
+          setState(() {
+            out =
+                l.isArabic ? 'جارٍ التحقق من الجهاز…' : 'Solving attestation…';
+          });
+
+          final sol = await compute(
+            shamellSolveAccountCreatePow,
+            <String, Object?>{
+              'nonce': nonce,
+              'device_id': didTrim,
+              'difficulty_bits': diffBits,
+              'max_millis': 15000,
+              'max_iters': 50000000,
+            },
+          );
+          if (sol == null || sol.trim().isEmpty) {
+            setOutSafe(l.isArabic
+                ? 'تعذّر حل التحقق. حاول مرة أخرى.'
+                : 'Could not solve attestation. Try again.');
+            return false;
+          }
+          powSolution = sol.trim();
+        }
+
+        return true;
+      }
+
+      final ok = await prepareAttestation();
+      if (!ok) {
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+
+      Future<http.Response> doCreate() async {
+        final uri = Uri.parse('${base.trim()}/auth/account/create');
+        return http
+            .post(
+              uri,
+              headers: await _hdr(json: true, baseUrl: base),
+              body: jsonEncode(<String, Object?>{
+                'device_id': didTrim.isEmpty ? null : didTrim,
+                if (challengeToken != null) 'challenge_token': challengeToken,
+                if (challengeToken != null) 'pow_token': challengeToken,
+                if (powSolution != null) 'pow_solution': powSolution,
+                if (iosDeviceCheckTokenB64 != null)
+                  'ios_devicecheck_token_b64': iosDeviceCheckTokenB64,
+                if (androidPlayIntegrityToken != null)
+                  'android_play_integrity_token': androidPlayIntegrityToken,
+              }),
+            )
+            .timeout(_accountCreateRequestTimeout);
+      }
+
+      var resp = await doCreate();
+      if (resp.statusCode == 401) {
+        final detail = _extractApiDetail(resp.body).toLowerCase();
+        if (detail.contains('attestation required')) {
+          // One retry: refresh challenge in case it expired or was invalidated.
+          final ok2 = await prepareAttestation();
+          if (ok2) {
+            resp = await doCreate();
+          }
+        }
+      }
+
+      if (resp.statusCode != 200) {
+        if (_isRetryableHttpStatus(resp.statusCode) &&
+            !_isAccountCreatePermanentFailure(
+              statusCode: resp.statusCode,
+              rawBody: resp.body,
+            )) {
+          _scheduleAutoCreateRetry();
+        }
+        setOutSafe(_accountCreateHttpError(
+          statusCode: resp.statusCode,
+          rawBody: resp.body,
+          isArabic: l.isArabic,
+        ));
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+
+      final sess =
+          extractSessionTokenFromSetCookieHeader(resp.headers['set-cookie']);
+      if (sess == null || sess.isEmpty) {
+        setOutSafe(l.isArabic
+            ? 'تعذّر استلام جلسة من الخادم.'
+            : 'Could not obtain a server session.');
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+      await setSessionTokenForBaseUrl(base, sess);
+
+      String shamellId = '';
+      try {
+        final decoded = jsonDecode(resp.body);
+        if (decoded is Map) {
+          shamellId = (decoded['shamell_id'] ?? '').toString().trim();
+        }
+      } catch (_) {}
+
+      if (shamellId.isNotEmpty) {
+        setOutSafe(l.isArabic
+            ? 'تم إنشاء معرّف Shamell: $shamellId'
+            : 'Created Shamell ID: $shamellId');
+      }
+
+      await _handlePostLoginNavigation();
+      if (!mounted) return;
+      setState(() {
+        _hasSessionCookie = true;
+        _busy = false;
+      });
+      _autoCreateRetryTimer?.cancel();
+    } catch (e) {
+      setOutSafe(_sanitizeLoginException(
+        error: e,
+        isArabic: l.isArabic,
+        baseUrl: base,
+      ));
+      if (mounted) setState(() => _busy = false);
+      if (_isLikelyNetworkError(e)) {
+        _scheduleAutoCreateRetry();
+      }
+    }
   }
 
   Future<void> _handlePostLoginNavigation() async {
-    final base = baseCtrl.text.trim();
-    final phone = _normalizedPhone();
-    Map<String, dynamic>? snapshot;
-    List<String> roles = const <String>[];
-    List<String> opDomains = const <String>[];
-    bool isSuper = false;
-    bool isAdmin = false;
-
-    Future<bool> _loadSnapshot() async {
-      if (snapshot != null) return true;
-      try {
-        final uri = Uri.parse('$base/me/home_snapshot');
-        final r = await http.get(uri, headers: await _hdr());
-        if (r.statusCode == 404) {
-          // Legacy BFF without /me/home_snapshot.
-          return false;
-        }
-        if (r.statusCode != 200) {
-          setState(() => out = 'Could not load profile (${r.statusCode}).');
-          await _clearCookie();
-          return false;
-        }
-        final body = jsonDecode(r.body) as Map<String, dynamic>;
-        snapshot = body;
-        roles = (body['roles'] as List?)?.map((e) => e.toString()).toList() ??
-            const <String>[];
-        opDomains = (body['operator_domains'] as List?)
-                ?.map((e) => e.toString())
-                .toList() ??
-            const <String>[];
-        isSuper = (body['is_superadmin'] ?? false) == true ||
-            (body['phone'] ?? '') == kSuperadminPhone;
-        isAdmin = (body['is_admin'] ?? false) == true ||
-            isSuper ||
-            roles.contains('admin');
-        return true;
-      } catch (e) {
-        setState(() => out = 'Error during profile lookup: $e');
-        await _clearCookie();
-        return false;
-      }
-    }
-
-    // Superadmin phone: always allow direct Superadmin dashboard
-    // (except in explicit driver login, where we honour driver mode).
-    if (!_driverLogin &&
-        phone == kSuperadminPhone &&
-        _loginMode != AppMode.operator) {
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => SuperadminDashboardPage(base)),
-      );
-      return;
-    }
-
-    // Driver login: require explicit driver role
-    if (_driverLogin) {
-      final ok = await _loadSnapshot();
-      if (!ok) {
-        // If snapshot unsupported, treat as error for driver login.
-        return;
-      }
-      const driverRole = 'driver';
-      if (!roles.contains(driverRole)) {
-        setState(() => out =
-            'This phone is not registered as a driver. Please contact an admin.');
-        await _clearCookie();
-        return;
-      }
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => OperatorDashboardPage(base)),
-      );
-      return;
-    }
-
-    // For operator/admin modes, enforce that the phone has corresponding roles.
-    if (_loginMode == AppMode.operator || _loginMode == AppMode.admin) {
-      final ok = await _loadSnapshot();
-      if (!ok) {
-        // Legacy BFF without /me/home_snapshot: skip strict gating but still
-        // route into the respective dashboards. Server-side guards remain.
-        if (_loginMode == AppMode.operator) {
-          if (!mounted) return;
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => OperatorDashboardPage(base)),
-          );
-          return;
-        }
-        if (_loginMode == AppMode.admin) {
-          if (!mounted) return;
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => AdminDashboardPage(base)),
-          );
-          return;
-        }
-      }
-      if (_loginMode == AppMode.operator) {
-        if (opDomains.isEmpty && !isAdmin) {
-          setState(() => out =
-              'This phone is not registered as an operator. Please contact an admin.');
-          await _clearCookie();
-          return;
-        }
-        if (!mounted) return;
-        Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) =>
-                  OperatorDashboardPage(base, operatorDomains: opDomains),
-            ));
-        return;
-      }
-
-      if (_loginMode == AppMode.admin) {
-        if (!isAdmin) {
-          setState(() => out =
-              'This phone is not registered as an admin. Please contact a superadmin.');
-          await _clearCookie();
-          return;
-        }
-        if (!mounted) return;
-        Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => AdminDashboardPage(base),
-            ));
-        return;
-      }
-    }
-
-    // Default: end-user app home.
+    // Default: end-user app home only.
     if (!mounted) return;
-    // On some Flutter Web setups, Navigator may not have an
-    // active route to replace yet, so we use push instead of
-    // pushReplacement to avoid assertion failures.
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => HomePage(
-          lockedMode: _loginMode,
+          lockedMode: AppMode.user,
         ),
       ),
     );
@@ -787,30 +823,8 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final theme = Theme.of(context);
-    final List<DropdownMenuItem<String>> regionItems = _regionCodes.map((code) {
-      String country;
-      switch (code) {
-        case '+963':
-          country = l.isArabic ? 'سوريا' : 'Syria';
-          break;
-        case '+971':
-          country = l.isArabic ? 'الإمارات' : 'UAE';
-          break;
-        case '+966':
-          country = l.isArabic ? 'السعودية' : 'Saudi Arabia';
-          break;
-        default:
-          country = '';
-      }
-      final label = country.isEmpty ? code : '$code · $country';
-      return DropdownMenuItem<String>(
-        value: code,
-        child: Text(label),
-      );
-    }).toList();
-    final String currentDial = _regionCodes.contains(_selectedDialCode)
-        ? _selectedDialCode
-        : _regionCodes.first;
+    final hasSession = widget.hasSession || _hasSessionCookie;
+    final needsAutoCreate = !kIsWeb && !hasSession;
 
     final content = ListView(
       padding: const EdgeInsets.all(16),
@@ -827,14 +841,14 @@ class _LoginPageState extends State<LoginPage> {
                     l.appTitle,
                     style: theme.textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.w900,
-                      color: WeChatPalette.green,
+                      color: ShamellPalette.green,
                     ),
                   ),
                   const SizedBox(width: 8),
                   const Icon(
                     Icons.chat_bubble_outline,
                     size: 32,
-                    color: WeChatPalette.green,
+                    color: ShamellPalette.green,
                   ),
                 ],
               ),
@@ -850,182 +864,51 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
         const SizedBox(height: 16),
-        Row(
-          children: [
-            SizedBox(
-              width: 140,
-              child: DropdownButtonFormField<String>(
-                initialValue: currentDial,
-                items: regionItems,
-                decoration: InputDecoration(
-                  labelText: l.isArabic ? 'المقدمة' : 'Code',
-                  prefixIcon: const Icon(Icons.flag_outlined),
-                ),
-                onChanged: (value) {
-                  if (value == null) return;
-                  setState(() {
-                    _selectedDialCode = value;
-                  });
-                },
+        if (needsAutoCreate) ...[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    l.isArabic ? 'إعداد تلقائي' : 'Automatic setup',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    l.isArabic
+                        ? 'سيتم إنشاء معرّف Shamell جديد تلقائياً عند أول تشغيل.'
+                        : 'A new Shamell ID is created automatically on first launch.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: .70),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                controller: phoneCtrl,
-                keyboardType: TextInputType.phone,
-                decoration: InputDecoration(
-                  labelText: l.loginPhone,
-                  prefixIcon: const Icon(Icons.phone_outlined),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: codeCtrl,
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(
-            labelText: l.loginCodeLabel,
-            prefixIcon: const Icon(Icons.verified_user_outlined),
-          ),
-        ),
-        const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: _request,
-          icon: const Icon(Icons.sms),
-          label: Text(l.loginRequestCode),
-        ),
-        const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _verify,
-          icon: const Icon(Icons.login),
-          label: Text(l.loginVerify),
-        ),
-        if (_canBiometricLogin) ...[
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _loginWithBiometrics,
-            icon: const Icon(Icons.fingerprint),
-            label: Text(
-              l.isArabic ? 'تسجيل الدخول بالبصمة' : 'Login with biometrics',
-            ),
-          ),
-        ],
-        const SizedBox(height: 16),
-        TextButton(
-          onPressed: () {
-            setState(() {
-              _showAdvanced = !_showAdvanced;
-            });
-          },
-          child: Text(
-            l.isArabic ? 'خيارات متقدّمة' : 'Advanced options',
-          ),
-        ),
-        if (_showAdvanced) ...[
-          const SizedBox(height: 8),
-          TextField(
-            controller: baseCtrl,
-            keyboardType: TextInputType.url,
-            decoration: InputDecoration(
-              labelText: l.isArabic ? 'عنوان الخادم' : 'Server URL',
-              prefixIcon: const Icon(Icons.dns_outlined),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _RoleChip(
-                mode: AppMode.user,
-                current: _driverLogin ? AppMode.operator : _loginMode,
-                onTap: () {
-                  setState(() {
-                    _loginMode = AppMode.user;
-                    _superadminLogin = false;
-                    _driverLogin = false;
-                  });
-                },
-              ),
-              const SizedBox(width: 8),
-              _DriverChip(
-                onTap: () {
-                  setState(() {
-                    _loginMode = AppMode.user;
-                    _superadminLogin = false;
-                    _driverLogin = true;
-                  });
-                },
-                selected: _driverLogin,
-              ),
-              const SizedBox(width: 8),
-              _RoleChip(
-                mode: AppMode.operator,
-                current: _loginMode,
-                onTap: () {
-                  setState(() {
-                    _loginMode = AppMode.operator;
-                    _superadminLogin = false;
-                    _driverLogin = false;
-                  });
-                },
-              ),
-              const SizedBox(width: 8),
-              _RoleChip(
-                mode: AppMode.admin,
-                current: _superadminLogin ? AppMode.user : _loginMode,
-                onTap: () {
-                  setState(() {
-                    _loginMode = AppMode.admin;
-                    _superadminLogin = false;
-                    _driverLogin = false;
-                  });
-                },
-              ),
-              const SizedBox(width: 8),
-              _SuperadminChip(
-                selected: _superadminLogin,
-                onTap: () {
-                  setState(() {
-                    _loginMode = AppMode.admin;
-                    _superadminLogin = true;
-                    _driverLogin = false;
-                  });
-                },
-              ),
-            ],
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: nameCtrl,
-            keyboardType: TextInputType.name,
-            decoration: InputDecoration(
-              labelText: l.loginFullName,
-              prefixIcon: const Icon(Icons.person_outline),
+          if (_busy)
+            const Center(
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2.2),
+              ),
             ),
-          ),
+          if (_busy) const SizedBox(height: 12),
+        ],
+        if (out.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          StatusBanner.info(out, dense: true),
         ],
         const SizedBox(height: 16),
-        if (out.isNotEmpty) StatusBanner.info(out, dense: true),
-        const SizedBox(height: 16),
-        Text(
-          l.loginQrHint,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: .70),
-          ),
-        ),
-        const SizedBox(height: 8),
         Text(
           l.loginTerms,
           textAlign: TextAlign.center,
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: .60),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          l.loginNoteDemo,
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurface.withValues(alpha: .60),
           ),

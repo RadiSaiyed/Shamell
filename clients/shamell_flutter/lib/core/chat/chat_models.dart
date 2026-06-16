@@ -42,6 +42,70 @@ class ChatIdentity {
   }
 }
 
+class ChatOneTimePrekey {
+  final int keyId;
+  final String keyB64;
+
+  const ChatOneTimePrekey({
+    required this.keyId,
+    required this.keyB64,
+  });
+
+  Map<String, Object?> toJson() => {
+        'key_id': keyId,
+        'key_b64': keyB64,
+      };
+}
+
+class ChatKeyBundle {
+  final String deviceId;
+  final String identityKeyB64;
+  final String? identitySigningPubkeyB64;
+  final int signedPrekeyId;
+  final String signedPrekeyB64;
+  final String signedPrekeySigB64;
+  final int? oneTimePrekeyId;
+  final String? oneTimePrekeyB64;
+  final String protocolFloor;
+  final bool supportsV2;
+  final bool v2Only;
+
+  const ChatKeyBundle({
+    required this.deviceId,
+    required this.identityKeyB64,
+    this.identitySigningPubkeyB64,
+    required this.signedPrekeyId,
+    required this.signedPrekeyB64,
+    required this.signedPrekeySigB64,
+    this.oneTimePrekeyId,
+    this.oneTimePrekeyB64,
+    this.protocolFloor = 'v1_legacy',
+    this.supportsV2 = false,
+    this.v2Only = false,
+  });
+
+  factory ChatKeyBundle.fromJson(Map<String, Object?> map) => ChatKeyBundle(
+        deviceId: (map['device_id'] ?? '') as String,
+        identityKeyB64: (map['identity_key_b64'] ?? '') as String,
+        identitySigningPubkeyB64:
+            (map['identity_signing_pubkey_b64'] as String?)?.trim().isEmpty ??
+                    true
+                ? null
+                : (map['identity_signing_pubkey_b64'] as String).trim(),
+        signedPrekeyId: _parseInt(map['signed_prekey_id']) ?? 0,
+        signedPrekeyB64: (map['signed_prekey_b64'] ?? '') as String,
+        signedPrekeySigB64: (map['signed_prekey_sig_b64'] ?? '') as String,
+        oneTimePrekeyId: _parseInt(map['one_time_prekey_id']),
+        oneTimePrekeyB64: () {
+          final raw = (map['one_time_prekey_b64'] ?? '').toString().trim();
+          return raw.isEmpty ? null : raw;
+        }(),
+        protocolFloor: (map['protocol_floor'] ?? 'v1_legacy').toString(),
+        supportsV2: (map['supports_v2'] as bool?) ?? false,
+        v2Only: (map['v2_only'] as bool?) ?? false,
+      );
+}
+
 class ChatContact {
   final String id;
   final String publicKeyB64;
@@ -170,6 +234,7 @@ class ChatMessage {
   final int? keyId;
   final int? prevKeyId;
   final String? senderDhPubB64;
+  final bool trustedLocalPlaintext;
 
   const ChatMessage({
     required this.id,
@@ -187,6 +252,7 @@ class ChatMessage {
     this.keyId,
     this.prevKeyId,
     this.senderDhPubB64,
+    this.trustedLocalPlaintext = false,
   });
 
   static ChatMessage fromJson(Map<String, Object?> map) => ChatMessage(
@@ -205,6 +271,7 @@ class ChatMessage {
         keyId: _parseInt(map['key_id']),
         prevKeyId: _parseInt(map['prev_key_id']),
         senderDhPubB64: map['sender_dh_pub_b64'] as String?,
+        trustedLocalPlaintext: false,
       );
 
   static ChatMessage fromMap(Map<String, Object?> map) => ChatMessage(
@@ -223,6 +290,7 @@ class ChatMessage {
         keyId: _parseInt(map['keyId']),
         prevKeyId: _parseInt(map['prevKeyId']),
         senderDhPubB64: map['senderDhPubB64'] as String?,
+        trustedLocalPlaintext: (map['trustedLocalPlaintext'] as bool?) ?? false,
       );
 
   Map<String, Object?> toMap() => {
@@ -241,6 +309,7 @@ class ChatMessage {
         'keyId': keyId,
         'prevKeyId': prevKeyId,
         'senderDhPubB64': senderDhPubB64,
+        'trustedLocalPlaintext': trustedLocalPlaintext,
       };
 }
 
@@ -512,7 +581,7 @@ String fingerprintForKey(String publicKeyB64) {
   }
 }
 
-String generateShortId({int length = 8}) {
+String generateShortId({int length = 24}) {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   final rnd = Random.secure();
   return List.generate(length, (_) => alphabet[rnd.nextInt(alphabet.length)])

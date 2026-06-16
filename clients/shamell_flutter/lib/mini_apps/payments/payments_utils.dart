@@ -25,23 +25,16 @@ int parseCents(String s) {
 }
 
 Map<String, Object?> buildTransferTarget(
-  String raw, {
-  String? resolvedWalletId,
-}) {
+  String raw,
+) {
   final v = raw.trim();
   if (v.isEmpty) return const <String, Object?>{};
-  final rw = (resolvedWalletId ?? '').trim();
   final isPhone = v.startsWith('+') || RegExp(r'^[0-9]{6,}$').hasMatch(v);
   if (isPhone) {
-    if (rw.isNotEmpty) {
-      return <String, Object?>{'to_wallet_id': rw};
-    }
-    return <String, Object?>{'to_phone': v};
+    // Permanently disabled: never use phone numbers as payment routing identifiers.
+    return const <String, Object?>{};
   }
   if (v.startsWith('@')) {
-    if (rw.isNotEmpty) {
-      return <String, Object?>{'to_wallet_id': rw};
-    }
     return <String, Object?>{'to_alias': v};
   }
   return <String, Object?>{'to_wallet_id': v};

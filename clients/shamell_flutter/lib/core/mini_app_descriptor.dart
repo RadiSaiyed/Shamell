@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Descriptor for a Shamell mini-app (WeChat-style mini-program).
+/// Descriptor for a Shamell mini-app (Shamell-style mini-program).
 ///
 /// Used by:
 ///   - Discover strip on the home/services tab

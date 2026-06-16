@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates_rs/shamell_common",
+  "crates_rs/shamell_signal",
+  "services_rs/bus_service",
+  "services_rs/chat_service",
+  "services_rs/payments_service",
+  "services_rs/bff_gateway",
+]

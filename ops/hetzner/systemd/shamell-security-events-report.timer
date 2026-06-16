@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Shamell security event report every 5 minutes
+Requires=shamell-security-events-report.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=45s
+AccuracySec=30s
+Persistent=true
+Unit=shamell-security-events-report.service
+
+[Install]
+WantedBy=timers.target

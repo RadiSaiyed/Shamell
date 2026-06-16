@@ -1,4 +1,4 @@
-/// Minimal manifest model for a WeChat‑style Mini‑Program.
+/// Minimal manifest model for a Shamell‑style Mini‑Program.
 ///
 /// Für das erste MVP halten wir das Schema bewusst klein und
 /// konzentrieren uns auf einfache Info‑Seiten mit Buttons, die

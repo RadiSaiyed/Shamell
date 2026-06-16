@@ -1,11 +1,15 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'http_error.dart';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n.dart';
 import 'moments_page.dart';
+import 'safe_set_state.dart';
+
+const Duration _officialMomentsCommentsRequestTimeout = Duration(seconds: 15);
 
 class OfficialMomentsCommentsPage extends StatefulWidget {
   final String baseUrl;
@@ -25,7 +29,8 @@ class OfficialMomentsCommentsPage extends StatefulWidget {
 }
 
 class _OfficialMomentsCommentsPageState
-    extends State<OfficialMomentsCommentsPage> {
+    extends State<OfficialMomentsCommentsPage>
+    with SafeSetStateMixin<OfficialMomentsCommentsPage> {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _items = const <Map<String, dynamic>>[];
@@ -42,10 +47,9 @@ class _OfficialMomentsCommentsPageState
       headers['content-type'] = 'application/json';
     }
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie') ?? '';
+      final cookie = await getSessionCookieHeader(widget.baseUrl) ?? '';
       if (cookie.isNotEmpty) {
-        headers['sa_cookie'] = cookie;
+        headers['cookie'] = cookie;
       }
     } catch (_) {}
     return headers;
@@ -63,12 +67,18 @@ class _OfficialMomentsCommentsPageState
         'official_account_id': widget.accountId,
         'limit': '200',
       });
-      final r = await http.get(uri, headers: await _hdr());
+      final r = await http
+          .get(uri, headers: await _hdr())
+          .timeout(_officialMomentsCommentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _error = r.body.isNotEmpty ? r.body : 'HTTP ${r.statusCode}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
         return;
       }
@@ -93,7 +103,7 @@ class _OfficialMomentsCommentsPageState
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = sanitizeExceptionForUi(error: e);
       });
     }
   }
@@ -103,7 +113,9 @@ class _OfficialMomentsCommentsPageState
     try {
       final uri =
           Uri.parse('${widget.baseUrl}/moments/admin/comments/$commentId');
-      final r = await http.delete(uri, headers: await _hdr(jsonBody: true));
+      final r = await http
+          .delete(uri, headers: await _hdr(jsonBody: true))
+          .timeout(_officialMomentsCommentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -120,12 +132,13 @@ class _OfficialMomentsCommentsPageState
         _items = _items.where((c) => (c['id'] ?? 0) != commentId).toList();
       });
     } catch (e) {
+      final detail = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             l.isArabic
-                ? 'تعذّر حذف التعليق: $e'
-                : 'Failed to delete comment: $e',
+                ? 'تعذّر حذف التعليق: $detail'
+                : 'Failed to delete comment: $detail',
           ),
         ),
       );
@@ -217,11 +230,13 @@ class _OfficialMomentsCommentsPageState
       if (replyToId != null) {
         body['reply_to_id'] = replyToId;
       }
-      final r = await http.post(
-        uri,
-        headers: await _hdr(jsonBody: true),
-        body: jsonEncode(body),
-      );
+      final r = await http
+          .post(
+            uri,
+            headers: await _hdr(jsonBody: true),
+            body: jsonEncode(body),
+          )
+          .timeout(_officialMomentsCommentsRequestTimeout);
       if (r.statusCode < 200 || r.statusCode >= 300) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -236,10 +251,13 @@ class _OfficialMomentsCommentsPageState
       }
       await _load();
     } catch (e) {
+      final detail = sanitizeExceptionForUi(error: e, isArabic: l.isArabic);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            l.isArabic ? 'تعذّر إرسال الرد: $e' : 'Failed to send reply: $e',
+            l.isArabic
+                ? 'تعذّر إرسال الرد: $detail'
+                : 'Failed to send reply: $detail',
           ),
         ),
       );

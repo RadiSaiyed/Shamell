@@ -58,14 +58,10 @@ class _RuntimeMiniApp implements MiniApp {
   @override
   final String id;
   final MiniProgramManifest? manifestFallback;
-  final String? followOfficialId;
-  final String? followChatPeerId;
 
   const _RuntimeMiniApp({
     required this.id,
     this.manifestFallback,
-    this.followOfficialId,
-    this.followChatPeerId,
   });
 
   @override
@@ -73,12 +69,6 @@ class _RuntimeMiniApp implements MiniApp {
 
   @override
   Widget entry(BuildContext context, SuperappAPI api) {
-    if (followOfficialId != null && followChatPeerId != null) {
-      unawaited(api.ensureServiceOfficialFollow(
-        officialId: followOfficialId!,
-        chatPeerId: followChatPeerId!,
-      ));
-    }
     unawaited(api.recordModuleUse(id));
     return MiniProgramPage(
       id: id,

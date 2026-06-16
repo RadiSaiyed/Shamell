@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/design_tokens.dart';
 import '../../core/l10n.dart';
 import '../../core/format.dart' show fmtCents;
+import '../../core/http_error.dart';
+import '../../core/safe_set_state.dart';
 import '../../core/superapp_api.dart';
 import 'payments_shell.dart';
 import '../../core/history_page.dart';
@@ -20,7 +22,8 @@ class PaymentsMultiLevelPage extends StatefulWidget {
   State<PaymentsMultiLevelPage> createState() => _PaymentsMultiLevelPageState();
 }
 
-class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage> {
+class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage>
+    with SafeSetStateMixin<PaymentsMultiLevelPage> {
   bool _loading = true;
   String _error = '';
 
@@ -54,7 +57,11 @@ class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage> {
       );
       if (r.statusCode != 200) {
         setState(() {
-          _error = '${r.statusCode}: ${r.body}';
+          _error = sanitizeHttpError(
+            statusCode: r.statusCode,
+            rawBody: r.body,
+            isArabic: L10n.of(context).isArabic,
+          );
         });
       } else {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -86,7 +93,10 @@ class _PaymentsMultiLevelPageState extends State<PaymentsMultiLevelPage> {
       }
     } catch (e) {
       setState(() {
-        _error = 'error: $e';
+        _error = sanitizeExceptionForUi(
+          error: e,
+          isArabic: L10n.of(context).isArabic,
+        );
       });
     } finally {
       if (mounted) {

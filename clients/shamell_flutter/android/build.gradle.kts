@@ -1,11 +1,15 @@
 import com.android.build.gradle.BaseExtension
 import org.gradle.api.tasks.compile.JavaCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 allprojects {
     repositories {
         google()
         mavenCentral()
+        maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
+        maven(url = uri("https://jitpack.io"))
+        maven(url = uri("https://repositories.tomtom.com/artifactory/maven"))
     }
 }
 
@@ -68,7 +72,8 @@ subprojects {
                     ?: fallbackJavaTask?.targetCompatibility
                 )?.trim()
             if (!javaTarget.isNullOrEmpty()) {
-                kotlinOptions.jvmTarget = javaTarget
+                runCatching { JvmTarget.fromTarget(javaTarget) }
+                    .onSuccess { compilerOptions.jvmTarget.set(it) }
             }
         }
     }

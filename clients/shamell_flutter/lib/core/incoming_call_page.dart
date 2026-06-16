@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'design_tokens.dart';
 import 'l10n.dart';
 import 'call_signaling.dart';
+import 'safe_set_state.dart';
 import 'chat/chat_service.dart';
 import 'chat/chat_models.dart';
 
@@ -29,7 +30,8 @@ class IncomingCallPage extends StatefulWidget {
   State<IncomingCallPage> createState() => _IncomingCallPageState();
 }
 
-class _IncomingCallPageState extends State<IncomingCallPage> {
+class _IncomingCallPageState extends State<IncomingCallPage>
+    with SafeSetStateMixin<IncomingCallPage> {
   bool _active = true;
   bool _connected = false;
   Duration _elapsed = Duration.zero;
@@ -45,6 +47,10 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
 
   bool _accepted = false;
+  bool _acceptRequested = false;
+  bool _answerSent = false;
+  bool _processingOffer = false;
+  bool _signalingInitStarted = false;
   String? _pendingOfferSdp;
   bool _muted = false;
   bool _videoEnabled = true;
@@ -71,6 +77,8 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
   }
 
   Future<void> _initSignaling() async {
+    if (_signalingInitStarted) return;
+    _signalingInitStarted = true;
     try {
       final devId = await CallSignalingClient.loadDeviceId();
       if (!mounted) return;
@@ -82,6 +90,9 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
       final stream = client.connect(deviceId: devId);
       _client = client;
       _sigSub = stream.listen(_onSignal);
+      if (_acceptRequested) {
+        unawaited(_flushAcceptFlow());
+      }
     } catch (_) {
       // best-effort
     }
@@ -199,8 +210,8 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
       final sdp = (msg['sdp'] ?? '').toString();
       if (sdp.isEmpty) return;
       _pendingOfferSdp = sdp;
-      if (_accepted) {
-        await _processOffer();
+      if (_acceptRequested) {
+        await _flushAcceptFlow();
       }
     } else if (type == 'ice_candidate') {
       final cand = msg['candidate'];
@@ -234,7 +245,11 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
     final devId = _deviceId;
     if (client != null && devId != null && devId.isNotEmpty) {
       client
-          .sendHangup(callId: widget.callId, fromDeviceId: devId)
+          .sendHangup(
+            callId: widget.callId,
+            fromDeviceId: devId,
+            toDeviceId: widget.fromDeviceId,
+          )
           .catchError((_) {});
     }
     _logAndPop(accepted: _connected);
@@ -283,9 +298,15 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
         ? (l.isArabic ? 'انتهت المكالمة' : 'Call ended')
         : (_connected
             ? _fmt(_elapsed)
-            : (isVideoCall
-                ? (l.isArabic ? 'مكالمة فيديو واردة' : 'Incoming video call')
-                : (l.isArabic ? 'مكالمة صوتية واردة' : 'Incoming voice call')));
+            : (_accepted
+                ? (l.isArabic ? 'جارٍ الاتصال...' : 'Connecting…')
+                : (isVideoCall
+                    ? (l.isArabic
+                        ? 'مكالمة فيديو واردة'
+                        : 'Incoming video call')
+                    : (l.isArabic
+                        ? 'مكالمة صوتية واردة'
+                        : 'Incoming voice call'))));
 
     final hasRemote =
         _remoteStream != null && _remoteRenderer.srcObject != null;
@@ -481,6 +502,7 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
 
   Future<void> _logAndPop({required bool accepted}) async {
     if (_logged) {
+      if (!mounted) return;
       Navigator.of(context).pop();
       return;
     }
@@ -498,6 +520,7 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
       );
       await store.append(entry);
     } catch (_) {}
+    if (!mounted) return;
     Navigator.of(context).pop();
   }
 
@@ -531,19 +554,40 @@ class _IncomingCallPageState extends State<IncomingCallPage> {
     } catch (_) {}
   }
 
-  void _acceptCall() async {
-    if (!_active) return;
-    setState(() {
-      _accepted = true;
-    });
+  Future<void> _flushAcceptFlow() async {
+    if (!_active || !_acceptRequested) return;
     final client = _client;
     final devId = _deviceId;
-    if (client != null && devId != null && devId.isNotEmpty) {
-      // Best-effort signaling answer.
-      // ignore: discarded_futures
-      client.sendAnswer(callId: widget.callId, fromDeviceId: devId);
+    if (!_answerSent && client != null && devId != null && devId.isNotEmpty) {
+      await client.sendAnswer(
+        callId: widget.callId,
+        fromDeviceId: devId,
+        toDeviceId: widget.fromDeviceId,
+      );
+      _answerSent = true;
     }
-    await _processOffer();
+    if (!_processingOffer &&
+        _pendingOfferSdp != null &&
+        _pendingOfferSdp!.isNotEmpty) {
+      _processingOffer = true;
+      try {
+        await _processOffer();
+      } finally {
+        _processingOffer = false;
+      }
+    }
+  }
+
+  void _acceptCall() async {
+    if (!_active || _connected) return;
+    setState(() {
+      _accepted = true;
+      _acceptRequested = true;
+    });
+    if (_client == null || _deviceId == null || _deviceId!.isEmpty) {
+      unawaited(_initSignaling());
+    }
+    await _flushAcceptFlow();
   }
 
   Widget _roundButton({

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:shamell_flutter/core/session_cookie_store.dart';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -7,7 +8,9 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'wechat_webview_page.dart';
+import 'shamell_webview_page.dart';
+
+const Duration _superappApiRequestTimeout = Duration(seconds: 20);
 
 class GeoPosition {
   final double latitude;
@@ -102,11 +105,8 @@ class SuperappAPI {
     final h = <String, String>{};
     if (json) h['content-type'] = 'application/json';
     try {
-      final sp = await SharedPreferences.getInstance();
-      final cookie = sp.getString('sa_cookie');
-      if (cookie != null && cookie.isNotEmpty) {
-        h['sa_cookie'] = cookie;
-      }
+      final cookie = await getSessionCookieHeader(baseUrl);
+      if (cookie != null && cookie.isNotEmpty) h['cookie'] = cookie;
     } catch (_) {}
     if (extra != null && extra.isNotEmpty) {
       h.addAll(extra);
@@ -115,7 +115,7 @@ class SuperappAPI {
   }
 
   Future<http.Response> getUri(Uri uri, {Map<String, String>? headers}) {
-    return http.get(uri, headers: headers);
+    return http.get(uri, headers: headers).timeout(_superappApiRequestTimeout);
   }
 
   Future<http.Response> postUri(
@@ -124,7 +124,9 @@ class SuperappAPI {
     Object? body,
     Encoding? encoding,
   }) {
-    return http.post(uri, headers: headers, body: body, encoding: encoding);
+    return http
+        .post(uri, headers: headers, body: body, encoding: encoding)
+        .timeout(_superappApiRequestTimeout);
   }
 
   Future<http.Response> patchUri(
@@ -133,7 +135,9 @@ class SuperappAPI {
     Object? body,
     Encoding? encoding,
   }) {
-    return http.patch(uri, headers: headers, body: body, encoding: encoding);
+    return http
+        .patch(uri, headers: headers, body: body, encoding: encoding)
+        .timeout(_superappApiRequestTimeout);
   }
 
   Future<http.Response> deleteUri(
@@ -142,7 +146,9 @@ class SuperappAPI {
     Object? body,
     Encoding? encoding,
   }) {
-    return http.delete(uri, headers: headers, body: body, encoding: encoding);
+    return http
+        .delete(uri, headers: headers, body: body, encoding: encoding)
+        .timeout(_superappApiRequestTimeout);
   }
 
   Future<String?> kvGetString(String key) async {
@@ -239,13 +245,28 @@ class SuperappAPI {
       if (!external) {
         final scheme = uri.scheme.toLowerCase();
         if ((scheme == 'http' || scheme == 'https') && _canPushPage) {
-          pushPage(
-            WeChatWebViewPage(
-              initialUri: uri,
-              baseUri: baseUri,
-            ),
-          );
-          return true;
+          // Best practice: keep embedded WebViews first-party and same-origin.
+          if (baseUri != null) {
+            final sameScheme = baseUri.scheme.toLowerCase() == scheme;
+            final sameHost =
+                baseUri.host.toLowerCase() == uri.host.toLowerCase();
+            final basePort =
+                baseUri.hasPort ? baseUri.port : (scheme == 'https' ? 443 : 80);
+            final uriPort =
+                uri.hasPort ? uri.port : (scheme == 'https' ? 443 : 80);
+            final sameOrigin = sameScheme && sameHost && basePort == uriPort;
+            if (sameOrigin) {
+              pushPage(
+                ShamellWebViewPage(
+                  initialUri: uri,
+                  baseUri: baseUri,
+                ),
+              );
+              return true;
+            }
+          }
+          // Non-same-origin: open externally to reduce phishing surface.
+          return await launchUrl(uri, mode: LaunchMode.externalApplication);
         }
       }
       return await launchUrl(

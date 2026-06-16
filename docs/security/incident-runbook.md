@@ -192,12 +192,49 @@ It is written for Shamell-owned systems only (repository, CI, staging, productio
   - webhook accepted/rejected counts by reason
   - payments edge rate-limit events by scope (`requests_*`, `favorites_*`, `resolve_phone`)
 
-### Runtime Alert Controls (BFF)
+### Runtime Alert Controls (BFF + Chat)
 
 - `SECURITY_ALERT_WEBHOOK_URL`: optional webhook target for runtime security alerts.
+- `SECURITY_ALERT_WEBHOOK_INTERNAL_SECRET`: optional override for `X-Internal-Secret` header used by alert scripts (default fallback: `INTERNAL_API_SECRET`).
 - `SECURITY_ALERT_WINDOW_SECS`: rolling window for threshold checks (default `300`).
 - `SECURITY_ALERT_COOLDOWN_SECS`: minimum resend interval per alert action (default `600`).
+- `SECURITY_ALERT_SERVICE`: comma-separated compose service names to scan (default `bff,chat`).
 - `SECURITY_ALERT_THRESHOLDS`: comma-separated `action:threshold` pairs. Default covers:
+  - `device_login_approve.blocked`
+  - `device_login_redeem.blocked`
+  - `biometric_login.blocked`
+  - `biometric_token_rotate.failed`
+  - `auth_rate_limit_exceeded.blocked`
+  - `chat_protocol_downgrade.blocked`
+  - `chat_key_bundle_policy.blocked`
+  - `chat_key_register_policy.blocked`
+- Run log-based alert evaluation on host (cron/systemd timer recommended):
+  - `./scripts/security_events_report.sh`
+  - or `./scripts/ops.sh pipg security-report`
+- Preferred production setup: `systemd` timer on Hetzner host
+  - install/update: `./scripts/sync_hetzner_security_timer.sh shamell --run-now`
+  - verify timer: `ssh shamell "sudo systemctl list-timers --all shamell-security-events-report.timer --no-pager"`
+  - inspect logs: `ssh shamell "sudo journalctl -u shamell-security-events-report.service -n 100 --no-pager"`
+- `security_events_report.sh` reads JSON logs from `SECURITY_ALERT_SERVICE` (default `bff,chat`) and can post webhook notifications with cooldown.
+- Recommended in-host default (no third-party webhook required):
+  - `SECURITY_ALERT_WEBHOOK_URL=http://127.0.0.1:8080/internal/security/alerts`
+  - Endpoint: `POST /internal/security/alerts` (BFF, internal-auth protected).
+- Webhook drill:
+  - local dry-run: `./scripts/ops.sh pipg security-drill --dry-run`
+  - live host drill: `./scripts/sync_hetzner_security_timer.sh shamell --drill`
+- Current runtime security event names include:
+  - `device_login_start`
+  - `device_login_approve`
+  - `device_login_redeem`
+  - `biometric_login`
+  - `biometric_token_rotate`
+  - `device_removed`
+  - `auth_rate_limit_exceeded`
+  - `chat_protocol_downgrade`
+  - `chat_key_bundle_policy`
+  - `chat_key_register_policy`
+  - `blocked` outcomes should page on sustained spikes.
+- Legacy payments edge alert actions (if still configured):
   - `payments_transfer_wallet_mismatch`
   - `alias_request_wallet_mismatch`
   - `alias_request_user_override_blocked`

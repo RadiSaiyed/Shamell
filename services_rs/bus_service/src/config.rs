@@ -1,0 +1,415 @@
+use shamell_common::secret_policy;
+use std::env;
+
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub env_name: String,
+
+    pub host: String,
+    pub port: u16,
+    pub max_body_bytes: usize,
+
+    pub require_internal_secret: bool,
+    pub internal_secret: Option<String>,
+    pub internal_allowed_callers: Vec<String>,
+
+    pub allowed_hosts: Vec<String>,
+    pub allowed_origins: Vec<String>,
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_opt(key: &str) -> Option<String> {
+    match env::var(key) {
+        Ok(v) => {
+            let v = v.trim().to_string();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+fn parse_csv(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn parse_required_bool_like(raw: &str) -> Option<bool> {
+    let v = raw.trim().to_lowercase();
+    if v.is_empty() {
+        return None;
+    }
+    if matches!(v.as_str(), "0" | "false" | "no" | "off") {
+        Some(false)
+    } else {
+        Some(true)
+    }
+}
+
+impl Config {
+    pub fn from_env() -> Result<Self, String> {
+        let env_name = env_or("ENV", "dev");
+        let env_lower = env_name.trim().to_lowercase();
+
+        let host = env_or("APP_HOST", "0.0.0.0");
+        let port: u16 = env_or("APP_PORT", "8083")
+            .parse()
+            .map_err(|_| "APP_PORT must be a valid u16".to_string())?;
+
+        let prod_like = matches!(env_lower.as_str(), "prod" | "production" | "staging");
+
+        let require_internal_secret = {
+            let raw = env_or("BUS_REQUIRE_INTERNAL_SECRET", "");
+            match parse_required_bool_like(&raw) {
+                Some(v) => v,
+                None => prod_like,
+            }
+        };
+        if prod_like && !require_internal_secret {
+            return Err("BUS_REQUIRE_INTERNAL_SECRET must be true in prod/staging".to_string());
+        }
+
+        let internal_secret = env_opt("BUS_INTERNAL_SECRET");
+        if require_internal_secret && internal_secret.as_deref().unwrap_or("").is_empty() {
+            return Err(
+                "BUS_INTERNAL_SECRET must be set when BUS_REQUIRE_INTERNAL_SECRET is enabled"
+                    .to_string(),
+            );
+        }
+        secret_policy::validate_secret_for_env(
+            &env_name,
+            "BUS_INTERNAL_SECRET",
+            internal_secret.as_deref(),
+            false,
+        )?;
+
+        let mut internal_allowed_callers = parse_csv(&env_or("BUS_INTERNAL_ALLOWED_CALLERS", ""))
+            .into_iter()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>();
+        if internal_allowed_callers.is_empty() && prod_like {
+            internal_allowed_callers = vec!["bff".to_string()];
+        }
+        if require_internal_secret && prod_like && internal_allowed_callers.is_empty() {
+            return Err(
+                "BUS_INTERNAL_ALLOWED_CALLERS must define at least one caller in prod/staging"
+                    .to_string(),
+            );
+        }
+
+        let mut allowed_hosts = parse_csv(&env_or("ALLOWED_HOSTS", ""));
+        if allowed_hosts.is_empty() {
+            // Fail closed on missing host allowlist:
+            // - dev/test keep loopback defaults for local ergonomics
+            // - prod/staging requires explicit external hosts from ALLOWED_HOSTS
+            if matches!(env_lower.as_str(), "dev" | "test") {
+                allowed_hosts = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+            }
+        }
+        if matches!(env_lower.as_str(), "dev" | "test") {
+            for extra in ["localhost", "127.0.0.1"] {
+                if !allowed_hosts.iter().any(|h| h == extra) {
+                    allowed_hosts.push(extra.to_string());
+                }
+            }
+        }
+        // Keep service-to-service calls working.
+        for extra in ["bus"] {
+            if !allowed_hosts.iter().any(|h| h == extra) {
+                allowed_hosts.push(extra.to_string());
+            }
+        }
+        if prod_like && allowed_hosts.iter().any(|h| h.trim() == "*") {
+            return Err("ALLOWED_HOSTS must not contain '*' in prod/staging".to_string());
+        }
+
+        let mut allowed_origins = parse_csv(&env_or("ALLOWED_ORIGINS", ""));
+        if allowed_origins.is_empty() && matches!(env_lower.as_str(), "dev" | "test") {
+            // Safe local default for development.
+            allowed_origins = vec![
+                "http://localhost:5173".to_string(),
+                "http://127.0.0.1:5173".to_string(),
+            ];
+        }
+        if prod_like && allowed_origins.is_empty() {
+            return Err("ALLOWED_ORIGINS must be set in prod/staging".to_string());
+        }
+        if prod_like && allowed_origins.iter().any(|o| o.trim() == "*") {
+            return Err("ALLOWED_ORIGINS must not contain '*' in prod/staging".to_string());
+        }
+        if prod_like
+            && allowed_origins
+                .iter()
+                .any(|o| !o.trim().starts_with("https://"))
+        {
+            return Err("ALLOWED_ORIGINS must use https:// origins in prod/staging".to_string());
+        }
+        let max_body_bytes: usize = env_or("BUS_MAX_BODY_BYTES", "1048576")
+            .parse()
+            .map_err(|_| "BUS_MAX_BODY_BYTES must be an integer".to_string())?;
+        let max_body_bytes = max_body_bytes.clamp(16 * 1024, 10 * 1024 * 1024);
+
+        Ok(Self {
+            env_name,
+            host,
+            port,
+            max_body_bytes,
+            require_internal_secret,
+            internal_secret,
+            internal_allowed_callers,
+            allowed_hosts,
+            allowed_origins,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvGuard {
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&str]) -> Self {
+            let mut keys = keys.to_vec();
+            if !keys.contains(&"BUS_MAX_BODY_BYTES") {
+                keys.push("BUS_MAX_BODY_BYTES");
+            }
+            if !keys.contains(&"ALLOWED_ORIGINS") {
+                keys.push("ALLOWED_ORIGINS");
+            }
+            let mut saved = Vec::with_capacity(keys.len());
+            for k in keys {
+                let existing = env::var(k).ok();
+                saved.push((k.to_string(), existing));
+                env::remove_var(k);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in self.saved.drain(..) {
+                match v {
+                    Some(val) => env::set_var(k, val),
+                    None => env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn dev_config_loads_without_prod_only_secrets() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+            "ALLOWED_HOSTS",
+            "BUS_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "dev");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
+        env::remove_var("BUS_INTERNAL_SECRET");
+
+        let cfg = Config::from_env().expect("dev config should load");
+        assert!(cfg.allowed_hosts.iter().any(|h| h == "localhost"));
+        assert!(cfg
+            .allowed_origins
+            .iter()
+            .any(|o| o == "http://localhost:5173"));
+    }
+
+    #[test]
+    fn prod_requires_internal_secret_value_when_enabled() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::remove_var("BUS_INTERNAL_SECRET");
+
+        let res = Config::from_env();
+        assert!(res.is_err());
+        let msg = res.err().unwrap_or_default();
+        assert!(msg.contains("BUS_INTERNAL_SECRET"));
+    }
+
+    #[test]
+    fn prod_ignores_removed_bus_payments_secret_env() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+            "PAYMENTS_BASE_URL",
+            "BUS_PAYMENTS_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("PAYMENTS_BASE_URL", "http://payments:8082");
+        env::remove_var("BUS_PAYMENTS_INTERNAL_SECRET");
+
+        let cfg = Config::from_env()
+            .expect("BUS_PAYMENTS_INTERNAL_SECRET was removed from bus_service config contract");
+        assert!(cfg.require_internal_secret);
+    }
+
+    #[test]
+    fn prod_rejects_wildcard_allowed_hosts() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_DB_URL",
+            "DB_URL",
+            "BUS_TICKET_SECRET",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_HOSTS",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
+        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
+        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("ALLOWED_HOSTS", "*");
+
+        let err = Config::from_env().expect_err("wildcard hosts must be rejected in prod");
+        assert!(err.contains("ALLOWED_HOSTS"));
+    }
+
+    #[test]
+    fn prod_requires_explicit_allowed_origins() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_DB_URL",
+            "DB_URL",
+            "BUS_TICKET_SECRET",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+            "PAYMENTS_BASE_URL",
+            "BUS_PAYMENTS_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
+        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::remove_var("ALLOWED_ORIGINS");
+        env::remove_var("PAYMENTS_BASE_URL");
+        env::remove_var("BUS_PAYMENTS_INTERNAL_SECRET");
+
+        let err = Config::from_env().expect_err("missing ALLOWED_ORIGINS must be rejected in prod");
+        assert!(err.contains("ALLOWED_ORIGINS must be set in prod/staging"));
+    }
+
+    #[test]
+    fn prod_rejects_non_https_allowed_origins() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_DB_URL",
+            "DB_URL",
+            "BUS_TICKET_SECRET",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+            "BUS_INTERNAL_SECRET",
+            "ALLOWED_ORIGINS",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
+        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
+        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "true");
+        env::set_var("BUS_INTERNAL_SECRET", "bus-secret-0123456789");
+        env::set_var("ALLOWED_ORIGINS", "http://online.shamell.online");
+
+        let err = Config::from_env().expect_err("non-https origins must be rejected in prod");
+        assert!(err.contains("ALLOWED_ORIGINS must use https:// origins"));
+    }
+
+    #[test]
+    fn prod_rejects_internal_secret_toggle_off() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_DB_URL",
+            "DB_URL",
+            "BUS_TICKET_SECRET",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "prod");
+        env::set_var("ALLOWED_ORIGINS", "https://online.shamell.test");
+        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
+        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
+
+        let err = Config::from_env().expect_err("must reject disabled internal secret in prod");
+        assert!(err.contains("BUS_REQUIRE_INTERNAL_SECRET must be true in prod/staging"));
+    }
+
+    #[test]
+    fn body_limit_is_clamped_to_safe_bounds() {
+        let _g = env_lock();
+        let _env = EnvGuard::new(&[
+            "ENV",
+            "BUS_DB_URL",
+            "DB_URL",
+            "BUS_TICKET_SECRET",
+            "BUS_REQUIRE_INTERNAL_SECRET",
+        ]);
+
+        env::set_var("ENV", "dev");
+        env::set_var("BUS_DB_URL", "postgresql://u:p@localhost:5432/bus");
+        env::set_var("BUS_TICKET_SECRET", "bus-ticket-secret-0123456789");
+        env::set_var("BUS_REQUIRE_INTERNAL_SECRET", "false");
+
+        env::set_var("BUS_MAX_BODY_BYTES", "1");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.max_body_bytes, 16 * 1024);
+
+        env::set_var("BUS_MAX_BODY_BYTES", "999999999");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.max_body_bytes, 10 * 1024 * 1024);
+    }
+}

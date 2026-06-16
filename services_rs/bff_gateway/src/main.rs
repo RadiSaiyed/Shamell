@@ -49,6 +49,7 @@ async fn main() {
 
     let http = match reqwest::Client::builder()
         .timeout(Duration::from_secs(cfg.upstream_timeout_secs))
+        .connect_timeout(Duration::from_secs(5))
         .user_agent(format!("shamell-bff-gateway/{}", env!("CARGO_PKG_VERSION")))
         .build()
     {
@@ -74,8 +75,6 @@ async fn main() {
         payments_internal_secret: cfg.payments_internal_secret.clone(),
         chat_base_url: cfg.chat_base_url.clone(),
         chat_internal_secret: cfg.chat_internal_secret.clone(),
-        bus_base_url: cfg.bus_base_url.clone(),
-        bus_internal_secret: cfg.bus_internal_secret.clone(),
         internal_service_id: cfg.internal_service_id.clone(),
         enforce_route_authz: cfg.enforce_route_authz,
         role_header_secret: cfg.role_header_secret.clone(),
@@ -132,6 +131,7 @@ async fn main() {
 
     let contacts_routes = Router::new()
         .route("/contacts/invites", post(handlers::contacts_invite_create))
+        .route("/contacts/resolve", post(handlers::contacts_resolve))
         .route(
             "/contacts/invites/redeem",
             post(handlers::contacts_invite_redeem),
@@ -140,6 +140,15 @@ async fn main() {
     let chat_routes = Router::new()
         .route("/chat/devices/register", post(handlers::chat_register))
         .route("/chat/devices/:device_id", get(handlers::chat_get_device))
+        .route("/chat/keys/register", post(handlers::chat_keys_register))
+        .route(
+            "/chat/keys/prekeys/upload",
+            post(handlers::chat_prekeys_upload),
+        )
+        .route(
+            "/chat/keys/bundle/:device_id",
+            get(handlers::chat_get_key_bundle),
+        )
         .route(
             "/chat/devices/:device_id/push_token",
             post(handlers::chat_push_token),
@@ -168,6 +177,9 @@ async fn main() {
         .route("/chat/messages/inbox", get(handlers::chat_inbox))
         .route("/chat/messages/stream", get(handlers::chat_stream))
         .route("/chat/messages/:mid/read", post(handlers::chat_mark_read))
+        .route("/ws/chat/inbox", get(handlers::ws_chat_inbox))
+        .route("/ws/chat/groups", get(handlers::ws_chat_groups))
+        .route("/ws/call/signaling", get(handlers::ws_call_signaling))
         .route("/chat/groups/create", post(handlers::chat_group_create))
         .route("/chat/groups/list", get(handlers::chat_group_list))
         .route(
@@ -207,66 +219,7 @@ async fn main() {
             get(handlers::chat_group_key_events),
         );
 
-    let bus_routes = Router::new()
-        .route("/bus/health", get(handlers::bus_health))
-        .route("/bus/cities", get(handlers::bus_cities))
-        .route("/bus/cities_cached", get(handlers::bus_cities_cached))
-        .route("/bus/routes", get(handlers::bus_routes))
-        .route("/bus/operators", get(handlers::bus_list_operators))
-        .route(
-            "/bus/operators/:operator_id/stats",
-            get(handlers::bus_operator_stats),
-        )
-        .route(
-            "/bus/operators/:operator_id/trips",
-            get(handlers::bus_operator_trips),
-        )
-        .route("/bus/trips/search", get(handlers::bus_trips_search))
-        .route("/bus/trips/:trip_id", get(handlers::bus_trip_detail))
-        .route("/bus/trips/:trip_id/book", post(handlers::bus_book_trip))
-        .route("/bus/bookings/search", get(handlers::bus_booking_search))
-        .route(
-            "/bus/bookings/:booking_id",
-            get(handlers::bus_booking_status),
-        )
-        .route(
-            "/bus/bookings/:booking_id/tickets",
-            get(handlers::bus_booking_tickets),
-        );
-
-    let operator_only = Router::new()
-        .route("/bus/routes", post(handlers::bus_create_route))
-        .route("/bus/operators", post(handlers::bus_create_operator))
-        .route(
-            "/bus/operators/:operator_id/online",
-            post(handlers::bus_operator_online),
-        )
-        .route(
-            "/bus/operators/:operator_id/offline",
-            post(handlers::bus_operator_offline),
-        )
-        .route("/bus/trips", post(handlers::bus_create_trip))
-        .route(
-            "/bus/trips/:trip_id/publish",
-            post(handlers::bus_publish_trip),
-        )
-        .route(
-            "/bus/trips/:trip_id/unpublish",
-            post(handlers::bus_unpublish_trip),
-        )
-        .route(
-            "/bus/trips/:trip_id/cancel",
-            post(handlers::bus_cancel_trip),
-        )
-        .route(
-            "/bus/bookings/:booking_id/cancel",
-            post(handlers::bus_booking_cancel),
-        )
-        .route("/bus/tickets/board", post(handlers::bus_ticket_board));
-
     let admin_only = Router::new()
-        .route("/bus/cities", post(handlers::bus_create_city))
-        .route("/bus/admin/summary", get(handlers::bus_admin_summary))
         .route(
             "/admin/roles",
             get(handlers::admin_roles_list)
@@ -288,24 +241,12 @@ async fn main() {
             &cfg.allowed_origins,
             bff_chat_cors_allowed_headers(),
         )))
-        .merge(bus_routes.layer(cors_layer_for_headers(
-            &cfg.allowed_origins,
-            bff_bus_cors_allowed_headers(),
-        )))
-        .merge(
-            operator_only
-                .layer(middleware::from_fn_with_state(
-                    state.clone(),
-                    authz::require_operator_bus,
-                ))
-                .layer(cors_layer_for_headers(
-                    &cfg.allowed_origins,
-                    bff_bus_cors_allowed_headers(),
-                )),
-        )
         .merge(
             admin_only
-                .layer(middleware::from_fn_with_state(state.clone(), authz::require_admin))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    authz::require_admin,
+                ))
                 .layer(cors_layer_for_headers(
                     &cfg.allowed_origins,
                     bff_public_cors_allowed_headers(),
@@ -349,8 +290,7 @@ async fn main() {
             delete(auth::auth_devices_delete),
         )
         .route("/me/roles", get(auth::me_roles))
-        .route("/me/home_snapshot", get(auth::me_home_snapshot))
-        .route("/me/mobility_history", get(auth::me_mobility_history));
+        .route("/me/home_snapshot", get(auth::me_home_snapshot));
 
     let public_auth = if cfg.auth_device_login_web_enabled {
         public_auth
@@ -412,11 +352,20 @@ async fn main() {
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], cfg.port)));
     tracing::info!(%addr, "starting shamell_bff_gateway");
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app)
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!(error = %e, %addr, "listener bind failed");
+            std::process::exit(2);
+        }
+    };
+    if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .unwrap();
+    {
+        tracing::error!(error = %e, "server exited with error");
+        std::process::exit(2);
+    }
 }
 
 async fn shutdown_signal() {
@@ -458,6 +407,7 @@ fn bff_payments_cors_allowed_headers() -> Vec<HeaderName> {
     headers
 }
 
+#[cfg(test)]
 fn bff_bus_cors_allowed_headers() -> Vec<HeaderName> {
     let mut headers = bff_public_cors_allowed_headers();
     headers.extend([
@@ -467,7 +417,10 @@ fn bff_bus_cors_allowed_headers() -> Vec<HeaderName> {
     headers
 }
 
-fn cors_layer_for_headers(allowed_origins: &[String], allowed_headers: Vec<HeaderName>) -> CorsLayer {
+fn cors_layer_for_headers(
+    allowed_origins: &[String],
+    allowed_headers: Vec<HeaderName>,
+) -> CorsLayer {
     if allowed_origins.iter().any(|o| o == "*") {
         CorsLayer::new()
             .allow_origin(Any)
@@ -756,7 +709,10 @@ mod tests {
                 bff_public_cors_allowed_headers(),
             ));
         let contacts = Router::new()
-            .route("/contacts/invites/redeem", post(|| async { StatusCode::OK }))
+            .route(
+                "/contacts/invites/redeem",
+                post(|| async { StatusCode::OK }),
+            )
             .layer(cors_layer_for_headers(
                 &allowed_origins,
                 bff_contacts_cors_allowed_headers(),
@@ -774,7 +730,7 @@ mod tests {
                 bff_payments_cors_allowed_headers(),
             ));
         let bus = Router::new()
-            .route("/bus/trips/:trip_id/book", post(|| async { StatusCode::OK }))
+            .route("/bus/messages/read", post(|| async { StatusCode::OK }))
             .layer(cors_layer_for_headers(
                 &allowed_origins,
                 bff_bus_cors_allowed_headers(),
@@ -790,7 +746,11 @@ mod tests {
             .merge(internal)
     }
 
-    async fn preflight(path: &str, requested_method: Method, requested_headers: &str) -> axum::response::Response {
+    async fn preflight(
+        path: &str,
+        requested_method: Method,
+        requested_headers: &str,
+    ) -> axum::response::Response {
         cors_zone_test_app()
             .oneshot(
                 Request::builder()
@@ -1130,7 +1090,7 @@ mod tests {
     #[tokio::test]
     async fn cors_preflight_bus_zone_scopes_to_bus_headers() {
         let resp = preflight(
-            "/bus/trips/t-123/book",
+            "/bus/messages/read",
             Method::POST,
             "content-type,idempotency-key,x-device-id",
         )
@@ -1138,8 +1098,10 @@ mod tests {
         assert!(resp.status().is_success());
         assert!(has_allow_header(&resp, "idempotency-key"));
         assert!(has_allow_header(&resp, "x-device-id"));
-        assert!(!has_allow_header(&resp, "x-merchant"));
         assert!(!has_allow_header(&resp, "x-chat-device-id"));
+        assert!(!has_allow_header(&resp, "x-chat-device-token"));
+        assert!(!has_allow_header(&resp, "x-merchant"));
+        assert!(!has_allow_header(&resp, "x-ref"));
     }
 
     #[tokio::test]

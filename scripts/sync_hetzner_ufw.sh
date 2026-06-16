@@ -70,17 +70,14 @@ ssh -tt "${HOST_ALIAS}" "
   fi
   is_tailscale_client=0
   if [[ -n \"\$client_ip\" ]]; then
-    # python is present on Ubuntu by default; this keeps the CIDR check correct.
-    is_tailscale_client=\"\$(CLIENT_IP=\"\$client_ip\" python3 - <<'PY'
-import ipaddress, os, sys
-raw = os.environ.get('CLIENT_IP','').strip()
-try:
-    ip = ipaddress.ip_address(raw)
-    print(1 if ip in ipaddress.ip_network('100.64.0.0/10') else 0)
-except Exception:
-    print(0)
-PY
-)\"
+    # Tailscale IPv4 range is 100.64.0.0/10.
+    if [[ \"\$client_ip\" =~ ^([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})\\.([0-9]{1,3})$ ]]; then
+      o1=\"\${BASH_REMATCH[1]}\"
+      o2=\"\${BASH_REMATCH[2]}\"
+      if [[ \"\$o1\" -eq 100 && \"\$o2\" -ge 64 && \"\$o2\" -le 127 ]]; then
+        is_tailscale_client=1
+      fi
+    fi
   fi
 
   sudo ufw default deny incoming >/dev/null

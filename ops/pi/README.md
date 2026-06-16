@@ -1,92 +1,203 @@
 # Shamell Pi Deployment Notes
 
-This folder contains the production/staging **microservices** compose file for Pi/edge deployments:
+Pi/Hetzner deploy uses a Rust microservices stack with Postgres:
 
-- `docker-compose.yml` (BFF + Chat + Payments + Bus + LiveKit)
+- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + Bus + LiveKit)
+- `docker-compose.yml` (alias copy of the same Postgres-backed stack)
 
-An optional Postgres-backed variant is available for production-hardening and multi-instance readiness:
+## Environment
+Use `ops/pi/.env` (do not commit secrets).
 
-- `docker-compose.postgres.yml` (Postgres + BFF + Chat + Payments + Bus + LiveKit + `migrate-sqlite-to-postgres`)
-
-Security baseline env templates are provided for staged rollout:
-
-- `env.staging.example`
+Security baseline templates:
 - `env.prod.example`
+- `env.staging.example`
 
-Both templates focus on:
+Auth hardening baseline (set in env templates):
+- Biometric/device-login rate limits (`AUTH_BIOMETRIC_LOGIN_*`, `AUTH_DEVICE_LOGIN_*`)
+- token-scoped device-login limits (`AUTH_DEVICE_LOGIN_REDEEM_MAX_PER_TOKEN`, `AUTH_DEVICE_LOGIN_APPROVE_MAX_PER_TOKEN`)
+- chat device abuse limits (`AUTH_CHAT_REGISTER_*`, `AUTH_CHAT_GET_DEVICE_*`)
+- mailbox write abuse limits (`AUTH_CHAT_MAILBOX_WRITE_*`)
+- chat protocol migration flags (`CHAT_PROTOCOL_V2_ENABLED`, `CHAT_PROTOCOL_V1_WRITE_ENABLED`, `CHAT_PROTOCOL_V1_READ_ENABLED`, `CHAT_PROTOCOL_REQUIRE_V2_FOR_GROUPS`)
+- mailbox transport API rollout flag (`CHAT_MAILBOX_API_ENABLED=true` in staging template, keep `false` in prod until rollout sign-off)
+- mailbox transport metadata retention (`CHAT_MAILBOX_CONSUMED_RETENTION_SECS`, `CHAT_MAILBOX_INACTIVE_RETENTION_SECS`)
+- Postgres-backed auth abuse state (`auth_biometric_tokens`, `auth_rate_limits`)
+- session idle timeout (`AUTH_SESSION_IDLE_TTL_SECS`)
+- CSRF guard for cookie sessions (`CSRF_GUARD_ENABLED`, `ALLOWED_ORIGINS`)
+- legacy cookie fallback cutover switch (`AUTH_ACCEPT_LEGACY_SESSION_COOKIE`)
+- service-side security headers + HSTS + CSP (`SECURITY_HEADERS_ENABLED`, `HSTS_ENABLED`, `CSP_ENABLED`)
+- secret quality fail-fast in prod/staging (min length + no placeholder secrets)
+- per-service internal secrets (at minimum: `INTERNAL_API_SECRET`, `PAYMENTS_INTERNAL_SECRET`, `CHAT_INTERNAL_SECRET`, `BUS_INTERNAL_SECRET`)
+- dedicated bus->payments booking-binding secret (`BUS_PAYMENTS_INTERNAL_SECRET`)
+- internal caller allowlists (`BFF_SECURITY_ALERT_ALLOWED_CALLERS`, `CHAT_INTERNAL_ALLOWED_CALLERS`, `PAYMENTS_INTERNAL_ALLOWED_CALLERS`, `BUS_INTERNAL_ALLOWED_CALLERS`)
+- legacy chat token bootstrap is removed and must stay disabled
+- service caller IDs for internal hops (`BFF_INTERNAL_SERVICE_ID`, `BUS_INTERNAL_SERVICE_ID`)
+- direct wallet topup disabled by default in staging/prod (`PAYMENTS_ALLOW_DIRECT_TOPUP=false`)
+- periodic auth data cleanup (`AUTH_MAINTENANCE_INTERVAL_SECS`, `AUTH_*_CLEANUP_GRACE_SECS`)
+- device metadata retention (`AUTH_DEVICE_SESSION_RETENTION_SECS`, recommended: `2592000` = 30 days)
+- rate-limit state retention (`AUTH_RATE_LIMIT_RETENTION_SECS`)
+- runtime alert endpoint (`SECURITY_ALERT_WEBHOOK_URL=http://127.0.0.1:8080/internal/security/alerts`)
+- runtime alert auth header override (`SECURITY_ALERT_WEBHOOK_INTERNAL_SECRET`, fallback: `INTERNAL_API_SECRET`)
+- runtime alert caller-id header (`SECURITY_ALERT_WEBHOOK_SERVICE_ID=security-reporter`)
 
-- payments edge rate limits (`PAY_API_*`)
-- runtime security alerting (`SECURITY_ALERT_*`)
-- ensuring strong payments secrets are configured (no `change-me-*` defaults in prod/staging)
-- avoiding dangerous schema auto-create in prod/staging (`AUTO_CREATE_SCHEMA=false`)
-- disabling OTP/alias code exposure in non-dev environments
-- trusted host allowlist (`ALLOWED_HOSTS`) to mitigate Host header attacks
-- disabling interactive API docs in staging/prod (unless explicitly enabled)
-- keeping raw domain routers disabled in prod/staging (BFF-only public surface)
-- disabling dev-only wallet websocket stream in prod/staging
-- protecting (or disabling) metrics ingest in prod/staging
+### Account-Create Hardware Attestation (Strict)
 
-## Additional Runtime Flags
+For prod/staging, keep account creation strict (no fallback):
 
-These are intentionally fail-closed defaults for staging/prod:
+- `AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED=true`
+- `AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION=true`
+- `AUTH_ACCOUNT_CREATE_POW_ENABLED=true`
+- `AUTH_ACCOUNT_CREATE_POW_SECRET` set to a strong secret
 
-- `EXPOSE_PAYMENTS_ROUTER` / `EXPOSE_CHAT_ROUTER`: keep `false` in staging/prod so only the BFF is public.
-- `ENABLE_WALLET_WS_IN_PROD`: keep `false` unless you explicitly want the dev wallet stream exposed.
-- `METRICS_INGEST_SECRET`: when set, `/metrics` ingest requires the secret; when empty, ingest is disabled (403).
+Required provider secrets in `ops/pi/.env`:
 
-## LiveKit Notes
+- `AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_TEAM_ID`
+- `AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_KEY_ID`
+- `AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_PRIVATE_KEY_P8_B64` (base64 of `.p8` private key)
+- `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON_B64` (base64 of service-account JSON)
+- `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_ALLOWED_PACKAGE_NAMES`
+- `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_STRONG_INTEGRITY=true`
+- `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_PLAY_RECOGNIZED=true`
 
-This repo assumes:
+Convenience setup command:
 
-- LiveKit is publicly reachable for WebRTC media, but clients must only join using **server-minted tokens**.
-- LiveKit's HTTP/WebSocket API (`7880`) should be private and served over TLS via Nginx.
+```bash
+scripts/configure_account_create_attestation.sh \
+  --env-file ops/pi/.env \
+  --apple-team-id <TEAM_ID> \
+  --apple-key-id <KEY_ID> \
+  --apple-p8-file <path/to/AuthKey_XXXX.p8> \
+  --google-sa-json-file <path/to/play-integrity-sa.json>
+```
 
-Practical implications:
+### Account-Create Secure Interim Mode (Credentials Pending)
 
-- Keep `LIVEKIT_HTTP_PUBLISH_ADDR=127.0.0.1` (default in `ops/pi/docker-compose*.yml`) and proxy `443 -> 127.0.0.1:7880` in Nginx (see `ops/hetzner/nginx/sites-available/livekit.shamell.online`).
-- WebRTC media still requires public reachability for `7881/tcp` and `7882/udp`. If you run Cloudflare-only origin lockdown, you must either:
-  - run LiveKit on a separate host/IP, or
-  - use a proxy that supports arbitrary TCP/UDP (e.g. Cloudflare Spectrum), or
-  - explicitly open these ports on the origin firewall (note: this exposes the origin IP to participants).
+If Apple/Google attestation credentials are not available yet, keep account creation
+fail-closed until provisioning is complete:
 
-To enable the token mint endpoint (`POST /livekit/token`):
+- `AUTH_ACCOUNT_CREATE_HARDWARE_ATTESTATION_ENABLED=false`
+- `AUTH_ACCOUNT_CREATE_REQUIRE_HARDWARE_ATTESTATION=false`
+- `AUTH_ACCOUNT_CREATE_ENABLED=false`
+- keep all attestation provider vars empty (`AUTH_ACCOUNT_CREATE_APPLE_DEVICECHECK_*`,
+  `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON_B64`,
+  `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_ALLOWED_PACKAGE_NAMES`)
+- keep Play Integrity policy flags off:
+  - `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_STRONG_INTEGRITY=false`
+  - `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_PLAY_RECOGNIZED=false`
+  - `AUTH_ACCOUNT_CREATE_GOOGLE_PLAY_INTEGRITY_REQUIRE_LICENSED=false`
 
-- set `LIVEKIT_TOKEN_ENDPOINT_ENABLED=true`
-- set `LIVEKIT_PUBLIC_URL` to the client-facing `wss://...` URL
-- set strong `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (non-dev values)
+This keeps existing sessions/device-login working but blocks brand-new public account creation.
 
-## Volume Ownership Note
+## Deployment
 
-`docker-compose.yml` includes a `bootstrap-perms` init container that fixes volume ownership
-to the non-root runtime UID/GID (10001:10001) for the service volumes.
+```bash
+./scripts/ops.sh pipg check
+./scripts/ops.sh pipg deploy
+./scripts/ops.sh pipg smoke-api
+./scripts/ops.sh pipg security-report
+./scripts/ops.sh pipg security-drill --dry-run
+```
 
-## Postgres Migration Note (SQLite -> Postgres)
+`smoke-api` now verifies account-create rollout policy:
+- strict mode (`AUTH_ACCOUNT_CREATE_ENABLED=true`): challenge endpoint should return `200` (or `429` under rate-limit)
+- secure interim mode (`AUTH_ACCOUNT_CREATE_ENABLED=false`): challenge endpoint must return `503`
 
-`docker-compose.postgres.yml` includes:
+When running against a direct BFF instance in `prod` mode (without Nginx edge), provide:
+- `SMOKE_CLIENT_IP=<ip>` so auth-path rate-limit checks get `X-Shamell-Client-IP`
 
-- a `db` service (Postgres 16)
-- a one-shot `migrate-sqlite-to-postgres` service that reads the legacy SQLite volumes (`bff_data`, `chat_data`, `payments_data`) and inserts rows into Postgres
+CI profile guard (strict + interim):
 
-Best practice rollout is staging-first, with a full SQLite volume backup immediately before cutover.
+```bash
+bash ./scripts/ci_account_create_profiles.sh
+```
 
-## Recommended Rollout
+## Edge Internal-Auth (Internal Routes Only)
 
-1. Copy one template into `ops/pi/.env` and keep existing secrets unchanged.
-2. Enable `SECURITY_ALERT_WEBHOOK_URL` before tightening limits.
-3. Deploy to staging first and run smoke + core payment flows for at least 24h.
-4. Deploy to production with canary traffic first, then full rollout after clean metrics.
+`X-Internal-Secret` is reserved for true internal-only endpoints (e.g.
+`/internal/security/alerts`). The client-facing API routes must remain reachable
+for authenticated clients (cookie session + app-auth), and should not rely on a
+shared-secret header injected by Nginx.
 
-Suggested canary gates:
+If you do run internal-only routes behind Nginx, you can still inject the
+header via the host-local snippet:
 
-1. 10% traffic for 30-60 minutes.
-2. 50% traffic for 2-4 hours.
-3. 100% traffic if no sustained alert spikes or elevated `429` on legit flows.
+- `/etc/nginx/snippets/shamell_bff_internal_auth.local.conf`
 
-## Tuning Heuristics
+Apply Nginx IaC (also renders the snippet from `ops/pi/.env` by default):
 
-Use a 60-second limiter window (`PAY_API_RATE_WINDOW_SECS=60`) and tune by observed p95:
+```bash
+NGINX_SYNC_ENV_FILE=ops/pi/.env ./scripts/sync_hetzner_nginx.sh shamell
+```
 
-1. If legitimate `429` exceeds 0.3% for an action family over 15 minutes, raise that family by 15-25%.
-2. If abuse telemetry stays low for 7 days, lower high-risk families (`resolve`, write paths) by 10-15%.
-3. Keep `*_PER_IP` roughly 4x `*_PER_WALLET` to curb spray attacks while preserving NAT users.
-4. Keep staging stricter than prod to catch regressions early.
+Aliases:
+- `pi` -> `pipg`
+- `prod` -> `pipg`
+
+## Runtime Security Timer (Hetzner)
+
+Install/update `systemd` timer on host:
+
+```bash
+./scripts/sync_hetzner_security_timer.sh shamell --run-now
+```
+
+Run webhook drill on host:
+
+```bash
+./scripts/sync_hetzner_security_timer.sh shamell --drill
+```
+
+## Mailbox API Staging Smoke
+
+Use this checklist after staging deploy when `CHAT_MAILBOX_API_ENABLED=true`.
+
+1. Health and config
+   - `./scripts/ops.sh pipg check`
+   - Confirm staging env contains `CHAT_MAILBOX_API_ENABLED=true`.
+2. Endpoint reachability via BFF
+   - Recommended: `./scripts/ops.sh pipg smoke-mailbox`
+     - Note: this seeds a temporary auth session/device in `shamell_core` and cleans it up on exit.
+     - It refuses to run when `ENV=prod` unless `SMOKE_ALLOW_PROD=1` is set.
+   - `POST /chat/mailboxes/issue` with valid chat device auth headers returns `200` and `mailbox_token`.
+   - `POST /chat/mailboxes/write` with that token and a valid envelope returns `200` and `accepted=true`.
+   - `POST /chat/mailboxes/poll` as mailbox owner returns the written message once.
+   - A second `poll` returns empty list (message marked consumed).
+   - `POST /chat/mailboxes/rotate` returns a new token; old token no longer accepts writes.
+3. Fail-closed auth checks
+   - `issue/poll/rotate` without valid device auth must return `401/403`.
+   - `poll/rotate` from non-owner device must return not found/forbidden behavior (no existence leak).
+4. Observability
+   - Verify no mailbox token plaintext is logged in BFF/chat service logs.
+   - Verify 5xx rate does not increase after enabling flag.
+5. Rollback
+   - Set `CHAT_MAILBOX_API_ENABLED=false`, redeploy.
+   - Confirm mailbox endpoints return `404`.
+
+Files:
+- `ops/hetzner/systemd/shamell-security-events-report.service`
+- `ops/hetzner/systemd/shamell-security-events-report.timer`
+- `ops/hetzner/systemd/README.md`
+
+## Backups
+Postgres dump bundle:
+
+```bash
+./scripts/ops.sh pipg backup
+```
+
+Restore (destructive):
+
+```bash
+CONFIRM_RESTORE=1 ./scripts/ops.sh pipg restore <backup-file.tar.gz>
+```
+
+Optional full schema reset before restore:
+
+```bash
+CONFIRM_RESTORE=1 RESTORE_DROP_SCHEMA=1 ./scripts/ops.sh pipg restore <backup-file.tar.gz>
+```
+
+## LiveKit
+- Keep `LIVEKIT_HTTP_PUBLISH_ADDR=127.0.0.1` and terminate TLS at Nginx.
+- On the API host, keep `LIVEKIT_RTC_PUBLISH_ADDR=127.0.0.1` by default.
+- For production RTC, run LiveKit on a dedicated host/IP (`ops/livekit` stack).
+- Use strong non-dev `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` in staging/prod.

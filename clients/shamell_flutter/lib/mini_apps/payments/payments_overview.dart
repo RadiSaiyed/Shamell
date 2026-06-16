@@ -9,11 +9,13 @@ import '../../core/perf.dart';
 import '../../core/l10n.dart';
 import '../../core/ui_kit.dart';
 import '../../core/glass.dart';
+import '../../core/safe_set_state.dart';
 import 'payments_bills.dart';
 import 'payments_receive_pay.dart';
 import 'payments_send.dart' show PayActionButton, GroupPayPage;
 import 'payments_requests.dart';
-import '../../core/moments_page.dart' show MomentsPage;
+import 'package:shamell_flutter/core/session_cookie_store.dart';
+import 'package:shamell_flutter/core/http_error.dart';
 
 class PaymentOverviewTab extends StatefulWidget {
   final String baseUrl;
@@ -30,7 +32,9 @@ class PaymentOverviewTab extends StatefulWidget {
   State<PaymentOverviewTab> createState() => _PaymentOverviewTabState();
 }
 
-class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
+class _PaymentOverviewTabState extends State<PaymentOverviewTab>
+    with SafeSetStateMixin<PaymentOverviewTab> {
+  static const Duration _paymentsOverviewRequestTimeout = Duration(seconds: 15);
   bool _loading = true;
   int? _balanceCents;
   String _curSym = 'SYP';
@@ -61,7 +65,10 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
         await _maybeOpenInitialSection();
       }
     } catch (e) {
-      _out = 'Error: $e';
+      _out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
       Perf.action('payments_overview_error');
     }
     if (mounted) setState(() => _loading = false);
@@ -71,45 +78,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     final section = (widget.initialSection ?? '').trim().toLowerCase();
     if (section.isEmpty) return;
     if (!mounted) return;
-    if (section == 'redpacket' || section == 'redpacket_history') {
-      if (widget.walletId.isEmpty) return;
-      final list = _recent
-          .where(
-              (t) => (t['kind'] ?? '').toString().toLowerCase() == 'redpacket')
-          .toList();
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => HistoryPage(
-            baseUrl: widget.baseUrl,
-            walletId: widget.walletId,
-            initialKind: 'redpacket',
-            initialTxns: list.isEmpty ? null : list,
-          ),
-        ),
-      );
-    } else if (section.startsWith('redpacket:')) {
-      if (widget.walletId.isEmpty) return;
-      final parts = section.split(':');
-      final campaignId = parts.length > 1 ? parts.sublist(1).join(':') : '';
-      final txns = _recent.where((t) {
-        if ((t['kind'] ?? '').toString().toLowerCase() != 'redpacket') {
-          return false;
-        }
-        final meta = (t['meta'] ?? '').toString().toLowerCase();
-        if (campaignId.isEmpty) return true;
-        return meta.contains(campaignId.toLowerCase());
-      }).toList();
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => HistoryPage(
-            baseUrl: widget.baseUrl,
-            walletId: widget.walletId,
-            initialKind: 'redpacket',
-            initialTxns: txns.isEmpty ? null : txns,
-          ),
-        ),
-      );
-    }
+    // No initial-section deep links supported.
   }
 
   Future<void> _loadSnapshot() async {
@@ -119,13 +88,19 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
               Uri.encodeComponent(widget.walletId) +
               '/snapshot')
           .replace(queryParameters: qp);
-      final r = await http.get(uri, headers: await _hdrPO());
+      final r = await http
+          .get(uri, headers: await _hdrPO(widget.baseUrl))
+          .timeout(_paymentsOverviewRequestTimeout);
       if (r.statusCode == 200) {
         Perf.action('payments_overview_snapshot_ok');
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         await _applySnapshot(j, persist: true, rawBody: r.body);
       } else {
-        _out = '${r.statusCode}: ${r.body}';
+        _out = sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: L10n.of(context).isArabic,
+        );
         Perf.action('payments_overview_snapshot_fail');
       }
       // Savings overview (best-effort)
@@ -133,7 +108,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
         if (widget.walletId.isNotEmpty) {
           final suri = Uri.parse(
               '${widget.baseUrl}/payments/savings/overview?wallet_id=${Uri.encodeComponent(widget.walletId)}');
-          final sr = await http.get(suri, headers: await _hdrPO());
+          final sr = await http
+              .get(suri, headers: await _hdrPO(widget.baseUrl))
+              .timeout(_paymentsOverviewRequestTimeout);
           if (sr.statusCode == 200) {
             final sj = jsonDecode(sr.body) as Map<String, dynamic>;
             final sb = sj['savings_balance_cents'];
@@ -146,7 +123,10 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
         }
       } catch (_) {}
     } catch (e) {
-      _out = 'Error: $e';
+      _out = sanitizeExceptionForUi(
+        error: e,
+        isArabic: L10n.of(context).isArabic,
+      );
       Perf.action('payments_overview_snapshot_error');
     }
   }
@@ -248,29 +228,17 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
       if (_recent.isEmpty || widget.walletId.isEmpty) return null;
       int inC = 0, outC = 0;
       int inCnt = 0, outCnt = 0;
-      int rpInC = 0, rpOutC = 0;
-      int rpInCnt = 0, rpOutCnt = 0;
       for (final t in _recent) {
         final row = t;
         final cents = (row['amount_cents'] ?? 0) as int;
         final from = (row['from_wallet_id'] ?? '').toString();
-        final kind = (row['kind'] ?? '').toString().toLowerCase();
         final isOut = from == widget.walletId;
-        final isRedpacket = kind == 'redpacket';
         if (isOut) {
           outC += cents;
           outCnt++;
-          if (isRedpacket) {
-            rpOutC += cents;
-            rpOutCnt++;
-          }
         } else {
           inC += cents;
           inCnt++;
-          if (isRedpacket) {
-            rpInC += cents;
-            rpInCnt++;
-          }
         }
       }
       return {
@@ -278,10 +246,6 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
         'outC': outC,
         'inCnt': inCnt,
         'outCnt': outCnt,
-        'rpInC': rpInC,
-        'rpOutC': rpOutC,
-        'rpInCnt': rpInCnt,
-        'rpOutCnt': rpOutCnt,
       };
     } catch (_) {
       return null;
@@ -367,22 +331,6 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                       value:
                           '${fmtCents((summary['inC'] ?? 0) as int)} $_curSym · ${(summary['inCnt'] ?? 0)}',
                     ),
-                    _summaryChip(
-                      context,
-                      label: l.isArabic
-                          ? 'حزم حمراء (مرسلة)'
-                          : 'Red packets · sent',
-                      value:
-                          '${fmtCents((summary['rpOutC'] ?? 0) as int)} $_curSym · ${(summary['rpOutCnt'] ?? 0)}',
-                    ),
-                    _summaryChip(
-                      context,
-                      label: l.isArabic
-                          ? 'حزم حمراء (مستلمة)'
-                          : 'Red packets · received',
-                      value:
-                          '${fmtCents((summary['rpInC'] ?? 0) as int)} $_curSym · ${(summary['rpInCnt'] ?? 0)}',
-                    ),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -461,8 +409,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
               const SizedBox(height: 8),
               Text(
                 l.isArabic
-                    ? 'شحن الرصيد أو إنشاء رمز سحب نقدي، مشابه لتجربة WeChat Pay.'
-                    : 'Top up your balance or create a cash‑out code, similar to WeChat Pay.',
+                    ? 'شحن الرصيد أو إنشاء رمز سحب نقدي، مشابه لتجربة Shamell Pay.'
+                    : 'Top up your balance or create a cash‑out code, similar to Shamell Pay.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: .70),
                 ),
@@ -620,67 +568,6 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
             ],
           ),
         ),
-      ),
-      FormSection(
-        title: l.isArabic ? 'الحزم الحمراء' : 'Red packets',
-        children: [
-          Text(
-            l.isArabic
-                ? 'سجل الحزم الحمراء التي أرسلتها وتلقيتها.'
-                : 'History of red packets you sent and received.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurface
-                      .withValues(alpha: .70),
-                ),
-          ),
-          const SizedBox(height: 8),
-          TextButton.icon(
-            icon: const Icon(Icons.card_giftcard),
-            label: Text(
-              l.isArabic ? 'عرض سجل الحزم الحمراء' : 'View red packet history',
-            ),
-            onPressed: widget.walletId.isEmpty
-                ? null
-                : () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => HistoryPage(
-                          baseUrl: widget.baseUrl,
-                          walletId: widget.walletId,
-                          initialKind: 'redpacket',
-                          initialTxns: _recent
-                              .where((t) =>
-                                  (t['kind'] ?? '').toString().toLowerCase() ==
-                                  'redpacket')
-                              .toList(),
-                        ),
-                      ),
-                    );
-                  },
-          ),
-          TextButton(
-            style: TextButton.styleFrom(
-              padding: EdgeInsets.zero,
-              visualDensity: VisualDensity.compact,
-            ),
-            onPressed: () {
-              // ignore: discarded_futures
-              _shareRedPacketToMoments();
-            },
-            child: Text(
-              l.isArabic ? 'مشاركة في اللحظات' : 'Share to Moments',
-              style: TextStyle(
-                fontSize: 11,
-                color: Theme.of(context)
-                    .colorScheme
-                    .primary
-                    .withValues(alpha: .85),
-              ),
-            ),
-          ),
-        ],
       ),
       FormSection(
         title: l.isArabic ? 'النشاط الأخير' : 'Recent activity',
@@ -1156,7 +1043,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                             onPressed: submitting
                                 ? null
                                 : () => Navigator.of(ctx2).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -1190,7 +1077,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1212,13 +1100,15 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     final l = L10n.of(context);
     final uri = Uri.parse(
         '${widget.baseUrl}/payments/wallets/${Uri.encodeComponent(widget.walletId)}/topup');
-    final headers = await _hdrPO(json: true);
+    final headers = await _hdrPO(widget.baseUrl, json: true);
     headers['Idempotency-Key'] =
         'topup-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
     final payload = <String, Object?>{
       'amount': double.parse(amountMajor.toStringAsFixed(2)),
     };
-    final r = await http.post(uri, headers: headers, body: jsonEncode(payload));
+    final r = await http
+        .post(uri, headers: headers, body: jsonEncode(payload))
+        .timeout(_paymentsOverviewRequestTimeout);
     if (r.statusCode >= 200 && r.statusCode < 300) {
       await _loadSnapshot();
       if (mounted) {
@@ -1228,16 +1118,11 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
           l.isArabic ? 'تم شحن المحفظة بنجاح.' : 'Wallet top‑up successful.';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } else {
-      String msg = l.isArabic ? 'تعذّر شحن المحفظة.' : 'Top‑up failed.';
-      try {
-        final body = jsonDecode(r.body);
-        final detail =
-            body is Map<String, dynamic> ? body['detail']?.toString() : null;
-        if (detail != null && detail.isNotEmpty) {
-          msg = detail;
-        }
-      } catch (_) {}
-      throw Exception(msg);
+      throw Exception(sanitizeHttpError(
+        statusCode: r.statusCode,
+        rawBody: r.body,
+        isArabic: l.isArabic,
+      ));
     }
   }
 
@@ -1343,7 +1228,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                               onPressed: submitting
                                   ? null
                                   : () => Navigator.of(ctx2).pop(),
-                              child: Text(l.mirsaalDialogCancel),
+                              child: Text(l.shamellDialogCancel),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1394,7 +1279,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                       } catch (e) {
                                         setStateSB(() {
                                           submitting = false;
-                                          error = e.toString();
+                                          error =
+                                              sanitizeExceptionForUi(error: e);
                                         });
                                       }
                                     },
@@ -1420,7 +1306,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
   }) async {
     final l = L10n.of(context);
     final uri = Uri.parse('${widget.baseUrl}/payments/cash/create');
-    final headers = await _hdrPO(json: true);
+    final headers = await _hdrPO(widget.baseUrl, json: true);
     headers['Idempotency-Key'] =
         'cash-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
     final payload = <String, Object?>{
@@ -1431,7 +1317,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     if (recipientPhone != null && recipientPhone.trim().isNotEmpty) {
       payload['recipient_phone'] = recipientPhone.trim();
     }
-    final r = await http.post(uri, headers: headers, body: jsonEncode(payload));
+    final r = await http
+        .post(uri, headers: headers, body: jsonEncode(payload))
+        .timeout(_paymentsOverviewRequestTimeout);
     if (r.statusCode >= 200 && r.statusCode < 300) {
       try {
         final body = jsonDecode(r.body);
@@ -1445,18 +1333,11 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
       } catch (_) {}
       return <String, dynamic>{};
     } else {
-      String msg = l.isArabic
-          ? 'تعذّر إنشاء رمز السحب.'
-          : 'Failed to create cash‑out code.';
-      try {
-        final body = jsonDecode(r.body);
-        final detail =
-            body is Map<String, dynamic> ? body['detail']?.toString() : null;
-        if (detail != null && detail.isNotEmpty) {
-          msg = detail;
-        }
-      } catch (_) {}
-      throw Exception(msg);
+      throw Exception(sanitizeHttpError(
+        statusCode: r.statusCode,
+        rawBody: r.body,
+        isArabic: l.isArabic,
+      ));
     }
   }
 
@@ -1556,7 +1437,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                         Expanded(
                           child: TextButton(
                             onPressed: () => Navigator.of(ctx2).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -1716,68 +1597,6 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     ]);
   }
 
-  Future<void> _shareRedPacketToMoments() async {
-    final l = L10n.of(context);
-    String text;
-    String? campaignId;
-    final sec = (widget.initialSection ?? '').trim();
-    if (sec.toLowerCase().startsWith('redpacket:')) {
-      final parts = sec.split(':');
-      if (parts.length > 1) {
-        campaignId = parts.sublist(1).join(':').trim();
-        if (campaignId.isEmpty) {
-          campaignId = null;
-        }
-      }
-    }
-    if (campaignId != null && campaignId.isNotEmpty) {
-      try {
-        final uri = Uri.parse(
-            '${widget.baseUrl}/redpacket/campaigns/${Uri.encodeComponent(campaignId)}/moments_template');
-        final r = await http.get(uri, headers: await _hdrPO());
-        if (r.statusCode == 200) {
-          final j = jsonDecode(r.body) as Map<String, dynamic>;
-          final te = (j['text_en'] ?? '').toString();
-          final ta = (j['text_ar'] ?? '').toString();
-          if (l.isArabic && ta.trim().isNotEmpty) {
-            text = ta.trim();
-          } else if (!l.isArabic && te.trim().isNotEmpty) {
-            text = te.trim();
-          } else {
-            text = l.isArabic
-                ? 'أرسل حزمًا حمراء عبر Shamell Pay 🎁'
-                : 'I am sending red packets via Shamell Pay 🎁';
-          }
-        } else {
-          text = l.isArabic
-              ? 'أرسل حزمًا حمراء عبر Shamell Pay 🎁'
-              : 'I am sending red packets via Shamell Pay 🎁';
-        }
-      } catch (_) {
-        text = l.isArabic
-            ? 'أرسل حزمًا حمراء عبر Shamell Pay 🎁'
-            : 'I am sending red packets via Shamell Pay 🎁';
-      }
-    } else {
-      text = l.isArabic
-          ? 'أرسل حزمًا حمراء عبر Shamell Pay 🎁'
-          : 'I am sending red packets via Shamell Pay 🎁';
-    }
-    if (!text.contains('#')) {
-      text += l.isArabic ? ' #شامل_باي #حزمة_حمراء' : ' #ShamellPay #RedPacket';
-    }
-    try {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString('moments_preset_text', text);
-    } catch (_) {}
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MomentsPage(baseUrl: widget.baseUrl),
-      ),
-    );
-  }
-
   Future<void> _promptSavingsMove({required bool toSavings}) async {
     final l = L10n.of(context);
     if (widget.walletId.isEmpty) {
@@ -1871,7 +1690,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                             onPressed: submitting
                                 ? null
                                 : () => Navigator.of(ctx2).pop(),
-                            child: Text(l.mirsaalDialogCancel),
+                            child: Text(l.shamellDialogCancel),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -1913,7 +1732,8 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
                                     } catch (e) {
                                       setStateSB(() {
                                         submitting = false;
-                                        error = e.toString();
+                                        error =
+                                            sanitizeExceptionForUi(error: e);
                                       });
                                     }
                                   },
@@ -1936,7 +1756,7 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     final l = L10n.of(context);
     final uri = Uri.parse(
         '${widget.baseUrl}/payments/savings/${toSavings ? 'deposit' : 'withdraw'}');
-    final headers = await _hdrPO(json: true);
+    final headers = await _hdrPO(widget.baseUrl, json: true);
     headers['Idempotency-Key'] =
         '${toSavings ? 'sav-dep-' : 'sav-wd-'}${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
     final payload = <String, Object?>{
@@ -1944,8 +1764,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
       'amount': double.parse(amountMajor.toStringAsFixed(2)),
     };
     try {
-      final r =
-          await http.post(uri, headers: headers, body: jsonEncode(payload));
+      final r = await http
+          .post(uri, headers: headers, body: jsonEncode(payload))
+          .timeout(_paymentsOverviewRequestTimeout);
       if (r.statusCode >= 200 && r.statusCode < 300) {
         // Refresh wallet + savings overview so the UI stays in sync.
         await _loadSnapshot();
@@ -1960,16 +1781,11 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(msg)));
       } else {
-        String msg = l.paySendFailed;
-        try {
-          final body = jsonDecode(r.body);
-          final detail =
-              body is Map<String, dynamic> ? body['detail']?.toString() : null;
-          if (detail != null && detail.isNotEmpty) {
-            msg = detail;
-          }
-        } catch (_) {}
-        throw Exception(msg);
+        throw Exception(sanitizeHttpError(
+          statusCode: r.statusCode,
+          rawBody: r.body,
+          isArabic: l.isArabic,
+        ));
       }
     } catch (e) {
       rethrow;
@@ -2053,14 +1869,9 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
     final ts = (t['created_at'] ?? '').toString();
     final theme = Theme.of(context);
     final onSurface = theme.colorScheme.onSurface;
-    final bool isRedpacket = kind == 'redpacket';
 
     String mainLabel;
-    if (isRedpacket) {
-      mainLabel = L10n.of(context).isArabic
-          ? (isOut ? 'حزمة حمراء مرسلة' : 'حزمة حمراء مستلمة')
-          : (isOut ? 'Red packet sent' : 'Red packet received');
-    } else if (kind.startsWith('transfer')) {
+    if (kind.startsWith('transfer')) {
       mainLabel = L10n.of(context).isArabic ? 'تحويل' : 'Transfer';
     } else if (kind.startsWith('topup')) {
       mainLabel = L10n.of(context).isArabic ? 'شحن رصيد' : 'Top‑up';
@@ -2085,24 +1896,12 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
       subtitleText = ts;
     }
 
-    final Color amountColor = isRedpacket
-        ? Colors.red.shade400
-        : (sign == '+'
-            ? Tokens.colorPayments
-            : onSurface.withValues(alpha: .85));
-    final Color iconColor =
-        isRedpacket ? Colors.red.shade400 : Tokens.colorPayments;
-    final Color iconBg = isRedpacket
-        ? Colors.red.shade50
-        : Tokens.colorPayments.withValues(alpha: .08);
-    final IconData iconData;
-    if (isRedpacket) {
-      iconData = Icons.card_giftcard;
-    } else if (sign == '+') {
-      iconData = Icons.call_received_rounded;
-    } else {
-      iconData = Icons.call_made_rounded;
-    }
+    final Color amountColor =
+        sign == '+' ? Tokens.colorPayments : onSurface.withValues(alpha: .85);
+    final Color iconColor = Tokens.colorPayments;
+    final Color iconBg = Tokens.colorPayments.withValues(alpha: .08);
+    final IconData iconData =
+        sign == '+' ? Icons.call_received_rounded : Icons.call_made_rounded;
 
     return StandardListTile(
       leading: Container(
@@ -2151,15 +1950,14 @@ class _PaymentOverviewTabState extends State<PaymentOverviewTab> {
   }
 }
 
-Future<String?> _getCookiePO() async {
-  final sp = await SharedPreferences.getInstance();
-  return sp.getString('sa_cookie');
+Future<String?> _getCookiePO(String baseUrl) async {
+  return await getSessionCookieHeader(baseUrl);
 }
 
-Future<Map<String, String>> _hdrPO({bool json = false}) async {
+Future<Map<String, String>> _hdrPO(String baseUrl, {bool json = false}) async {
   final h = <String, String>{};
   if (json) h['content-type'] = 'application/json';
-  final c = await _getCookiePO();
-  if (c != null && c.isNotEmpty) h['Cookie'] = c;
+  final c = await _getCookiePO(baseUrl);
+  if (c != null && c.isNotEmpty) h['cookie'] = c;
   return h;
 }
